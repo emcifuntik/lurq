@@ -1796,7 +1796,10 @@ impl Node {
       shrink_rule: ShrinkRule::default(),
       node_kind,
       node_id: NodeId::UNASSIGNED,
-      tag_name: Arc::from("Node"),
+      tag_name: {
+        static TAG_NAME: std::sync::OnceLock<Arc<str>> = std::sync::OnceLock::new();
+        TAG_NAME.get_or_init(|| Arc::from("Node")).clone()
+      },
       component_slot_id: None,
       component_key: None,
       element_id: None,
@@ -4087,6 +4090,12 @@ impl Node {
   }
 
   pub(crate) fn preserve_runtime_state_from(&mut self, old: &Node) {
+    self.preserve_runtime_state_and_layout_signature_from(old);
+  }
+
+  // Return the positional subtree signature while reconciling it, so each
+  // ancestor does not compare the same descendants again on a deep tree.
+  fn preserve_runtime_state_and_layout_signature_from(&mut self, old: &Node) -> bool {
     #[cfg(feature = "canvas")]
     if self.can_preserve_runtime_state_from(old)
       && let (NodeKind::Canvas { canvas }, NodeKind::Canvas { canvas: old_canvas }) =
@@ -4097,12 +4106,6 @@ impl Node {
 
     self.clear_unchanged_guard_flags_from(old);
     let own_layout_signature_matches = self.own_layout_signature_matches(old);
-    if own_layout_signature_matches && self.children.len() == old.children.len() {
-      self.layout_cache.preserve_from(&old.layout_cache);
-      if !self.child_layout_signatures_match(old) {
-        self.layout_cache.mark_descendant_dirty();
-      }
-    }
 
     match (&self.node_kind, &old.node_kind) {
       (NodeKind::Text { state, .. }, NodeKind::Text { state: old_state, .. }) => {
@@ -4149,26 +4152,50 @@ impl Node {
       }
     }
 
-    let mut claimed = vec![false; old.children.len()];
-    for index in 0..self.children.len() {
-      let child = &self.children[index];
-      let matched = old
-        .children
-        .get(index)
-        .filter(|old_child| !claimed[index] && child.can_preserve_runtime_state_from(old_child))
-        .map(|_| index)
-        .or_else(|| {
-          old
-            .children
-            .iter()
-            .enumerate()
-            .find_map(|(offset, old_child)| (!claimed[offset] && child.identity_matches(old_child)).then_some(offset))
-        });
-      if let Some(offset) = matched {
-        claimed[offset] = true;
-        self.children[index].preserve_runtime_state_from(&old.children[offset]);
+    let positional = self
+      .children
+      .iter()
+      .zip(&old.children)
+      .all(|(child, old_child)| child.can_preserve_runtime_state_from(old_child));
+    let mut child_layout_signatures_match = true;
+    if positional {
+      for (child, old_child) in self.children.iter_mut().zip(&old.children) {
+        child_layout_signatures_match &= child.preserve_runtime_state_and_layout_signature_from(old_child);
+      }
+    } else {
+      // Reordered children preserve state by identity, but cache signatures
+      // still describe their positions. Compare those before copying state.
+      child_layout_signatures_match = self.child_layout_signatures_match(old);
+      let mut claimed = vec![false; old.children.len()];
+      for index in 0..self.children.len() {
+        let child = &self.children[index];
+        let matched = old
+          .children
+          .get(index)
+          .filter(|old_child| !claimed[index] && child.can_preserve_runtime_state_from(old_child))
+          .map(|_| index)
+          .or_else(|| {
+            old
+              .children
+              .iter()
+              .enumerate()
+              .find_map(|(offset, old_child)| (!claimed[offset] && child.identity_matches(old_child)).then_some(offset))
+          });
+        if let Some(offset) = matched {
+          claimed[offset] = true;
+          self.children[index].preserve_runtime_state_from(&old.children[offset]);
+        }
       }
     }
+
+    let own_layout_matches = own_layout_signature_matches && self.children.len() == old.children.len();
+    if own_layout_matches {
+      self.layout_cache.preserve_from(&old.layout_cache);
+      if !child_layout_signatures_match {
+        self.layout_cache.mark_descendant_dirty();
+      }
+    }
+    own_layout_matches && child_layout_signatures_match
   }
 
   fn can_preserve_runtime_state_from(&self, old: &Node) -> bool {
@@ -4229,6 +4256,8 @@ impl Node {
   }
 
   fn own_layout_signature_matches(&self, old: &Node) -> bool {
+    #[cfg(test)]
+    tests::LAYOUT_SIGNATURE_COMPARISONS.with(|count| count.set(count.get() + 1));
     self.component_slot_id == old.component_slot_id
       && self.component_key == old.component_key
       && self.layout_kind_matches_for_cache(old)
@@ -4778,6 +4807,82 @@ mod tests {
       layout_result::{ChildLayout, LayoutResult, SubtreeHolds},
     },
   };
+
+  #[test]
+  fn built_in_tag_names_share_storage() {
+    use std::sync::Arc;
+    use crate::components::{Column, Rect, Row};
+
+    let a = Node::new();
+    let b = Node::new();
+    assert_eq!(a.tag_name(), "Node");
+    assert!(Arc::ptr_eq(&a.tag_name, &b.tag_name));
+    for (a, b, name) in [
+      (Row::new().node, Row::new().node, "Row"),
+      (Column::new().node, Column::new().node, "Column"),
+      (Rect::new(1.0, 1.0).node, Rect::new(2.0, 2.0).node, "Rect"),
+    ] {
+      assert_eq!(a.tag_name(), name);
+      assert!(Arc::ptr_eq(&a.tag_name, &b.tag_name));
+    }
+  }
+
+  thread_local! {
+    pub(super) static LAYOUT_SIGNATURE_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+  }
+
+  #[test]
+  fn deep_reconcile_compares_each_layout_signature_once() {
+    fn chain(depth: usize) -> Node {
+      let mut node = Node::new().size(10.0, 10.0);
+      for _ in 0..depth {
+        node = Node::column(0.0, Alignment::Start, vec![node]);
+      }
+      node
+    }
+
+    for depth in [16, 64] {
+      let old = chain(depth);
+      let mut new = chain(depth);
+      LAYOUT_SIGNATURE_COMPARISONS.set(0);
+      new.preserve_runtime_state_from(&old);
+      assert_eq!(LAYOUT_SIGNATURE_COMPARISONS.get(), depth + 1);
+    }
+  }
+
+  #[test]
+  fn deep_reconcile_marks_every_ancestor_of_changed_leaf() {
+    fn chain(leaf_width: f32) -> Node {
+      let mut node = Node::new().size(leaf_width, 10.0);
+      for _ in 0..16 {
+        node = Node::column(0.0, Alignment::Start, vec![node]);
+        node.layout_cache.store(
+          Constraints::loose(Size::new(400.0, 400.0)),
+          LayoutResult {
+            size: Size::new(10.0, 10.0),
+            children: Vec::new(),
+            text_layout: None,
+            dropped: false,
+            holds: SubtreeHolds::UNKNOWN,
+          },
+        );
+      }
+      node
+    }
+
+    let old = chain(10.0);
+    for width in [10.0, 20.0] {
+      let mut new = chain(width);
+      new.preserve_runtime_state_from(&old);
+      let mut node = &new;
+      while let Some(child) = node.children.first() {
+        assert!(node.layout_cache.has_cached_result());
+        assert_eq!(node.layout_cache.is_descendant_dirty(), width != 10.0);
+        node = child;
+      }
+      assert_eq!(node.frame.width, Some(crate::node::dimension::Dimension::Px(width)));
+    }
+  }
 
   #[test]
   fn layout_state_fields_follow_style_precedence_and_updates() {
