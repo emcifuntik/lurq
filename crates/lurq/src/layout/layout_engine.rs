@@ -2365,6 +2365,9 @@ impl LayoutEngine {
     }
   }
 
+  // Leaf controls and scroll layout have large temporaries. Keep them out of
+  // the dispatch frame that stays on the stack while containers recurse.
+  #[inline(never)]
   fn layout_leaf(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> LayoutResult {
     match node.node_kind() {
       NodeKind::Text { state, style, .. } => {
@@ -3571,6 +3574,7 @@ impl LayoutEngine {
     }
   }
 
+  #[inline(never)]
   fn layout_scroll(
     &self,
     glyph_engine: &mut GlyphEngine,
