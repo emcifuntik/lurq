@@ -13,6 +13,7 @@ struct InteractionStateInner {
   focus_visible: bool,
   drag_over: bool,
   layout_dirty: bool,
+  layout_subscribers: crate::core::layout_dirty::LayoutSubscribers,
 }
 
 impl Clone for InteractionState {
@@ -91,8 +92,14 @@ impl InteractionState {
     inner.focus_visible = val && inner.focused;
   }
 
+  pub(crate) fn track_layout(&self, watch: &Arc<crate::core::layout_dirty::LayoutWatch>) {
+    self.shared_inner().lock().unwrap().layout_subscribers.bind(watch);
+  }
+
   pub(crate) fn mark_layout_dirty(&self) {
-    self.shared_inner().lock().unwrap().layout_dirty = true;
+    let mut inner = self.shared_inner().lock().unwrap();
+    inner.layout_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   pub(crate) fn has_layout_dirty(&self) -> bool {

@@ -119,31 +119,31 @@ pub(crate) fn read_target(node: &crate::node::Node, prop: AnimatableProperty) ->
       .map(AnimatableValue::Color),
     AnimatableProperty::BorderColor => style
       .border
-      .or_else(|| <Option<_> as Clone>::clone(&node.border))
+      .or_else(|| node.border.as_deref().cloned())
       .and_then(|b| b.color())
       .and_then(|color| color.as_color())
       .map(AnimatableValue::Color),
     AnimatableProperty::BorderWidthTop => style
       .border
-      .or_else(|| <Option<_> as Clone>::clone(&node.border))
+      .or_else(|| node.border.as_deref().cloned())
       .and_then(|b| b.top_width())
       .and_then(|width| width.as_px())
       .map(AnimatableValue::Float),
     AnimatableProperty::BorderWidthRight => style
       .border
-      .or_else(|| <Option<_> as Clone>::clone(&node.border))
+      .or_else(|| node.border.as_deref().cloned())
       .and_then(|b| b.right_width())
       .and_then(|width| width.as_px())
       .map(AnimatableValue::Float),
     AnimatableProperty::BorderWidthBottom => style
       .border
-      .or_else(|| <Option<_> as Clone>::clone(&node.border))
+      .or_else(|| node.border.as_deref().cloned())
       .and_then(|b| b.bottom_width())
       .and_then(|width| width.as_px())
       .map(AnimatableValue::Float),
     AnimatableProperty::BorderWidthLeft => style
       .border
-      .or_else(|| <Option<_> as Clone>::clone(&node.border))
+      .or_else(|| node.border.as_deref().cloned())
       .and_then(|b| b.left_width())
       .and_then(|width| width.as_px())
       .map(AnimatableValue::Float),
@@ -208,6 +208,11 @@ pub(crate) fn write_property(node: &mut crate::node::Node, prop: AnimatablePrope
 }
 
 pub(crate) fn clear_overrides(node: &mut crate::node::Node) {
+  if !node.prepare_layout_tracking().timeline {
+    return;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
   node.animation_overrides.clear();
   for child in &mut node.children {
     clear_overrides(child);

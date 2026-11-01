@@ -212,6 +212,11 @@ impl TransitionEngine {
   }
 
   fn tick_recursive(&mut self, node: &mut crate::node::Node, now: Instant) -> bool {
+    if !node.prepare_layout_tracking().timeline {
+      return false;
+    }
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
     let node_id = node.node_id();
     let mut needs_layout = false;
     if node_id.is_assigned() && !node.transitions.is_empty() {

@@ -33,7 +33,7 @@ fn check_agreement(name: &str, spec: &Spec) {
   let mut tree = Tree::new();
   tree.resize(VIEW_W as u32, VIEW_H as u32);
   tree.set_root(lurq_element(spec));
-  let lurq = tree.bench_layout_only(&mut app, true).expect("root");
+  let lurq = tree.bench_layout_only_shared(&mut app, true).expect("root");
   let mut lurq_leaves = Vec::new();
   lurq_leaf_positions(&lurq, 0.0, 0.0, &mut lurq_leaves);
 
@@ -85,7 +85,7 @@ fn probe(arg: &str) -> ! {
         let mut tree = Tree::new();
         tree.resize(VIEW_W as u32, VIEW_H as u32);
         tree.set_root(lurq_element(&spec));
-        tree.bench_layout_only(&mut app, true);
+        tree.bench_layout_only_shared(&mut app, true);
         // Dropping a deep tree recurses as well; keep it out of the probe.
         std::mem::forget(tree);
       } else {
@@ -132,7 +132,7 @@ fn bench(c: &mut Criterion) {
       tree.resize(VIEW_W as u32, VIEW_H as u32);
       b.iter(|| {
         tree.set_root(lurq_element(spec));
-        black_box(tree.bench_layout_only(&mut app, false));
+        black_box(tree.bench_layout_only_shared(&mut app, false));
       });
     });
     group.bench_function(BenchmarkId::new("taffy/cold", name), |b| {
@@ -146,7 +146,7 @@ fn bench(c: &mut Criterion) {
     // forced
     group.bench_function(BenchmarkId::new("lurq/forced", name), |b| {
       let mut tree = lurq_tree(spec, &mut app);
-      b.iter(|| black_box(tree.bench_layout_only(&mut app, true)));
+      b.iter(|| black_box(tree.bench_layout_only_shared(&mut app, true)));
     });
     group.bench_function(BenchmarkId::new("taffy/forced", name), |b| {
       let mut built = taffy_build(spec);
@@ -167,7 +167,7 @@ fn bench(c: &mut Criterion) {
         i += 1;
         let w = WIDTHS[i % WIDTHS.len()];
         tree.set_layout_constraints_override(Some(Constraints::tight(LSize::new(w, VIEW_H))));
-        black_box(tree.bench_layout_only(&mut app, false));
+        black_box(tree.bench_layout_only_shared(&mut app, false));
       });
     });
     group.bench_function(BenchmarkId::new("taffy/resize", name), |b| {
@@ -184,7 +184,7 @@ fn bench(c: &mut Criterion) {
     // noop
     group.bench_function(BenchmarkId::new("lurq/noop", name), |b| {
       let mut tree = lurq_tree(spec, &mut app);
-      b.iter(|| black_box(tree.bench_layout_only(&mut app, false)));
+      b.iter(|| black_box(tree.bench_layout_only_shared(&mut app, false)));
     });
     group.bench_function(BenchmarkId::new("taffy/noop", name), |b| {
       let mut built = taffy_build(spec);

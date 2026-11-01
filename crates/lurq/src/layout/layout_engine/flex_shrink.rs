@@ -3,6 +3,8 @@
 //! final main size, so its inner layout (scroll viewport, nested flex
 //! distribution, alignment) matches the box it is given.
 
+use std::sync::Arc;
+
 use super::{
   ChildLayoutOverride, LayoutEngine,
   shrink_distribution::{LineSpace, ShrinkOutcome, distribute},
@@ -54,7 +56,7 @@ pub(super) struct FreeRoom {
 /// did not account for still counts: a flex basis, and whatever a child takes
 /// beyond its grant.
 pub(super) fn line_overflow(
-  results: &[LayoutResult],
+  results: &[Arc<LayoutResult>],
   params: &[FlexParams],
   grants: &[Option<f32>],
   room: FreeRoom,
@@ -118,7 +120,7 @@ impl LayoutEngine {
     &self,
     glyph_engine: &mut GlyphEngine,
     line: &FlexShrinkLine<'_>,
-    results: &mut [LayoutResult],
+    results: &mut [Arc<LayoutResult>],
     child_overrides: Option<&[Option<ChildLayoutOverride>]>,
   ) -> Vec<bool> {
     let mut collapsed = vec![false; results.len()];
@@ -140,8 +142,8 @@ impl LayoutEngine {
         ShrinkOutcome::Drop => {
           let zero = Constraints::tight(Size::default());
           let mut dropped = self.layout_child_node(glyph_engine, child_overrides, index, child, zero);
-          dropped.size = Size::default();
-          dropped.dropped = true;
+          Arc::make_mut(&mut dropped).size = Size::default();
+          Arc::make_mut(&mut dropped).dropped = true;
           results[index] = dropped;
         }
       }
@@ -159,7 +161,7 @@ impl LayoutEngine {
     glyph_engine: &mut GlyphEngine,
     child: &Node,
     constraints: Constraints,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     let depth = self.collapsed_lines.borrow().len();
     let mut node = child;
     loop {
@@ -180,7 +182,7 @@ impl LayoutEngine {
   }
 
   /// What the overflow does to each shrinking child, by child index.
-  fn shrink_outcomes(&self, line: &FlexShrinkLine<'_>, results: &[LayoutResult]) -> Vec<(usize, ShrinkOutcome)> {
+  fn shrink_outcomes(&self, line: &FlexShrinkLine<'_>, results: &[Arc<LayoutResult>]) -> Vec<(usize, ShrinkOutcome)> {
     if line.shrink_total <= 0.0 || !line.max_main.is_finite() {
       return Vec::new();
     }

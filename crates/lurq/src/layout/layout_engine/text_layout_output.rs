@@ -253,10 +253,11 @@ impl LayoutEngine {
   fn leaf_with_output(size: Size, output: TextLayoutOutput) -> LayoutResult {
     LayoutResult {
       size,
-      children: vec![],
+      children: vec![].into(),
       text_layout: Some(Arc::new(output)),
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 }

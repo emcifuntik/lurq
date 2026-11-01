@@ -133,7 +133,7 @@ pub(crate) struct ResolvedPadding {
 #[derive(Clone)]
 struct ChildLayoutOverride {
   constraints: Constraints,
-  result: LayoutResult,
+  result: Arc<LayoutResult>,
 }
 
 #[derive(Default)]
@@ -535,7 +535,7 @@ impl LayoutEngine {
     scrollbar: ScrollBarStyle,
     typography: ThemeTypography,
     force_dirty: bool,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     self.compute_inner(
       glyph_engine,
       node,
@@ -565,7 +565,7 @@ impl LayoutEngine {
     scrollbar: ScrollBarStyle,
     typography: ThemeTypography,
     force_dirty: bool,
-  ) -> (LayoutResult, OverlayLayoutIndex) {
+  ) -> (Arc<LayoutResult>, OverlayLayoutIndex) {
     let result = self.compute_inner(
       glyph_engine,
       node,
@@ -597,7 +597,7 @@ impl LayoutEngine {
     scrollbar: ScrollBarStyle,
     typography: ThemeTypography,
     force_dirty: bool,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     self.last_recalculated.set(false);
     *self.palette.borrow_mut() = palette;
     *self.border_sizes.borrow_mut() = border_sizes;
@@ -731,6 +731,12 @@ impl LayoutEngine {
   }
 
   fn mark_layout_dirty(node: &Node, force_dirty: bool) -> bool {
+    node.prepare_layout_tracking();
+    if !force_dirty && !node.layout_cache.needs_dirty_scan() {
+      return node.layout_cache.is_dirty();
+    }
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
     // Overlay/modal declaration nodes are invisible to layout: flex/stack
     // walks skip them and their content is laid out inside the overlay host
     // instead. They never receive a cached result, so any dirt attributed to
@@ -743,6 +749,7 @@ impl LayoutEngine {
     // cache invalidated by a layout-affecting change (e.g. a reconciled subtree
     // patched in via a component slot replacement). It must be laid out, and its
     // ancestors must recompute to reposition it, so propagate dirtiness upward.
+    let generation = node.layout_cache.watch.generation();
     let text_input_dirty = match node.node_kind() {
       // A multiline input scrolled by wheel or scrollbar lays out again to
       // keep its offset in its text, and stops following its caret.
@@ -750,8 +757,15 @@ impl LayoutEngine {
       NodeKind::Select { state } => state.take_layout_dirty(),
       _ => false,
     };
-    let mut local_dirty =
-      force_dirty || node.text_content.is_changed() || text_input_dirty || !node.layout_cache.has_cached_result();
+    // Shared handles can be measured by a second tree first. Its walk may
+    // consume the handle's flag, but cannot consume this node's notification.
+    let local_changed = node.layout_cache.inspected_generation.get() != 0
+      && node.layout_cache.watch.local_changed_since(node.layout_cache.inspected_generation.get());
+    let mut local_dirty = force_dirty
+      || local_changed
+      || node.text_content.is_changed()
+      || text_input_dirty
+      || !node.layout_cache.has_cached_result();
 
     // A cached result that contradicts the node's own fixed frame is stale no
     // matter how it got there (observed in production: retained-tree diffs can
@@ -797,19 +811,16 @@ impl LayoutEngine {
       local_dirty = true;
     }
 
-    let mut child_dirty = false;
+    // A base/overlay compute may already have consumed a child's marks.
+    // Its revision still asks this parent to repair its own older snapshot.
+    let mut child_dirty = node.layout_cache.inspected_generation.get() != 0 && node.layout_cache.needs_dirty_scan();
     for child in node.children() {
       child_dirty |= Self::mark_layout_dirty(child, force_dirty);
     }
 
-    if local_dirty {
-      node.layout_cache.mark_local_dirty();
-    }
-    if child_dirty || scroll_offset_dirty {
-      node.layout_cache.mark_descendant_dirty();
-    }
+    node.layout_cache.record_dirty_scan(generation, local_dirty, child_dirty || scroll_offset_dirty);
 
-    local_dirty || child_dirty || scroll_offset_dirty
+    node.layout_cache.is_dirty()
   }
 
   pub(crate) fn resolve_quads(&self, node: &Node, result: &LayoutResult) -> Vec<Quad> {
@@ -1940,7 +1951,7 @@ impl LayoutEngine {
     }
   }
 
-  fn layout_node(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> LayoutResult {
+  fn layout_node(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> Arc<LayoutResult> {
     // A collapsed line's cache holds layouts its parent did not collapse.
     if !self.is_collapsed(node)
       && let Some(cached) = self.layout_node_from_cache(glyph_engine, node, constraints)
@@ -1956,13 +1967,15 @@ impl LayoutEngine {
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
-  ) -> Option<LayoutResult> {
+  ) -> Option<Arc<LayoutResult>> {
     if !node.layout_cache.is_dirty() {
-      return node.layout_cache.get(constraints).and_then(|cached| {
+      return node.layout_cache.get_shared(constraints).and_then(|cached| {
         if !Self::cached_result_matches_node_tree(node, &cached) {
           return None;
         }
-        Some(self.prepare_cached_result(node, cached))
+        let prepared = self.prepare_cached_result(node, cached);
+        node.layout_cache.record_validation(constraints, prepared.generation);
+        Some(prepared)
       });
     }
 
@@ -1992,14 +2005,17 @@ impl LayoutEngine {
     // geometry. Patch dirty child results into the cached tree and only force
     // this parent to relayout if the child no longer fits the cached parent or
     // the parent layout kind needs to reposition siblings around the new size.
-    let mut cached = node.layout_cache.get_repairable(constraints)?;
+    let cached = node.layout_cache.get_repairable(constraints)?;
     if !Self::cached_result_matches_node_tree(node, &cached) {
       return None;
     }
 
+    let mut cached = cached.as_ref().clone();
     let mut child_overrides = vec![None; cached.children.len()];
     for (index, child) in node.children().iter().enumerate() {
-      if !child.layout_cache.is_dirty() {
+      if !child.layout_cache.is_dirty()
+        && cached.children[index].result.generation == child.layout_cache.watch.generation()
+      {
         continue;
       }
 
@@ -2043,15 +2059,20 @@ impl LayoutEngine {
           Some(&child_overrides),
         ));
       }
-      cached.children[index].result = repaired.into();
+      cached.children[index].result = repaired;
     }
 
-    let prepared = self.prepare_cached_result(node, cached);
-    node.layout_cache.store(constraints, prepared.clone());
+    let prepared = self.prepare_cached_result(node, Arc::new(cached));
+    node.layout_cache.store_shared(constraints, prepared.clone());
     Some(prepared)
   }
 
-  fn cached_result_matches_node_tree(node: &Node, result: &LayoutResult) -> bool {
+  fn cached_result_matches_node_tree(node: &Node, result: &Arc<LayoutResult>) -> bool {
+    if result.generation == node.layout_cache.watch.generation() || node.layout_cache.matches_validated(result) {
+      return true;
+    }
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
     // A cached subtree whose geometry contradicts any node's fixed frame is
     // stale no matter how clean its flags are — observed in production as a
     // virtualized list's rows column serving a previous window's result
@@ -2069,7 +2090,7 @@ impl LayoutEngine {
     {
       return false;
     }
-    result.children.len() == node.children().len()
+    let matches = result.children.len() == node.children().len()
       && node
         .children()
         .iter()
@@ -2099,7 +2120,13 @@ impl LayoutEngine {
             }
           }
           Self::cached_result_matches_node_tree(child, &child_layout.result)
-        })
+        });
+    if matches {
+      // Remember this exact snapshot too: a rebuilt parent can still hold
+      // the old generation of an otherwise unchanged descendant.
+      node.layout_cache.remember_validation(result);
+    }
+    matches
   }
 
   fn child_fits_cached_parent(offset: Offset, child_size: Size, parent_size: Size) -> bool {
@@ -2164,8 +2191,17 @@ impl LayoutEngine {
   /// Serving a cached result skips text layout, so the text output of every
   /// text leaf in it is written back as well: the node's text state otherwise
   /// keeps what the last real layout, possibly at other constraints, wrote.
-  fn prepare_cached_result(&self, node: &Node, mut cached: LayoutResult) -> LayoutResult {
-    self.prepare_layout_result_tree(node, &mut cached, true);
+  fn prepare_cached_result(&self, node: &Node, mut cached: Arc<LayoutResult>) -> Arc<LayoutResult> {
+    if !cached.holds.scroll {
+      if cached.holds.text {
+        Self::restore_text_layout_tree(node, &cached);
+      }
+      if cached.generation != node.layout_cache.watch.generation() {
+        Arc::make_mut(&mut cached).generation = node.layout_cache.watch.generation();
+      }
+      return cached;
+    }
+    self.prepare_layout_result_tree(node, Arc::make_mut(&mut cached), true);
     cached
   }
 
@@ -2176,6 +2212,7 @@ impl LayoutEngine {
   /// would otherwise copy all of it, and preparing every freshly laid-out
   /// parent would walk and copy its whole subtree again.
   fn prepare_layout_result_tree(&self, node: &Node, result: &mut LayoutResult, restore_text_layout: bool) {
+    result.generation = node.layout_cache.watch.generation();
     if restore_text_layout {
       Self::restore_text_layout_output(node, result);
     }
@@ -2225,7 +2262,7 @@ impl LayoutEngine {
     node: &Node,
     constraints: Constraints,
     child_overrides: Option<&[Option<ChildLayoutOverride>]>,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     #[cfg(feature = "perf_profile")]
     let profile_start = Instant::now();
     #[cfg(feature = "perf_profile")]
@@ -2243,10 +2280,13 @@ impl LayoutEngine {
       .unwrap_or(0);
 
     self.last_recalculated.set(true);
+    #[cfg(test)]
+    crate::core::layout_dirty::LAYOUTS.with(|layouts| layouts.set(layouts.get() + 1));
     let mut result = self.layout_node_box(glyph_engine, node, constraints, child_overrides);
     Self::apply_runtime_rect(node, &mut result);
     self.prepare_layout_result_tree(node, &mut result, false);
-    node.layout_cache.store(constraints, result.clone());
+    let result = Arc::new(result);
+    node.layout_cache.store_shared(constraints, result.clone());
     #[cfg(feature = "perf_profile")]
     {
       let elapsed = profile_start.elapsed();
@@ -2423,10 +2463,11 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       NodeKind::Slider { .. } => {
@@ -2444,10 +2485,11 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       NodeKind::Select { state } => {
@@ -2464,20 +2506,22 @@ impl LayoutEngine {
           .unwrap_or(DEFAULT_SELECT_HEIGHT);
         return LayoutResult {
           size: constraints.constrain(Size::new(width, height)),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "canvas")]
       NodeKind::Canvas { .. } => {
         return LayoutResult {
           size: constraints.constrain(node.intrinsic_size.unwrap_or(Size::new(300.0, 150.0))),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "raster")]
@@ -2487,10 +2531,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "raster")]
@@ -2500,10 +2545,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "image")]
@@ -2513,10 +2559,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "svg")]
@@ -2526,10 +2573,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.viewbox_width(), data.viewbox_height()));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(all(feature = "svg", feature = "resources"))]
@@ -2539,10 +2587,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       // Its paragraph places it (`inline_links`); on its own it has no box.
@@ -2558,10 +2607,11 @@ impl LayoutEngine {
     let preferred = node.intrinsic_size.unwrap_or_default();
     LayoutResult {
       size: constraints.constrain(preferred),
-      children: vec![],
+      children: vec![].into(),
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -2589,10 +2639,11 @@ impl LayoutEngine {
     };
     LayoutResult {
       size,
-      children: vec![],
+      children: vec![].into(),
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -2736,10 +2787,11 @@ impl LayoutEngine {
     if children.is_empty() {
       return LayoutResult {
         size: constraints.constrain(Size::default()),
-        children: vec![],
+        children: vec![].into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       };
     }
 
@@ -2766,7 +2818,7 @@ impl LayoutEngine {
 
     let mut grow_total = 0.0_f32;
     let mut shrink_total = 0.0_f32;
-    let mut non_flex_results: Vec<Option<LayoutResult>> = Vec::with_capacity(children.len());
+    let mut non_flex_results: Vec<Option<Arc<LayoutResult>>> = Vec::with_capacity(children.len());
     let mut flex_params_list: Vec<FlexParams> = Vec::with_capacity(children.len());
 
     for child in children {
@@ -2776,13 +2828,14 @@ impl LayoutEngine {
           shrink: 0.0,
           basis: None,
         });
-        non_flex_results.push(Some(LayoutResult {
+        non_flex_results.push(Some(Arc::new(LayoutResult {
           size: Size::default(),
-          children: Vec::new(),
+          children: Vec::new().into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
-        }));
+          generation: 0,
+        })));
         continue;
       }
 
@@ -2829,7 +2882,7 @@ impl LayoutEngine {
 
     let remaining = max_main - total_spacing - non_flex_main;
 
-    let mut results: Vec<LayoutResult> = Vec::with_capacity(children.len());
+    let mut results: Vec<Arc<LayoutResult>> = Vec::with_capacity(children.len());
     // The main size each flex child is laid out at.
     let mut grants: Vec<Option<f32>> = vec![None; children.len()];
     for (i, child) in children.iter().enumerate() {
@@ -2965,6 +3018,7 @@ impl LayoutEngine {
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3033,7 +3087,7 @@ impl LayoutEngine {
   fn position_flex_line(
     &self,
     children: &[Node],
-    results: Vec<LayoutResult>,
+    results: Vec<Arc<LayoutResult>>,
     container_size: &Size,
     spacing: f32,
     align: Alignment,
@@ -3157,7 +3211,7 @@ impl LayoutEngine {
       constraints.max_width
     };
 
-    let mut child_results: Vec<Option<LayoutResult>> = children
+    let mut child_results: Vec<Option<Arc<LayoutResult>>> = children
       .iter()
       .enumerate()
       .map(|(index, child)| {
@@ -3195,10 +3249,11 @@ impl LayoutEngine {
       offset: Offset::default(),
       result: LayoutResult {
         size: Size::default(),
-        children: vec![],
+        children: vec![].into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       }
       .into(),
     });
@@ -3291,10 +3346,11 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: all_layouts,
+      children: all_layouts.into(),
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3308,7 +3364,7 @@ impl LayoutEngine {
   ) -> LayoutResult {
     let children = node.children();
     let child_constraints = constraints.loosen_width().loosen_height();
-    let results: Vec<LayoutResult> = children
+    let results: Vec<Arc<LayoutResult>> = children
       .iter()
       .enumerate()
       .map(|(index, child)| match child.position() {
@@ -3323,10 +3379,10 @@ impl LayoutEngine {
           };
           let mut result = self.layout_child_node(glyph_engine, child_overrides, index, child, positioned_constraints);
           if let Some(width) = resolved_width {
-            result.size.width = width;
+            Arc::make_mut(&mut result).size.width = width;
           }
           if let Some(height) = resolved_height {
-            result.size.height = height;
+            Arc::make_mut(&mut result).size.height = height;
           }
           result
         }
@@ -3338,7 +3394,7 @@ impl LayoutEngine {
       .iter()
       .zip(results.iter())
       .filter(|(child, _)| !matches!(child.position(), Position::Absolute { .. }))
-      .map(|(_, result)| result)
+      .map(|(_, result)| result.as_ref())
       .collect();
 
     let max_width = normal_results.iter().map(|r| r.size.width).fold(0.0_f32, f32::max);
@@ -3372,6 +3428,7 @@ impl LayoutEngine {
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3611,10 +3668,11 @@ impl LayoutEngine {
         children: vec![ChildLayout {
           offset: Offset::new(-state.scroll_x(), -state.scroll_y()),
           result: child_result.into(),
-        }],
+        }].into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       };
     }
 
@@ -3656,10 +3714,11 @@ impl LayoutEngine {
       children: vec![ChildLayout {
         offset: Offset::new(-state.scroll_x(), -state.scroll_y()),
         result: child_result.into(),
-      }],
+      }].into(),
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3673,10 +3732,11 @@ impl LayoutEngine {
     let Some(child) = node.children().first() else {
       return LayoutResult {
         size: Size::new(0.0, 0.0),
-        children: Vec::new(),
+        children: Vec::new().into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       };
     };
     let child_result = self.layout_child_node(glyph_engine, child_overrides, 0, child, constraints);
@@ -3687,10 +3747,11 @@ impl LayoutEngine {
       children: vec![ChildLayout {
         offset: Offset::default(),
         result: child_result.into(),
-      }],
+      }].into(),
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3701,7 +3762,7 @@ impl LayoutEngine {
     index: usize,
     child: &Node,
     constraints: Constraints,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     if let Some(Some(child_override)) = child_overrides.and_then(|overrides| overrides.get(index)) {
       if child_override.constraints == constraints {
         // The override was laid out before this parent layout began, which
@@ -4170,10 +4231,11 @@ mod tests {
       constraints,
       LayoutResult {
         size: constraints.constrain(Size::new(10.0, 10.0)),
-        children: Vec::new(),
+        children: Vec::new().into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       },
     );
     child.layout_cache.mark_local_dirty();
@@ -4872,6 +4934,112 @@ mod tests {
     assert!(second.offset.x >= first.offset.x + first.result.size.width + 8.0);
   }
 
+  #[test]
+  fn shared_handle_change_survives_another_tree_consuming_its_dirty_flag() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let reference = crate::core::ElementRefMut::new();
+    let build = || Node::stack(
+      StackAlignment::TopStart,
+      vec![fixed(50.0, 50.0).ref_element(reference.clone())],
+    );
+    let first = build();
+    let second = build();
+    let constraints = Constraints::tight(Size::new(400.0, 300.0));
+    compute_at(&engine, &mut glyph_engine, &first, constraints, false);
+    compute_at(&engine, &mut glyph_engine, &second, constraints, false);
+    reference.set_relative_bounds(30.0, 40.0, 80.0, 70.0);
+    compute_at(&engine, &mut glyph_engine, &first, constraints, false);
+
+    let result = compute_at(&engine, &mut glyph_engine, &second, constraints, false);
+
+    assert_eq!(result.children[0].result.size, Size::new(80.0, 70.0));
+    assert_eq!((result.children[0].offset.x, result.children[0].offset.y), (30.0, 40.0));
+  }
+
+  #[test]
+  fn unchanged_large_tree_skips_layout_walks() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let root = Node::column(0.0, Alignment::Start, (0..10_000).map(|_| fixed(10.0, 1.0)).collect());
+    let constraints = Constraints::tight(Size::new(400.0, 20_000.0));
+    compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+
+    compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    assert!(visits < 20, "unchanged layout visited {visits} nodes");
+  }
+
+  #[test]
+  fn one_deep_leaf_change_only_visits_its_path_and_reflows_its_siblings() {
+    fn branch(depth: usize) -> Node {
+      if depth == 0 {
+        return fixed(10.0, 1.0);
+      }
+      Node::column(0.0, Alignment::Start, (0..10).map(|_| branch(depth - 1)).collect())
+    }
+    fn same_geometry(actual: &LayoutResult, expected: &LayoutResult) {
+      assert_eq!(actual.size, expected.size);
+      assert_eq!(actual.children.len(), expected.children.len());
+      for (actual, expected) in actual.children.iter().zip(&expected.children) {
+        assert_eq!((actual.offset.x, actual.offset.y), (expected.offset.x, expected.offset.y));
+        same_geometry(&actual.result, &expected.result);
+      }
+    }
+
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let mut root = branch(4);
+    let constraints = Constraints::loose(Size::new(400.0, 20_000.0));
+    let old = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+    // Start from carried caches as well: checking the rebuilt snapshot once
+    // must not make later changes walk its unaffected branches again.
+    let mut rebuilt = branch(4);
+    rebuilt.preserve_runtime_state_from(&root);
+    root = rebuilt;
+    let before = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+    same_geometry(&before, &old);
+    let leaf = &mut root.children[0].children[0].children[0].children[0];
+    crate::node::node::NodeUpdate::height(leaf, 2.0);
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+    crate::core::layout_dirty::LAYOUTS.with(|layouts| layouts.set(0));
+
+    let repaired = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    let layouts = crate::core::layout_dirty::LAYOUTS.with(|layouts| layouts.get());
+    assert!(visits < 100, "one changed leaf visited {visits} nodes");
+    assert_eq!(layouts, 5, "only the leaf and its four ancestors need layout");
+    assert_eq!(repaired.children[1].offset.y, before.children[1].offset.y + 1.0);
+    assert!(Arc::ptr_eq(
+      &repaired.children[1].result.children[0].result,
+      &before.children[1].result.children[0].result,
+    ));
+    let fresh = compute_at(&engine, &mut glyph_engine, &root, constraints, true);
+    same_geometry(&repaired, &fresh);
+  }
+
+  #[test]
+  fn validated_rebuilt_tree_skips_later_layout_walks() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let build = || Node::column(0.0, Alignment::Start, (0..1000).map(|_| fixed(10.0, 1.0)).collect());
+    let old = build();
+    let constraints = Constraints::tight(Size::new(400.0, 2000.0));
+    compute_at(&engine, &mut glyph_engine, &old, constraints, false);
+    let mut new = build();
+    new.preserve_runtime_state_from(&old);
+    compute_at(&engine, &mut glyph_engine, &new, constraints, false);
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+
+    compute_at(&engine, &mut glyph_engine, &new, constraints, false);
+
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    assert!(visits < 20, "validated rebuilt tree visited {visits} nodes");
+  }
+
   fn fixed(width: f32, height: f32) -> Node {
     Node::new().frame(FrameConstraints {
       width: Some(Dimension::Px(width)),
@@ -4886,7 +5054,7 @@ mod tests {
     node: &Node,
     constraints: Constraints,
     force_dirty: bool,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     engine.compute(
       glyph_engine,
       node,
@@ -4919,6 +5087,7 @@ mod tests {
     let served = compute_at(&engine, &mut glyph_engine, &node, constraints, false);
 
     assert!(!engine.last_recalculated());
+    assert!(Arc::ptr_eq(&first, &served));
     assert_eq!(
       first.holds,
       SubtreeHolds {

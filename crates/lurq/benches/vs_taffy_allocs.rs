@@ -67,7 +67,7 @@ fn main() {
     let mut tree = Tree::new();
     tree.resize(VIEW_W as u32, VIEW_H as u32);
     tree.set_root(lurq_element(spec));
-    tree.bench_layout_only(&mut app, true);
+    tree.bench_layout_only_shared(&mut app, true);
     let mut built = taffy_build(spec);
     taffy_compute(&mut built);
 
@@ -89,7 +89,7 @@ fn main() {
     rows.push((
       "forced",
       count(|| {
-        tree.bench_layout_only(&mut app, true);
+        tree.bench_layout_only_shared(&mut app, true);
       }),
       count(|| {
         for &leaf in &built.leaves {
@@ -106,7 +106,7 @@ fn main() {
         i += 1;
         let w = WIDTHS[i % WIDTHS.len()];
         tree.set_layout_constraints_override(Some(Constraints::tight(LSize::new(w, VIEW_H))));
-        tree.bench_layout_only(&mut app, false);
+        tree.bench_layout_only_shared(&mut app, false);
       }),
       count(|| {
         j += 1;
@@ -115,11 +115,11 @@ fn main() {
       }),
     ));
     tree.set_layout_constraints_override(None);
-    tree.bench_layout_only(&mut app, false);
+    tree.bench_layout_only_shared(&mut app, false);
     rows.push((
       "noop",
       count(|| {
-        tree.bench_layout_only(&mut app, false);
+        tree.bench_layout_only_shared(&mut app, false);
       }),
       count(|| taffy_compute(&mut built)),
     ));

@@ -696,7 +696,8 @@ pub(crate) struct Node {
   pub(crate) color: Guard<Option<BackgroundColor>>,
   pub(crate) gradient: Guard<Option<Gradient>>,
   pub(crate) border_radius: Guard<Option<ThemedBorderRadius>>,
-  pub(crate) border: Guard<Option<Borders>>,
+  /// Boxed to keep tracking metadata within the node's stack size budget.
+  pub(crate) border: Guard<Option<Box<Borders>>>,
   /// Boxed: most nodes have no shadow, and `Node` size is budgeted (lurq#25).
   pub(crate) box_shadow: Guard<Option<Box<BoxShadowValue>>>,
   pub(crate) caret_color: Guard<Option<TextColor>>,
@@ -750,10 +751,12 @@ impl NodeUpdate for Node {
 
   fn child(&mut self, child: Node) {
     self.children.push(child);
+    self.layout_cache.invalidate();
   }
 
   fn with_children(&mut self, children: impl IntoIterator<Item = Node>) {
     self.children.extend(children);
+    self.layout_cache.invalidate();
   }
 
   fn id(&mut self, id: impl Into<Arc<str>>) {
@@ -1069,47 +1072,47 @@ impl NodeUpdate for Node {
   }
 
   fn border_inside(&mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) {
-    self.border.set(Some(Borders::all(Border::inside(width, color))));
+    self.border.set(Some(Box::new(Borders::all(Border::inside(width, color)))));
   }
 
   fn border_outside(&mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) {
-    self.border.set(Some(Borders::all(Border::outside(width, color))));
+    self.border.set(Some(Box::new(Borders::all(Border::outside(width, color)))));
   }
 
   fn border_center(&mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) {
-    self.border.set(Some(Borders::all(Border::center(width, color))));
+    self.border.set(Some(Box::new(Borders::all(Border::center(width, color)))));
   }
 
   fn border(&mut self, border: Border) {
-    self.border.set(Some(Borders::all(border)));
+    self.border.set(Some(Box::new(Borders::all(border))));
   }
 
   fn border_custom(&mut self, border: Borders) {
-    self.border.set(Some(border));
+    self.border.set(Some(Box::new(border)));
   }
 
   fn border_top(&mut self, border: Border) {
-    let mut borders = <Option<Borders> as Clone>::clone(&self.border).unwrap_or_default();
+    let mut borders = self.border.as_deref().cloned().unwrap_or_default();
     borders.top = Some(border);
-    self.border.set(Some(borders));
+    self.border.set(Some(Box::new(borders)));
   }
 
   fn border_right(&mut self, border: Border) {
-    let mut borders = <Option<Borders> as Clone>::clone(&self.border).unwrap_or_default();
+    let mut borders = self.border.as_deref().cloned().unwrap_or_default();
     borders.right = Some(border);
-    self.border.set(Some(borders));
+    self.border.set(Some(Box::new(borders)));
   }
 
   fn border_bottom(&mut self, border: Border) {
-    let mut borders = <Option<Borders> as Clone>::clone(&self.border).unwrap_or_default();
+    let mut borders = self.border.as_deref().cloned().unwrap_or_default();
     borders.bottom = Some(border);
-    self.border.set(Some(borders));
+    self.border.set(Some(Box::new(borders)));
   }
 
   fn border_left(&mut self, border: Border) {
-    let mut borders = <Option<Borders> as Clone>::clone(&self.border).unwrap_or_default();
+    let mut borders = self.border.as_deref().cloned().unwrap_or_default();
     borders.left = Some(border);
-    self.border.set(Some(borders));
+    self.border.set(Some(Box::new(borders)));
   }
 
   fn box_shadow(&mut self, shadow: impl Into<BoxShadowValue>) {
@@ -1531,6 +1534,7 @@ impl NodeUpdate for Node {
 
   fn ref_element(&mut self, element_ref: impl Into<CoreElementRef>) {
     self.element_ref = Some(element_ref.into());
+    self.layout_cache.watch.mark();
   }
 
   fn interactive(&mut self, state: InteractionState) {
@@ -2176,7 +2180,7 @@ impl Node {
       self.color.set(Some(background.clone()));
     }
     if let Some(border) = &part.border {
-      self.border.set(Some(border.clone()));
+      self.border.set(Some(Box::new(border.clone())));
     }
     if let Some(radius) = part.border_radius {
       self.border_radius.set(Some(radius));
@@ -2480,55 +2484,55 @@ impl Node {
   }
 
   pub fn border_inside(mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) -> Self {
-    self.border.set(Some(Borders::all(Border::inside(width, color))));
+    self.border.set(Some(Box::new(Borders::all(Border::inside(width, color)))));
     self
   }
 
   pub fn border_outside(mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) -> Self {
-    self.border.set(Some(Borders::all(Border::outside(width, color))));
+    self.border.set(Some(Box::new(Borders::all(Border::outside(width, color)))));
     self
   }
 
   pub fn border_center(mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) -> Self {
-    self.border.set(Some(Borders::all(Border::center(width, color))));
+    self.border.set(Some(Box::new(Borders::all(Border::center(width, color)))));
     self
   }
 
   pub fn border(mut self, border: Border) -> Self {
-    self.border.set(Some(Borders::all(border)));
+    self.border.set(Some(Box::new(Borders::all(border))));
     self
   }
 
   pub fn border_custom(mut self, border: Borders) -> Self {
-    self.border.set(Some(border));
+    self.border.set(Some(Box::new(border)));
     self
   }
 
   pub fn border_top(mut self, border: Border) -> Self {
-    let mut borders = <Option<Borders> as Clone>::clone(&self.border).unwrap_or_default();
+    let mut borders = self.border.as_deref().cloned().unwrap_or_default();
     borders.top = Some(border);
-    self.border.set(Some(borders));
+    self.border.set(Some(Box::new(borders)));
     self
   }
 
   pub fn border_right(mut self, border: Border) -> Self {
-    let mut borders = <Option<Borders> as Clone>::clone(&self.border).unwrap_or_default();
+    let mut borders = self.border.as_deref().cloned().unwrap_or_default();
     borders.right = Some(border);
-    self.border.set(Some(borders));
+    self.border.set(Some(Box::new(borders)));
     self
   }
 
   pub fn border_bottom(mut self, border: Border) -> Self {
-    let mut borders = <Option<Borders> as Clone>::clone(&self.border).unwrap_or_default();
+    let mut borders = self.border.as_deref().cloned().unwrap_or_default();
     borders.bottom = Some(border);
-    self.border.set(Some(borders));
+    self.border.set(Some(Box::new(borders)));
     self
   }
 
   pub fn border_left(mut self, border: Border) -> Self {
-    let mut borders = <Option<Borders> as Clone>::clone(&self.border).unwrap_or_default();
+    let mut borders = self.border.as_deref().cloned().unwrap_or_default();
     borders.left = Some(border);
-    self.border.set(Some(borders));
+    self.border.set(Some(Box::new(borders)));
     self
   }
 
@@ -2944,6 +2948,7 @@ impl Node {
 
   fn push_transition(&mut self, spec: Transition) {
     self.transitions.push(spec);
+    self.layout_cache.invalidate();
   }
 
   pub fn animation(mut self, spec: Animation) -> Self {
@@ -2953,6 +2958,7 @@ impl Node {
 
   fn set_animation(&mut self, spec: Animation) {
     self.animation = Some(spec);
+    self.layout_cache.invalidate();
   }
 
   pub fn scrollbar(mut self, style: ScrollBarStyle) -> Self {
@@ -2984,6 +2990,7 @@ impl Node {
 
   pub fn ref_element(mut self, element_ref: impl Into<CoreElementRef>) -> Self {
     self.element_ref = Some(element_ref.into());
+    self.layout_cache.watch.mark();
     self
   }
 
@@ -2995,7 +3002,9 @@ impl Node {
   }
 
   pub(crate) fn element_ref_handle(&mut self) -> CoreElementRef {
-    self.element_ref.get_or_insert_with(CoreElementRef::new).clone()
+    let reference = self.element_ref.get_or_insert_with(CoreElementRef::new).clone();
+    reference.track_layout(&self.layout_cache.watch);
+    reference
   }
 
   pub fn interactive(mut self, state: InteractionState) -> Self {
@@ -3512,6 +3521,7 @@ impl Node {
 
   pub(crate) fn set_layout_neutral(&mut self, layout_neutral: bool) {
     self.layout_neutral = layout_neutral;
+    self.layout_cache.invalidate();
   }
 
   pub(crate) fn overlay_declaration(&self) -> Option<&crate::app::ctx::OverlaySpec> {
@@ -3766,7 +3776,7 @@ impl Node {
     let mut b = self
       .state_style()
       .border
-      .or_else(|| <Option<Borders> as Clone>::clone(&self.border));
+      .or_else(|| self.border.as_deref().cloned());
     let overrides = &self.animation_overrides;
     if let Some(ref mut borders) = b {
       for (prop, val) in overrides {
@@ -3849,10 +3859,9 @@ impl Node {
   }
 
   pub(crate) fn take_element_override_cleared(&self) -> bool {
-    self
-      .element_ref
-      .as_ref()
-      .is_some_and(CoreElementRef::take_override_cleared)
+    self.element_ref.as_ref().is_some_and(|reference| {
+      self.layout_cache.take_override_cleared(reference.override_clear_generation())
+    })
   }
 
   pub(crate) fn state_styles_affect_layout(&self) -> bool {
@@ -3868,6 +3877,11 @@ impl Node {
   }
 
   pub(crate) fn has_render_dirty(&self) -> bool {
+    if self.layout_cache.guards_generation.get() == self.layout_cache.watch.generation() {
+      return false;
+    }
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
     self.text_content.is_changed()
       || self.color.is_changed()
       || self.gradient.is_changed()
@@ -4054,6 +4068,12 @@ impl Node {
   }
 
   pub(crate) fn clear_guards(&self) {
+    let subtree = self.prepare_layout_tracking();
+    if self.layout_cache.guards_generation.get() == self.layout_cache.watch.generation() && !subtree.scroll {
+      return;
+    }
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
     self.text_content.clear_changed();
     self.color.clear_changed();
     self.gradient.clear_changed();
@@ -4074,9 +4094,15 @@ impl Node {
     for child in &self.children {
       child.clear_guards();
     }
+    self.layout_cache.guards_generation.set(self.layout_cache.watch.generation());
   }
 
   pub(crate) fn sync_dynamic_content_recursive(&mut self) {
+    if !self.prepare_layout_tracking().text_input {
+      return;
+    }
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
     if let NodeKind::TextInput { state, .. } = &self.node_kind {
       state.sync_external_value();
       let rendered = state.rendered_text();
@@ -4096,6 +4122,7 @@ impl Node {
   // Return the positional subtree signature while reconciling it, so each
   // ancestor does not compare the same descendants again on a deep tree.
   fn preserve_runtime_state_and_layout_signature_from(&mut self, old: &Node) -> bool {
+    self.layout_cache.watch.mark();
     #[cfg(feature = "canvas")]
     if self.can_preserve_runtime_state_from(old)
       && let (NodeKind::Canvas { canvas }, NodeKind::Canvas { canvas: old_canvas }) =
@@ -4870,10 +4897,11 @@ mod tests {
           Constraints::loose(Size::new(400.0, 400.0)),
           LayoutResult {
             size: Size::new(10.0, 10.0),
-            children: Vec::new(),
+            children: Vec::new().into(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
+            generation: 0,
           },
         );
       }
@@ -5018,10 +5046,11 @@ mod tests {
             offset: Offset::default(),
             result: LayoutResult {
               size: Size::new(50.0, 20.0),
-              children: Vec::new(),
+              children: Vec::new().into(),
               text_layout: None,
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
+              generation: 0,
             }
             .into(),
           },
@@ -5029,17 +5058,19 @@ mod tests {
             offset: Offset::new(50.0, 0.0),
             result: LayoutResult {
               size: Size::new(50.0, 20.0),
-              children: Vec::new(),
+              children: Vec::new().into(),
               text_layout: None,
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
+              generation: 0,
             }
             .into(),
           },
-        ],
+        ].into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       },
     );
     let mut new = Node::row(
@@ -5073,22 +5104,25 @@ mod tests {
               offset: Offset::default(),
               result: LayoutResult {
                 size: Size::new(30.0, 20.0),
-                children: Vec::new(),
+                children: Vec::new().into(),
                 text_layout: None,
                 dropped: false,
                 holds: SubtreeHolds::UNKNOWN,
+                generation: 0,
               }
               .into(),
-            }],
+            }].into(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
+            generation: 0,
           }
           .into(),
-        }],
+        }].into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       },
     );
 
@@ -5118,16 +5152,18 @@ mod tests {
           offset: Offset::default(),
           result: LayoutResult {
             size: Size::new(100.0, 20.0),
-            children: Vec::new(),
+            children: Vec::new().into(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
+            generation: 0,
           }
           .into(),
-        }],
+        }].into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       },
     );
 

@@ -17,6 +17,9 @@ pub struct LayoutResult {
   /// write back into its nodes. Set when the layout engine prepares the
   /// result; a result built anywhere else may hold anything.
   pub(crate) holds: SubtreeHolds,
+  /// The subtree generation this geometry was prepared for. Carried caches
+  /// retain their old generation and must be checked against the new nodes.
+  pub(crate) generation: u64,
 }
 
 /// What a laid-out subtree holds that serving it from a cache writes back:
@@ -57,7 +60,7 @@ impl LayoutResult {
         .text_layout
         .as_ref()
         .map_or(0, |output| output.estimated_memory_bytes())
-      + self.children.capacity() * std::mem::size_of::<ChildLayout>()
+      + self.children.len() * std::mem::size_of::<ChildLayout>()
       + self
         .children
         .iter()
@@ -82,16 +85,23 @@ mod tests {
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         }
         .into(),
       }],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     };
 
-    let cloned = result.clone();
+    let mut cloned = result.clone();
 
+    assert_ne!(result.children.as_ptr(), cloned.children.as_ptr());
+    assert!(Arc::ptr_eq(&result.children[0].result, &cloned.children[0].result));
+    cloned.children[0].offset.x = 3.0;
+    assert_eq!(result.children[0].offset.x, 0.0);
+    assert_eq!(cloned.children[0].offset.x, 3.0);
     assert!(Arc::ptr_eq(&result.children[0].result, &cloned.children[0].result));
   }
 }

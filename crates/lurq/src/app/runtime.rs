@@ -653,7 +653,7 @@ pub struct Tree {
   root: Option<Node>,
   root_component: Option<Box<dyn AnyRootComponent>>,
   root_ctx: Option<Ctx>,
-  last_layout: Option<LayoutResult>,
+  last_layout: Option<Arc<LayoutResult>>,
   /// The nodes the last layout dropped from their Row/Column
   /// (`ShrinkLimit::Drop`). Kept while the layout is invalidated, so focus
   /// requested before the next layout cannot land inside them either.
@@ -1199,7 +1199,7 @@ impl Tree {
       .unwrap_or(0);
     let last_layout_bytes = self
       .last_layout
-      .as_ref()
+      .as_deref()
       .map(LayoutResult::estimated_memory_bytes)
       .unwrap_or(0);
     let render_engine_bytes = self
@@ -5550,7 +5550,7 @@ impl Tree {
 
   #[doc(hidden)]
   pub fn last_layout(&self) -> Option<&LayoutResult> {
-    self.last_layout.as_ref()
+    self.last_layout.as_deref()
   }
 
   /// Benchmarks only: runs the layout engine over the root under the
@@ -5558,6 +5558,15 @@ impl Tree {
   /// hit-testing, focus, quads). `force_dirty` lays every node out again.
   #[doc(hidden)]
   pub fn bench_layout_only(&mut self, app: &mut App, force_dirty: bool) -> Option<LayoutResult> {
+    self
+      .bench_layout_only_shared(app, force_dirty)
+      .map(|result| result.as_ref().clone())
+  }
+
+  /// Benchmarks only: the same engine pass, retaining its shared snapshot
+  /// instead of copying the root's children into an owned result.
+  #[doc(hidden)]
+  pub fn bench_layout_only_shared(&mut self, app: &mut App, force_dirty: bool) -> Option<Arc<LayoutResult>> {
     let root = self.root.as_ref()?;
     let constraints = self
       .layout_constraints_override
@@ -6132,6 +6141,7 @@ impl Tree {
         .unwrap_or_else(|| app.theme().version());
       let theme_changed = self.last_theme_version != theme_version;
       let has_active_overlays = root.has_synthetic_role(SyntheticNodeRole::OverlayHost) && root.children.len() > 1;
+      root.prepare_layout_tracking();
       let has_dirty_element_ref = has_dirty_element_ref_recursive(root);
       let has_pending_layout_dirty = has_pending_layout_dirty_recursive(root);
       let has_runtime_layout_state = has_runtime_layout_state_recursive(root);
@@ -6158,7 +6168,9 @@ impl Tree {
       {
         self.last_theme_version = theme_version;
         #[cfg(feature = "canvas")]
-        if let Some(layout) = self.last_layout.as_ref() {
+        if let Some(layout) = self.last_layout.as_ref()
+          && root.prepare_layout_tracking().canvas
+        {
           let offset = root.offset_position().unwrap_or_default();
           update_canvas_placement_recursive(
             root,
@@ -6613,6 +6625,13 @@ impl Tree {
     loader: &crate::resources::ResourceLoader,
     image_cache: &mut std::collections::HashMap<Arc<str>, crate::images::ImageData>,
   ) -> bool {
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
+    if !node.prepare_layout_tracking().resource_images {
+      return false;
+    }
+    // Poll resource-backed subtrees even without layout dirt: a load can
+    // complete independently of mutations to the nodes.
     let mut layout_dirty = false;
 
     if let NodeKind::ResourceImage { path } = node.node_kind() {
@@ -6706,6 +6725,11 @@ impl Tree {
     loader: &crate::resources::ResourceLoader,
     svg_cache: &mut std::collections::HashMap<Arc<str>, crate::svg::SvgData>,
   ) -> bool {
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
+    if !node.prepare_layout_tracking().resource_svgs {
+      return false;
+    }
     let mut layout_dirty = false;
 
     if let NodeKind::ResourceSvg { path } = node.node_kind() {
@@ -7089,6 +7113,8 @@ fn build_overlays_from_layout_index(
                 typography.clone(),
                 theme_changed,
               )
+              .as_ref()
+              .clone()
             },
           )
         };
@@ -9937,7 +9963,190 @@ fn replace_live_component_slot_everywhere(
   replaced
 }
 
+#[cfg(test)]
+mod layout_tracking_tests {
+  use super::*;
+  use crate::layout::Offset;
+
+  #[test]
+  fn shared_handle_notification_survives_another_headless_pass() {
+    let mut app = App::new();
+    let reference = crate::core::ElementRefMut::new();
+    let build = || {
+      let mut tree = Tree::new();
+      tree.resize(400, 300);
+      tree.set_root(
+        crate::components::Stack::new()
+          .child(crate::components::Rect::new(50.0, 50.0).ref_element(reference.clone())),
+      );
+      tree
+    };
+    let mut first = build();
+    let mut second = build();
+    first.pass_headless(&mut app);
+    second.pass_headless(&mut app);
+    reference.set_relative_bounds(30.0, 40.0, 80.0, 70.0);
+    first.pass_headless(&mut app);
+
+    let report = second.pass_headless(&mut app);
+
+    assert!(report.layout_updated);
+    assert_eq!(second.last_layout().unwrap().children[0].result.size, Size::new(80.0, 70.0));
+  }
+
+  #[test]
+  fn shared_handle_clear_override_restores_both_trees_offsets() {
+    let mut app = App::new();
+    let reference = crate::core::ElementRefMut::new();
+    let build = || {
+      let mut tree = Tree::new();
+      tree.resize(400, 300);
+      tree.set_root(
+        crate::components::Stack::new()
+          .child(crate::components::Rect::new(50.0, 50.0).ref_element(reference.clone())),
+      );
+      tree
+    };
+    let mut first = build();
+    let mut second = build();
+    first.pass_headless(&mut app);
+    second.pass_headless(&mut app);
+    reference.set_relative_bounds(30.0, 40.0, 50.0, 50.0);
+    first.pass_headless(&mut app);
+    second.pass_headless(&mut app);
+    for tree in [&first, &second] {
+      assert!(tree.last_layout().unwrap().children[0].offset == Offset::new(30.0, 40.0));
+    }
+
+    reference.clear_bounds_override();
+    first.pass_headless(&mut app);
+    second.pass_headless(&mut app);
+
+    for tree in [&mut first, &mut second] {
+      assert!(tree.last_layout().unwrap().children[0].offset == Offset::default());
+      assert!(!tree.pass_headless(&mut app).layout_updated);
+    }
+  }
+
+  #[cfg(all(feature = "image", feature = "svg", feature = "resources"))]
+  #[test]
+  fn resource_completion_only_visits_resource_branches() {
+    let mut app = App::new();
+    let mut tree = Tree::new();
+    tree.resize(400, 20_000);
+    tree.set_root(crate::node::Element::from_node(Node::column(
+      0.0,
+      crate::layout::Alignment::Start,
+      vec![
+        Node::column(
+          0.0,
+          crate::layout::Alignment::Start,
+          (0..10_000).map(|_| Node::new().width(10.0).height(1.0)).collect(),
+        ),
+        Node::column(
+          0.0,
+          crate::layout::Alignment::Start,
+          vec![Node::resource_image("image"), Node::resource_svg("svg")],
+        ),
+      ],
+    )));
+    tree.bench_layout_only_shared(&mut app, false);
+    assert!(!tree.root.as_ref().unwrap().layout_cache.needs_dirty_scan());
+    app.shared.image_resource_cache.lock().insert(
+      Arc::from("image"),
+      crate::images::ImageData::from_rgba(vec![255; 24], 2, 3),
+    );
+    app.shared.svg_resource_cache.lock().insert(
+      Arc::from("svg"),
+      crate::svg::SvgData::from_str(r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="5"/>"#),
+    );
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+
+    assert!(tree.resolve_resource_images(&mut app));
+    assert!(tree.resolve_resource_svgs(&mut app));
+
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    assert!(visits < 40, "resource polling visited {visits} nodes");
+    let root = tree.root.as_ref().unwrap();
+    assert!(matches!(root.children[1].children[0].node_kind(), NodeKind::Image { .. }));
+    assert!(matches!(root.children[1].children[1].node_kind(), NodeKind::Svg { .. }));
+    let result = tree.bench_layout_only_shared(&mut app, false).unwrap();
+    assert_eq!(result.children[1].result.children[0].result.size, Size::new(2.0, 3.0));
+    assert_eq!(result.children[1].result.children[1].result.size, Size::new(4.0, 5.0));
+  }
+
+  #[cfg(feature = "image")]
+  #[test]
+  fn another_trees_loading_image_does_not_walk_a_clean_tree() {
+    let mut app = App::new();
+    let mut tree = Tree::new();
+    tree.resize(400, 20_000);
+    let mut column = crate::components::Column::new();
+    for _ in 0..10_000 {
+      column = column.child(crate::components::Rect::new(10.0, 1.0));
+    }
+    tree.set_root(column);
+    tree.pass_headless(&mut app);
+    let _image = crate::components::Image::from_bytes(&b"not decoded in this tree"[..]);
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+
+    assert!(!tree.pass_headless(&mut app).layout_updated);
+
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    assert!(visits < 40, "an unrelated loading image caused {visits} visits");
+  }
+
+  #[test]
+  fn popup_declarations_do_not_wedge_the_layout_fast_path() {
+    for open in [false, true] {
+      let mut app = App::new();
+      let mut tree = Tree::new();
+      tree.resize(400, 300);
+      let anchor = crate::core::ElementRef::new();
+      tree.set_root(
+        crate::components::Column::new()
+          .child(crate::components::Rect::new(40.0, 40.0).ref_element(anchor.clone()))
+          .child(
+            crate::components::Popup::new(anchor, crate::components::Rect::new(30.0, 30.0))
+              .open(crate::core::Signal::new(open)),
+          ),
+      );
+      tree.pass_headless(&mut app);
+      assert!(!has_pending_layout_dirty_recursive(tree.root.as_ref().unwrap()));
+
+      let report = tree.pass_headless(&mut app);
+
+      assert!(!report.layout_updated, "popup open={open} prevented the fast path");
+    }
+  }
+
+  #[test]
+  fn unchanged_large_headless_pass_skips_layout_walks() {
+    let mut app = App::new();
+    let mut tree = Tree::new();
+    tree.resize(400, 20_000);
+    let mut column = crate::components::Column::new();
+    for _ in 0..10_000 {
+      column = column.child(crate::components::Rect::new(10.0, 1.0));
+    }
+    tree.set_root(column);
+    tree.pass_headless(&mut app);
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+
+    let report = tree.pass_headless(&mut app);
+
+    assert!(!report.layout_updated);
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    assert!(visits < 40, "unchanged pass visited {visits} nodes");
+  }
+}
+
 fn has_dirty_element_ref_recursive(node: &Node) -> bool {
+  if !node.layout_cache.needs_dirty_scan() {
+    return false;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
   node
     .element_ref
     .as_ref()
@@ -9946,6 +10155,11 @@ fn has_dirty_element_ref_recursive(node: &Node) -> bool {
 }
 
 fn has_runtime_layout_state_recursive(node: &Node) -> bool {
+  if !node.prepare_layout_tracking().select {
+    return false;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
   let local = match node.node_kind() {
     NodeKind::Select { state } => state.is_open(),
     _ => false,
@@ -9954,10 +10168,20 @@ fn has_runtime_layout_state_recursive(node: &Node) -> bool {
 }
 
 fn has_timeline_target_recursive(node: &Node) -> bool {
+  if !node.prepare_layout_tracking().timeline {
+    return false;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
   !node.transitions.is_empty() || node.animation.is_some() || node.children().iter().any(has_timeline_target_recursive)
 }
 
 fn has_pending_layout_dirty_recursive(node: &Node) -> bool {
+  if !node.layout_cache.needs_dirty_scan() && !node.layout_cache.is_dirty() {
+    return false;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
   // Overlay/modal declaration nodes are invisible to layout (mirrors the
   // `mark_layout_dirty` skip): they are never laid out, so their flags could
   // never be cleared — counting them here would wedge the fast path. Their
@@ -9970,7 +10194,10 @@ fn has_pending_layout_dirty_recursive(node: &Node) -> bool {
     NodeKind::Select { state } => state.has_layout_dirty(),
     _ => false,
   };
-  let local = text_input_dirty
+  // Another compute can consume a shared handle's flag before this tree's
+  // pass. Its pending revision still needs to reach the layout engine.
+  let local = (node.layout_cache.inspected_generation.get() != 0 && node.layout_cache.needs_dirty_scan())
+    || text_input_dirty
     || node.layout_cache.is_dirty()
     || node.has_style_layout_dirty()
     || node
