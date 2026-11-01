@@ -1,8 +1,5 @@
 //! Heap allocations per layout, lurq against taffy, on the `vs_taffy` trees.
 //! Prints a table; no timing (the counting allocator would skew it).
-//!
-//! `first` and `rebuilt` count the layout only, not the building before it.
-//! Taffy keeps no caches across a rebuild, so its `rebuilt` is its `first`.
 
 use std::{
   alloc::{GlobalAlloc, Layout, System},
@@ -45,7 +42,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// Allocations and bytes of `f` alone, for a mode whose setup must not count.
+/// Allocations and bytes of `f`.
 fn measure(f: impl FnOnce()) -> (usize, usize) {
   let (a, b) = (ALLOCS.load(Ordering::Relaxed), BYTES.load(Ordering::Relaxed));
   f();
@@ -58,8 +55,9 @@ fn count(mut f: impl FnMut()) -> (usize, usize) {
   measure(f)
 }
 
-/// What `f` measured in its second run, the first being a warm-up.
-fn after_warm_up(mut f: impl FnMut() -> (usize, usize)) -> (usize, usize) {
+/// What `f` reports of one run, after a warm-up run: for a phase of a run,
+/// `f` measures that phase only.
+fn count_phase(mut f: impl FnMut() -> (usize, usize)) -> (usize, usize) {
   f();
   f()
 }
@@ -71,7 +69,7 @@ fn main() {
     scenarios.push((format!("deep_chain/{d}"), deep_chain(d)));
   }
   println!(
-    "{:22}{:>8} {:>8} | {:>10}{:>10} | {:>10}{:>10} | {:>10}{:>10}",
+    "{:22}{:>8} {:>14} | {:>10}{:>10} | {:>10}{:>10} | {:>10}{:>10}",
     "scenario", "nodes", "mode", "lurq al", "taffy al", "lurq al/n", "taffy al/n", "lurq KiB", "taffy KiB"
   );
   for (name, spec) in &scenarios {
@@ -98,6 +96,70 @@ fn main() {
       count(|| {
         let b = taffy_build(spec);
         std::mem::forget(b);
+      }),
+    ));
+    // `cold` and `rebuild` are the whole iteration `vs_taffy` times, element
+    // and node building included; their `layout` rows are the layout alone.
+    rows.push((
+      "cold",
+      count(|| {
+        let mut t = Tree::new();
+        t.resize(VIEW_W as u32, VIEW_H as u32);
+        t.set_root(lurq_element(spec));
+        t.bench_layout_only_shared(&mut app, false);
+        std::mem::forget(t);
+      }),
+      count(|| {
+        let mut b = taffy_build(spec);
+        taffy_compute(&mut b);
+        std::mem::forget(b);
+      }),
+    ));
+    rows.push((
+      "cold layout",
+      count_phase(|| {
+        let mut t = Tree::new();
+        t.resize(VIEW_W as u32, VIEW_H as u32);
+        t.set_root(lurq_element(spec));
+        let counted = measure(|| {
+          t.bench_layout_only_shared(&mut app, false);
+        });
+        std::mem::forget(t);
+        counted
+      }),
+      count_phase(|| {
+        let mut b = taffy_build(spec);
+        let counted = measure(|| taffy_compute(&mut b));
+        std::mem::forget(b);
+        counted
+      }),
+    ));
+    // On their own trees: the rows below need `tree` and `built` as first laid out.
+    let mut rebuilt_tree = lurq_tree(spec, &mut app);
+    let mut rebuilt = taffy_build(spec);
+    taffy_compute(&mut rebuilt);
+    rows.push((
+      "rebuild",
+      count(|| {
+        rebuilt_tree.set_root(lurq_element(spec));
+        rebuilt_tree.bench_layout_only_shared(&mut app, false);
+      }),
+      count(|| {
+        taffy_rebuild(&mut rebuilt, spec);
+        taffy_compute(&mut rebuilt);
+      }),
+    ));
+    rows.push((
+      "rebuild layout",
+      count_phase(|| {
+        rebuilt_tree.set_root(lurq_element(spec));
+        measure(|| {
+          rebuilt_tree.bench_layout_only_shared(&mut app, false);
+        })
+      }),
+      count_phase(|| {
+        taffy_rebuild(&mut rebuilt, spec);
+        measure(|| taffy_compute(&mut rebuilt))
       }),
     ));
     rows.push((
@@ -137,40 +199,10 @@ fn main() {
       }),
       count(|| taffy_compute(&mut built)),
     ));
-    let taffy_first = after_warm_up(|| {
-      let mut fresh = taffy_build(spec);
-      let counted = measure(|| taffy_compute(&mut fresh));
-      std::mem::forget(fresh);
-      counted
-    });
-    rows.push((
-      "first",
-      after_warm_up(|| {
-        let mut t = Tree::new();
-        t.resize(VIEW_W as u32, VIEW_H as u32);
-        t.set_root(lurq_element(spec));
-        let counted = measure(|| {
-          t.bench_layout_only_shared(&mut app, false);
-        });
-        std::mem::forget(t);
-        counted
-      }),
-      taffy_first,
-    ));
-    rows.push((
-      "rebuilt",
-      after_warm_up(|| {
-        tree.set_root(lurq_element(spec));
-        measure(|| {
-          tree.bench_layout_only_shared(&mut app, false);
-        })
-      }),
-      taffy_first,
-    ));
 
     for (mode, (la, lb), (ta, tb)) in rows {
       println!(
-        "{:22}{:>8} {:>8} | {:>10}{:>10} | {:>10.1}{:>10.1} | {:>10.1}{:>10.1}",
+        "{:22}{:>8} {:>14} | {:>10}{:>10} | {:>10.1}{:>10.1} | {:>10.1}{:>10.1}",
         name,
         nodes,
         mode,
@@ -183,5 +215,6 @@ fn main() {
       );
     }
     std::mem::forget(tree);
+    std::mem::forget(rebuilt_tree);
   }
 }

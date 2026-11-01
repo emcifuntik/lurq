@@ -4,19 +4,18 @@
 //! taffy measures no text, so a text leaf would time cosmic-text, not layout.
 //!
 //! Modes, per engine:
-//! - `build`: building the tree only (lurq: `set_root`; taffy: new nodes).
-//! - `cold`: building plus a first layout.
+//! - `build`: building the tree only (lurq: `set_root` on one `Tree`, over the previous root; taffy: new nodes).
+//! - `cold`: a new tree every iteration, building it plus its first layout. Dropping the tree is left out of the time
+//!   in both engines.
+//! - `rebuild`: a freshly built tree over one already laid out, plus layout (lurq: `set_root` on one `Tree`, which keeps
+//!   what the previous root's caches allow; taffy has no equivalent, the closest is `clear`, new nodes and a compute,
+//!   which keeps only the storage). Dropping the previous tree is part of the time in both engines.
 //! - `forced`: every node laid out again on a tree already laid out (lurq: `force_dirty`; taffy: `mark_dirty` on every
 //!   leaf).
 //! - `resize`: the root's width cycles through three values, so caches miss wherever a width reaches.
 //! - `noop`: layout again with nothing changed.
-//! - `first` (lurq only): a first layout, without the building before it.
-//! - `rebuilt` (lurq only): layout after `set_root` of the same tree over a laid-out one, without the rebuild.
 
-use std::{
-  hint::black_box,
-  time::{Duration, Instant},
-};
+use std::{hint::black_box, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use lurq::{
@@ -133,18 +132,36 @@ fn bench(c: &mut Criterion) {
 
     // cold
     group.bench_function(BenchmarkId::new("lurq/cold", name), |b| {
-      let mut tree = Tree::new();
-      tree.resize(VIEW_W as u32, VIEW_H as u32);
+      b.iter_with_large_drop(|| {
+        let mut tree = Tree::new();
+        tree.resize(VIEW_W as u32, VIEW_H as u32);
+        tree.set_root(lurq_element(spec));
+        let layout = tree.bench_layout_only_shared(&mut app, false);
+        (tree, layout)
+      });
+    });
+    group.bench_function(BenchmarkId::new("taffy/cold", name), |b| {
+      b.iter_with_large_drop(|| {
+        let mut built = taffy_build(spec);
+        taffy_compute(&mut built);
+        built
+      });
+    });
+
+    // rebuild
+    group.bench_function(BenchmarkId::new("lurq/rebuild", name), |b| {
+      let mut tree = lurq_tree(spec, &mut app);
       b.iter(|| {
         tree.set_root(lurq_element(spec));
         black_box(tree.bench_layout_only_shared(&mut app, false));
       });
     });
-    group.bench_function(BenchmarkId::new("taffy/cold", name), |b| {
+    group.bench_function(BenchmarkId::new("taffy/rebuild", name), |b| {
+      let mut built = taffy_build(spec);
+      taffy_compute(&mut built);
       b.iter(|| {
-        let mut built = taffy_build(spec);
+        taffy_rebuild(&mut built, spec);
         taffy_compute(&mut built);
-        black_box(built)
       });
     });
 
@@ -195,37 +212,6 @@ fn bench(c: &mut Criterion) {
       let mut built = taffy_build(spec);
       taffy_compute(&mut built);
       b.iter(|| taffy_compute(&mut built));
-    });
-
-    // first
-    group.bench_function(BenchmarkId::new("lurq/first", name), |b| {
-      b.iter_custom(|iters| {
-        let mut total = Duration::ZERO;
-        for _ in 0..iters {
-          let mut tree = Tree::new();
-          tree.resize(VIEW_W as u32, VIEW_H as u32);
-          tree.set_root(lurq_element(spec));
-          let start = Instant::now();
-          black_box(tree.bench_layout_only_shared(&mut app, false));
-          total += start.elapsed();
-        }
-        total
-      });
-    });
-
-    // rebuilt
-    group.bench_function(BenchmarkId::new("lurq/rebuilt", name), |b| {
-      let mut tree = lurq_tree(spec, &mut app);
-      b.iter_custom(|iters| {
-        let mut total = Duration::ZERO;
-        for _ in 0..iters {
-          tree.set_root(lurq_element(spec));
-          let start = Instant::now();
-          black_box(tree.bench_layout_only_shared(&mut app, false));
-          total += start.elapsed();
-        }
-        total
-      });
     });
   }
 
