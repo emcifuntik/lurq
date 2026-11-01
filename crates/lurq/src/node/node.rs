@@ -1147,22 +1147,27 @@ impl NodeUpdate for Node {
 
   fn hovered_style(&mut self, style: Style) {
     self.state_styles.hovered = Some(style);
+    self.state_styles.invalidate_layout_style();
   }
 
   fn active_style(&mut self, style: Style) {
     self.state_styles.active = Some(style);
+    self.state_styles.invalidate_layout_style();
   }
 
   fn focused_style(&mut self, style: Style) {
     self.state_styles.focused = Some(style);
+    self.state_styles.invalidate_layout_style();
   }
 
   fn focus_visible_style(&mut self, style: Style) {
     self.state_styles.focus_visible = Some(style);
+    self.state_styles.invalidate_layout_style();
   }
 
   fn drag_over_style(&mut self, style: Style) {
     self.state_styles.drag_over = Some(style);
+    self.state_styles.invalidate_layout_style();
   }
 
   fn hovered(&mut self, f: impl FnOnce(Style) -> Style) {
@@ -2573,11 +2578,13 @@ impl Node {
 
   pub fn hovered_style(mut self, style: Style) -> Self {
     self.state_styles.hovered = Some(style);
+    self.state_styles.invalidate_layout_style();
     self
   }
 
   pub fn active_style(mut self, style: Style) -> Self {
     self.state_styles.active = Some(style);
+    self.state_styles.invalidate_layout_style();
     self
   }
 
@@ -2585,6 +2592,7 @@ impl Node {
   /// there (pointer, keyboard or a request).
   pub fn focused_style(mut self, style: Style) -> Self {
     self.state_styles.focused = Some(style);
+    self.state_styles.invalidate_layout_style();
     self
   }
 
@@ -2593,6 +2601,7 @@ impl Node {
   /// pointer press does not show. See [`InteractionState::is_focus_visible`].
   pub fn focus_visible_style(mut self, style: Style) -> Self {
     self.state_styles.focus_visible = Some(style);
+    self.state_styles.invalidate_layout_style();
     self
   }
 
@@ -2600,6 +2609,7 @@ impl Node {
   /// it, so a drop target can highlight.
   pub fn drag_over_style(mut self, style: Style) -> Self {
     self.state_styles.drag_over = Some(style);
+    self.state_styles.invalidate_layout_style();
     self
   }
 
@@ -3956,7 +3966,10 @@ impl Node {
 
   pub(crate) fn effective_frame(&self, base: FrameConstraints) -> FrameConstraints {
     let base = merge_frame(self.frame, base);
-    let mut result = self.state_style().frame.map_or(base, |frame| merge_frame(base, frame));
+    let mut result = self
+      .state_styles
+      .layout_frame(&self.style_state)
+      .map_or(base, |frame| merge_frame(base, frame));
     for (prop, val) in &self.animation_overrides {
       if let crate::animation::AnimatableValue::Float(v) = val {
         match prop {
@@ -3981,13 +3994,13 @@ impl Node {
   pub(crate) fn effective_padding(&self, base: &Padding) -> Padding {
     let mut padding = self.padding;
     padding.merge_from(base);
-    self.state_style().padding.unwrap_or(padding)
+    self.state_styles.layout_padding(&self.style_state).unwrap_or(padding)
   }
 
   pub(crate) fn state_flex(&self) -> Option<FlexParams> {
     self
-      .state_style()
-      .flex
+      .state_styles
+      .layout_flex(&self.style_state)
       .or(self.flex)
       .or_else(|| match &self.layout_kind {
         LayoutKind::LogicalModifier => self.children.first().and_then(|child| child.state_flex()),
@@ -4765,6 +4778,49 @@ mod tests {
       layout_result::{ChildLayout, LayoutResult, SubtreeHolds},
     },
   };
+
+  #[test]
+  fn layout_state_fields_follow_style_precedence_and_updates() {
+    use crate::node::{Style, dimension::Dimension, padding::Padding};
+    use crate::layout::layout_kind::{FlexParams, FrameConstraints};
+
+    let mut node = Node::column(0.0, Alignment::Start, vec![])
+      .width(10.0).height(20.0).padding(1.0).flex(1.0)
+      .focused_style(Style::new().width(30.0).padding(2.0).flex(2.0))
+      .focus_visible_style(Style::new().height(40.0))
+      .hovered_style(Style::new().padding_left(3.0))
+      .active_style(Style::new().flex(4.0))
+      .drag_over_style(Style::new().width(50.0).padding(5.0).flex(5.0));
+    for bits in 0..32 {
+      node.set_style_focused(bits & 1 != 0);
+      node.set_style_focus_visible(bits & 2 != 0);
+      node.set_style_hovered(bits & 4 != 0);
+      node.set_style_active(bits & 8 != 0);
+      node.set_style_drag_over(bits & 16 != 0);
+      let style = node.state_style();
+      let frame = style.frame.map_or(node.frame, |frame| super::merge_frame(node.frame, frame));
+      for _ in 0..2 {
+        assert!(node.effective_frame(FrameConstraints::default()) == frame);
+        assert!(node.state_frame() == Some(frame));
+        assert_eq!(node.effective_padding(&Padding::default()), style.padding.unwrap_or(node.padding));
+        assert!(node.state_flex() == style.flex.or(node.flex));
+      }
+    }
+
+    // A shared interaction handle can change without going through this node.
+    let cloned = node.clone_for_reuse();
+    cloned.set_style_drag_over(false);
+    assert!(node.state_flex() == Some(FlexParams::grow(4.0)));
+    assert_eq!(node.state_frame().unwrap().width, Some(Dimension::Px(10.0)));
+
+    // Replacing an applied style must refresh the cached field sources too.
+    NodeUpdate::active_style(&mut node, Style::new().height(70.0));
+    assert!(node.state_flex() == Some(FlexParams::grow(2.0)));
+    assert_eq!(node.state_frame().unwrap().height, Some(Dimension::Px(70.0)));
+    let node = node.active_style(Style::new().padding(8.0));
+    assert_eq!(node.effective_padding(&Padding::default()), Padding::all(8.0));
+    assert_eq!(node.state_frame().unwrap().height, Some(Dimension::Px(40.0)));
+  }
 
   #[test]
   fn text_input_mask_builders_render_bullets_and_allow_overrides() {

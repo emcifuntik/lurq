@@ -4,14 +4,12 @@ use std::cell::{Cell, RefCell};
 use crate::layout::layout_result::SubtreeHolds;
 use crate::layout::{Constraints, layout_result::LayoutResult};
 
-const MAX_CACHED_LAYOUTS: usize = 2;
-
 /// Up to two layout results of one node, most recently used first.
 ///
 /// The front entry is the layout the node was last laid out as or served
 /// from, so its constraints are the ones the node's parent last gave it.
 pub struct LayoutCache {
-  inner: RefCell<Vec<CachedLayout>>,
+  inner: RefCell<CachedLayouts>,
   local_dirty: Cell<bool>,
   descendant_dirty: Cell<bool>,
   /// Whether every descendant cache's front entry belongs to this cache's
@@ -29,10 +27,38 @@ struct CachedLayout {
   result: LayoutResult,
 }
 
+#[derive(Clone, Default)]
+struct CachedLayouts {
+  slots: [Option<CachedLayout>; 2],
+  front: usize,
+}
+
+impl CachedLayouts {
+  fn front(&self) -> Option<&CachedLayout> {
+    self.slots[self.front].as_ref()
+  }
+
+  fn find(&self, constraints: Constraints) -> Option<usize> {
+    self.slots.iter().position(|slot| {
+      slot.as_ref().is_some_and(|cached| cached.constraints == constraints)
+    })
+  }
+
+  fn clear(&mut self) {
+    self.slots = [None, None];
+  }
+
+  fn store(&mut self, constraints: Constraints, result: LayoutResult) {
+    let index = self.find(constraints).unwrap_or(1 - self.front);
+    self.slots[index] = Some(CachedLayout { constraints, result });
+    self.front = index;
+  }
+}
+
 impl LayoutCache {
   pub fn new() -> Self {
     Self {
-      inner: RefCell::new(Vec::new()),
+      inner: RefCell::new(CachedLayouts::default()),
       local_dirty: Cell::new(false),
       descendant_dirty: Cell::new(false),
       descendants_match_front: Cell::new(true),
@@ -46,24 +72,19 @@ impl LayoutCache {
       return None;
     }
     let mut entries = self.inner.borrow_mut();
-    let index = entries.iter().position(|cached| cached.constraints == constraints)?;
-    if index > 0 {
-      let served = entries.remove(index);
-      entries.insert(0, served);
+    let index = entries.find(constraints)?;
+    if index != entries.front {
+      entries.front = index;
       self.descendants_match_front.set(false);
     }
-    Some(entries[0].result.clone())
+    Some(entries.front()?.result.clone())
   }
 
   pub(crate) fn contains(&self, constraints: Constraints) -> bool {
     if self.is_dirty() {
       return false;
     }
-    self
-      .inner
-      .borrow()
-      .iter()
-      .any(|cached| cached.constraints == constraints)
+    self.inner.borrow().find(constraints).is_some()
   }
 
   /// Records that the parent reused `result`, this node's layout under
@@ -74,16 +95,11 @@ impl LayoutCache {
   /// them. The entry is put back if those layouts pushed it out.
   pub(crate) fn record_reuse(&self, constraints: Constraints, result: &LayoutResult) {
     let mut entries = self.inner.borrow_mut();
-    let reused = match entries.iter().position(|cached| cached.constraints == constraints) {
-      Some(0) => return,
-      Some(index) => entries.remove(index),
-      None => CachedLayout {
-        constraints,
-        result: result.clone(),
-      },
-    };
-    entries.insert(0, reused);
-    entries.truncate(MAX_CACHED_LAYOUTS);
+    match entries.find(constraints) {
+      Some(index) if index == entries.front => return,
+      Some(index) => entries.front = index,
+      None => entries.store(constraints, result.clone()),
+    }
     self.descendants_match_front.set(false);
   }
 
@@ -97,16 +113,16 @@ impl LayoutCache {
       return None;
     }
     let entries = self.inner.borrow();
-    let front = entries.first()?;
+    let front = entries.front()?;
     (front.constraints == constraints).then(|| front.result.clone())
   }
 
   pub(crate) fn constraints(&self) -> Option<Constraints> {
-    self.inner.borrow().first().map(|cached| cached.constraints)
+    self.inner.borrow().front().map(|cached| cached.constraints)
   }
 
   pub(crate) fn has_cached_result(&self) -> bool {
-    !self.inner.borrow().is_empty()
+    self.inner.borrow().front().is_some()
   }
 
   /// Constraints and size of the most recently stored result, if any.
@@ -114,7 +130,7 @@ impl LayoutCache {
     self
       .inner
       .borrow()
-      .first()
+      .front()
       .map(|cached| (cached.constraints, cached.result.size))
   }
 
@@ -147,11 +163,8 @@ impl LayoutCache {
       // sibling layout with clean flags, freezing a text row at its old
       // child offsets).
       borrow.clear();
-    } else if let Some(index) = borrow.iter().position(|cached| cached.constraints == constraints) {
-      borrow.remove(index);
     }
-    borrow.insert(0, CachedLayout { constraints, result });
-    borrow.truncate(MAX_CACHED_LAYOUTS);
+    borrow.store(constraints, result);
     self.descendants_match_front.set(true);
     self.clear_dirty();
   }
@@ -199,10 +212,12 @@ impl LayoutCache {
   pub(crate) fn estimated_memory_bytes(&self) -> usize {
     let borrow = self.inner.borrow();
     let cached_bytes = borrow
+      .slots
       .iter()
-      .map(|cached| std::mem::size_of::<CachedLayout>() + cached.result.estimated_memory_bytes())
+      .flatten()
+      .map(|cached| cached.result.estimated_memory_bytes() - std::mem::size_of::<LayoutResult>())
       .sum::<usize>();
-    std::mem::size_of::<Self>() + borrow.capacity() * std::mem::size_of::<CachedLayout>() + cached_bytes
+    std::mem::size_of::<Self>() + cached_bytes
   }
 }
 

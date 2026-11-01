@@ -4085,6 +4085,86 @@ mod tests {
     node::{Node, dsl::scroll_vertical},
   };
 
+  #[test]
+  fn layout_does_not_build_state_styles() {
+    use crate::node::{Style, style::STYLE_OPERATIONS};
+
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let constraints = Constraints::loose(Size::new(200.0, 100.0));
+    for node in [
+      Node::column(0.0, Alignment::Start, vec![]).width(20.0).height(10.0),
+      Node::column(0.0, Alignment::Start, vec![])
+        .width(20.0)
+        .height(10.0)
+        .hovered_style(Style::new().width(60.0).padding(5.0).flex(2.0)),
+    ] {
+      for hovered in [false, true] {
+        node.set_style_hovered(hovered);
+        let operations = STYLE_OPERATIONS.with(|counts| counts.get());
+        let result = engine.layout_node_uncached_with_child_overrides(&mut glyph_engine, &node, constraints, None);
+        assert_eq!(STYLE_OPERATIONS.with(|counts| counts.get()), operations);
+        assert_eq!(result.size.height, 10.0);
+      }
+    }
+  }
+
+  #[test]
+  fn interaction_state_styles_relayout_frame_padding_and_flex() {
+    use crate::node::Style;
+
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let setters: [fn(&Node, bool) -> bool; 5] = [
+      Node::set_style_focused,
+      Node::set_style_focus_visible,
+      Node::set_style_hovered,
+      Node::set_style_active,
+      Node::set_style_drag_over,
+    ];
+    for (index, set_state) in setters.into_iter().enumerate() {
+      let styled = |node: Node, style: Style| match index {
+        0 => node.focused_style(style),
+        1 => node.focus_visible_style(style),
+        2 => node.hovered_style(style),
+        3 => node.active_style(style),
+        _ => node.drag_over_style(style),
+      };
+      let node = Node::row(0.0, Alignment::Start, vec![
+        styled(
+          Node::column(0.0, Alignment::Start, vec![]).width(20.0).height(10.0),
+          Style::new().width(40.0),
+        ),
+        styled(
+          Node::column(0.0, Alignment::Start, vec![
+            Node::column(0.0, Alignment::Start, vec![]).width(10.0).height(10.0),
+          ]).padding(1.0),
+          Style::new().padding(5.0),
+        ),
+        styled(
+          Node::column(0.0, Alignment::Start, vec![]).height(10.0),
+          Style::new().flex(1.0),
+        ),
+      ]);
+      if index == 1 {
+        for child in node.children() {
+          child.set_style_focused(true);
+        }
+      }
+      for enabled in [false, true, false] {
+        for child in node.children() {
+          set_state(child, enabled);
+        }
+        LayoutEngine::mark_layout_dirty(&node, false);
+        let result = engine.layout_node(&mut glyph_engine, &node, Constraints::tight(Size::new(200.0, 100.0)));
+        assert_eq!(result.children[0].result.size.width, if enabled { 40.0 } else { 20.0 });
+        assert_eq!(result.children[1].result.size.width, if enabled { 20.0 } else { 12.0 });
+        assert_eq!(result.children[1].result.children[0].offset.x, if enabled { 5.0 } else { 1.0 });
+        assert_eq!(result.children[2].result.size.width, if enabled { 140.0 } else { 0.0 });
+      }
+    }
+  }
+
   fn dirty_child_with_cached_constraints(child: Node, constraints: Constraints) -> Node {
     child.layout_cache.store(
       constraints,

@@ -20,6 +20,11 @@ impl InteractionState {
     Self::default()
   }
 
+  pub(crate) fn layout_states(&self) -> [bool; 5] {
+    let inner = self.inner.lock().unwrap();
+    [inner.focused, inner.focus_visible, inner.hovered, inner.active, inner.drag_over]
+  }
+
   pub fn is_hovered(&self) -> bool {
     self.inner.lock().unwrap().hovered
   }
