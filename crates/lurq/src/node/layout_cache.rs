@@ -54,13 +54,12 @@ struct ValidatedLayout {
   result: Weak<LayoutResult>,
 }
 
-#[derive(Clone)]
 struct CachedLayout {
   constraints: Constraints,
   result: Arc<LayoutResult>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct CachedLayouts {
   slots: [Option<CachedLayout>; 2],
   front: usize,
@@ -207,10 +206,16 @@ impl LayoutCache {
       .map(|cached| (cached.constraints, cached.result.size))
   }
 
+  /// Takes over the entries of `old`, a cache of the tree being replaced:
+  /// every caller drops that node right after reconciling (`Tree::set_root`,
+  /// `Tree::rebuild`, the component slots, the live slot replacement, the
+  /// overlays), and each old node is preserved from at most once, so moving
+  /// the box saves cloning it for every node of a rebuilt tree. `old` serves
+  /// nothing afterwards; only its flags stay as they were.
   pub(crate) fn preserve_from(&self, old: &Self) {
     self.watch.mark();
     self.override_clear_generation.set(old.override_clear_generation.get());
-    *self.inner.borrow_mut() = old.inner.borrow().clone();
+    *self.inner.borrow_mut() = old.inner.take();
     // The descendants take over the old descendants' caches the same way, so
     // whether they match the front entry carries over with the entries.
     self.descendants_match_front.set(old.descendants_match_front.get());
@@ -496,6 +501,44 @@ mod tests {
     new.preserve_from(&old);
 
     assert!(new.get_repairable(constraints(1440.0)).is_none());
+  }
+
+  /// A rebuilt tree takes its layouts over from the tree it replaces: the
+  /// entries move, in their order, and the old cache has none left to serve.
+  #[test]
+  fn preserving_a_cache_takes_the_entries_instead_of_cloning_them() {
+    let old = LayoutCache::new();
+    old.store(constraints(1440.0), result(1440.0));
+    old.store(constraints(960.0), result(960.0));
+    let older = old.get_shared(constraints(1440.0)).unwrap();
+    let front = old.get_shared(constraints(960.0)).unwrap();
+
+    let new = LayoutCache::new();
+    new.preserve_from(&old);
+
+    assert!(!old.has_cached_result(), "the old cache keeps no entry");
+    assert!(old.get_shared(constraints(960.0)).is_none());
+    assert_eq!(Arc::strong_count(&front), 2, "only the new cache holds the result besides this test");
+    assert_eq!(new.constraints().map(|front| front.max_width), Some(960.0));
+    assert!(Arc::ptr_eq(&new.get_shared(constraints(960.0)).unwrap(), &front));
+    assert!(Arc::ptr_eq(&new.get_shared(constraints(1440.0)).unwrap(), &older));
+  }
+
+  /// Taking the entries must not launder what the old cache had pending.
+  #[test]
+  fn preserving_a_cache_carries_its_dirty_flags_with_the_entries() {
+    let old = LayoutCache::new();
+    old.store(constraints(960.0), result(960.0));
+    old.mark_local_dirty();
+    old.mark_descendant_dirty();
+
+    let new = LayoutCache::new();
+    new.preserve_from(&old);
+
+    assert!(new.is_local_dirty());
+    assert!(new.is_descendant_dirty());
+    assert!(new.has_cached_result());
+    assert!(new.get_shared(constraints(960.0)).is_none(), "a dirty cache serves nothing");
   }
 
   /// A reused override becomes the front entry, and comes back if the

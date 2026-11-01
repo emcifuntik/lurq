@@ -15,13 +15,9 @@ impl Node {
     let watch = &cache.watch;
     self.text_content.track_layout(watch);
     self.color.track_layout(watch);
-    self.gradient.track_layout(watch);
     self.border_radius.track_layout(watch);
     self.border.track_layout(watch);
-    self.box_shadow.track_layout(watch);
-    self.caret_color.track_layout(watch);
-    self.selection_color.track_layout(watch);
-    self.caret_mode.track_layout(watch);
+    self.rare_style.track_layout(watch);
     #[cfg(feature = "raster")]
     self.background_image.track_layout(watch);
     self.scrollbar_style.track_layout(watch);

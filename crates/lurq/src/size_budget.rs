@@ -10,7 +10,7 @@
 //! (`scripts/stack-depth-probe.py`).
 //!
 //! Measured on x86_64 with every feature enabled: role enums 8, `Element` 8,
-//! `Node` 1624, `WindowChrome` 872, `ChromeTitleBar` 760.
+//! `Node` 1272, `WindowChrome` 872, `ChromeTitleBar` 760.
 
 use std::mem::size_of;
 
@@ -31,6 +31,6 @@ const _: () = assert!(size_of::<Padding>() <= 48);
 
 // An element is a pointer to its heap-allocated root node.
 const _: () = assert!(size_of::<Element>() <= size_of::<usize>());
-const _: () = assert!(size_of::<Node>() <= 1664);
+const _: () = assert!(size_of::<Node>() <= 1272);
 const _: () = assert!(size_of::<WindowChrome>() <= 1024);
 const _: () = assert!(size_of::<ChromeTitleBar>() <= 1024);

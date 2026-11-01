@@ -1509,7 +1509,7 @@ impl LayoutEngine {
     }
 
     #[cfg(feature = "raster")]
-    if let Some(ref bg_image) = *node.background_image {
+    if let Some(bg_image) = node.background_image.as_deref() {
       let placement = background_image_placement(
         node.background_size,
         result.size.width,
@@ -4042,12 +4042,12 @@ fn node_is_plain_logical_wrapper(node: &Node) -> bool {
   matches!(node.layout_kind(), LayoutKind::LogicalModifier)
     && matches!(node.node_kind(), NodeKind::Empty)
     && node.color.as_ref().is_none()
-    && node.gradient.as_ref().is_none()
+    && node.rare_style.gradient.is_none()
     && node.border_radius.as_ref().is_none()
     && node.border.as_ref().is_none()
-    && node.box_shadow.as_ref().is_none()
-    && node.caret_color.as_ref().is_none()
-    && node.caret_mode.as_ref().is_none()
+    && node.rare_style.box_shadow.is_none()
+    && node.rare_style.caret_color.is_none()
+    && node.rare_style.caret_mode.is_none()
     && node.scrollbar_style.as_ref().is_none()
     && node.state_styles.hovered.is_none()
     && node.state_styles.active.is_none()
@@ -5118,6 +5118,34 @@ mod tests {
     assert!(!engine.last_recalculated());
     assert!(!new.style_state.has_shared_storage());
     assert!(new.children().iter().all(|child| !child.style_state.has_shared_storage()));
+  }
+
+  /// Each rebuild takes the layouts of the tree before it. The tree it
+  /// replaced has none left, so nothing can be reading them: every rebuilt
+  /// tree in the chain still lays out nothing.
+  #[test]
+  fn a_chain_of_rebuilds_serves_the_layouts_taken_from_the_old_trees() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let build = || Node::column(0.0, Alignment::Start, (0..10).map(|_| fixed(10.0, 1.0)).collect());
+    let constraints = Constraints::tight(Size::new(400.0, 200.0));
+    let mut old = build();
+    let laid = compute_at(&engine, &mut glyph_engine, &old, constraints, false);
+
+    for _ in 0..3 {
+      let mut new = build();
+      new.preserve_runtime_state_from(&old);
+      assert!(!old.layout_cache.has_cached_result());
+      assert!(old.children().iter().all(|child| !child.layout_cache.has_cached_result()));
+
+      let result = compute_at(&engine, &mut glyph_engine, &new, constraints, false);
+
+      assert!(!engine.last_recalculated(), "the rebuilt tree serves the old layout");
+      assert_eq!(result.size, laid.size);
+      assert_eq!(result.children.len(), laid.children.len());
+      assert_eq!(result.children[9].offset.y, laid.children[9].offset.y);
+      old = new;
+    }
   }
 
   fn fixed(width: f32, height: f32) -> Node {

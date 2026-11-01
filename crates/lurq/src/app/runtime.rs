@@ -6648,9 +6648,9 @@ impl Tree {
 
     if let Some(key) = node.background_resource_image.clone() {
       if let Some(img) = Self::resolve_image_resource(&key, loader, image_cache) {
-        let current_id = node.background_image.as_ref().map(crate::images::ImageData::id);
+        let current_id = node.background_image.as_deref().map(crate::images::ImageData::id);
         if current_id != Some(img.id()) {
-          node.background_image.set(Some(img));
+          node.background_image.set(Some(Box::new(img)));
           layout_dirty = true;
         }
       }

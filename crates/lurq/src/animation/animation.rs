@@ -323,7 +323,7 @@ impl AnimationEngine {
     if node_id.is_assigned() {
       if let Some(spec) = &node.animation {
         self.seen.insert(node_id);
-        let spec = spec.clone();
+        let spec = Animation::clone(spec);
         needs_layout = self.process_node(node, &spec, now);
       }
     }

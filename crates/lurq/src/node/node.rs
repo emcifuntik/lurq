@@ -644,8 +644,23 @@ pub struct EventHandlers {
   pub on_scroll_reach_bottom: Vec<Callback<ScrollEvent>>,
 }
 
+/// The styles few nodes set, behind one guard: a guard holds a watch handle
+/// that layout tracking takes and dropping a node gives back, so a guard per
+/// field cost every node of a rebuilt tree those atomics, and these fields
+/// cost it 176 bytes. Only whether any style changed is ever asked, so one
+/// flag says what theirs said.
+#[derive(Clone, Default, PartialEq)]
+pub(crate) struct RareStyle {
+  pub(crate) gradient: Option<Gradient>,
+  pub(crate) box_shadow: Option<BoxShadowValue>,
+  pub(crate) caret_color: Option<TextColor>,
+  pub(crate) selection_color: Option<TextColor>,
+  pub(crate) caret_mode: Option<CaretMode>,
+}
+
 empty_default!(EventHandlers);
 empty_default!(StateStyles);
+empty_default!(RareStyle);
 
 pub(crate) struct Node {
   pub(crate) node_id: NodeId,
@@ -694,24 +709,21 @@ pub(crate) struct Node {
   pub(crate) overflow: Overflow,
   pub(crate) intrinsic_size: Option<Size>,
   pub(crate) color: Guard<Option<BackgroundColor>>,
-  pub(crate) gradient: Guard<Option<Gradient>>,
   pub(crate) border_radius: Guard<Option<ThemedBorderRadius>>,
   /// Boxed to keep tracking metadata within the node's stack size budget.
   pub(crate) border: Guard<Option<Box<Borders>>>,
-  /// Boxed: most nodes have no shadow, and `Node` size is budgeted (lurq#25).
-  pub(crate) box_shadow: Guard<Option<Box<BoxShadowValue>>>,
-  pub(crate) caret_color: Guard<Option<TextColor>>,
-  pub(crate) selection_color: Guard<Option<TextColor>>,
-  pub(crate) caret_mode: Guard<Option<CaretMode>>,
+  pub(crate) rare_style: Guard<LazyBox<RareStyle>>,
   pub(crate) cursor: Option<CursorIcon>,
   pub(crate) hit_test: HitTestBehavior,
   #[cfg(feature = "raster")]
-  pub(crate) background_image: Guard<Option<crate::images::ImageData>>,
+  /// Boxed: few nodes have one, and `Node` size is budgeted (lurq#25).
+  pub(crate) background_image: Guard<Option<Box<crate::images::ImageData>>>,
   #[cfg(feature = "raster")]
   pub(crate) background_size: BackgroundSize,
   #[cfg(all(feature = "image", feature = "resources"))]
   pub(crate) background_resource_image: Option<Arc<str>>,
-  pub(crate) scrollbar_style: Guard<Option<ScrollBarStyle>>,
+  /// Boxed: most nodes do not scroll, and `Node` size is budgeted (lurq#25).
+  pub(crate) scrollbar_style: Guard<Option<Box<ScrollBarStyle>>>,
   pub(crate) scrollbar_hovered_style: Option<ScrollbarStyleCallback>,
   pub(crate) element_ref: Option<CoreElementRef>,
   pub(crate) drag_payload: Option<crate::app::events::DragPayload>,
@@ -729,7 +741,8 @@ pub(crate) struct Node {
   pub(crate) transform: Transform2D,
   pub(crate) animation_overrides: Vec<(crate::animation::AnimatableProperty, crate::animation::AnimatableValue)>,
   pub(crate) transitions: Vec<Transition>,
-  pub(crate) animation: Option<Animation>,
+  /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
+  pub(crate) animation: Option<Box<Animation>>,
   pub(crate) layout_cache: crate::node::layout_cache::LayoutCache,
   pub(crate) children: Vec<Node>,
   pub(crate) events: LazyBox<EventHandlers>,
@@ -1018,7 +1031,7 @@ impl NodeUpdate for Node {
   }
 
   fn background_gradient(&mut self, gradient: impl Into<Gradient>) {
-    self.gradient.set(Some(gradient.into()));
+    self.rare_style.gradient = Some(gradient.into());
   }
 
   fn caret_color(&mut self, color: impl Into<TextColor>) {
@@ -1031,7 +1044,7 @@ impl NodeUpdate for Node {
 
   fn text_input_caret_mode(&mut self, mode: CaretMode) {
     if matches!(self.node_kind, NodeKind::TextInput { .. }) {
-      self.caret_mode.set(Some(mode));
+      self.rare_style.caret_mode = Some(mode);
     }
   }
 
@@ -1116,7 +1129,7 @@ impl NodeUpdate for Node {
   }
 
   fn box_shadow(&mut self, shadow: impl Into<BoxShadowValue>) {
-    self.box_shadow.set(Some(Box::new(shadow.into())));
+    self.rare_style.box_shadow = Some(shadow.into());
   }
 
   fn cursor(&mut self, cursor: CursorIcon) {
@@ -1126,8 +1139,8 @@ impl NodeUpdate for Node {
   #[cfg(feature = "raster")]
   fn background_image(&mut self, data: impl Into<crate::images::ImageKind>) {
     match data.into() {
-      crate::images::ImageKind::Bytes(data) => self.background_image.set(Some(data)),
-      crate::images::ImageKind::Native(data) => self.background_image.set(Some(data.image_data())),
+      crate::images::ImageKind::Bytes(data) => self.background_image.set(Some(Box::new(data))),
+      crate::images::ImageKind::Native(data) => self.background_image.set(Some(Box::new(data.image_data()))),
       #[cfg(all(feature = "image", feature = "resources"))]
       crate::images::ImageKind::Resource(path) => self.background_resource_image = Some(path),
     }
@@ -1511,7 +1524,7 @@ impl NodeUpdate for Node {
   }
 
   fn scrollbar(&mut self, style: ScrollBarStyle) {
-    self.scrollbar_style.set(Some(style));
+    self.scrollbar_style.set(Some(Box::new(style)));
   }
 
   fn scrollbar_hovered(&mut self, f: impl Fn(ScrollBarStyle) -> ScrollBarStyle + Send + Sync + 'static) {
@@ -1832,13 +1845,9 @@ impl Node {
       overflow: Overflow::Hidden,
       intrinsic_size: None,
       color: Guard::new(None),
-      gradient: Guard::new(None),
       border_radius: Guard::new(None),
       border: Guard::new(None),
-      box_shadow: Guard::new(None),
-      caret_color: Guard::new(None),
-      selection_color: Guard::new(None),
-      caret_mode: Guard::new(None),
+      rare_style: Guard::new(LazyBox::new()),
       cursor: None,
       hit_test: HitTestBehavior::default(),
       #[cfg(feature = "raster")]
@@ -2407,7 +2416,7 @@ impl Node {
   }
 
   pub fn background_gradient(mut self, gradient: impl Into<Gradient>) -> Self {
-    self.gradient.set(Some(gradient.into()));
+    self.rare_style.gradient = Some(gradient.into());
     self
   }
 
@@ -2417,11 +2426,7 @@ impl Node {
   }
 
   fn set_caret_color(&mut self, color: TextColor) {
-    if matches!(self.node_kind, NodeKind::TextInput { .. }) {
-      self.caret_color.set(Some(color));
-    } else {
-      self.caret_color.set(Some(color));
-    }
+    self.rare_style.caret_color = Some(color);
   }
 
   pub(crate) fn selection_color(mut self, color: impl Into<TextColor>) -> Self {
@@ -2430,12 +2435,12 @@ impl Node {
   }
 
   fn set_selection_color(&mut self, color: TextColor) {
-    self.selection_color.set(Some(color));
+    self.rare_style.selection_color = Some(color);
   }
 
   pub(crate) fn text_input_caret_mode(mut self, mode: CaretMode) -> Self {
     if matches!(self.node_kind, NodeKind::TextInput { .. }) {
-      self.caret_mode.set(Some(mode));
+      self.rare_style.caret_mode = Some(mode);
     }
     self
   }
@@ -2550,10 +2555,10 @@ impl Node {
   pub fn background_image(mut self, data: impl Into<crate::images::ImageKind>) -> Self {
     match data.into() {
       crate::images::ImageKind::Bytes(data) => {
-        self.background_image.set(Some(data));
+        self.background_image.set(Some(Box::new(data)));
       }
       crate::images::ImageKind::Native(data) => {
-        self.background_image.set(Some(data.image_data()));
+        self.background_image.set(Some(Box::new(data.image_data())));
       }
       #[cfg(all(feature = "image", feature = "resources"))]
       crate::images::ImageKind::Resource(path) => {
@@ -2957,12 +2962,12 @@ impl Node {
   }
 
   fn set_animation(&mut self, spec: Animation) {
-    self.animation = Some(spec);
+    self.animation = Some(Box::new(spec));
     self.layout_cache.invalidate();
   }
 
   pub fn scrollbar(mut self, style: ScrollBarStyle) -> Self {
-    self.scrollbar_style.set(Some(style));
+    self.scrollbar_style.set(Some(Box::new(style)));
     self
   }
 
@@ -3667,7 +3672,7 @@ impl Node {
 
   /// The node's scrollbar style at rest or hovered, wherever the pointer is.
   pub(crate) fn scrollbar_style_when(&self, default_style: ScrollBarStyle, hovered: bool) -> ScrollBarStyle {
-    let style = (*self.scrollbar_style).clone().unwrap_or(default_style);
+    let style = self.scrollbar_style.as_deref().cloned().unwrap_or(default_style);
     match &self.scrollbar_hovered_style {
       Some(hovered_style) if hovered => hovered_style(style),
       _ => style,
@@ -3697,15 +3702,15 @@ impl Node {
   }
 
   pub(crate) fn caret_color_value(&self) -> Option<TextColor> {
-    <Option<TextColor> as Clone>::clone(&self.caret_color)
+    self.rare_style.caret_color.clone()
   }
 
   pub(crate) fn selection_color_value(&self) -> Option<TextColor> {
-    <Option<TextColor> as Clone>::clone(&self.selection_color)
+    self.rare_style.selection_color.clone()
   }
 
   pub(crate) fn caret_mode_value(&self) -> Option<CaretMode> {
-    *self.caret_mode
+    self.rare_style.caret_mode
   }
 
   pub(crate) fn background_color(&self) -> Option<BackgroundColor> {
@@ -3741,11 +3746,11 @@ impl Node {
       .or_else(|| state_shadow(self.style_state.is_hovered(), &states.hovered))
       .or_else(|| state_shadow(self.style_state.is_focus_visible(), &states.focus_visible))
       .or_else(|| state_shadow(self.style_state.is_focused(), &states.focused))
-      .or(self.box_shadow.as_deref())
+      .or(self.rare_style.box_shadow.as_ref())
   }
 
   pub(crate) fn resolved_gradient(&self) -> Option<Gradient> {
-    <Option<Gradient> as Clone>::clone(&self.gradient)
+    self.rare_style.gradient.clone()
   }
 
   pub fn get_border_radius(&self, radii: &crate::app::theme::ThemeRadii) -> Option<BorderRadius> {
@@ -3884,13 +3889,9 @@ impl Node {
     crate::core::layout_dirty::visit();
     self.text_content.is_changed()
       || self.color.is_changed()
-      || self.gradient.is_changed()
       || self.border_radius.is_changed()
       || self.border.is_changed()
-      || self.box_shadow.is_changed()
-      || self.caret_color.is_changed()
-      || self.selection_color.is_changed()
-      || self.caret_mode.is_changed()
+      || self.rare_style.is_changed()
       || self.scrollbar_style.is_changed()
       || {
         #[cfg(feature = "raster")]
@@ -4085,13 +4086,9 @@ impl Node {
     crate::core::layout_dirty::visit();
     self.text_content.clear_changed();
     self.color.clear_changed();
-    self.gradient.clear_changed();
     self.border_radius.clear_changed();
     self.border.clear_changed();
-    self.box_shadow.clear_changed();
-    self.caret_color.clear_changed();
-    self.selection_color.clear_changed();
-    self.caret_mode.clear_changed();
+    self.rare_style.clear_changed();
     #[cfg(feature = "raster")]
     self.background_image.clear_changed();
     self.scrollbar_style.clear_changed();
@@ -4254,26 +4251,14 @@ impl Node {
     if self.color.as_ref() == old.color.as_ref() {
       self.color.clear_changed();
     }
-    if self.gradient.as_ref() == old.gradient.as_ref() {
-      self.gradient.clear_changed();
-    }
     if self.border_radius.as_ref() == old.border_radius.as_ref() {
       self.border_radius.clear_changed();
     }
     if self.border.as_ref() == old.border.as_ref() {
       self.border.clear_changed();
     }
-    if self.box_shadow.as_ref() == old.box_shadow.as_ref() {
-      self.box_shadow.clear_changed();
-    }
-    if self.caret_color.as_ref() == old.caret_color.as_ref() {
-      self.caret_color.clear_changed();
-    }
-    if self.selection_color.as_ref() == old.selection_color.as_ref() {
-      self.selection_color.clear_changed();
-    }
-    if self.caret_mode.as_ref() == old.caret_mode.as_ref() {
-      self.caret_mode.clear_changed();
+    if **self.rare_style == **old.rare_style {
+      self.rare_style.clear_changed();
     }
   }
 
@@ -4598,13 +4583,9 @@ impl Node {
       overflow: self.overflow,
       intrinsic_size: self.intrinsic_size,
       color: self.color.clone(),
-      gradient: self.gradient.clone(),
       border_radius: self.border_radius.clone(),
       border: self.border.clone(),
-      box_shadow: self.box_shadow.clone(),
-      caret_color: self.caret_color.clone(),
-      selection_color: self.selection_color.clone(),
-      caret_mode: self.caret_mode.clone(),
+      rare_style: self.rare_style.clone(),
       cursor: self.cursor,
       hit_test: self.hit_test,
       #[cfg(feature = "raster")]
@@ -4917,8 +4898,9 @@ mod tests {
       node
     }
 
-    let old = chain(10.0);
     for width in [10.0, 20.0] {
+      // Reconciling takes the old tree's entries, so each round needs its own.
+      let old = chain(10.0);
       let mut new = chain(width);
       new.preserve_runtime_state_from(&old);
       let mut node = &new;
