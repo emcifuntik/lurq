@@ -7,6 +7,7 @@ pub(crate) struct WeakTextInputState {
   inner: Weak<Mutex<TextInputInner>>,
   on_input: Weak<Mutex<Vec<TextInputCallback>>>,
   layout_dirty: Weak<AtomicBool>,
+  layout_subscribers: Weak<crate::core::layout_dirty::LayoutSubscribers>,
 }
 
 impl WeakTextInputState {
@@ -16,6 +17,7 @@ impl WeakTextInputState {
       inner: self.inner.upgrade()?,
       on_input: self.on_input.upgrade()?,
       layout_dirty: self.layout_dirty.upgrade()?,
+      layout_subscribers: self.layout_subscribers.upgrade()?,
     })
   }
 }
@@ -27,6 +29,7 @@ impl TextInputState {
       inner: Arc::downgrade(&self.inner),
       on_input: Arc::downgrade(&self.on_input),
       layout_dirty: Arc::downgrade(&self.layout_dirty),
+      layout_subscribers: Arc::downgrade(&self.layout_subscribers),
     }
   }
   pub(crate) fn controller_selection(&self) -> (usize, Option<usize>) {

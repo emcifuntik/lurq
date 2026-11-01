@@ -46,10 +46,14 @@ struct ElementRefInner {
   override_rect: Option<ElementRect>,
   override_cleared: bool,
   layout_dirty: bool,
+  layout_subscribers: crate::core::layout_dirty::LayoutSubscribers,
   rect_observer: Option<Arc<dyn Fn(ElementRect) + Send + Sync>>,
 }
 
 impl ElementRef {
+  pub(crate) fn track_layout(&self, watch: &Arc<crate::core::layout_dirty::LayoutWatch>) {
+    self.inner.read().unwrap().layout_subscribers.bind(watch);
+  }
   /// Typed access to the attached canvas; `None` before layout or after detachment.
   #[cfg(feature = "canvas")]
   pub fn as_canvas(&self) -> Option<crate::canvas::CanvasHandle> {
@@ -337,6 +341,7 @@ impl ElementRefMut {
     inner.height = rect.height;
     inner.override_rect = Some(rect);
     inner.layout_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   pub fn set_relative_bounds(&self, relative_x: f32, relative_y: f32, width: f32, height: f32) {
@@ -362,6 +367,7 @@ impl ElementRefMut {
       inner.override_cleared = true;
     }
     inner.layout_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   pub fn is_attached(&self) -> bool {

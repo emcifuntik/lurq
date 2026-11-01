@@ -460,13 +460,14 @@ fn link_child_layout(child: &Node, span_boxes: &[SpanBox], top: f32) -> ChildLay
     offset: origin,
     result: Arc::new(LayoutResult {
       size: Size::new(first.width, first.height),
-      children: Vec::new(),
+      children: Vec::new().into(),
       text_layout: Some(Arc::new(TextLayoutOutput::InlineLink(InlineLinkOutput {
         origin,
         ..output
       }))),
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }),
   }
 }

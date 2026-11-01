@@ -3,13 +3,22 @@ use std::cell::{Cell, RefCell};
 #[cfg(test)]
 use crate::layout::layout_result::SubtreeHolds;
 use crate::layout::{Constraints, layout_result::LayoutResult};
+use crate::node::lazy_box::{LazyBox, empty_default};
 
 /// Up to two layout results of one node, most recently used first.
 ///
 /// The front entry is the layout the node was last laid out as or served
 /// from, so its constraints are the ones the node's parent last gave it.
 pub struct LayoutCache {
-  inner: RefCell<CachedLayouts>,
+  // Keep the two result slots off Node's stack footprint as tracking grows.
+  // An unlaid node needs neither the slots nor an allocation for them.
+  inner: RefCell<LazyBox<CachedLayouts>>,
+  validated: RefCell<Option<Box<ValidatedLayout>>>,
+  pub(crate) watch: std::sync::Arc<crate::core::layout_dirty::LayoutWatch>,
+  pub(crate) tracking_generation: Cell<u64>,
+  pub(crate) inspected_generation: Cell<u64>,
+  pub(crate) guards_generation: Cell<u64>,
+  pub(crate) subtree: Cell<LayoutSubtree>,
   local_dirty: Cell<bool>,
   descendant_dirty: Cell<bool>,
   /// Whether every descendant cache's front entry belongs to this cache's
@@ -19,6 +28,22 @@ pub struct LayoutCache {
   /// this node), and repairing a dirty descendant under them would lay it
   /// out for that other size.
   descendants_match_front: Cell<bool>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LayoutSubtree {
+  pub(crate) text_input: bool,
+  pub(crate) select: bool,
+  pub(crate) timeline: bool,
+  pub(crate) scroll: bool,
+  pub(crate) canvas: bool,
+}
+
+struct ValidatedLayout {
+  generation: u64,
+  source_generation: u64,
+  size: crate::layout::Size,
+  children: crate::layout::layout_result::ChildLayouts,
 }
 
 #[derive(Clone)]
@@ -32,6 +57,8 @@ struct CachedLayouts {
   slots: [Option<CachedLayout>; 2],
   front: usize,
 }
+
+empty_default!(CachedLayouts);
 
 impl CachedLayouts {
   fn front(&self) -> Option<&CachedLayout> {
@@ -58,7 +85,13 @@ impl CachedLayouts {
 impl LayoutCache {
   pub fn new() -> Self {
     Self {
-      inner: RefCell::new(CachedLayouts::default()),
+      inner: RefCell::new(LazyBox::new()),
+      validated: RefCell::new(None),
+      watch: crate::core::layout_dirty::LayoutWatch::new(),
+      tracking_generation: Cell::new(0),
+      inspected_generation: Cell::new(0),
+      guards_generation: Cell::new(0),
+      subtree: Cell::new(LayoutSubtree::default()),
       local_dirty: Cell::new(false),
       descendant_dirty: Cell::new(false),
       descendants_match_front: Cell::new(true),
@@ -78,6 +111,31 @@ impl LayoutCache {
       self.descendants_match_front.set(false);
     }
     Some(entries.front()?.result.clone())
+  }
+
+  pub(crate) fn matches_validated(&self, result: &LayoutResult) -> bool {
+    self.validated.borrow().as_ref().is_some_and(|validated| {
+      validated.generation == self.watch.generation()
+        && validated.source_generation == result.generation
+        && validated.size == result.size
+        && validated.children.same_storage(&result.children)
+    })
+  }
+
+  pub(crate) fn remember_validation(&self, result: &LayoutResult) {
+    *self.validated.borrow_mut() = Some(Box::new(ValidatedLayout {
+      generation: self.watch.generation(),
+      source_generation: result.generation,
+      size: result.size,
+      children: result.children.clone(),
+    }));
+  }
+
+  pub(crate) fn record_validation(&self, constraints: Constraints, generation: u64) {
+    let mut entries = self.inner.borrow_mut();
+    if let Some(index) = entries.find(constraints) {
+      entries.slots[index].as_mut().unwrap().result.generation = generation;
+    }
   }
 
   pub(crate) fn contains(&self, constraints: Constraints) -> bool {
@@ -135,6 +193,7 @@ impl LayoutCache {
   }
 
   pub(crate) fn preserve_from(&self, old: &Self) {
+    self.watch.mark();
     *self.inner.borrow_mut() = old.inner.borrow().clone();
     // The descendants take over the old descendants' caches the same way, so
     // whether they match the front entry carries over with the entries.
@@ -170,7 +229,9 @@ impl LayoutCache {
   }
 
   pub fn invalidate(&self) {
-    self.inner.borrow_mut().clear();
+    self.watch.mark();
+    self.validated.borrow_mut().take();
+    *self.inner.borrow_mut() = LazyBox::new();
     self.descendants_match_front.set(true);
     self.clear_dirty();
   }
@@ -185,11 +246,26 @@ impl LayoutCache {
   }
 
   pub(crate) fn mark_local_dirty(&self) {
+    self.watch.mark();
     self.local_dirty.set(true);
   }
 
   pub(crate) fn mark_descendant_dirty(&self) {
+    self.watch.mark_descendant();
     self.descendant_dirty.set(true);
+  }
+
+  pub(crate) fn needs_dirty_scan(&self) -> bool {
+    self.inspected_generation.get() != self.watch.generation()
+  }
+
+  pub(crate) fn record_dirty_scan(&self, generation: u64, local: bool, descendant: bool) {
+    self.local_dirty.set(self.local_dirty.get() || local);
+    self.descendant_dirty.set(self.descendant_dirty.get() || descendant);
+    // A shared handle can change while the walk consumes its marks. Only
+    // acknowledge the generation the walk started with, so a later write
+    // still asks for another inspection.
+    self.inspected_generation.set(generation);
   }
 
   pub(crate) fn is_local_dirty(&self) -> bool {
@@ -217,7 +293,15 @@ impl LayoutCache {
       .flatten()
       .map(|cached| cached.result.estimated_memory_bytes() - std::mem::size_of::<LayoutResult>())
       .sum::<usize>();
-    std::mem::size_of::<Self>() + cached_bytes
+    let slots_bytes = if borrow.front().is_some() {
+      std::mem::size_of::<CachedLayouts>()
+    } else {
+      0
+    };
+    std::mem::size_of::<Self>()
+      + std::mem::size_of::<crate::core::layout_dirty::LayoutWatch>()
+      + slots_bytes
+      + cached_bytes
   }
 }
 
@@ -232,6 +316,17 @@ mod tests {
   use super::*;
   use crate::layout::Size;
 
+  #[test]
+  fn dirty_scan_does_not_consume_a_later_notification() {
+    let cache = LayoutCache::new();
+    let generation = cache.watch.generation();
+    cache.watch.mark();
+
+    cache.record_dirty_scan(generation, false, false);
+
+    assert!(cache.needs_dirty_scan());
+  }
+
   fn constraints(max_width: f32) -> Constraints {
     Constraints {
       min_width: 0.0,
@@ -244,10 +339,11 @@ mod tests {
   fn result(width: f32) -> LayoutResult {
     LayoutResult {
       size: Size::new(width, 10.0),
-      children: vec![],
+      children: vec![].into(),
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 

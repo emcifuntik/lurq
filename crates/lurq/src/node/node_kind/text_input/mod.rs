@@ -25,6 +25,7 @@ pub(crate) struct TextInputState {
   inner: Arc<Mutex<TextInputInner>>,
   on_input: Arc<Mutex<Vec<TextInputCallback>>>,
   layout_dirty: Arc<AtomicBool>,
+  layout_subscribers: Arc<crate::core::layout_dirty::LayoutSubscribers>,
 }
 
 struct TextInputInner {
@@ -134,6 +135,7 @@ impl TextInputState {
       })),
       on_input: Arc::new(Mutex::new(Vec::new())),
       layout_dirty: Arc::new(AtomicBool::new(false)),
+      layout_subscribers: Arc::default(),
     }
   }
 
@@ -351,6 +353,11 @@ impl TextInputState {
     }
   }
 
+  pub(crate) fn track_layout(&self, watch: &Arc<crate::core::layout_dirty::LayoutWatch>) {
+    self.layout_subscribers.bind(watch);
+    self.inner.lock().scroll.track_layout(watch);
+  }
+
   pub(crate) fn take_layout_dirty(&self) -> bool {
     self.layout_dirty.swap(false, Ordering::Relaxed)
   }
@@ -367,12 +374,14 @@ impl TextInputState {
     inner.vertical_goal = None;
     drop(inner);
     self.layout_dirty.store(true, Ordering::Relaxed);
+    self.layout_subscribers.mark();
   }
 
   /// Marks a change of how the input looks (its placeholder, mode, rows or
   /// focus) that leaves the scroll where it is.
   fn mark_layout_dirty_keeping_scroll(&self) {
     self.layout_dirty.store(true, Ordering::Relaxed);
+    self.layout_subscribers.mark();
   }
 
   /// Fire `on_input` handlers with the text this edit is about to produce.

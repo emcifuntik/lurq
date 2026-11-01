@@ -6132,6 +6132,7 @@ impl Tree {
         .unwrap_or_else(|| app.theme().version());
       let theme_changed = self.last_theme_version != theme_version;
       let has_active_overlays = root.has_synthetic_role(SyntheticNodeRole::OverlayHost) && root.children.len() > 1;
+      root.prepare_layout_tracking();
       let has_dirty_element_ref = has_dirty_element_ref_recursive(root);
       let has_pending_layout_dirty = has_pending_layout_dirty_recursive(root);
       let has_runtime_layout_state = has_runtime_layout_state_recursive(root);
@@ -6158,7 +6159,9 @@ impl Tree {
       {
         self.last_theme_version = theme_version;
         #[cfg(feature = "canvas")]
-        if let Some(layout) = self.last_layout.as_ref() {
+        if let Some(layout) = self.last_layout.as_ref()
+          && root.prepare_layout_tracking().canvas
+        {
           let offset = root.offset_position().unwrap_or_default();
           update_canvas_placement_recursive(
             root,
@@ -9937,7 +9940,87 @@ fn replace_live_component_slot_everywhere(
   replaced
 }
 
+#[cfg(test)]
+mod layout_tracking_tests {
+  use super::*;
+
+  #[test]
+  fn shared_handle_notification_survives_another_headless_pass() {
+    let mut app = App::new();
+    let reference = crate::core::ElementRefMut::new();
+    let build = || {
+      let mut tree = Tree::new();
+      tree.resize(400, 300);
+      tree.set_root(
+        crate::components::Stack::new()
+          .child(crate::components::Rect::new(50.0, 50.0).ref_element(reference.clone())),
+      );
+      tree
+    };
+    let mut first = build();
+    let mut second = build();
+    first.pass_headless(&mut app);
+    second.pass_headless(&mut app);
+    reference.set_relative_bounds(30.0, 40.0, 80.0, 70.0);
+    first.pass_headless(&mut app);
+
+    let report = second.pass_headless(&mut app);
+
+    assert!(report.layout_updated);
+    assert_eq!(second.last_layout().unwrap().children[0].result.size, Size::new(80.0, 70.0));
+  }
+
+  #[test]
+  fn popup_declarations_do_not_wedge_the_layout_fast_path() {
+    for open in [false, true] {
+      let mut app = App::new();
+      let mut tree = Tree::new();
+      tree.resize(400, 300);
+      let anchor = crate::core::ElementRef::new();
+      tree.set_root(
+        crate::components::Column::new()
+          .child(crate::components::Rect::new(40.0, 40.0).ref_element(anchor.clone()))
+          .child(
+            crate::components::Popup::new(anchor, crate::components::Rect::new(30.0, 30.0))
+              .open(crate::core::Signal::new(open)),
+          ),
+      );
+      tree.pass_headless(&mut app);
+      assert!(!has_pending_layout_dirty_recursive(tree.root.as_ref().unwrap()));
+
+      let report = tree.pass_headless(&mut app);
+
+      assert!(!report.layout_updated, "popup open={open} prevented the fast path");
+    }
+  }
+
+  #[test]
+  fn unchanged_large_headless_pass_skips_layout_walks() {
+    let mut app = App::new();
+    let mut tree = Tree::new();
+    tree.resize(400, 20_000);
+    let mut column = crate::components::Column::new();
+    for _ in 0..10_000 {
+      column = column.child(crate::components::Rect::new(10.0, 1.0));
+    }
+    tree.set_root(column);
+    tree.pass_headless(&mut app);
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+
+    let report = tree.pass_headless(&mut app);
+
+    assert!(!report.layout_updated);
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    assert!(visits < 40, "unchanged pass visited {visits} nodes");
+  }
+}
+
 fn has_dirty_element_ref_recursive(node: &Node) -> bool {
+  if !node.layout_cache.needs_dirty_scan() {
+    return false;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
   node
     .element_ref
     .as_ref()
@@ -9946,6 +10029,11 @@ fn has_dirty_element_ref_recursive(node: &Node) -> bool {
 }
 
 fn has_runtime_layout_state_recursive(node: &Node) -> bool {
+  if !node.prepare_layout_tracking().select {
+    return false;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
   let local = match node.node_kind() {
     NodeKind::Select { state } => state.is_open(),
     _ => false,
@@ -9954,10 +10042,20 @@ fn has_runtime_layout_state_recursive(node: &Node) -> bool {
 }
 
 fn has_timeline_target_recursive(node: &Node) -> bool {
+  if !node.prepare_layout_tracking().timeline {
+    return false;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
   !node.transitions.is_empty() || node.animation.is_some() || node.children().iter().any(has_timeline_target_recursive)
 }
 
 fn has_pending_layout_dirty_recursive(node: &Node) -> bool {
+  if !node.layout_cache.needs_dirty_scan() && !node.layout_cache.is_dirty() {
+    return false;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
   // Overlay/modal declaration nodes are invisible to layout (mirrors the
   // `mark_layout_dirty` skip): they are never laid out, so their flags could
   // never be cleared — counting them here would wedge the fast path. Their
@@ -9970,7 +10068,10 @@ fn has_pending_layout_dirty_recursive(node: &Node) -> bool {
     NodeKind::Select { state } => state.has_layout_dirty(),
     _ => false,
   };
-  let local = text_input_dirty
+  // Another compute can consume a shared handle's flag before this tree's
+  // pass. Its pending revision still needs to reach the layout engine.
+  let local = (node.layout_cache.inspected_generation.get() != 0 && node.layout_cache.needs_dirty_scan())
+    || text_input_dirty
     || node.layout_cache.is_dirty()
     || node.has_style_layout_dirty()
     || node
