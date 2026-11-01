@@ -1,5 +1,7 @@
 use std::cell::{Cell, RefCell};
 
+#[cfg(test)]
+use crate::layout::layout_result::SubtreeHolds;
 use crate::layout::{Constraints, layout_result::LayoutResult};
 
 const MAX_CACHED_LAYOUTS: usize = 2;
@@ -230,6 +232,7 @@ mod tests {
       children: vec![],
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
     }
   }
 

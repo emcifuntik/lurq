@@ -20,7 +20,7 @@ use crate::{
   },
   layout::{
     Offset, Size,
-    layout_result::{ChildLayout, LayoutResult},
+    layout_result::{ChildLayout, LayoutResult, SubtreeHolds},
     quad::{ClipRect, Quad, QuadContent, RichTextSpan},
     text_style::TextAlign,
   },
@@ -466,6 +466,7 @@ fn link_child_layout(child: &Node, span_boxes: &[SpanBox], top: f32) -> ChildLay
         ..output
       }))),
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
     }),
   }
 }

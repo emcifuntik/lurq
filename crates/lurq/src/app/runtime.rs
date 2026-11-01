@@ -5553,6 +5553,32 @@ impl Tree {
     self.last_layout.as_ref()
   }
 
+  /// Benchmarks only: runs the layout engine over the root under the
+  /// viewport's tight constraints, without the rest of a pass (overlays,
+  /// hit-testing, focus, quads). `force_dirty` lays every node out again.
+  #[doc(hidden)]
+  pub fn bench_layout_only(&mut self, app: &mut App, force_dirty: bool) -> Option<LayoutResult> {
+    let root = self.root.as_ref()?;
+    let constraints = self
+      .layout_constraints_override
+      .unwrap_or_else(|| Constraints::tight(self.viewport_logical()));
+    let theme = app.theme();
+    self.layout_engine.set_shadows(theme.shared_shadows());
+    Some(self.layout_engine.compute(
+      &mut app.shared.glyph_engine.lock(),
+      root,
+      constraints,
+      theme.palette().clone(),
+      theme.border_sizes().clone(),
+      theme.spacing().clone(),
+      theme.radii().clone(),
+      *theme.caret(),
+      theme.scrollbar().clone(),
+      theme.typography().clone(),
+      force_dirty,
+    ))
+  }
+
   /// The text selected in the selectable texts (`Text::selectable`,
   /// `MarkdownProps::selectable`) as of the last pass, as Ctrl+C copies it:
   /// the texts drawn side by side on one line, in x order; texts stacked

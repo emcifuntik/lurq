@@ -4762,7 +4762,7 @@ mod tests {
     core::Signal,
     layout::{
       Alignment, Constraints, Offset, Size,
-      layout_result::{ChildLayout, LayoutResult},
+      layout_result::{ChildLayout, LayoutResult, SubtreeHolds},
     },
   };
 
@@ -4850,6 +4850,7 @@ mod tests {
               children: Vec::new(),
               text_layout: None,
               dropped: false,
+              holds: SubtreeHolds::UNKNOWN,
             }
             .into(),
           },
@@ -4860,12 +4861,14 @@ mod tests {
               children: Vec::new(),
               text_layout: None,
               dropped: false,
+              holds: SubtreeHolds::UNKNOWN,
             }
             .into(),
           },
         ],
         text_layout: None,
         dropped: false,
+        holds: SubtreeHolds::UNKNOWN,
       },
     );
     let mut new = Node::row(
@@ -4902,16 +4905,19 @@ mod tests {
                 children: Vec::new(),
                 text_layout: None,
                 dropped: false,
+                holds: SubtreeHolds::UNKNOWN,
               }
               .into(),
             }],
             text_layout: None,
             dropped: false,
+            holds: SubtreeHolds::UNKNOWN,
           }
           .into(),
         }],
         text_layout: None,
         dropped: false,
+        holds: SubtreeHolds::UNKNOWN,
       },
     );
 
@@ -4944,11 +4950,13 @@ mod tests {
             children: Vec::new(),
             text_layout: None,
             dropped: false,
+            holds: SubtreeHolds::UNKNOWN,
           }
           .into(),
         }],
         text_layout: None,
         dropped: false,
+        holds: SubtreeHolds::UNKNOWN,
       },
     );
 

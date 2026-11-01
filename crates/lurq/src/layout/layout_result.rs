@@ -13,6 +13,28 @@ pub struct LayoutResult {
   /// [`ShrinkLimit::Drop`](crate::layout::layout_kind::ShrinkLimit::Drop):
   /// laid out at zero size, neither drawn nor hit.
   pub(crate) dropped: bool,
+  /// What in this subtree a result served from a layout cache must still
+  /// write back into its nodes. Set when the layout engine prepares the
+  /// result; a result built anywhere else may hold anything.
+  pub(crate) holds: SubtreeHolds,
+}
+
+/// What a laid-out subtree holds that serving it from a cache writes back:
+/// a scroll container syncs its scroll state and its content's offset, a
+/// text leaf restores its text layout output. A subtree holding neither is
+/// served as it is: the layout engine neither walks nor copies it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct SubtreeHolds {
+  pub(crate) scroll: bool,
+  pub(crate) text: bool,
+}
+
+impl SubtreeHolds {
+  /// For a result nobody has looked into yet: it may hold either.
+  pub(crate) const UNKNOWN: Self = Self {
+    scroll: true,
+    text: true,
+  };
 }
 
 #[derive(Clone)]
@@ -59,11 +81,13 @@ mod tests {
           children: Vec::new(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
         }
         .into(),
       }],
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
     };
 
     let cloned = result.clone();
