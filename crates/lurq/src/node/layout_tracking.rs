@@ -44,7 +44,21 @@ impl Node {
       }
       #[cfg(feature = "canvas")]
       NodeKind::Canvas { .. } => subtree.canvas = true,
+      #[cfg(all(feature = "image", feature = "resources"))]
+      NodeKind::ResourceImage { .. } => subtree.resource_images = true,
+      // Part styles are shared and can change without a layout notification.
+      // Keep controls pollable for resource images in any of those styles.
+      #[cfg(all(feature = "image", feature = "resources"))]
+      NodeKind::Checkbox { .. } | NodeKind::Slider { .. } => subtree.resource_images = true,
+      #[cfg(all(feature = "svg", feature = "resources"))]
+      NodeKind::ResourceSvg { .. } => subtree.resource_svgs = true,
+      #[cfg(feature = "image")]
+      NodeKind::LoadingImage { .. } => subtree.loading_images = true,
       _ => {}
+    }
+    #[cfg(all(feature = "image", feature = "resources"))]
+    {
+      subtree.resource_images |= self.background_resource_image.is_some();
     }
     if let LayoutKind::ScrollModifier { state, .. } = self.layout_kind() {
       state.track_layout(watch);
@@ -58,6 +72,9 @@ impl Node {
       subtree.timeline |= child.timeline;
       subtree.scroll |= child.scroll;
       subtree.canvas |= child.canvas;
+      subtree.resource_images |= child.resource_images;
+      subtree.resource_svgs |= child.resource_svgs;
+      subtree.loading_images |= child.loading_images;
     }
     cache.subtree.set(subtree);
     cache.tracking_generation.set(watch.generation());

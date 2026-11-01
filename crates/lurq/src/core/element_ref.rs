@@ -1,4 +1,9 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{
+  Arc, RwLock,
+  atomic::{AtomicU64, Ordering},
+};
+
+static OVERRIDE_CLEAR_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Default)]
 pub struct ElementRef {
@@ -44,7 +49,7 @@ struct ElementRefInner {
   focus_visible: bool,
   focus_visible_signal: Option<crate::core::Signal<bool>>,
   override_rect: Option<ElementRect>,
-  override_cleared: bool,
+  override_clear_generation: u64,
   layout_dirty: bool,
   layout_subscribers: crate::core::layout_dirty::LayoutSubscribers,
   rect_observer: Option<Arc<dyn Fn(ElementRect) + Send + Sync>>,
@@ -227,11 +232,8 @@ impl ElementRef {
     self.inner.read().unwrap().override_rect
   }
 
-  pub(crate) fn take_override_cleared(&self) -> bool {
-    let mut inner = self.inner.write().unwrap();
-    let cleared = inner.override_cleared;
-    inner.override_cleared = false;
-    cleared
+  pub(crate) fn override_clear_generation(&self) -> u64 {
+    self.inner.read().unwrap().override_clear_generation
   }
 
   pub(crate) fn has_layout_dirty(&self) -> bool {
@@ -361,10 +363,9 @@ impl ElementRefMut {
   pub fn clear_bounds_override(&self) {
     let mut inner = self.inner.write().unwrap();
     if inner.override_rect.take().is_some() {
-      // Cached parent layouts have the override baked into their child
-      // offsets — flag so the layout engine falls back to a full relayout
-      // instead of serving the stale offset.
-      inner.override_cleared = true;
+      // Each node consuming this handle must discard its cached offset.
+      // A shared flag would let the first tree hide the clear from the rest.
+      inner.override_clear_generation = OVERRIDE_CLEAR_GENERATION.fetch_add(1, Ordering::Relaxed);
     }
     inner.layout_dirty = true;
     inner.layout_subscribers.mark();

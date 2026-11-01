@@ -184,7 +184,7 @@ pub fn lurq_tree(spec: &Spec, app: &mut App) -> Tree {
   let mut tree = Tree::new();
   tree.resize(VIEW_W as u32, VIEW_H as u32);
   tree.set_root(lurq_element(spec));
-  tree.bench_layout_only(app, true);
+  tree.bench_layout_only_shared(app, true);
   tree
 }
 

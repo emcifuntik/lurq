@@ -1,4 +1,7 @@
-use std::cell::{Cell, RefCell};
+use std::{
+  cell::{Cell, RefCell},
+  sync::{Arc, Weak},
+};
 
 #[cfg(test)]
 use crate::layout::layout_result::SubtreeHolds;
@@ -18,6 +21,8 @@ pub struct LayoutCache {
   pub(crate) tracking_generation: Cell<u64>,
   pub(crate) inspected_generation: Cell<u64>,
   pub(crate) guards_generation: Cell<u64>,
+  // A clear belongs to each node consuming the shared element handle.
+  override_clear_generation: Cell<u64>,
   pub(crate) subtree: Cell<LayoutSubtree>,
   local_dirty: Cell<bool>,
   descendant_dirty: Cell<bool>,
@@ -37,19 +42,20 @@ pub(crate) struct LayoutSubtree {
   pub(crate) timeline: bool,
   pub(crate) scroll: bool,
   pub(crate) canvas: bool,
+  pub(crate) resource_images: bool,
+  pub(crate) resource_svgs: bool,
+  pub(crate) loading_images: bool,
 }
 
 struct ValidatedLayout {
   generation: u64,
-  source_generation: u64,
-  size: crate::layout::Size,
-  children: crate::layout::layout_result::ChildLayouts,
+  result: Weak<LayoutResult>,
 }
 
 #[derive(Clone)]
 struct CachedLayout {
   constraints: Constraints,
-  result: LayoutResult,
+  result: Arc<LayoutResult>,
 }
 
 #[derive(Clone, Default)]
@@ -75,7 +81,7 @@ impl CachedLayouts {
     self.slots = [None, None];
   }
 
-  fn store(&mut self, constraints: Constraints, result: LayoutResult) {
+  fn store(&mut self, constraints: Constraints, result: Arc<LayoutResult>) {
     let index = self.find(constraints).unwrap_or(1 - self.front);
     self.slots[index] = Some(CachedLayout { constraints, result });
     self.front = index;
@@ -91,6 +97,7 @@ impl LayoutCache {
       tracking_generation: Cell::new(0),
       inspected_generation: Cell::new(0),
       guards_generation: Cell::new(0),
+      override_clear_generation: Cell::new(0),
       subtree: Cell::new(LayoutSubtree::default()),
       local_dirty: Cell::new(false),
       descendant_dirty: Cell::new(false),
@@ -100,7 +107,12 @@ impl LayoutCache {
 
   /// Serves the entry laid out under `constraints` and makes it the front
   /// entry, so the constraints of the layout last served stay first.
+  #[cfg(test)]
   pub fn get(&self, constraints: Constraints) -> Option<LayoutResult> {
+    self.get_shared(constraints).map(|result| result.as_ref().clone())
+  }
+
+  pub(crate) fn get_shared(&self, constraints: Constraints) -> Option<Arc<LayoutResult>> {
     if self.is_dirty() {
       return None;
     }
@@ -113,28 +125,26 @@ impl LayoutCache {
     Some(entries.front()?.result.clone())
   }
 
-  pub(crate) fn matches_validated(&self, result: &LayoutResult) -> bool {
+  pub(crate) fn matches_validated(&self, result: &Arc<LayoutResult>) -> bool {
     self.validated.borrow().as_ref().is_some_and(|validated| {
-      validated.generation == self.watch.generation()
-        && validated.source_generation == result.generation
-        && validated.size == result.size
-        && validated.children.same_storage(&result.children)
+      validated.generation == self.watch.generation() && validated.result.ptr_eq(&Arc::downgrade(result))
     })
   }
 
-  pub(crate) fn remember_validation(&self, result: &LayoutResult) {
+  pub(crate) fn remember_validation(&self, result: &Arc<LayoutResult>) {
     *self.validated.borrow_mut() = Some(Box::new(ValidatedLayout {
       generation: self.watch.generation(),
-      source_generation: result.generation,
-      size: result.size,
-      children: result.children.clone(),
+      result: Arc::downgrade(result),
     }));
   }
 
   pub(crate) fn record_validation(&self, constraints: Constraints, generation: u64) {
     let mut entries = self.inner.borrow_mut();
     if let Some(index) = entries.find(constraints) {
-      entries.slots[index].as_mut().unwrap().result.generation = generation;
+      let result = &mut entries.slots[index].as_mut().unwrap().result;
+      if result.generation != generation {
+        Arc::make_mut(result).generation = generation;
+      }
     }
   }
 
@@ -151,7 +161,7 @@ impl LayoutCache {
   /// those constraints the front ones: the parent may have laid the node out
   /// under other constraints in between, and its next repair must not use
   /// them. The entry is put back if those layouts pushed it out.
-  pub(crate) fn record_reuse(&self, constraints: Constraints, result: &LayoutResult) {
+  pub(crate) fn record_reuse(&self, constraints: Constraints, result: &Arc<LayoutResult>) {
     let mut entries = self.inner.borrow_mut();
     match entries.find(constraints) {
       Some(index) if index == entries.front => return,
@@ -166,7 +176,7 @@ impl LayoutCache {
   /// descendants were not laid out for another entry since. The patch lays
   /// each dirty child out again under that child's front constraints, which
   /// are only the ones this result gave it under those two conditions.
-  pub(crate) fn get_repairable(&self, constraints: Constraints) -> Option<LayoutResult> {
+  pub(crate) fn get_repairable(&self, constraints: Constraints) -> Option<Arc<LayoutResult>> {
     if !self.descendants_match_front.get() {
       return None;
     }
@@ -194,6 +204,7 @@ impl LayoutCache {
 
   pub(crate) fn preserve_from(&self, old: &Self) {
     self.watch.mark();
+    self.override_clear_generation.set(old.override_clear_generation.get());
     *self.inner.borrow_mut() = old.inner.borrow().clone();
     // The descendants take over the old descendants' caches the same way, so
     // whether they match the front entry carries over with the entries.
@@ -210,7 +221,12 @@ impl LayoutCache {
       .set(self.descendant_dirty.get() || old.descendant_dirty.get());
   }
 
+  #[cfg(test)]
   pub fn store(&self, constraints: Constraints, result: LayoutResult) {
+    self.store_shared(constraints, Arc::new(result));
+  }
+
+  pub(crate) fn store_shared(&self, constraints: Constraints, result: Arc<LayoutResult>) {
     let mut borrow = self.inner.borrow_mut();
     if self.is_dirty() {
       // The dirty flags are cache-wide, but a store only replaces the entry
@@ -268,6 +284,10 @@ impl LayoutCache {
     self.inspected_generation.set(generation);
   }
 
+  pub(crate) fn take_override_cleared(&self, generation: u64) -> bool {
+    self.override_clear_generation.replace(generation) != generation
+  }
+
   pub(crate) fn is_local_dirty(&self) -> bool {
     self.local_dirty.get()
   }
@@ -291,7 +311,7 @@ impl LayoutCache {
       .slots
       .iter()
       .flatten()
-      .map(|cached| cached.result.estimated_memory_bytes() - std::mem::size_of::<LayoutResult>())
+      .map(|cached| cached.result.estimated_memory_bytes() + std::mem::size_of::<[usize; 2]>())
       .sum::<usize>();
     let slots_bytes = if borrow.front().is_some() {
       std::mem::size_of::<CachedLayouts>()
@@ -455,13 +475,13 @@ mod tests {
     let cache = LayoutCache::new();
     cache.store(constraints(292.0), result(292.0));
     cache.store(constraints(300.0), result(300.0));
-    cache.record_reuse(constraints(292.0), &result(292.0));
+    cache.record_reuse(constraints(292.0), &result(292.0).into());
     assert_eq!(cache.constraints().map(|front| front.max_width), Some(292.0));
     assert!(cache.get_repairable(constraints(292.0)).is_none());
 
     cache.store(constraints(300.0), result(300.0));
     cache.store(constraints(310.0), result(310.0));
-    cache.record_reuse(constraints(292.0), &result(292.0));
+    cache.record_reuse(constraints(292.0), &result(292.0).into());
     assert_eq!(
       cache.cached_entry().map(|(front, size)| (front.max_width, size.width)),
       Some((292.0, 292.0))

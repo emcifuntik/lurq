@@ -133,7 +133,7 @@ pub(crate) struct ResolvedPadding {
 #[derive(Clone)]
 struct ChildLayoutOverride {
   constraints: Constraints,
-  result: LayoutResult,
+  result: Arc<LayoutResult>,
 }
 
 #[derive(Default)]
@@ -535,7 +535,7 @@ impl LayoutEngine {
     scrollbar: ScrollBarStyle,
     typography: ThemeTypography,
     force_dirty: bool,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     self.compute_inner(
       glyph_engine,
       node,
@@ -565,7 +565,7 @@ impl LayoutEngine {
     scrollbar: ScrollBarStyle,
     typography: ThemeTypography,
     force_dirty: bool,
-  ) -> (LayoutResult, OverlayLayoutIndex) {
+  ) -> (Arc<LayoutResult>, OverlayLayoutIndex) {
     let result = self.compute_inner(
       glyph_engine,
       node,
@@ -597,7 +597,7 @@ impl LayoutEngine {
     scrollbar: ScrollBarStyle,
     typography: ThemeTypography,
     force_dirty: bool,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     self.last_recalculated.set(false);
     *self.palette.borrow_mut() = palette;
     *self.border_sizes.borrow_mut() = border_sizes;
@@ -1951,7 +1951,7 @@ impl LayoutEngine {
     }
   }
 
-  fn layout_node(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> LayoutResult {
+  fn layout_node(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> Arc<LayoutResult> {
     // A collapsed line's cache holds layouts its parent did not collapse.
     if !self.is_collapsed(node)
       && let Some(cached) = self.layout_node_from_cache(glyph_engine, node, constraints)
@@ -1967,9 +1967,9 @@ impl LayoutEngine {
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
-  ) -> Option<LayoutResult> {
+  ) -> Option<Arc<LayoutResult>> {
     if !node.layout_cache.is_dirty() {
-      return node.layout_cache.get(constraints).and_then(|cached| {
+      return node.layout_cache.get_shared(constraints).and_then(|cached| {
         if !Self::cached_result_matches_node_tree(node, &cached) {
           return None;
         }
@@ -2005,11 +2005,12 @@ impl LayoutEngine {
     // geometry. Patch dirty child results into the cached tree and only force
     // this parent to relayout if the child no longer fits the cached parent or
     // the parent layout kind needs to reposition siblings around the new size.
-    let mut cached = node.layout_cache.get_repairable(constraints)?;
+    let cached = node.layout_cache.get_repairable(constraints)?;
     if !Self::cached_result_matches_node_tree(node, &cached) {
       return None;
     }
 
+    let mut cached = cached.as_ref().clone();
     let mut child_overrides = vec![None; cached.children.len()];
     for (index, child) in node.children().iter().enumerate() {
       if !child.layout_cache.is_dirty()
@@ -2058,15 +2059,15 @@ impl LayoutEngine {
           Some(&child_overrides),
         ));
       }
-      cached.children[index].result = repaired.into();
+      cached.children[index].result = repaired;
     }
 
-    let prepared = self.prepare_cached_result(node, cached);
-    node.layout_cache.store(constraints, prepared.clone());
+    let prepared = self.prepare_cached_result(node, Arc::new(cached));
+    node.layout_cache.store_shared(constraints, prepared.clone());
     Some(prepared)
   }
 
-  fn cached_result_matches_node_tree(node: &Node, result: &LayoutResult) -> bool {
+  fn cached_result_matches_node_tree(node: &Node, result: &Arc<LayoutResult>) -> bool {
     if result.generation == node.layout_cache.watch.generation() || node.layout_cache.matches_validated(result) {
       return true;
     }
@@ -2190,12 +2191,17 @@ impl LayoutEngine {
   /// Serving a cached result skips text layout, so the text output of every
   /// text leaf in it is written back as well: the node's text state otherwise
   /// keeps what the last real layout, possibly at other constraints, wrote.
-  fn prepare_cached_result(&self, node: &Node, mut cached: LayoutResult) -> LayoutResult {
-    if !cached.holds.scroll && !cached.holds.text {
-      cached.generation = node.layout_cache.watch.generation();
+  fn prepare_cached_result(&self, node: &Node, mut cached: Arc<LayoutResult>) -> Arc<LayoutResult> {
+    if !cached.holds.scroll {
+      if cached.holds.text {
+        Self::restore_text_layout_tree(node, &cached);
+      }
+      if cached.generation != node.layout_cache.watch.generation() {
+        Arc::make_mut(&mut cached).generation = node.layout_cache.watch.generation();
+      }
       return cached;
     }
-    self.prepare_layout_result_tree(node, &mut cached, true);
+    self.prepare_layout_result_tree(node, Arc::make_mut(&mut cached), true);
     cached
   }
 
@@ -2256,7 +2262,7 @@ impl LayoutEngine {
     node: &Node,
     constraints: Constraints,
     child_overrides: Option<&[Option<ChildLayoutOverride>]>,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     #[cfg(feature = "perf_profile")]
     let profile_start = Instant::now();
     #[cfg(feature = "perf_profile")]
@@ -2279,7 +2285,8 @@ impl LayoutEngine {
     let mut result = self.layout_node_box(glyph_engine, node, constraints, child_overrides);
     Self::apply_runtime_rect(node, &mut result);
     self.prepare_layout_result_tree(node, &mut result, false);
-    node.layout_cache.store(constraints, result.clone());
+    let result = Arc::new(result);
+    node.layout_cache.store_shared(constraints, result.clone());
     #[cfg(feature = "perf_profile")]
     {
       let elapsed = profile_start.elapsed();
@@ -2811,7 +2818,7 @@ impl LayoutEngine {
 
     let mut grow_total = 0.0_f32;
     let mut shrink_total = 0.0_f32;
-    let mut non_flex_results: Vec<Option<LayoutResult>> = Vec::with_capacity(children.len());
+    let mut non_flex_results: Vec<Option<Arc<LayoutResult>>> = Vec::with_capacity(children.len());
     let mut flex_params_list: Vec<FlexParams> = Vec::with_capacity(children.len());
 
     for child in children {
@@ -2821,14 +2828,14 @@ impl LayoutEngine {
           shrink: 0.0,
           basis: None,
         });
-        non_flex_results.push(Some(LayoutResult {
+        non_flex_results.push(Some(Arc::new(LayoutResult {
           size: Size::default(),
           children: Vec::new().into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
-        }));
+        })));
         continue;
       }
 
@@ -2875,7 +2882,7 @@ impl LayoutEngine {
 
     let remaining = max_main - total_spacing - non_flex_main;
 
-    let mut results: Vec<LayoutResult> = Vec::with_capacity(children.len());
+    let mut results: Vec<Arc<LayoutResult>> = Vec::with_capacity(children.len());
     // The main size each flex child is laid out at.
     let mut grants: Vec<Option<f32>> = vec![None; children.len()];
     for (i, child) in children.iter().enumerate() {
@@ -3080,7 +3087,7 @@ impl LayoutEngine {
   fn position_flex_line(
     &self,
     children: &[Node],
-    results: Vec<LayoutResult>,
+    results: Vec<Arc<LayoutResult>>,
     container_size: &Size,
     spacing: f32,
     align: Alignment,
@@ -3204,7 +3211,7 @@ impl LayoutEngine {
       constraints.max_width
     };
 
-    let mut child_results: Vec<Option<LayoutResult>> = children
+    let mut child_results: Vec<Option<Arc<LayoutResult>>> = children
       .iter()
       .enumerate()
       .map(|(index, child)| {
@@ -3357,7 +3364,7 @@ impl LayoutEngine {
   ) -> LayoutResult {
     let children = node.children();
     let child_constraints = constraints.loosen_width().loosen_height();
-    let results: Vec<LayoutResult> = children
+    let results: Vec<Arc<LayoutResult>> = children
       .iter()
       .enumerate()
       .map(|(index, child)| match child.position() {
@@ -3372,10 +3379,10 @@ impl LayoutEngine {
           };
           let mut result = self.layout_child_node(glyph_engine, child_overrides, index, child, positioned_constraints);
           if let Some(width) = resolved_width {
-            result.size.width = width;
+            Arc::make_mut(&mut result).size.width = width;
           }
           if let Some(height) = resolved_height {
-            result.size.height = height;
+            Arc::make_mut(&mut result).size.height = height;
           }
           result
         }
@@ -3387,7 +3394,7 @@ impl LayoutEngine {
       .iter()
       .zip(results.iter())
       .filter(|(child, _)| !matches!(child.position(), Position::Absolute { .. }))
-      .map(|(_, result)| result)
+      .map(|(_, result)| result.as_ref())
       .collect();
 
     let max_width = normal_results.iter().map(|r| r.size.width).fold(0.0_f32, f32::max);
@@ -3755,7 +3762,7 @@ impl LayoutEngine {
     index: usize,
     child: &Node,
     constraints: Constraints,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     if let Some(Some(child_override)) = child_overrides.and_then(|overrides| overrides.get(index)) {
       if child_override.constraints == constraints {
         // The override was laid out before this parent layout began, which
@@ -5047,7 +5054,7 @@ mod tests {
     node: &Node,
     constraints: Constraints,
     force_dirty: bool,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     engine.compute(
       glyph_engine,
       node,
@@ -5080,6 +5087,7 @@ mod tests {
     let served = compute_at(&engine, &mut glyph_engine, &node, constraints, false);
 
     assert!(!engine.last_recalculated());
+    assert!(Arc::ptr_eq(&first, &served));
     assert_eq!(
       first.holds,
       SubtreeHolds {

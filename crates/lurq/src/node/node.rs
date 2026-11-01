@@ -3859,10 +3859,9 @@ impl Node {
   }
 
   pub(crate) fn take_element_override_cleared(&self) -> bool {
-    self
-      .element_ref
-      .as_ref()
-      .is_some_and(CoreElementRef::take_override_cleared)
+    self.element_ref.as_ref().is_some_and(|reference| {
+      self.layout_cache.take_override_cleared(reference.override_clear_generation())
+    })
   }
 
   pub(crate) fn state_styles_affect_layout(&self) -> bool {

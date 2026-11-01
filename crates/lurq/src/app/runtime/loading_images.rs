@@ -75,6 +75,11 @@ impl Tree {
 }
 
 fn resolve_recursive(node: &mut Node, wake: &WindowWaker, pending: &mut Vec<(ImageKey, Option<ImageSizeCap>)>) -> bool {
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
+  if !node.prepare_layout_tracking().loading_images {
+    return false;
+  }
   let mut layout_dirty = false;
   if let NodeKind::LoadingImage { request } = &mut node.node_kind {
     let state = decoded_images().load(request.key, request.cap, || request.source.clone(), Some(wake.clone()));

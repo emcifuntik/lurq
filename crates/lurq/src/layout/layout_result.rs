@@ -5,7 +5,7 @@ use crate::layout::{Offset, Size, layout_engine::TextLayoutOutput};
 #[derive(Clone)]
 pub struct LayoutResult {
   pub size: Size,
-  pub children: ChildLayouts,
+  pub children: Vec<ChildLayout>,
   /// What laying out a text leaf wrote into its node's text state, written
   /// back when the result is served from a layout cache.
   pub(crate) text_layout: Option<Arc<TextLayoutOutput>>,
@@ -38,68 +38,6 @@ impl SubtreeHolds {
     scroll: true,
     text: true,
   };
-}
-
-/// Child placements shared by cached results, copied only when a layout
-/// changes them. Reading and iterating the children works like a slice.
-#[derive(Clone, Default)]
-pub struct ChildLayouts(Option<Arc<[ChildLayout]>>);
-
-impl ChildLayouts {
-  pub(crate) fn same_storage(&self, other: &Self) -> bool {
-    match (&self.0, &other.0) {
-      (None, None) => true,
-      (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-      _ => false,
-    }
-  }
-}
-
-impl std::ops::Deref for ChildLayouts {
-  type Target = [ChildLayout];
-
-  fn deref(&self) -> &Self::Target {
-    self.0.as_deref().unwrap_or(&[])
-  }
-}
-
-impl std::ops::DerefMut for ChildLayouts {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    match &mut self.0 {
-      Some(children) => Arc::make_mut(children),
-      None => &mut [],
-    }
-  }
-}
-
-impl From<Vec<ChildLayout>> for ChildLayouts {
-  fn from(children: Vec<ChildLayout>) -> Self {
-    Self((!children.is_empty()).then(|| children.into()))
-  }
-}
-
-impl FromIterator<ChildLayout> for ChildLayouts {
-  fn from_iter<T: IntoIterator<Item = ChildLayout>>(iter: T) -> Self {
-    Vec::from_iter(iter).into()
-  }
-}
-
-impl<'a> IntoIterator for &'a ChildLayouts {
-  type Item = &'a ChildLayout;
-  type IntoIter = std::slice::Iter<'a, ChildLayout>;
-
-  fn into_iter(self) -> Self::IntoIter {
-    self.iter()
-  }
-}
-
-impl<'a> IntoIterator for &'a mut ChildLayouts {
-  type Item = &'a mut ChildLayout;
-  type IntoIter = std::slice::IterMut<'a, ChildLayout>;
-
-  fn into_iter(self) -> Self::IntoIter {
-    self.iter_mut()
-  }
 }
 
 #[derive(Clone)]
@@ -143,14 +81,14 @@ mod tests {
         offset: Offset::default(),
         result: LayoutResult {
           size: Size::new(5.0, 5.0),
-          children: Vec::new().into(),
+          children: Vec::new(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
         }
         .into(),
-      }].into(),
+      }],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -159,7 +97,7 @@ mod tests {
 
     let mut cloned = result.clone();
 
-    assert_eq!(result.children.as_ptr(), cloned.children.as_ptr());
+    assert_ne!(result.children.as_ptr(), cloned.children.as_ptr());
     assert!(Arc::ptr_eq(&result.children[0].result, &cloned.children[0].result));
     cloned.children[0].offset.x = 3.0;
     assert_eq!(result.children[0].offset.x, 0.0);
