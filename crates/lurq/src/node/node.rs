@@ -4421,12 +4421,12 @@ impl Node {
     }
 
     // Keyed/slotted children can move between renders (a windowed or reordered
-    // list). Match them to their old twin by identity so node ids — and the
-    // hover/active/focus state the runtime tracks by id — follow the element
-    // instead of its position. Subtrees with no such children keep the cheap
-    // positional zip. This mirrors the keyed/slotted matching in `preserve_runtime_state_from`.
+    // list). Match them by identity so node ids follow the element. Unchanged
+    // positions need no claimed-child buffer, even for identified children.
     let reorderable = self.children.iter().any(Node::has_stable_identity);
-    if !reorderable {
+    let positional = !reorderable
+      || self.children.iter().zip(&old.children).all(|(child, old_child)| child.can_reuse_id_from(old_child));
+    if positional {
       for (child, old_child) in self.children.iter_mut().zip(old.children.iter_mut()) {
         child.preserve_ids_from(old_child);
       }
@@ -4832,20 +4832,30 @@ mod tests {
   }
 
   #[test]
-  fn deep_reconcile_compares_each_layout_signature_once() {
-    fn chain(depth: usize) -> Node {
-      let mut node = Node::new().size(10.0, 10.0);
-      for _ in 0..depth {
-        node = Node::column(0.0, Alignment::Start, vec![node]);
+  fn deep_set_root_compares_each_layout_signature_once() {
+    use crate::{
+      app::Tree,
+      components::{Column, Rect, Row},
+      node::Element,
+    };
+
+    fn chain(depth: usize) -> Element {
+      let mut element = Rect::new(10.0, 10.0).into();
+      for index in 0..depth {
+        element = if index % 2 == 0 {
+          Row::with(0.0, Alignment::Start, [element]).into()
+        } else {
+          Column::with(0.0, Alignment::Start, [element]).into()
+        };
       }
-      node
+      element
     }
 
     for depth in [16, 64] {
-      let old = chain(depth);
-      let mut new = chain(depth);
+      let mut tree = Tree::new();
+      tree.set_root(chain(depth));
       LAYOUT_SIGNATURE_COMPARISONS.set(0);
-      new.preserve_runtime_state_from(&old);
+      tree.set_root(chain(depth));
       assert_eq!(LAYOUT_SIGNATURE_COMPARISONS.get(), depth + 1);
     }
   }
