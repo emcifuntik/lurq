@@ -16,7 +16,9 @@ pub struct LayoutCache {
   // Keep the two result slots off Node's stack footprint as tracking grows.
   // An unlaid node needs neither the slots nor an allocation for them.
   inner: RefCell<LazyBox<CachedLayouts>>,
-  validated: RefCell<Option<Box<ValidatedLayout>>>,
+  // Inline: a rebuilt tree validates every node, and a box here was as many
+  // allocations. Without the RefCell it costs Node no more than the box did.
+  validated: Cell<Option<ValidatedLayout>>,
   pub(crate) watch: std::sync::Arc<crate::core::layout_dirty::LayoutWatch>,
   pub(crate) tracking_generation: Cell<u64>,
   pub(crate) inspected_generation: Cell<u64>,
@@ -92,7 +94,7 @@ impl LayoutCache {
   pub fn new() -> Self {
     Self {
       inner: RefCell::new(LazyBox::new()),
-      validated: RefCell::new(None),
+      validated: Cell::new(None),
       watch: crate::core::layout_dirty::LayoutWatch::new(),
       tracking_generation: Cell::new(0),
       inspected_generation: Cell::new(0),
@@ -126,13 +128,16 @@ impl LayoutCache {
   }
 
   pub(crate) fn matches_validated(&self, result: &Arc<LayoutResult>) -> bool {
-    self.validated.borrow().as_ref().is_some_and(|validated| {
-      validated.generation == self.watch.generation() && validated.result.ptr_eq(&Arc::downgrade(result))
-    })
+    let validated = self.validated.take();
+    let matches = validated.as_ref().is_some_and(|validated| {
+      validated.generation == self.watch.generation() && std::ptr::eq(validated.result.as_ptr(), Arc::as_ptr(result))
+    });
+    self.validated.set(validated);
+    matches
   }
 
   pub(crate) fn remember_validation(&self, result: &Arc<LayoutResult>) {
-    *self.validated.borrow_mut() = Some(Box::new(ValidatedLayout {
+    self.validated.set(Some(ValidatedLayout {
       generation: self.watch.generation(),
       result: Arc::downgrade(result),
     }));
@@ -246,7 +251,7 @@ impl LayoutCache {
 
   pub fn invalidate(&self) {
     self.watch.mark();
-    self.validated.borrow_mut().take();
+    self.validated.take();
     *self.inner.borrow_mut() = LazyBox::new();
     self.descendants_match_front.set(true);
     self.clear_dirty();
@@ -365,6 +370,31 @@ mod tests {
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
     }
+  }
+
+  #[test]
+  fn a_validation_holds_for_its_result_until_the_generation_moves() {
+    let cache = LayoutCache::new();
+    let validated = Arc::new(result(40.0));
+    let other = Arc::new(result(40.0));
+    assert!(!cache.matches_validated(&validated), "nothing validated yet");
+
+    cache.remember_validation(&validated);
+    assert!(cache.matches_validated(&validated));
+    assert!(cache.matches_validated(&validated), "asking keeps the record");
+    assert!(!cache.matches_validated(&other), "another snapshot was not validated");
+
+    cache.watch.mark();
+    assert!(!cache.matches_validated(&validated), "a later change voids it");
+
+    cache.remember_validation(&validated);
+    assert!(cache.matches_validated(&validated));
+    cache.remember_validation(&other);
+    assert!(!cache.matches_validated(&validated), "the record holds one snapshot");
+    assert!(cache.matches_validated(&other));
+
+    cache.invalidate();
+    assert!(!cache.matches_validated(&other));
   }
 
   /// A dirty cache must not keep sibling entries across a store: they were

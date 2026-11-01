@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::core::layout_dirty::LayoutWatch;
+
 #[derive(Default)]
 pub struct InteractionState {
   inner: OnceLock<Arc<Mutex<InteractionStateInner>>>,
@@ -92,7 +94,17 @@ impl InteractionState {
     inner.focus_visible = val && inner.focused;
   }
 
-  pub(crate) fn track_layout(&self, watch: &Arc<crate::core::layout_dirty::LayoutWatch>) {
+  /// Binds `watch` only if the shared state exists: layout tracks every node,
+  /// and must not allocate the state of the many nodes nothing interacts with.
+  /// Whoever creates the state later binds with [`Self::bind_layout`].
+  pub(crate) fn track_layout(&self, watch: &Arc<LayoutWatch>) {
+    if let Some(inner) = self.inner.get() {
+      inner.lock().unwrap().layout_subscribers.bind(watch);
+    }
+  }
+
+  /// Binds `watch`, creating the shared state if it does not exist yet.
+  pub(crate) fn bind_layout(&self, watch: &Arc<LayoutWatch>) {
     self.shared_inner().lock().unwrap().layout_subscribers.bind(watch);
   }
 
@@ -115,11 +127,39 @@ impl InteractionState {
     inner.layout_dirty = false;
     dirty
   }
+
+  #[cfg(test)]
+  pub(crate) fn has_shared_storage(&self) -> bool {
+    self.inner.get().is_some()
+  }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::InteractionState;
+  use super::{InteractionState, LayoutWatch};
+
+  #[test]
+  fn tracking_layout_does_not_allocate_shared_storage() {
+    let state = InteractionState::new();
+    state.track_layout(&LayoutWatch::new());
+    assert!(state.inner.get().is_none());
+  }
+
+  #[test]
+  fn tracking_a_created_state_adds_to_its_bound_watches() {
+    let state = InteractionState::new();
+    let first = LayoutWatch::new();
+    state.bind_layout(&first);
+    let clone = state.clone();
+    let second = LayoutWatch::new();
+    clone.track_layout(&second);
+    let generations = (first.generation(), second.generation());
+
+    clone.mark_layout_dirty();
+
+    assert!(first.generation() > generations.0);
+    assert!(second.generation() > generations.1);
+  }
 
   #[test]
   fn untouched_state_queries_do_not_allocate_shared_storage() {

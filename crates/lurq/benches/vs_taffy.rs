@@ -10,8 +10,13 @@
 //!   leaf).
 //! - `resize`: the root's width cycles through three values, so caches miss wherever a width reaches.
 //! - `noop`: layout again with nothing changed.
+//! - `first` (lurq only): a first layout, without the building before it.
+//! - `rebuilt` (lurq only): layout after `set_root` of the same tree over a laid-out one, without the rebuild.
 
-use std::{hint::black_box, time::Duration};
+use std::{
+  hint::black_box,
+  time::{Duration, Instant},
+};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use lurq::{
@@ -190,6 +195,37 @@ fn bench(c: &mut Criterion) {
       let mut built = taffy_build(spec);
       taffy_compute(&mut built);
       b.iter(|| taffy_compute(&mut built));
+    });
+
+    // first
+    group.bench_function(BenchmarkId::new("lurq/first", name), |b| {
+      b.iter_custom(|iters| {
+        let mut total = Duration::ZERO;
+        for _ in 0..iters {
+          let mut tree = Tree::new();
+          tree.resize(VIEW_W as u32, VIEW_H as u32);
+          tree.set_root(lurq_element(spec));
+          let start = Instant::now();
+          black_box(tree.bench_layout_only_shared(&mut app, false));
+          total += start.elapsed();
+        }
+        total
+      });
+    });
+
+    // rebuilt
+    group.bench_function(BenchmarkId::new("lurq/rebuilt", name), |b| {
+      let mut tree = lurq_tree(spec, &mut app);
+      b.iter_custom(|iters| {
+        let mut total = Duration::ZERO;
+        for _ in 0..iters {
+          tree.set_root(lurq_element(spec));
+          let start = Instant::now();
+          black_box(tree.bench_layout_only_shared(&mut app, false));
+          total += start.elapsed();
+        }
+        total
+      });
     });
   }
 

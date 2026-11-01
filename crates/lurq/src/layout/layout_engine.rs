@@ -5040,6 +5040,86 @@ mod tests {
     assert!(visits < 20, "validated rebuilt tree visited {visits} nodes");
   }
 
+  /// The setters and styles of the interaction states that can move layout
+  /// on their own (focus-visible needs focus, which creates the state first).
+  fn interaction_states() -> [(fn(&Node, bool) -> bool, fn(Node, crate::node::Style) -> Node); 4] {
+    [
+      (Node::set_style_hovered, Node::hovered_style),
+      (Node::set_style_focused, Node::focused_style),
+      (Node::set_style_active, Node::active_style),
+      (Node::set_style_drag_over, Node::drag_over_style),
+    ]
+  }
+
+  fn nested_in_columns(node: Node) -> Node {
+    Node::column(0.0, Alignment::Start, vec![Node::column(0.0, Alignment::Start, vec![node])])
+  }
+
+  /// Layout tracks a node before anything creates its interaction state, so
+  /// the state binds the watch when it is created. A lost binding would serve
+  /// the root's clean cached layout through the update fast path.
+  #[test]
+  fn interaction_state_created_after_tracking_marks_its_node_dirty() {
+    use crate::node::Style;
+
+    for (set_state, styled) in interaction_states() {
+      let engine = LayoutEngine::new();
+      let mut glyph_engine = GlyphEngine::new();
+      let root = nested_in_columns(styled(fixed(20.0, 10.0), Style::new().width(40.0)));
+      let constraints = Constraints::loose(Size::new(200.0, 100.0));
+      let width = |result: &LayoutResult| result.children[0].result.children[0].result.size.width;
+      let target = &root.children[0].children[0];
+      assert_eq!(width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)), 20.0);
+      assert!(!target.style_state.has_shared_storage(), "layout left the state unallocated");
+
+      assert!(set_state(target, true));
+
+      assert!(root.layout_cache.needs_dirty_scan(), "the change reached the root's watch");
+      assert_eq!(width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)), 40.0);
+      assert!(set_state(target, false));
+      assert_eq!(width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)), 20.0);
+    }
+  }
+
+  /// A clone shares the state, so a change through it must still reach the
+  /// original node even though cloning came after the original's tracking.
+  #[test]
+  fn interaction_state_cloned_after_tracking_marks_the_original_node_dirty() {
+    use crate::node::Style;
+
+    for (set_state, styled) in interaction_states() {
+      let engine = LayoutEngine::new();
+      let mut glyph_engine = GlyphEngine::new();
+      let root = nested_in_columns(styled(fixed(20.0, 10.0), Style::new().width(40.0)));
+      let constraints = Constraints::loose(Size::new(200.0, 100.0));
+      compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+      let clone = root.children[0].children[0].clone_for_reuse();
+
+      assert!(set_state(&clone, true));
+
+      let result = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+      assert_eq!(result.children[0].result.children[0].result.size.width, 40.0);
+    }
+  }
+
+  #[test]
+  fn revalidating_a_rebuilt_tree_leaves_interaction_states_unallocated() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let build = || Node::column(0.0, Alignment::Start, (0..10).map(|_| fixed(10.0, 1.0)).collect());
+    let old = build();
+    let constraints = Constraints::tight(Size::new(400.0, 200.0));
+    compute_at(&engine, &mut glyph_engine, &old, constraints, false);
+    let mut new = build();
+    new.preserve_runtime_state_from(&old);
+
+    compute_at(&engine, &mut glyph_engine, &new, constraints, false);
+
+    assert!(!engine.last_recalculated());
+    assert!(!new.style_state.has_shared_storage());
+    assert!(new.children().iter().all(|child| !child.style_state.has_shared_storage()));
+  }
+
   fn fixed(width: f32, height: f32) -> Node {
     Node::new().frame(FrameConstraints {
       width: Some(Dimension::Px(width)),

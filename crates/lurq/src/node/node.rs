@@ -3917,10 +3917,19 @@ impl Node {
     self.style_state.is_focus_visible()
   }
 
+  /// The interaction state, for what may create it (a change, a clone).
+  /// Layout tracking leaves an untouched state unallocated, so the state
+  /// binds this node's watch here: tracking may never come again before the
+  /// change, and a state without the watch would not mark the node dirty.
+  fn bound_style_state(&self) -> &InteractionState {
+    self.style_state.bind_layout(&self.layout_cache.watch);
+    &self.style_state
+  }
+
   pub(crate) fn set_style_hovered(&self, hovered: bool) -> bool {
     let changed = self.style_state.is_hovered() != hovered;
     if changed {
-      self.style_state.set_hovered(hovered);
+      self.bound_style_state().set_hovered(hovered);
     }
     let layout_dirty = changed && self.state_styles_affect_layout();
     if layout_dirty {
@@ -3936,7 +3945,7 @@ impl Node {
   pub(crate) fn set_style_drag_over(&self, drag_over: bool) -> bool {
     let changed = self.style_state.is_drag_over() != drag_over;
     if changed {
-      self.style_state.set_drag_over(drag_over);
+      self.bound_style_state().set_drag_over(drag_over);
     }
     let layout_dirty = changed && self.state_styles_affect_layout();
     if layout_dirty {
@@ -3948,7 +3957,7 @@ impl Node {
   pub(crate) fn set_style_active(&self, active: bool) -> bool {
     let changed = self.style_state.is_active() != active;
     if changed {
-      self.style_state.set_active(active);
+      self.bound_style_state().set_active(active);
     }
     let layout_dirty = changed && self.state_styles_affect_layout();
     if layout_dirty {
@@ -3960,7 +3969,7 @@ impl Node {
   pub(crate) fn set_style_focused(&self, focused: bool) -> bool {
     let changed = self.style_state.is_focused() != focused;
     if changed {
-      self.style_state.set_focused(focused);
+      self.bound_style_state().set_focused(focused);
     }
     let layout_dirty = changed && self.state_styles_affect_layout();
     if layout_dirty {
@@ -3972,7 +3981,7 @@ impl Node {
   pub(crate) fn set_style_focus_visible(&self, visible: bool) -> bool {
     let changed = self.style_state.is_focus_visible() != visible;
     if changed {
-      self.style_state.set_focus_visible(visible);
+      self.bound_style_state().set_focus_visible(visible);
     }
     let layout_dirty = changed && self.state_styles_affect_layout();
     if layout_dirty {
@@ -4614,7 +4623,7 @@ impl Node {
       button_kind: self.button_kind,
       #[cfg(feature = "form")]
       form_name: self.form_name.clone(),
-      style_state: self.style_state.clone(),
+      style_state: self.bound_style_state().clone(),
       state_styles: self.state_styles.clone(),
       opacity: self.opacity,
       transform: self.transform,

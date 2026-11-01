@@ -1,5 +1,8 @@
 //! Heap allocations per layout, lurq against taffy, on the `vs_taffy` trees.
 //! Prints a table; no timing (the counting allocator would skew it).
+//!
+//! `first` and `rebuilt` count the layout only, not the building before it.
+//! Taffy keeps no caches across a rebuild, so its `rebuilt` is its `first`.
 
 use std::{
   alloc::{GlobalAlloc, Layout, System},
@@ -42,12 +45,23 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// Allocations and bytes of one run of `f`, after a warm-up run.
-fn count(mut f: impl FnMut()) -> (usize, usize) {
-  f();
+/// Allocations and bytes of `f` alone, for a mode whose setup must not count.
+fn measure(f: impl FnOnce()) -> (usize, usize) {
   let (a, b) = (ALLOCS.load(Ordering::Relaxed), BYTES.load(Ordering::Relaxed));
   f();
   (ALLOCS.load(Ordering::Relaxed) - a, BYTES.load(Ordering::Relaxed) - b)
+}
+
+/// Allocations and bytes of one run of `f`, after a warm-up run.
+fn count(mut f: impl FnMut()) -> (usize, usize) {
+  f();
+  measure(f)
+}
+
+/// What `f` measured in its second run, the first being a warm-up.
+fn after_warm_up(mut f: impl FnMut() -> (usize, usize)) -> (usize, usize) {
+  f();
+  f()
 }
 
 fn main() {
@@ -122,6 +136,36 @@ fn main() {
         tree.bench_layout_only_shared(&mut app, false);
       }),
       count(|| taffy_compute(&mut built)),
+    ));
+    let taffy_first = after_warm_up(|| {
+      let mut fresh = taffy_build(spec);
+      let counted = measure(|| taffy_compute(&mut fresh));
+      std::mem::forget(fresh);
+      counted
+    });
+    rows.push((
+      "first",
+      after_warm_up(|| {
+        let mut t = Tree::new();
+        t.resize(VIEW_W as u32, VIEW_H as u32);
+        t.set_root(lurq_element(spec));
+        let counted = measure(|| {
+          t.bench_layout_only_shared(&mut app, false);
+        });
+        std::mem::forget(t);
+        counted
+      }),
+      taffy_first,
+    ));
+    rows.push((
+      "rebuilt",
+      after_warm_up(|| {
+        tree.set_root(lurq_element(spec));
+        measure(|| {
+          tree.bench_layout_only_shared(&mut app, false);
+        })
+      }),
+      taffy_first,
     ));
 
     for (mode, (la, lb), (ta, tb)) in rows {
