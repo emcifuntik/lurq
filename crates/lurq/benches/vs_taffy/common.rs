@@ -257,7 +257,7 @@ pub struct TaffyBuilt {
   pub leaves: Vec<NodeId>,
 }
 
-pub fn taffy_build(spec: &Spec) -> TaffyBuilt {
+fn taffy_nodes(tree: &mut TaffyTree<()>, spec: &Spec, leaves: &mut Vec<NodeId>) -> NodeId {
   fn go(tree: &mut TaffyTree<()>, spec: &Spec, leaves: &mut Vec<NodeId>) -> NodeId {
     match spec {
       Spec::Leaf { .. } => {
@@ -271,11 +271,7 @@ pub fn taffy_build(spec: &Spec) -> TaffyBuilt {
       }
     }
   }
-  let mut tree = TaffyTree::with_capacity(count(spec));
-  // lurq lays out in unrounded logical pixels.
-  tree.disable_rounding();
-  let mut leaves = Vec::new();
-  let inner = go(&mut tree, spec, &mut leaves);
+  let inner = go(tree, spec, leaves);
   // lurq's root takes the viewport's tight constraints.
   let mut root_style = taffy_style(spec);
   root_style.size = Size {
@@ -283,11 +279,24 @@ pub fn taffy_build(spec: &Spec) -> TaffyBuilt {
     height: length(VIEW_H),
   };
   tree.set_style(inner, root_style).unwrap();
-  TaffyBuilt {
-    tree,
-    root: inner,
-    leaves,
-  }
+  inner
+}
+
+pub fn taffy_build(spec: &Spec) -> TaffyBuilt {
+  let mut tree = TaffyTree::with_capacity(count(spec));
+  // lurq lays out in unrounded logical pixels.
+  tree.disable_rounding();
+  let mut leaves = Vec::new();
+  let root = taffy_nodes(&mut tree, spec, &mut leaves);
+  TaffyBuilt { tree, root, leaves }
+}
+
+/// taffy's closest to lurq's `set_root` over a laid-out tree: it carries no
+/// layout over, only the storage.
+pub fn taffy_rebuild(built: &mut TaffyBuilt, spec: &Spec) {
+  built.tree.clear();
+  built.leaves.clear();
+  built.root = taffy_nodes(&mut built.tree, spec, &mut built.leaves);
 }
 
 pub fn taffy_compute(built: &mut TaffyBuilt) {
