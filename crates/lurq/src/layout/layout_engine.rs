@@ -753,7 +753,7 @@ impl LayoutEngine {
     // cache invalidated by a layout-affecting change (e.g. a reconciled subtree
     // patched in via a component slot replacement). It must be laid out, and its
     // ancestors must recompute to reposition it, so propagate dirtiness upward.
-    let generation = node.layout_cache.watch.generation();
+    let generation = node.layout_cache.watch().generation();
     let text_input_dirty = match node.node_kind() {
       // A multiline input scrolled by wheel or scrollbar lays out again to
       // keep its offset in its text, and stops following its caret.
@@ -766,7 +766,7 @@ impl LayoutEngine {
     let local_changed = node.layout_cache.inspected_generation.get() != 0
       && node
         .layout_cache
-        .watch
+        .watch()
         .local_changed_since(node.layout_cache.inspected_generation.get());
     let mut local_dirty = force_dirty
       || local_changed
@@ -2025,7 +2025,7 @@ impl LayoutEngine {
     let mut child_overrides = vec![None; cached.children.len()];
     for (index, child) in node.children().iter().enumerate() {
       if !child.layout_cache.is_dirty()
-        && cached.children[index].result.generation == child.layout_cache.watch.generation()
+        && cached.children[index].result.generation == child.layout_cache.watch().generation()
       {
         continue;
       }
@@ -2079,7 +2079,7 @@ impl LayoutEngine {
   }
 
   fn cached_result_matches_node_tree(node: &Node, result: &Arc<LayoutResult>) -> bool {
-    if result.generation == node.layout_cache.watch.generation() || node.layout_cache.matches_validated(result) {
+    if result.generation == node.layout_cache.watch().generation() || node.layout_cache.matches_validated(result) {
       return true;
     }
     #[cfg(test)]
@@ -2207,8 +2207,8 @@ impl LayoutEngine {
       if cached.holds.text {
         Self::restore_text_layout_tree(node, &cached);
       }
-      if cached.generation != node.layout_cache.watch.generation() {
-        Arc::make_mut(&mut cached).generation = node.layout_cache.watch.generation();
+      if cached.generation != node.layout_cache.watch().generation() {
+        Arc::make_mut(&mut cached).generation = node.layout_cache.watch().generation();
       }
       return cached;
     }
@@ -2223,7 +2223,7 @@ impl LayoutEngine {
   /// would otherwise copy all of it, and preparing every freshly laid-out
   /// parent would walk and copy its whole subtree again.
   fn prepare_layout_result_tree(&self, node: &Node, result: &mut LayoutResult, restore_text_layout: bool) {
-    result.generation = node.layout_cache.watch.generation();
+    result.generation = node.layout_cache.watch().generation();
     if restore_text_layout {
       Self::restore_text_layout_output(node, result);
     }

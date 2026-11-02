@@ -1587,7 +1587,7 @@ impl NodeUpdate for Node {
 
   fn ref_element(&mut self, element_ref: impl Into<CoreElementRef>) {
     self.element_ref = Some(element_ref.into());
-    self.layout_cache.watch.mark();
+    self.layout_cache.mark_watch();
   }
 
   fn interactive(&mut self, state: InteractionState) {
@@ -3052,7 +3052,7 @@ impl Node {
 
   pub fn ref_element(mut self, element_ref: impl Into<CoreElementRef>) -> Self {
     self.element_ref = Some(element_ref.into());
-    self.layout_cache.watch.mark();
+    self.layout_cache.mark_watch();
     self
   }
 
@@ -3065,7 +3065,7 @@ impl Node {
 
   pub(crate) fn element_ref_handle(&mut self) -> CoreElementRef {
     let reference = self.element_ref.get_or_insert_with(CoreElementRef::new).clone();
-    reference.track_layout(&self.layout_cache.watch);
+    reference.track_layout(self.layout_cache.watch());
     reference
   }
 
@@ -3984,7 +3984,7 @@ impl Node {
   }
 
   pub(crate) fn has_render_dirty(&self) -> bool {
-    if self.layout_cache.guards_generation.get() == self.layout_cache.watch.generation() {
+    if self.layout_cache.guards_generation.get() == self.layout_cache.watch().generation() {
       return false;
     }
     #[cfg(test)]
@@ -4025,7 +4025,7 @@ impl Node {
   /// binds this node's watch here: tracking may never come again before the
   /// change, and a state without the watch would not mark the node dirty.
   fn bound_style_state(&self) -> &InteractionState {
-    self.style_state.bind_layout(&self.layout_cache.watch);
+    self.style_state.bind_layout(self.layout_cache.watch());
     &self.style_state
   }
 
@@ -4181,7 +4181,7 @@ impl Node {
 
   pub(crate) fn clear_guards(&self) {
     let subtree = self.prepare_layout_tracking();
-    if self.layout_cache.guards_generation.get() == self.layout_cache.watch.generation() && !subtree.scroll {
+    if self.layout_cache.guards_generation.get() == self.layout_cache.watch().generation() && !subtree.scroll {
       return;
     }
     #[cfg(test)]
@@ -4205,7 +4205,7 @@ impl Node {
     self
       .layout_cache
       .guards_generation
-      .set(self.layout_cache.watch.generation());
+      .set(self.layout_cache.watch().generation());
   }
 
   pub(crate) fn sync_dynamic_content_recursive(&mut self) {
@@ -4233,7 +4233,8 @@ impl Node {
   // Return the positional subtree signature while reconciling it, so each
   // ancestor does not compare the same descendants again on a deep tree.
   fn preserve_runtime_state_and_layout_signature_from(&mut self, old: &Node) -> bool {
-    self.layout_cache.watch.mark();
+    self.layout_cache.adopt_watch_from(&old.layout_cache);
+    self.layout_cache.mark_watch();
     #[cfg(feature = "canvas")]
     if self.can_preserve_runtime_state_from(old)
       && let (NodeKind::Canvas { canvas }, NodeKind::Canvas { canvas: old_canvas }) =
@@ -5026,6 +5027,49 @@ mod tests {
       }
       assert_eq!(node.frame.width, Some(crate::node::dimension::Dimension::Px(width)));
     }
+  }
+
+  /// A built tree makes no watches. A rebuilt node takes over the watch of
+  /// the node it carries its state over from, marked, and apart from the old
+  /// parent until tracking attaches it to its new one, as a new watch would
+  /// be: a rebuilt tree's first layout made a watch per node.
+  #[test]
+  fn rebuilt_nodes_take_over_the_old_nodes_watches() {
+    use std::sync::Arc;
+
+    use crate::{
+      components::{Column, Rect},
+      node::Element,
+    };
+
+    fn tree() -> Node {
+      Element::from(Column::with(0.0, Alignment::Start, [Rect::new(10.0, 10.0)])).into_node()
+    }
+
+    let mut new = tree();
+    assert!(!new.layout_cache.has_watch());
+    assert!(!new.children[0].layout_cache.has_watch());
+
+    let old = tree();
+    old.prepare_layout_tracking();
+    let old_root = old.layout_cache.watch().clone();
+    let old_child = old.children[0].layout_cache.watch().clone();
+    let tracked = old_root.generation();
+
+    new.preserve_runtime_state_from(&old);
+    assert!(Arc::ptr_eq(new.layout_cache.watch(), &old_root));
+    assert!(Arc::ptr_eq(new.children[0].layout_cache.watch(), &old_child));
+    assert!(old_root.generation() > tracked, "a watch taken over is marked");
+    assert!(new.layout_cache.needs_dirty_scan());
+
+    let detached = old_root.generation();
+    old_child.mark();
+    assert_eq!(old_root.generation(), detached, "the child left the old parent");
+    new.prepare_layout_tracking();
+    let attached = old_root.generation();
+    assert!(attached > detached, "attaching the child notifies its new parent");
+    old_child.mark();
+    assert!(old_root.generation() > attached, "the child notifies its new parent");
   }
 
   #[test]

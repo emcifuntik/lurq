@@ -1,11 +1,14 @@
 use std::{
-  cell::{Cell, RefCell},
+  cell::{Cell, OnceCell, RefCell},
   sync::{Arc, Weak},
 };
 
 #[cfg(test)]
 use crate::layout::layout_result::SubtreeHolds;
-use crate::layout::{Constraints, layout_result::LayoutResult};
+use crate::{
+  core::layout_dirty::LayoutWatch,
+  layout::{Constraints, layout_result::LayoutResult},
+};
 
 /// Up to two layout results of one node, most recently used first.
 ///
@@ -19,7 +22,12 @@ pub struct LayoutCache {
   // Inline: a rebuilt tree validates every node, and a box here was as many
   // allocations. Without the RefCell it costs Node no more than the box did.
   validated: Cell<Option<ValidatedLayout>>,
-  pub(crate) watch: std::sync::Arc<crate::core::layout_dirty::LayoutWatch>,
+  // Made on first use (`Self::watch`): building an element tree allocated one
+  // per node, and its builders marked each, before anything could observe it.
+  // A mark on a watch not made yet is dropped (`Self::mark_watch`): the watch
+  // starts at a generation newer than any mark before it, which is what the
+  // mark would have left, and nothing holds it to be notified.
+  watch: OnceCell<Arc<LayoutWatch>>,
   pub(crate) tracking_generation: Cell<u64>,
   pub(crate) inspected_generation: Cell<u64>,
   pub(crate) guards_generation: Cell<u64>,
@@ -156,7 +164,7 @@ impl LayoutCache {
     Self {
       inner: RefCell::new(CachedLayouts::Empty),
       validated: Cell::new(None),
-      watch: crate::core::layout_dirty::LayoutWatch::new(),
+      watch: OnceCell::new(),
       tracking_generation: Cell::new(0),
       inspected_generation: Cell::new(0),
       guards_generation: Cell::new(0),
@@ -165,6 +173,51 @@ impl LayoutCache {
       local_dirty: Cell::new(false),
       descendant_dirty: Cell::new(false),
       descendants_match_front: Cell::new(true),
+    }
+  }
+
+  /// The node's watch, made here the first time anything reads or binds it.
+  #[inline]
+  pub(crate) fn watch(&self) -> &Arc<LayoutWatch> {
+    match self.watch.get() {
+      Some(watch) => watch,
+      None => self.make_watch(),
+    }
+  }
+
+  // Out of line: the layout walks recurse through `watch`, and the making
+  // inlined into them grew every level's frame.
+  #[cold]
+  #[inline(never)]
+  fn make_watch(&self) -> &Arc<LayoutWatch> {
+    self.watch.get_or_init(LayoutWatch::new)
+  }
+
+  #[cfg(test)]
+  pub(crate) fn has_watch(&self) -> bool {
+    self.watch.get().is_some()
+  }
+
+  /// `LayoutWatch::mark` on the watch, if it was made: see `watch`.
+  pub(crate) fn mark_watch(&self) {
+    if let Some(watch) = self.watch.get() {
+      watch.mark();
+    }
+  }
+
+  /// Takes over the watch of `old`, the node a rebuilt node carries its
+  /// state over from, when this node has made none: a rebuilt tree's first
+  /// layout made one per node. The caller marks it right after, so its
+  /// generation is as new as a new watch's, and it starts without a parent
+  /// like one. What still notifies it for `old` (a shared state, a signal)
+  /// at most lays this node out once more; `old` is dropped right after
+  /// (see `preserve_from`).
+  pub(crate) fn adopt_watch_from(&self, old: &Self) {
+    if self.watch.get().is_none()
+      && let Some(watch) = old.watch.get()
+    {
+      watch.detach_parent();
+      let _ = self.watch.set(watch.clone());
     }
   }
 
@@ -191,7 +244,7 @@ impl LayoutCache {
   pub(crate) fn matches_validated(&self, result: &Arc<LayoutResult>) -> bool {
     let validated = self.validated.take();
     let matches = validated.as_ref().is_some_and(|validated| {
-      validated.generation == self.watch.generation() && std::ptr::eq(validated.result.as_ptr(), Arc::as_ptr(result))
+      validated.generation == self.watch().generation() && std::ptr::eq(validated.result.as_ptr(), Arc::as_ptr(result))
     });
     self.validated.set(validated);
     matches
@@ -199,7 +252,7 @@ impl LayoutCache {
 
   pub(crate) fn remember_validation(&self, result: &Arc<LayoutResult>) {
     self.validated.set(Some(ValidatedLayout {
-      generation: self.watch.generation(),
+      generation: self.watch().generation(),
       result: Arc::downgrade(result),
     }));
   }
@@ -275,7 +328,7 @@ impl LayoutCache {
   /// the entries saves cloning them for every node of a rebuilt tree. `old`
   /// serves nothing afterwards; only its flags stay as they were.
   pub(crate) fn preserve_from(&self, old: &Self) {
-    self.watch.mark();
+    self.mark_watch();
     self.override_clear_generation.set(old.override_clear_generation.get());
     *self.inner.borrow_mut() = old.inner.take();
     // The descendants take over the old descendants' caches the same way, so
@@ -317,7 +370,7 @@ impl LayoutCache {
   }
 
   pub fn invalidate(&self) {
-    self.watch.mark();
+    self.mark_watch();
     self.validated.take();
     *self.inner.borrow_mut() = CachedLayouts::Empty;
     self.descendants_match_front.set(true);
@@ -334,17 +387,19 @@ impl LayoutCache {
   }
 
   pub(crate) fn mark_local_dirty(&self) {
-    self.watch.mark();
+    self.mark_watch();
     self.local_dirty.set(true);
   }
 
   pub(crate) fn mark_descendant_dirty(&self) {
-    self.watch.mark_descendant();
+    if let Some(watch) = self.watch.get() {
+      watch.mark_descendant();
+    }
     self.descendant_dirty.set(true);
   }
 
   pub(crate) fn needs_dirty_scan(&self) -> bool {
-    self.inspected_generation.get() != self.watch.generation()
+    self.inspected_generation.get() != self.watch().generation()
   }
 
   pub(crate) fn record_dirty_scan(&self, generation: u64, local: bool, descendant: bool) {
@@ -411,12 +466,48 @@ mod tests {
   #[test]
   fn dirty_scan_does_not_consume_a_later_notification() {
     let cache = LayoutCache::new();
-    let generation = cache.watch.generation();
-    cache.watch.mark();
+    let generation = cache.watch().generation();
+    cache.watch().mark();
 
     cache.record_dirty_scan(generation, false, false);
 
     assert!(cache.needs_dirty_scan());
+  }
+
+  /// Marks before anything reads the watch make none, and the watch made
+  /// later is newer than all of them, as a marked one would be.
+  #[test]
+  fn a_watch_made_after_marks_is_newer_than_them() {
+    let cache = LayoutCache::new();
+    cache.invalidate();
+    cache.mark_local_dirty();
+    cache.mark_descendant_dirty();
+    assert!(!cache.has_watch());
+    let after_marks = LayoutWatch::new().generation();
+
+    assert!(cache.watch().generation() > after_marks);
+    assert!(cache.needs_dirty_scan());
+    assert!(cache.is_local_dirty() && cache.is_descendant_dirty());
+  }
+
+  /// A watch is taken over only by a cache without one, and leaves its parent.
+  #[test]
+  fn adopting_a_watch_keeps_one_already_made() {
+    let parent = LayoutWatch::new();
+    let old = LayoutCache::new();
+    old.watch().set_parent(&parent);
+
+    let made = LayoutCache::new();
+    let own = made.watch().clone();
+    made.adopt_watch_from(&old);
+    assert!(Arc::ptr_eq(made.watch(), &own));
+
+    let new = LayoutCache::new();
+    new.adopt_watch_from(&old);
+    assert!(Arc::ptr_eq(new.watch(), old.watch()));
+    let before = parent.generation();
+    new.mark_watch();
+    assert_eq!(parent.generation(), before, "the old parent hears no more");
   }
 
   fn constraints(max_width: f32) -> Constraints {
@@ -451,7 +542,7 @@ mod tests {
     assert!(cache.matches_validated(&validated), "asking keeps the record");
     assert!(!cache.matches_validated(&other), "another snapshot was not validated");
 
-    cache.watch.mark();
+    cache.watch().mark();
     assert!(!cache.matches_validated(&validated), "a later change voids it");
 
     cache.remember_validation(&validated);

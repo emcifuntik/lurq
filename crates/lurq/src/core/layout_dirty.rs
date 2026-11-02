@@ -62,6 +62,13 @@ impl LayoutWatch {
     // already consumed its dirty marks (the overlay host lays its base first).
     parent.mark_descendant();
   }
+
+  /// Forgets the parent, as a new watch has none: for a watch a rebuilt node
+  /// takes over, so attaching it to its new parent notifies that parent as
+  /// attaching a new one would.
+  pub(crate) fn detach_parent(&self) {
+    *self.parent.lock() = Weak::new();
+  }
 }
 
 /// Shared handles may be bound to more than one live node during a rebuild

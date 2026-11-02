@@ -30,9 +30,64 @@ pub struct ElementIter<'a> {
   inner: std::slice::Iter<'a, Node>,
 }
 
+/// The boxes [`Element::into_node`] moved a node out of, for the next element
+/// to take. Building a tree boxes every node and its parent moves the node out
+/// of the box right away, so a build allocated and freed a box per node; with
+/// these, a flat list reuses one box and a nested tree about one per level.
+/// Per thread, and only a few kept: a box is over 1 KiB.
+mod node_boxes {
+  use std::{cell::RefCell, mem::MaybeUninit};
+
+  use crate::node::node::Node;
+
+  const KEPT: usize = 16;
+
+  thread_local! {
+    static EMPTY: RefCell<Vec<Box<MaybeUninit<Node>>>> = const { RefCell::new(Vec::new()) };
+  }
+
+  /// `Box::new(node)`, in a box an element gave back when there is one.
+  pub(crate) fn boxed(node: Node) -> Box<Node> {
+    // `try_with`: a thread's own destructors may still build elements after
+    // its boxes are gone.
+    let empty = EMPTY
+      .try_with(|empty| empty.try_borrow_mut().ok().and_then(|mut empty| empty.pop()))
+      .ok()
+      .flatten();
+    match empty {
+      Some(empty) => Box::write(empty, node),
+      None => Box::new(node),
+    }
+  }
+
+  /// `*node`, keeping the emptied box for [`boxed`].
+  pub(crate) fn unboxed(node: Box<Node>) -> Node {
+    let raw = Box::into_raw(node);
+    // SAFETY: `raw` comes from a live `Box<Node>`, so it holds a valid node,
+    // read once here; the box is then owned again as uninitialised memory of
+    // the same layout, so neither the node nor the box is dropped twice.
+    let (node, empty) = unsafe { (raw.read(), Box::from_raw(raw.cast::<MaybeUninit<Node>>())) };
+    let _ = EMPTY.try_with(|kept| {
+      if let Ok(mut kept) = kept.try_borrow_mut()
+        && kept.len() < KEPT
+      {
+        if kept.capacity() == 0 {
+          kept.reserve_exact(KEPT);
+        }
+        kept.push(empty);
+      }
+    });
+    node
+  }
+}
+
+pub(crate) use node_boxes::boxed as boxed_node;
+
 impl Element {
   pub(crate) fn from_node(node: Node) -> Self {
-    Self { node: Box::new(node) }
+    Self {
+      node: node_boxes::boxed(node),
+    }
   }
 
   pub(crate) fn from_boxed_node(node: Box<Node>) -> Self {
@@ -55,9 +110,10 @@ impl Element {
     self.map_node(|node| decorate(node))
   }
 
-  /// Moves the root node out of its box, for storing it among a parent's children.
+  /// Moves the root node out of its box, for storing it among a parent's
+  /// children; the box goes to the next element built on this thread.
   pub(crate) fn into_node(self) -> Node {
-    *self.node
+    node_boxes::unboxed(self.node)
   }
 
   pub fn new() -> Self {
@@ -266,5 +322,23 @@ mod tests {
     .node;
 
     assert_eq!(node.children().len(), 2);
+  }
+
+  /// The box a node was moved out of holds the next element built, and a
+  /// node moved into one is the node that was built.
+  #[test]
+  fn an_element_reuses_the_box_its_predecessor_was_moved_out_of() {
+    let first = Element::from(Rect::new(10.0, 20.0));
+    let first_box = std::ptr::from_ref(&*first.node);
+    let node = first.into_node();
+    assert_eq!(node.frame.width, Some(crate::node::dimension::Dimension::Px(10.0)));
+
+    let second = Element::from(Rect::new(30.0, 40.0).id("second"));
+    assert!(std::ptr::eq(&*second.node, first_box));
+    assert_eq!(second.node.element_id(), Some("second"));
+    assert_eq!(
+      second.node.frame.width,
+      Some(crate::node::dimension::Dimension::Px(30.0))
+    );
   }
 }

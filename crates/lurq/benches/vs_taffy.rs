@@ -14,10 +14,16 @@
 //!   leaf).
 //! - `resize`: the root's width cycles through three values, so caches miss wherever a width reaches.
 //! - `noop`: layout again with nothing changed.
+//!
+//! The phases of lurq's `build` and `rebuild`, each timed alone:
+//! - `phase_element`: building the element tree (`lurq_element`); dropping it is left out.
+//! - `phase_set_root`: `set_root` of a built element tree on a new `Tree`, with no tree to carry state from.
+//! - `phase_set_root_over`: `set_root` over a laid-out tree, which carries its state over and drops it.
+//! - `phase_drop`: dropping a laid-out tree (taffy: its `TaffyTree`).
 
 use std::{hint::black_box, time::Duration};
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use lurq::{
   app::{App, Tree},
   layout::{Constraints, Size as LSize},
@@ -163,6 +169,49 @@ fn bench(c: &mut Criterion) {
     });
     group.bench_function(BenchmarkId::new("taffy/build", name), |b| {
       b.iter(|| black_box(taffy_build(spec)));
+    });
+
+    // phases
+    group.bench_function(BenchmarkId::new("lurq/phase_element", name), |b| {
+      b.iter_with_large_drop(|| lurq_element(spec));
+    });
+    group.bench_function(BenchmarkId::new("lurq/phase_set_root", name), |b| {
+      b.iter_batched(
+        || {
+          let mut tree = Tree::new();
+          tree.resize(VIEW_W as u32, VIEW_H as u32);
+          (tree, lurq_element(spec))
+        },
+        |(mut tree, element)| {
+          tree.set_root(element);
+          tree
+        },
+        BatchSize::LargeInput,
+      );
+    });
+    group.bench_function(BenchmarkId::new("lurq/phase_set_root_over", name), |b| {
+      b.iter_batched(
+        || (lurq_tree(spec, &mut app), lurq_element(spec)),
+        |(mut tree, element)| {
+          tree.set_root(element);
+          tree
+        },
+        BatchSize::LargeInput,
+      );
+    });
+    group.bench_function(BenchmarkId::new("lurq/phase_drop", name), |b| {
+      b.iter_batched(|| lurq_tree(spec, &mut app), drop, BatchSize::LargeInput);
+    });
+    group.bench_function(BenchmarkId::new("taffy/phase_drop", name), |b| {
+      b.iter_batched(
+        || {
+          let mut built = taffy_build(spec);
+          taffy_compute(&mut built);
+          built
+        },
+        drop,
+        BatchSize::LargeInput,
+      );
     });
 
     // cold

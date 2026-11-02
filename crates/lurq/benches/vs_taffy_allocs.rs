@@ -98,6 +98,38 @@ fn main() {
         std::mem::forget(b);
       }),
     ));
+    // The phases of lurq's `build` (taffy has none, so its columns repeat its
+    // whole build): the element tree alone, then `set_root` of it on a new
+    // tree and over a laid-out one. Dropping allocates nothing.
+    let taffy_build_allocs = rows[0].2;
+    rows.push((
+      "build element",
+      count(|| std::mem::forget(lurq_element(spec))),
+      taffy_build_allocs,
+    ));
+    rows.push((
+      "build set_root",
+      count_phase(|| {
+        let mut t = Tree::new();
+        t.resize(VIEW_W as u32, VIEW_H as u32);
+        let element = lurq_element(spec);
+        let counted = measure(|| t.set_root(element));
+        std::mem::forget(t);
+        counted
+      }),
+      taffy_build_allocs,
+    ));
+    rows.push((
+      "set_root over",
+      count_phase(|| {
+        let mut t = lurq_tree(spec, &mut app);
+        let element = lurq_element(spec);
+        let counted = measure(|| t.set_root(element));
+        std::mem::forget(t);
+        counted
+      }),
+      taffy_build_allocs,
+    ));
     // `cold` and `rebuild` are the whole iteration `vs_taffy` times, element
     // and node building included; their `layout` rows are the layout alone.
     rows.push((

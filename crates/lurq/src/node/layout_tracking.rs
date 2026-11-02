@@ -6,13 +6,13 @@ use crate::{
 impl Node {
   pub(crate) fn prepare_layout_tracking(&self) -> LayoutSubtree {
     let cache = &self.layout_cache;
-    if cache.tracking_generation.get() == cache.watch.generation() {
+    if cache.tracking_generation.get() == cache.watch().generation() {
       return cache.subtree.get();
     }
     #[cfg(test)]
     crate::core::layout_dirty::visit();
 
-    let watch = &cache.watch;
+    let watch = cache.watch();
     self.text_content.track_layout(watch);
     self.color.track_layout(watch);
     self.border_radius.track_layout(watch);
@@ -61,7 +61,7 @@ impl Node {
       subtree.scroll = true;
     }
     for child in self.children() {
-      child.layout_cache.watch.set_parent(watch);
+      child.layout_cache.watch().set_parent(watch);
       let child = child.prepare_layout_tracking();
       subtree.text_input |= child.text_input;
       subtree.select |= child.select;

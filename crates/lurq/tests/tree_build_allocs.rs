@@ -92,9 +92,10 @@ fn deep_set_root_preserves_identified_nodes_without_matching_allocations() {
   }
 }
 
-/// A first layout stores one cached result per node, inline. On a flat column
-/// only the root's children `Vec` comes on top of one result per node (2.0
-/// allocations per node when a box held each node's cached results).
+/// A first layout stores one cached result per node, inline, and makes each
+/// node's layout watch, which building the tree no longer makes. On a flat
+/// column only the root's children `Vec` comes on top of those two per node
+/// (3.0 allocations per node when a box held each node's cached results).
 #[test]
 fn first_layout_allocates_no_cache_box_per_node() {
   let mut app = App::new();
@@ -113,8 +114,63 @@ fn first_layout_allocates_no_cache_box_per_node() {
     let allocations = ALLOCS.replace(None).unwrap();
 
     assert!(
-      allocations <= nodes + 16,
+      allocations <= 2 * nodes + 16,
       "{allocations} allocations over {nodes} nodes"
+    );
+  }
+}
+
+fn flat_column(nodes: usize) -> Element {
+  Column::with(
+    0.0,
+    Alignment::Start,
+    (1..nodes).map(|_| Element::from(Rect::new(100.0, 20.0))),
+  )
+  .into()
+}
+
+/// Building an element tree allocates the children `Vec`s and no more per
+/// node: each node's box goes to the next element once its parent moved the
+/// node out, and its layout watch waits for a layout. Both were made per node
+/// (2.0 allocations per node), and `set_root` adds none.
+#[test]
+fn building_a_tree_allocates_no_box_or_watch_per_node() {
+  let nodes = 1_001;
+  for _ in 0..2 {
+    ALLOCS.set(Some(0));
+    let root = flat_column(nodes);
+    let built = ALLOCS.replace(None).unwrap();
+    assert!(built <= 16, "{built} allocations building {nodes} nodes");
+
+    let mut tree = Tree::new();
+    tree.resize(1200, 800);
+    ALLOCS.set(Some(0));
+    tree.set_root(root);
+    let set = ALLOCS.replace(None).unwrap();
+    assert_eq!(set, 0, "set_root of {nodes} nodes");
+  }
+}
+
+/// A tree set over a laid-out one takes over the old nodes' watches with
+/// their caches, so neither `set_root` nor the layout after it makes one per
+/// node (1.0 allocations per node when each rebuilt node made its own).
+#[test]
+fn rebuilding_a_laid_out_tree_allocates_no_watch_per_node() {
+  let mut app = App::new();
+  let nodes = 1_001;
+  let mut tree = Tree::new();
+  tree.resize(1200, 800);
+  tree.set_root(flat_column(nodes));
+  tree.bench_layout_only_shared(&mut app, false);
+  for _ in 0..2 {
+    let root = flat_column(nodes);
+    ALLOCS.set(Some(0));
+    tree.set_root(root);
+    tree.bench_layout_only_shared(&mut app, false);
+    let allocations = ALLOCS.replace(None).unwrap();
+    assert!(
+      allocations <= 16,
+      "{allocations} allocations rebuilding {nodes} nodes"
     );
   }
 }
@@ -178,7 +234,8 @@ fn container_trees() -> Vec<(&'static str, usize, usize, Element)> {
 /// A container allocates one `Vec`, its result's children, and one result:
 /// the per-child data it works with while laying out lives in that `Vec`.
 /// A `Vec` per kind of scratch data came to 6 per container, and a wrapping
-/// line built one throwaway result per child on top.
+/// line built one throwaway result per child on top. The first layout also
+/// makes each node's layout watch.
 #[test]
 fn layout_allocates_one_vec_per_container() {
   let mut app = App::new();
@@ -192,8 +249,9 @@ fn layout_allocates_one_vec_per_container() {
     tree.bench_layout_only_shared(&mut app, false);
     let first = ALLOCS.replace(None).unwrap();
     assert!(
-      first <= limit,
-      "{name}: first layout: {first} allocations, limit {limit}"
+      first <= limit + nodes,
+      "{name}: first layout: {first} allocations, limit {}",
+      limit + nodes
     );
 
     ALLOCS.set(Some(0));

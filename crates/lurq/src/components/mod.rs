@@ -118,7 +118,7 @@ macro_rules! impl_into_node {
     impl $struct_name {
       pub(crate) fn from_node(node: $crate::node::Node) -> Self {
         Self {
-          node: Box::new(node.with_tag_name(Self::tag_name())),
+          node: $crate::node::element::boxed_node(node.with_tag_name(Self::tag_name())),
         }
       }
 
