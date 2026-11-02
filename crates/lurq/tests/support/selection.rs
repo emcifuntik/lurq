@@ -11,13 +11,13 @@ mod clusters;
 use std::cell::{Cell, RefCell};
 
 use lurq::{
-  app::{events::MouseButton, App, Tree},
+  app::{App, Tree, events::MouseButton},
   core::ElementRect,
   node::color::Color,
 };
 
 use self::clusters::{Painted, Probes};
-use super::{render_pass_with_app, GlyphSnapshot, RectSnapshot, TestSurface};
+use super::{GlyphSnapshot, RectSnapshot, TestSurface, render_pass_with_app};
 
 /// The theme's default selection highlight.
 const HIGHLIGHT: Color = Color::new(191, 219, 254, 255);

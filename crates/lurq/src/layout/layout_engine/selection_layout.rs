@@ -18,13 +18,13 @@ use super::{LayoutEngine, TextLayoutOutput};
 use crate::{
   app::glyph_engine::GlyphEngine,
   layout::{
+    Size,
     layout_result::LayoutResult,
     text_style::{TextAlign, TextStyle},
-    Size,
   },
   node::{
-    node_kind::{NodeKind, PaintedCarets},
     Node,
+    node_kind::{NodeKind, PaintedCarets},
   },
 };
 
@@ -46,21 +46,21 @@ fn painted_max_width(scale: f32, wrap: bool, align: TextAlign, width: f32) -> f3
 }
 
 impl LayoutEngine {
-  /// Writes the carets of a selectable `Text` or `RichText` leaf into its
-  /// state and its result, once `result` holds its box.
+  /// Writes the carets of a selectable or highlighted `Text` or `RichText`
+  /// leaf into its state and its result, once `result` holds its box.
   pub(super) fn lay_out_text_selection(&self, glyph_engine: &mut GlyphEngine, node: &Node, result: &mut LayoutResult) {
     let Some(TextLayoutOutput::Text(output)) = result.text_layout.as_deref() else {
       return;
     };
     let painted = match node.node_kind() {
-      NodeKind::Text { state, style, .. } if state.selectable() => {
+      NodeKind::Text { state, style, .. } if state.measures_carets() => {
         let style = style.resolve(&self.typography.borrow(), &self.palette.borrow());
         let content = node.text_content().unwrap_or_default();
         let text = output.display_text.as_deref().unwrap_or(content);
         self.painted_text(glyph_engine, text, &style, output.render_wrap, result.size)
       }
       #[cfg(feature = "markdown")]
-      NodeKind::RichText { state, spans, .. } if state.selectable() => {
+      NodeKind::RichText { state, spans, .. } if state.measures_carets() => {
         let wrap = node.text_wrap && node.text_overflow == crate::node::node_kind::TextOverflow::Clip;
         self.painted_rich_text(glyph_engine, spans, wrap, result.size)
       }

@@ -1,5 +1,6 @@
 mod text {
   mod copy;
+  mod highlights;
   mod ligatures;
   mod scrollbar_lane;
   mod selectable;

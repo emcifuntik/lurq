@@ -8,7 +8,7 @@ description: Declarative routes, nested layouts, links, params, guards, and navi
 Requires the `router` feature flag.
 
 ```toml
-lurq = { version = "0.53.0", features = ["router"] }
+lurq = { version = "0.54.0", features = ["router"] }
 ```
 
 The router is an in-process UI router. It does not depend on browser URLs; it owns a reactive path signal and renders the matching route tree inside your `Tree`.

@@ -52,6 +52,8 @@ impl BubbleProps {
   }
 }
 
+impl lurq::app::component::DevtoolsInspectable for BubbleProps {}
+
 struct BubbleRoot;
 
 impl Component for BubbleRoot {

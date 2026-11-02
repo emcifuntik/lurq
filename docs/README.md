@@ -1,6 +1,6 @@
 # Documentation maintenance
 
-The guides in `src/content/docs` describe lurq **0.53.0**. The site uses Astro Starlight and deploys under `/lurq/` on GitHub Pages. `astro.config.mjs` controls the sidebar; `src/content/docs/index.md` is the guide index.
+The guides in `src/content/docs` describe lurq **0.54.0**. The site uses Astro Starlight and deploys under `/lurq/` on GitHub Pages. `astro.config.mjs` controls the sidebar; `src/content/docs/index.md` is the guide index.
 
 ## Build and check
 

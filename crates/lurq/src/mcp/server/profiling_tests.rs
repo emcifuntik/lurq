@@ -1,3 +1,10 @@
+#[cfg(feature = "perf_profile")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+  collections::HashSet,
+  io::{Read, Write},
+};
+
 use super::*;
 #[cfg(feature = "perf_profile")]
 use crate::{
@@ -5,12 +12,6 @@ use crate::{
   components::{Column, Text},
 };
 use crate::{app::Tree, mcp::Scope};
-#[cfg(feature = "perf_profile")]
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{
-  collections::HashSet,
-  io::{Read, Write},
-};
 
 fn shared(tree: &Tree) -> Arc<McpShared> {
   let shared = Arc::new(McpShared::new(

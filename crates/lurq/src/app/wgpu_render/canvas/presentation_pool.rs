@@ -1,9 +1,10 @@
 //! Submitted texture leases stay charged until the queue reports completion.
-use super::*;
 use std::sync::{
   Arc,
   atomic::{AtomicBool, Ordering},
 };
+
+use super::*;
 pub(super) struct Spare {
   pub(super) id: CanvasId,
   pub(super) ready: Arc<AtomicBool>,

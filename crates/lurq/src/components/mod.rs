@@ -103,8 +103,9 @@ pub use window_controls::{
   TrafficLightColors, WindowControlColors, WindowControlContent, WindowControlKind, WindowControlStyle, WindowControls,
 };
 
-pub use crate::app::ctx::{
-  CollisionStrategy, Modal, ModalTarget, OpenState, OutsidePress, Overlay, Parent, Placement, Root,
+pub use crate::{
+  app::ctx::{CollisionStrategy, Modal, ModalTarget, OpenState, OutsidePress, Overlay, Parent, Placement, Root},
+  node::text_highlight::TextHighlight,
 };
 
 #[macro_export]

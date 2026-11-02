@@ -1,6 +1,6 @@
 [package]
 name = "lurq"
-version = "0.53.0"
+version = "0.54.0"
 edition = "2024"
 description = "A Rust UI toolkit with typed components, retained state, reactive signals, GPU rendering, and DevTools."
 license = "MIT"

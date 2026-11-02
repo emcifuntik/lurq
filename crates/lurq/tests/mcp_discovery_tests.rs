@@ -66,7 +66,14 @@ fn point_discovery_at(base: &Path) -> PathBuf {
   let (variable, dir) = if cfg!(windows) {
     ("LOCALAPPDATA", base.join("lurq").join("mcp"))
   } else if cfg!(target_os = "macos") {
-    ("HOME", base.join("Library").join("Application Support").join("lurq").join("mcp"))
+    (
+      "HOME",
+      base
+        .join("Library")
+        .join("Application Support")
+        .join("lurq")
+        .join("mcp"),
+    )
   } else {
     ("XDG_RUNTIME_DIR", base.join("lurq").join("mcp"))
   };

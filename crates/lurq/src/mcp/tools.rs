@@ -12,9 +12,9 @@ pub(crate) mod file_dialogs;
 mod held;
 #[cfg(test)]
 mod held_tests;
-mod inspect;
 #[cfg(test)]
 mod input_source_tests;
+mod inspect;
 mod interact;
 mod lookup;
 mod navigate;
@@ -23,9 +23,9 @@ mod resolve;
 mod screenshot;
 mod semantics;
 #[cfg(test)]
-mod sensitive_tests;
-#[cfg(test)]
 mod sensitive_screenshot_tests;
+#[cfg(test)]
+mod sensitive_tests;
 mod set_value;
 #[cfg(test)]
 mod tests;

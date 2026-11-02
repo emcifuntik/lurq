@@ -3129,6 +3129,20 @@ impl Node {
   /// All of a rich text's spans, the presentation ones included: the text its
   /// caret positions and selection index. Its [`Self::text_content`] leaves
   /// the presentation out.
+  /// Fills behind ranges of a `Text` or `RichText` leaf; nothing for any
+  /// other node.
+  pub(crate) fn set_text_highlights(
+    &mut self,
+    highlights: impl Into<std::sync::Arc<[crate::node::text_highlight::TextHighlight]>>,
+  ) {
+    match &self.node_kind {
+      NodeKind::Text { state, .. } => state.set_highlights(highlights.into()),
+      #[cfg(feature = "markdown")]
+      NodeKind::RichText { state, .. } => state.set_highlights(highlights.into()),
+      _ => {}
+    }
+  }
+
   #[cfg(feature = "markdown")]
   pub(crate) fn rich_text_value(&self) -> Option<String> {
     let NodeKind::RichText { spans, .. } = self.node_kind() else {
@@ -4411,6 +4425,7 @@ impl Node {
       ) => {
         style == old_style
           && state.selectable() == old_state.selectable()
+          && state.measures_carets() == old_state.measures_carets()
           && state.is_sensitive() == old_state.is_sensitive()
           && transform_mode == old_transform_mode
       }
@@ -4431,6 +4446,7 @@ impl Node {
       ) => {
         spans == old_spans
           && state.selectable() == old_state.selectable()
+          && state.measures_carets() == old_state.measures_carets()
           && transform_mode == old_transform_mode
           && generated == old_generated
       }
@@ -4461,9 +4477,13 @@ impl Node {
         state.layout_signature() == old_state.layout_signature()
       }
       #[cfg(feature = "raster")]
-      (NodeKind::Image { data, fit }, NodeKind::Image { data: old_data, fit: old_fit }) => {
-        data.id() == old_data.id() && fit == old_fit
-      }
+      (
+        NodeKind::Image { data, fit },
+        NodeKind::Image {
+          data: old_data,
+          fit: old_fit,
+        },
+      ) => data.id() == old_data.id() && fit == old_fit,
       #[cfg(feature = "image")]
       (NodeKind::LoadingImage { request }, NodeKind::LoadingImage { request: old }) => {
         request.key == old.key && request.cap == old.cap && request.fit == old.fit

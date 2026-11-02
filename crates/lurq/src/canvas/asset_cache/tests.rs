@@ -129,7 +129,7 @@ fn a_frame_drawn_over_several_encodes_stays_whole_and_retires_overflow_per_encod
   // A texture not kept lives only for its encode, even within one frame.
   let (uploaded, retired, _) = encode(&mut cache, [8], false);
   assert_eq!((uploaded, retired), (vec![8], vec![8]));
-  let (uploaded, _, _) = encode(&mut cache, [8], true);
+  let (uploaded, ..) = encode(&mut cache, [8], true);
   assert_eq!(uploaded, [8]);
   assert_eq!((cache.len(), cache.bytes()), (8, 8 * 64 * KIB));
 }

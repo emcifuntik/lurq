@@ -8,8 +8,10 @@
 /// `true` unless the operating system reports that `pid` names no process.
 #[cfg(windows)]
 pub(super) fn is_running(pid: u32) -> bool {
-  use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE};
-  use windows::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+  use windows::Win32::{
+    Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE},
+    System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+  };
 
   // SAFETY: OpenProcess takes no pointers; the returned handle is owned here and
   // closed below on every path.

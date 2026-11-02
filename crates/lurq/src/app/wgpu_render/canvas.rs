@@ -11,10 +11,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use wgpu::*;
 
 use super::DynamicBuffer;
-use crate::app::profile_support::{profile_elapsed, profile_if, profile_scope};
-use crate::canvas::{
-  AssetCache, BlendMode, CanvasAssetBudget, CanvasError, CanvasHandle, CanvasId, CanvasSnapshot, CanvasWeak,
-  FrameBoundary, GradientKind, PresentationEvent, TargetCharge, gpu::*, replacement_admitted,
+use crate::{
+  app::profile_support::{profile_elapsed, profile_if, profile_scope},
+  canvas::{
+    AssetCache, BlendMode, CanvasAssetBudget, CanvasError, CanvasHandle, CanvasId, CanvasSnapshot, CanvasWeak,
+    FrameBoundary, GradientKind, PresentationEvent, TargetCharge, gpu::*, replacement_admitted,
+  },
 };
 
 struct Texture {

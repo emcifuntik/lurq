@@ -55,9 +55,9 @@ fn faded_container_fades_its_text_glyphs() {
   // Rects premultiplied opacity into their color; glyphs did not, so text
   // stayed fully opaque inside a faded subtree.
   let mut rt = Tree::new();
-  let node = lurq::components::Column::new().opacity(0.5).child(
-    lurq::components::Text::new("Hi").color(Color::new(255, 255, 255, 255)),
-  );
+  let node = lurq::components::Column::new()
+    .opacity(0.5)
+    .child(lurq::components::Text::new("Hi").color(Color::new(255, 255, 255, 255)));
   rt.set_root(node);
 
   rt.set_layout_constraints_override(Some(Constraints::loose(Size::new(400.0, 400.0))));

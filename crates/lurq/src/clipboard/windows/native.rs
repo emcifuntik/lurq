@@ -127,8 +127,9 @@ impl Drop for Owner {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
   use ::windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+  use super::*;
 
   #[test]
   fn windows_clipboard_real_owner_is_process_owned_until_drop() {

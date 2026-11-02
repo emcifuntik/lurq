@@ -10,7 +10,7 @@ Persistent storage is an app-level key/value store for small values that should 
 Enable it with the `persistent_storage` feature:
 
 ```toml
-lurq = { version = "0.53.0", features = ["persistent_storage"] }
+lurq = { version = "0.54.0", features = ["persistent_storage"] }
 ```
 
 The feature uses `redb` as the file-backed store. Values are stored as typed bytes, not JSON.

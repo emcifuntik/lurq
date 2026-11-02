@@ -3,7 +3,7 @@ title: Window lifecycle and native menus
 description: Veto OS close requests, defer a decision to a dialog, and install reactive macOS menus.
 ---
 
-Introduced in **lurq 0.18.1**; the behavior below describes **0.53.0**. The `winit` shell delivers close requests and menu
+Introduced in **lurq 0.18.1**; the behavior below describes **0.54.0**. The `winit` shell delivers close requests and menu
 activations on its event-loop thread. These APIs also have headless MCP coverage.
 
 ## Closing a window

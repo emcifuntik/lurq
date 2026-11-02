@@ -1,13 +1,14 @@
 //! Real component-hook boundary regression; no synthetic completed timers.
+use std::{
+  sync::{Arc, Mutex, mpsc},
+  time::{Duration, Instant},
+};
+
 use super::*;
 use crate::{
   app::{App, Tree, component::Component, ctx::Ctx},
   components::Column,
   node::Element,
-};
-use std::{
-  sync::{Arc, Mutex, mpsc},
-  time::{Duration, Instant},
 };
 
 #[derive(Clone)]

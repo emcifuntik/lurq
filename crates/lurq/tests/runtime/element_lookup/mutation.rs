@@ -1,4 +1,8 @@
-use lurq::{app::Tree, components::Column, components::Rect, node::color::Color};
+use lurq::{
+  app::Tree,
+  components::{Column, Rect},
+  node::color::Color,
+};
 
 use crate::support::{render_pass, run_pass};
 

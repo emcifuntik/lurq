@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.54.0 — 2026-11-02
+
+Added:
+
+- Fills behind ranges of a text, such as the matches of a search (#75). `Text::highlights` takes `TextHighlight` values (a UTF-8 byte range, a color or palette role and a corner radius, `TextHighlight::new(range, color).radius(r)`) and draws one fill per laid-out line each range covers, from the carets of the painted layout, as a selection is drawn: under the glyphs and under a selection, in each highlight's own color. The fills follow the text when it wraps again, and the text is shaped as without them; a range is cut at the text's end, its ends inside a character move back to its start, and an empty range draws nothing. A text that is not selectable now measures its carets when it has highlights. With the `markdown` feature, `MarkdownProps::highlights` does the same over a document, with ranges in bytes of its rendered text, which `MarkdownProps::rendered_text` returns for the app to search: the text of its paragraphs, headings, list items, table cells and code blocks in document order, one line feed between two of them, without list markers, footnote labels, a code block's language or a link's isolate marks. A range may cover several of them; inside a link the fill leaves the link's isolate marks out, as a selection does.
+
+Fixes:
+
+- With the `devtools` feature, a `Signal<SelectionStyle>` or a `Signal<HashMap<..>>` did not compile, as neither implemented `DevtoolsInspectable`. Both do now; a map shows its length, as a `HashSet` does.
+
 ## 0.53.0 — 2026-10-29
 
 Added:

@@ -1,11 +1,12 @@
-use super::*;
-use crate::app::{App, Tree};
 use std::{
   collections::HashSet,
   path::PathBuf,
   sync::atomic::{AtomicUsize, Ordering},
   task::{Wake, Waker},
 };
+
+use super::*;
+use crate::app::{App, Tree};
 
 fn fixture() -> (FileDialogBroker, Arc<McpShared>, Tree) {
   let broker = FileDialogBroker::new();

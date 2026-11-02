@@ -15,14 +15,15 @@ fn profiling_availability_is_explicit() {
 
 #[cfg(feature = "perf_profile")]
 mod enabled {
+  use std::{
+    sync::mpsc,
+    time::{Duration, Instant},
+  };
+
   use super::*;
   use crate::app::profiler::{
     model::{MAX_ACTIVE_SESSIONS, MAX_SAMPLES_PER_SESSION},
     producer::WindowProfiler,
-  };
-  use std::{
-    sync::mpsc,
-    time::{Duration, Instant},
   };
 
   fn sample(handle: &ProfilingHandle, window: &str) {
@@ -109,16 +110,17 @@ mod enabled {
   #[cfg(feature = "mcp")]
   #[test]
   fn pass_completion_includes_blocked_mcp_notification_tail() {
-    use crate::{
-      app::{App, Tree},
-      components::Column,
-      mcp::{McpWaitEntry, McpWaitMode},
-    };
     use std::{
       future::Future,
       pin::Pin,
       sync::{Arc, Mutex},
       task::{Context, Wake, Waker},
+    };
+
+    use crate::{
+      app::{App, Tree},
+      components::Column,
+      mcp::{McpWaitEntry, McpWaitMode},
     };
 
     struct BlockingWake {
@@ -200,8 +202,9 @@ mod enabled {
 
   #[test]
   fn real_blocked_input_callback_is_observable_before_any_frame_pass() {
-    use crate::{app::Tree, components::Column, node::Element};
     use std::sync::{Arc, Mutex};
+
+    use crate::{app::Tree, components::Column, node::Element};
     let (handle_tx, handle_rx) = mpsc::channel();
     let (begin_tx, begin_rx) = mpsc::channel();
     let (entered_tx, entered_rx) = mpsc::channel();

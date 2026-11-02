@@ -82,14 +82,8 @@ fn a_click_establishes_hover_before_pressing() {
   assert_ne!(first_center, second_center, "targets must not overlap");
 
   // Park the pointer on the first target, then click the second.
-  inject(
-    &mut runtime,
-    SyntheticInput::mouse_move(first_center.0, first_center.1),
-  );
-  inject(
-    &mut runtime,
-    SyntheticInput::click(second_center.0, second_center.1),
-  );
+  inject(&mut runtime, SyntheticInput::mouse_move(first_center.0, first_center.1));
+  inject(&mut runtime, SyntheticInput::click(second_center.0, second_center.1));
 
   assert_eq!(second.get(), 1, "the click must land on the second target");
   assert_eq!(first.get(), 0, "the parked pointer must not receive it");
@@ -120,9 +114,11 @@ fn synthetic_modifiers_are_carried_into_the_event() {
   let shifted = Signal::new(false);
   let mut runtime = Tree::new();
   let flag = shifted.clone();
-  runtime.set_root(Button::new("Press").on_click(move |event: lurq::app::events::MouseEvent| {
-    flag.set(event.shift);
-  }));
+  runtime.set_root(
+    Button::new("Press").on_click(move |event: lurq::app::events::MouseEvent| {
+      flag.set(event.shift);
+    }),
+  );
   run_pass(&mut runtime);
   let (x, y) = runtime
     .find_element(|_| true)
