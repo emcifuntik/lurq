@@ -19,10 +19,11 @@ use crate::{
     MarkdownBlock, MarkdownCodeBlockKind, MarkdownDocument, MarkdownHeadingLevel, MarkdownInline, MarkdownListItem,
     MarkdownTableAlignment, MarkdownTableRow, markdown_html_text, markdown_inline_rich_text, parse_markdown,
   },
-  node::{Element, Node, color::Color, dimension::Dimension},
+  node::{Element, Node, color::Color, dimension::Dimension, text_highlight::TextHighlight},
 };
 
 mod bidi_paragraphs;
+mod document_text;
 mod link_block;
 mod links;
 mod list_view;
@@ -30,6 +31,7 @@ mod paragraph;
 mod sizing;
 mod tooltip;
 
+use document_text::DocumentText;
 pub use links::{MarkdownLink, MarkdownLinkPresentation, MarkdownRun};
 pub use list_view::MarkdownList;
 use list_view::MarkdownListView;
@@ -49,6 +51,7 @@ pub struct MarkdownProps {
   on_link_activate: Option<MarkdownLinkActivator>,
   link_presentation: Option<MarkdownLinkPresenter>,
   list_view: Option<MarkdownListView>,
+  highlights: Arc<[TextHighlight]>,
 }
 
 impl PartialEq for MarkdownProps {
@@ -63,6 +66,7 @@ impl PartialEq for MarkdownProps {
       && same_callback(&self.on_link_activate, &other.on_link_activate)
       && same_callback(&self.link_presentation, &other.link_presentation)
       && same_callback(&self.list_view, &other.list_view)
+      && self.highlights == other.highlights
   }
 }
 
@@ -79,6 +83,7 @@ impl MarkdownProps {
       on_link_activate: None,
       link_presentation: None,
       list_view: None,
+      highlights: Arc::from([]),
     }
   }
 
@@ -94,6 +99,48 @@ impl MarkdownProps {
   pub fn theme(mut self, theme: ThemeMarkdown) -> Self {
     self.theme = Some(theme);
     self
+  }
+
+  /// Fills behind ranges of the document's words, such as the matches of a
+  /// search: one per laid-out line a range covers, each in its own color,
+  /// under the glyphs and under a selection. Ranges are in bytes of the
+  /// document's rendered text ([`Self::rendered_text`]), not of its source;
+  /// a range may run over several paragraphs. Links, code and lists render
+  /// as without them.
+  pub fn highlights(mut self, highlights: impl Into<Arc<[TextHighlight]>>) -> Self {
+    self.highlights = highlights.into();
+    self
+  }
+
+  /// The document's words as it renders them, the text
+  /// [`Self::highlights`] ranges index: each paragraph, heading, table cell,
+  /// code block and HTML block in document order, one line feed between
+  /// two. List markers, footnote labels and a code block's language are not
+  /// in it, nor link marks added for display; a link is its words. Search
+  /// this text to find what to highlight. Built with these props' link
+  /// presentation and list view; it renders the document to find it.
+  pub fn rendered_text(&self) -> String {
+    let document = parse_markdown(&self.source);
+    let theme = self.theme.clone().unwrap_or_default();
+    let links = LinkSession::new(
+      self.link_presentation.clone(),
+      None,
+      None,
+      #[cfg(feature = "router")]
+      None,
+      TooltipHover::new(crate::app::ctx::Timeout::detached),
+    );
+    let text = DocumentText::new(&[]);
+    let render_ctx = MarkdownRenderContext {
+      width: BlockWidth::new(self.fit_content),
+      links: &links,
+      list_view: self.list_view.as_ref(),
+      code_block_scrollbar: ScrollBarStyle::default(),
+      code_blocks: Cell::new(0),
+      text: &text,
+    };
+    let _ = render_document(&document, &self.style, &theme, &render_ctx);
+    text.into_text()
   }
 
   pub fn selectable(mut self, selectable: bool) -> Self {
@@ -241,6 +288,8 @@ struct MarkdownRenderContext<'a> {
   code_block_scrollbar: ScrollBarStyle,
   /// How many code blocks this render has drawn: the next one's ordinal.
   code_blocks: Cell<usize>,
+  /// The rendered text so far, and the highlights its leaves take.
+  text: &'a DocumentText<'a>,
 }
 
 impl Markdown {
@@ -287,12 +336,14 @@ impl Component for Markdown {
         .clone()
         .unwrap_or_else(|| ctx.theme().scrollbar().clone())
     };
+    let text = DocumentText::new(&props.highlights);
     let render_ctx = MarkdownRenderContext {
       width: BlockWidth::new(props.fit_content),
       links: &links,
       list_view: props.list_view.as_ref(),
       code_block_scrollbar,
       code_blocks: Cell::new(0),
+      text: &text,
     };
     let mut root = render_document(&document, &props.style, &theme, &render_ctx);
     let tooltips = links.take_tooltips();
@@ -357,10 +408,10 @@ fn render_block(
     MarkdownBlock::FootnoteDefinition { label, blocks } => {
       render_footnote_definition(label, blocks, base_style, theme, render_ctx)
     }
-    MarkdownBlock::Html(text) => render_ctx.width.leaf(Text::styled(
+    MarkdownBlock::Html(text) => render_ctx.width.leaf(render_ctx.text.leaf(Text::styled(
       &markdown_html_text(text.trim_end_matches('\n')),
       base_style.clone(),
-    )),
+    ))),
     MarkdownBlock::ThematicBreak => render_ctx
       .width
       .leaf(Rect::new(Dimension::Auto, 1.0).background(theme.table_marker.apply(base_style).color)),
@@ -381,7 +432,7 @@ fn render_inline_block(
   }
 
   if let [MarkdownInline::Text(text)] = inlines {
-    return render_ctx.width.leaf(Text::styled(text, style));
+    return render_ctx.width.leaf(render_ctx.text.leaf(Text::styled(text, style)));
   }
 
   if has_image(inlines) {
@@ -390,7 +441,9 @@ fn render_inline_block(
 
   let mut paragraph = Paragraph::new(inlines, false, theme, render_ctx.links);
   paragraph.push_inlines(inlines, &style, &mut None);
-  render_ctx.width.leaf(Element::from_node(paragraph.take_node()))
+  render_ctx
+    .width
+    .leaf(render_ctx.text.leaf(Element::from_node(paragraph.take_node())))
 }
 
 fn render_inline_flow(
@@ -442,7 +495,10 @@ fn render_inline_flow_row(
   );
   for item in flow {
     row = row.child(match item {
-      FlowItem::Text(node) => Element::from_node((*node).max_width(FILL_WIDTH).min_width(0.0)),
+      FlowItem::Text(mut node) => {
+        render_ctx.text.append(&mut node);
+        Element::from_node((*node).max_width(FILL_WIDTH).min_width(0.0))
+      }
       FlowItem::Image(image, style) => render_markdown_image(image, &style, theme),
     });
   }
@@ -651,9 +707,9 @@ fn render_code_block(
   let lines = Column::new()
     .overflow_visible()
     .padding(lines_padding)
-    .child(Element::from_node(
+    .child(render_ctx.text.leaf(Element::from_node(
       Node::rich_text(highlight_code_spans(text.trim_end_matches('\n'), kind, &code_style)).text_wrap(false),
-    ));
+    )));
   let scroll = ScrollHorizontal::new(lines)
     .key(key)
     .scrollbar(render_ctx.code_block_scrollbar.clone());

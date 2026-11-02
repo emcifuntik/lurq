@@ -298,6 +298,24 @@ struct TextInner {
   text_top: f32,
   display_text: Option<Arc<str>>,
   render_wrap: bool,
+  /// Fills behind ranges of the text (`Text::highlights`).
+  highlights: Arc<[crate::node::text_highlight::TextHighlight]>,
+}
+
+impl TextInner {
+  /// The parts of the lines that bytes `start..end` of `value` cover, in
+  /// logical pixels in the text's box.
+  fn line_ranges(&self, value: &str, start: usize, end: usize) -> Vec<TextSelectionRange> {
+    let scale = self.carets.scale;
+    selection_ranges_for_positions(&self.carets.positions, Some(value), start, end, 0.0, 0.0)
+      .into_iter()
+      .map(|range| TextSelectionRange {
+        x: range.x / scale,
+        y: range.y / scale + self.text_top,
+        width: range.width / scale,
+      })
+      .collect()
+  }
 }
 
 impl TextState {
@@ -312,6 +330,7 @@ impl TextState {
         text_top: 0.0,
         display_text: None,
         render_wrap: false,
+        highlights: Arc::from([]),
       })),
     }
   }
@@ -327,6 +346,17 @@ impl TextState {
 
   pub(crate) fn selectable(&self) -> bool {
     self.inner.lock().unwrap().selectable
+  }
+
+  pub(crate) fn set_highlights(&self, highlights: Arc<[crate::node::text_highlight::TextHighlight]>) {
+    self.inner.lock().unwrap().highlights = highlights;
+  }
+
+  /// Whether layout measures the carets of the painted text: a selection
+  /// and highlights are drawn from them.
+  pub(crate) fn measures_carets(&self) -> bool {
+    let inner = self.inner.lock().unwrap();
+    inner.selectable || !inner.highlights.is_empty()
   }
 
   pub(crate) fn set_sensitive(&self) {
@@ -416,13 +446,23 @@ impl TextState {
     let Some((start, end)) = selection_range_indices(value, inner.selection_anchor, inner.caret) else {
       return Vec::new();
     };
-    let scale = inner.carets.scale;
-    selection_ranges_for_positions(&inner.carets.positions, Some(value), start, end, 0.0, 0.0)
-      .into_iter()
-      .map(|range| TextSelectionRange {
-        x: range.x / scale,
-        y: range.y / scale + inner.text_top,
-        width: range.width / scale,
+    inner.line_ranges(value, start, end)
+  }
+
+  /// Each highlight with the parts of the lines it covers, in logical pixels
+  /// in the text's box, in the order given.
+  pub(crate) fn highlight_ranges(
+    &self,
+    value: &str,
+  ) -> Vec<(crate::node::text_highlight::TextHighlight, Vec<TextSelectionRange>)> {
+    let inner = self.inner.lock().unwrap();
+    inner
+      .highlights
+      .iter()
+      .filter_map(|highlight| {
+        let start = clamp_to_char_boundary(value, highlight.range.start);
+        let end = clamp_to_char_boundary(value, highlight.range.end);
+        (start < end).then(|| (highlight.clone(), inner.line_ranges(value, start, end)))
       })
       .collect()
   }
@@ -478,10 +518,12 @@ impl TextState {
     if selectable {
       inner.caret = old_inner.caret.min(len);
       inner.selection_anchor = old_inner.selection_anchor.map(|anchor| anchor.min(len));
-      inner.carets = old_inner.carets.clone();
     } else {
       inner.caret = 0;
       inner.selection_anchor = None;
+    }
+    if selectable || !inner.highlights.is_empty() {
+      inner.carets = old_inner.carets.clone();
     }
   }
 

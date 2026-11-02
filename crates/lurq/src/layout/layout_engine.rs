@@ -57,6 +57,7 @@ mod shrink_floors;
 mod shrink_sharing;
 #[cfg(feature = "markdown")]
 mod styled_input_layout;
+mod text_highlights;
 mod text_input_quads;
 mod text_layout_output;
 
@@ -1225,6 +1226,8 @@ impl LayoutEngine {
         if let NodeKind::TextInput { state, .. } = node.node_kind() {
           self.push_input_tokens(node, state, result, (abs_x, abs_y), transform, clip, opacity, quads);
         }
+
+        self.push_text_highlights(node, result, (abs_x, abs_y), transform, clip, opacity, quads);
 
         #[cfg(feature = "markdown")]
         let inline_paint = inline_links::InlinePaint {

@@ -99,6 +99,35 @@ impl Text {
     self.update_node(|node| crate::node::NodeUpdate::selection_color(node, color));
     self
   }
+
+  /// Fills behind ranges of the text, such as the matches of a search: one
+  /// per laid-out line a range covers, each in its own color, under the
+  /// glyphs and under a selection. Ranges are in bytes of the content and
+  /// stay on their words when the text re-wraps; the text is shaped as
+  /// without them. Pass an empty list to clear them.
+  ///
+  /// ```
+  /// use lurq::{
+  ///   components::{Text, TextHighlight},
+  ///   node::color::Color,
+  /// };
+  ///
+  /// let current = Color::new(250, 204, 21, 255);
+  /// let other = Color::new(250, 204, 21, 90);
+  /// Text::new("one match, two match")
+  ///   .highlights(vec![
+  ///     TextHighlight::new(4..9, current).radius(3.0),
+  ///     TextHighlight::new(15..20, other).radius(3.0),
+  ///   ]);
+  /// ```
+  pub fn highlights(
+    mut self,
+    highlights: impl Into<std::sync::Arc<[crate::node::text_highlight::TextHighlight]>>,
+  ) -> Self {
+    let highlights = highlights.into();
+    self.update_node(|node| node.set_text_highlights(highlights));
+    self
+  }
 }
 
 impl Default for Text {

@@ -29,6 +29,7 @@ pub mod slider_style;
 pub mod spacing_value;
 pub mod style;
 pub mod text_color;
+pub mod text_highlight;
 pub(crate) mod text_selection;
 pub mod transform;
 

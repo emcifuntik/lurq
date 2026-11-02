@@ -40,8 +40,8 @@ use crate::{
 
 mod futures;
 
-use futures::{FutureSlot, RuntimeFutureHandle};
 pub use futures::{FutureAction, FutureHandle, FutureState, FutureStatus, StreamEmitter, StreamHandle};
+use futures::{FutureSlot, RuntimeFutureHandle};
 
 static NEXT_COMPONENT_SLOT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -539,6 +539,16 @@ struct TimerInner {
 }
 
 impl Timeout {
+  /// A timeout no window runs: starting it never fires. For a component's
+  /// render run outside a window, such as a Markdown document rendered to
+  /// find its text.
+  #[cfg(feature = "markdown")]
+  pub(crate) fn detached(f: impl Fn() + Send + Sync + 'static) -> Self {
+    Self {
+      timer: Timer::new(Duration::ZERO, false, f, None),
+    }
+  }
+
   pub fn start(&self) {
     self.timer.start();
   }
