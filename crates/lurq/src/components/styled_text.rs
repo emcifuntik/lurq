@@ -255,6 +255,12 @@ pub struct SelectionStyle {
   pub has_link: bool,
 }
 
+impl DevtoolsInspectable for SelectionStyle {
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.value_debug(self);
+  }
+}
+
 impl SelectionStyle {
   pub fn mark(&self, mark: TextMark) -> MarkPresence {
     match mark {

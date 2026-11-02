@@ -11,10 +11,10 @@ fn profiling_canvas_upload_idle_and_disabled_capture_are_absent() {
 
 #[cfg(feature = "perf_profile")]
 mod enabled {
-  use super::super::producer::WindowProfiler;
-  use super::*;
-  use crate::app::{PassReport, profile_types::canvas_upload::AssetUploadStage};
   use std::time::Duration;
+
+  use super::{super::producer::WindowProfiler, *};
+  use crate::app::{PassReport, profile_types::canvas_upload::AssetUploadStage};
 
   #[test]
   fn profiling_canvas_upload_groups_accumulate_and_eviction_preserves_peak_charge() {

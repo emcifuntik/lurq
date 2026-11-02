@@ -63,8 +63,8 @@ pub mod winit_shell;
 
 pub use app_state::{App, SecondaryWindowRequest, WindowOpener, WindowOptions};
 pub use runtime::{
-  CheckboxHandle, ClipboardReader, ElementHandle, PassReasons, PassReport, SelectHandle, SliderHandle,
-  TextInputHandle, Tree,
+  CheckboxHandle, ClipboardReader, ElementHandle, PassReasons, PassReport, SelectHandle, SliderHandle, TextInputHandle,
+  Tree,
 };
 pub use synthetic_input::{SyntheticInput, SyntheticInputKind, SyntheticModifiers};
 #[cfg(feature = "screenshot")]

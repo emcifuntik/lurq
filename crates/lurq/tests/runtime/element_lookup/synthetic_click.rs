@@ -68,9 +68,11 @@ fn click_works_before_layout_with_zeroed_coordinates() {
   let clicks = Arc::new(AtomicUsize::new(0));
   let observed = clicks.clone();
   let mut tree = Tree::new();
-  tree.set_root(Column::new().child(Rect::new(10.0, 10.0).id("target").on_click(move |_event: MouseEvent| {
-    observed.fetch_add(1, Ordering::Relaxed);
-  })));
+  tree.set_root(
+    Column::new().child(Rect::new(10.0, 10.0).id("target").on_click(move |_event: MouseEvent| {
+      observed.fetch_add(1, Ordering::Relaxed);
+    })),
+  );
 
   tree.get_element_by_id_mut("target").unwrap().click();
   assert_eq!(clicks.load(Ordering::Relaxed), 1);

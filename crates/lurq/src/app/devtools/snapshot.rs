@@ -488,7 +488,11 @@ fn shape_rows(element: ElementRef<'_>) -> Vec<DevToolsShapeRow> {
   push_state_style_rows(&mut rows, "hover style", element.node.state_styles.hovered.as_ref());
   push_state_style_rows(&mut rows, "active style", element.node.state_styles.active.as_ref());
   push_state_style_rows(&mut rows, "focused style", element.node.state_styles.focused.as_ref());
-  push_state_style_rows(&mut rows, "focus-visible style", element.node.state_styles.focus_visible.as_ref());
+  push_state_style_rows(
+    &mut rows,
+    "focus-visible style",
+    element.node.state_styles.focus_visible.as_ref(),
+  );
 
   rows
 }

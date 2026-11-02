@@ -32,12 +32,10 @@ pub use application_model::{
 };
 pub use collector::ProfilingHandle;
 pub use model::{
-  BuildAvailability, CanvasTextProfile, InFlightObservation, InputDispatchSample, InputKind, PassSample, Phase,
+  BuildAvailability, CanvasTextProfile, InFlightObservation, InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS,
+  MAX_ENDED_SESSION_IDS, MAX_SAMPLES_PER_SESSION, MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassSample, Phase,
   ProfileError, ProfileReport, ProfileSample, SampleData, SessionId, SessionOptions, SessionStarted, UiUpdateKind,
   UiUpdateSample, WindowStatus,
-};
-pub use model::{
-  MAX_ACTIVE_SESSIONS, MAX_ENDED_SESSION_IDS, MAX_SAMPLES_PER_SESSION, MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES,
 };
 pub use producer::{PhaseGuard, ProfileContext};
 
@@ -67,18 +65,19 @@ mod observer {
 }
 
 #[cfg(feature = "perf_profile")]
-pub use observer::set_frame_profile_observer;
-
-#[cfg(feature = "perf_profile")]
 pub(crate) use observer::notify_frame_profile;
+#[cfg(feature = "perf_profile")]
+pub use observer::set_frame_profile_observer;
 
 #[cfg(all(test, feature = "perf_profile"))]
 mod tests {
-  use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+  use std::{
+    sync::{
+      Arc,
+      atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
   };
-  use std::time::Duration;
 
   use super::FrameProfile;
 

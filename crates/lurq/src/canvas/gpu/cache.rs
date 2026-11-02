@@ -1,5 +1,4 @@
-use super::tessellation::mesh;
-use super::*;
+use super::{tessellation::mesh, *};
 
 #[cfg(test)]
 mod tests;

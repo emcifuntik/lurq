@@ -12,6 +12,10 @@ mod draw;
 mod pipeline;
 mod resources;
 
+use pipeline::pipeline;
+pub(super) use resources::create_srv;
+use resources::{copy_location, readback, texture, viewport};
+
 use super::*;
 #[cfg(feature = "perf_profile")]
 use crate::app::profile_types::canvas_upload::{AssetUploadStage, CanvasAssetUploadProfile};
@@ -19,9 +23,6 @@ use crate::canvas::{
   AssetCache, BlendMode, CanvasAssetBudget, CanvasError, CanvasHandle, CanvasId, CanvasSnapshot, CanvasWeak,
   FrameBoundary, GradientKind, PresentationEvent, TargetCharge, gpu::*, replacement_admitted,
 };
-use pipeline::pipeline;
-pub(super) use resources::create_srv;
-use resources::{copy_location, readback, texture, viewport};
 
 struct Artwork {
   bytes: usize,

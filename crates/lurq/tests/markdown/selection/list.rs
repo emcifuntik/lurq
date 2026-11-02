@@ -2,7 +2,7 @@
 //! taller than its text by the app's own list view.
 
 use lurq::{
-  app::{component::Component, ctx::Ctx, events::ScrollPhase, App, Tree},
+  app::{App, Tree, component::Component, ctx::Ctx, events::ScrollPhase},
   components::{MarkdownProps, Row, VirtualizedList},
   layout::Alignment,
   markdown::MarkdownBlock,
@@ -11,9 +11,8 @@ use lurq::{
 
 use super::{super::links::MarkdownRoot, page, paragraph::REPORTED};
 use crate::support::{
-  render_pass_with_app,
-  selection::{rows_of, Page, GLYPH_PADDING, INK_SLACK},
-  TestSurface,
+  TestSurface, render_pass_with_app,
+  selection::{GLYPH_PADDING, INK_SLACK, Page, rows_of},
 };
 
 const OTHER: &str = "A shorter reply with `inline code` and *emphasis*, wrapped over two lines at this width maybe.";

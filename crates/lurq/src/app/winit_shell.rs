@@ -1826,10 +1826,7 @@ impl ApplicationHandler for WinitHandler {
       .filter_map(ManagedSecondaryWindow::next_file_drag_poll)
       .chain(self.main.next_file_drag_poll())
       .min();
-    let next_timer = trees()
-      .filter_map(Tree::next_timer_at)
-      .chain(next_file_drag_poll)
-      .min();
+    let next_timer = trees().filter_map(Tree::next_timer_at).chain(next_file_drag_poll).min();
 
     let wait = LoopWait::of(
       LoopNeeds {

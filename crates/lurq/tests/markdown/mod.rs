@@ -1,6 +1,7 @@
 mod code_font;
 mod code_scroll;
 mod fit_content;
+mod highlights;
 mod link_activation;
 mod link_bidi;
 mod link_blocks;

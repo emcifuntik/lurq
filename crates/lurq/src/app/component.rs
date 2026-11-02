@@ -439,6 +439,15 @@ impl<T, S> DevtoolsInspectable for std::collections::HashSet<T, S> {
   }
 }
 
+impl<K, V, S> DevtoolsInspectable for std::collections::HashMap<K, V, S> {
+  fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
+    formatter.value(
+      std::any::type_name::<std::collections::HashMap<K, V, S>>(),
+      format!("len={}", self.len()),
+    );
+  }
+}
+
 impl DevtoolsInspectable for str {
   fn inspect(&self, formatter: &mut DevtoolsFormatter<'_>) {
     formatter.value_debug(self);

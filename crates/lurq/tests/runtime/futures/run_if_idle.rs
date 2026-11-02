@@ -60,11 +60,20 @@ fn run_if_idle_leaves_a_run_in_flight() {
   assert!(action.run_if_idle("first".to_owned()));
   assert!(!action.run_if_idle("second".to_owned()), "a run is in flight");
   tree.tick_futures();
-  assert_eq!(action.state().get_untracked().fulfilled_data().map(String::as_str), Some("first"));
+  assert_eq!(
+    action.state().get_untracked().fulfilled_data().map(String::as_str),
+    Some("first")
+  );
 
-  assert!(action.run_if_idle("third".to_owned()), "idle again once the run completed");
+  assert!(
+    action.run_if_idle("third".to_owned()),
+    "idle again once the run completed"
+  );
   tree.tick_futures();
-  assert_eq!(action.state().get_untracked().fulfilled_data().map(String::as_str), Some("third"));
+  assert_eq!(
+    action.state().get_untracked().fulfilled_data().map(String::as_str),
+    Some("third")
+  );
 }
 
 #[test]
@@ -74,7 +83,10 @@ fn run_replaces_a_run_in_flight() {
   action.run("first".to_owned());
   action.run("second".to_owned());
   tree.tick_futures();
-  assert_eq!(action.state().get_untracked().fulfilled_data().map(String::as_str), Some("second"));
+  assert_eq!(
+    action.state().get_untracked().fulfilled_data().map(String::as_str),
+    Some("second")
+  );
 }
 
 #[test]

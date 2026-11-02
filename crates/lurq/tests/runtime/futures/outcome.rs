@@ -78,6 +78,9 @@ fn outcome_follows_the_status() {
   assert_eq!(idle.outcome(), None);
   assert_eq!(FutureState::<i32, &str>::pending(Some(1)).outcome(), None);
   assert_eq!(FutureState::<i32, &str>::fulfilled(2).outcome(), Some(Ok(&2)));
-  assert_eq!(FutureState::<i32, &str>::rejected("no", Some(2)).outcome(), Some(Err(&"no")));
+  assert_eq!(
+    FutureState::<i32, &str>::rejected("no", Some(2)).outcome(),
+    Some(Err(&"no"))
+  );
   assert_eq!(FutureState::<i32, &str>::rejected("no", Some(2)).fulfilled_data(), None);
 }

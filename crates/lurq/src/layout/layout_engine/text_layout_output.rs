@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use super::LayoutEngine;
 use crate::{
-  layout::{layout_result::LayoutResult, Size},
+  layout::{Size, layout_result::LayoutResult},
   node::{
     node::Node,
     node_kind::{NodeKind, PaintedCarets, TextInputOverflow, TextInputOverflowAnchor, TextInputState, TextState},
