@@ -6,10 +6,10 @@ use std::{
 
 use lurq::{
   app::{App, Tree},
-  components::{Column, Rect, Row},
+  components::{Column, Rect, Row, Stack},
   core::NodeId,
-  layout::Alignment,
-  node::{Element, ElementRef},
+  layout::{Alignment, StackAlignment},
+  node::{Element, ElementRef, dimension::Dimension},
 };
 
 struct Counting;
@@ -89,7 +89,7 @@ fn deep_set_root_preserves_identified_nodes_without_matching_allocations() {
 }
 
 /// A first layout stores one cached result per node, inline. On a flat column
-/// only the root's temporary `Vec`s come on top of one result per node (2.0
+/// only the root's children `Vec` comes on top of one result per node (2.0
 /// allocations per node when a box held each node's cached results).
 #[test]
 fn first_layout_allocates_no_cache_box_per_node() {
@@ -105,5 +105,86 @@ fn first_layout_allocates_no_cache_box_per_node() {
     let allocations = ALLOCS.replace(None).unwrap();
 
     assert!(allocations <= nodes + 16, "{allocations} allocations over {nodes} nodes");
+  }
+}
+
+fn rects(count: usize) -> Vec<Element> {
+  (0..count).map(|_| Rect::new(40.0, 20.0).into()).collect()
+}
+
+fn nested(depth: usize, items: usize, row: bool) -> Element {
+  if depth == 0 {
+    return Rect::new(40.0, 20.0).into();
+  }
+  let children = (0..items).map(|_| nested(depth - 1, items, !row));
+  if row {
+    Row::with(4.0, Alignment::Start, children).into()
+  } else {
+    Column::with(4.0, Alignment::Start, children).into()
+  }
+}
+
+/// Every container shape, with its node and container counts.
+fn container_trees() -> Vec<(&'static str, usize, usize, Element)> {
+  let names: Vec<Arc<str>> = (0..64).map(|index| Arc::from(format!("node-{index}"))).collect();
+  vec![
+    ("nested", 341, 85, nested(4, 4, true)),
+    ("chain", 65, 64, chain(&names, false)),
+    (
+      "growing",
+      121,
+      21,
+      Column::with(
+        0.0,
+        Alignment::Start,
+        (0..20).map(|_| {
+          let growing = (0..5).map(|_| Element::from(Rect::new(Dimension::Auto, 20.0).flex(1.0)));
+          Element::from(Row::with(4.0, Alignment::Start, growing))
+        }),
+      )
+      .into(),
+    ),
+    (
+      "wrapping",
+      101,
+      1,
+      Row::with(4.0, Alignment::Start, rects(100)).wrap().into(),
+    ),
+    (
+      "stacked",
+      81,
+      21,
+      Column::with(
+        0.0,
+        Alignment::Start,
+        (0..20).map(|_| Element::from(Stack::with(StackAlignment::Center, rects(3)))),
+      )
+      .into(),
+    ),
+  ]
+}
+
+/// A container allocates one `Vec`, its result's children, and one result:
+/// the per-child data it works with while laying out lives in that `Vec`.
+/// A `Vec` per kind of scratch data came to 6 per container, and a wrapping
+/// line built one throwaway result per child on top.
+#[test]
+fn layout_allocates_one_vec_per_container() {
+  let mut app = App::new();
+  for (name, nodes, containers, root) in container_trees() {
+    let mut tree = Tree::new();
+    tree.resize(1200, 800);
+    tree.set_root(root);
+    let limit = nodes + containers + 16;
+
+    ALLOCS.set(Some(0));
+    tree.bench_layout_only_shared(&mut app, false);
+    let first = ALLOCS.replace(None).unwrap();
+    assert!(first <= limit, "{name}: first layout: {first} allocations, limit {limit}");
+
+    ALLOCS.set(Some(0));
+    tree.bench_layout_only_shared(&mut app, true);
+    let forced = ALLOCS.replace(None).unwrap();
+    assert!(forced <= limit, "{name}: forced layout: {forced} allocations, limit {limit}");
   }
 }

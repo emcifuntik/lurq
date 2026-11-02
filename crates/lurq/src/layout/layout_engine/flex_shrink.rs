@@ -13,8 +13,8 @@ use crate::{
   app::glyph_engine::GlyphEngine,
   layout::{
     Constraints, Size,
-    layout_kind::{FlexParams, FlexWrap, LayoutKind, ShrinkRule},
-    layout_result::LayoutResult,
+    layout_kind::{FlexWrap, LayoutKind, ShrinkRule},
+    layout_result::{ChildLayout, LayoutResult},
   },
   node::node::Node,
 };
@@ -22,10 +22,9 @@ use crate::{
 /// Inputs of one flex line's shrink step.
 pub(super) struct FlexShrinkLine<'a> {
   pub(super) children: &'a [Node],
-  pub(super) params: &'a [FlexParams],
   pub(super) constraints: Constraints,
   pub(super) max_main: f32,
-  /// What the children take beyond `max_main` ([`line_overflow`]).
+  /// What the children take beyond `max_main` ([`LineOverflow`]).
   pub(super) overflow: f32,
   pub(super) spacing: f32,
   pub(super) shrink_total: f32,
@@ -45,8 +44,8 @@ pub(super) struct FreeRoom {
 }
 
 /// What a line's children take beyond its main size, before any of them
-/// shrinks. `grants` holds the main size the line laid each flex child out
-/// at (`None` for a child sized on its own).
+/// shrinks, summed up as the line lays out each child it grants a main size
+/// to; a child sized on its own is already out of the free room.
 ///
 /// The growing children are granted the free room in shares, so together
 /// they take exactly that room: it is not summed back up from their sizes.
@@ -55,27 +54,43 @@ pub(super) struct FreeRoom {
 /// and ellipsize the text, with the room still free beside it. What the room
 /// did not account for still counts: a flex basis, and whatever a child takes
 /// beyond its grant.
-pub(super) fn line_overflow(
-  results: &[Arc<LayoutResult>],
-  params: &[FlexParams],
-  grants: &[Option<f32>],
+pub(super) struct LineOverflow {
   room: FreeRoom,
   vertical: bool,
-) -> f32 {
-  if !room.remaining.is_finite() {
-    return 0.0;
+  granted: f32,
+}
+
+impl LineOverflow {
+  pub(super) fn new(room: FreeRoom, vertical: bool) -> Self {
+    Self {
+      room,
+      vertical,
+      granted: 0.0,
+    }
   }
-  let granted = results
-    .iter()
-    .zip(grants)
-    .zip(params)
-    .filter_map(|((result, grant), params)| grant.map(|grant| (main_size(result, vertical), grant, params)));
-  if room.remaining > 0.0 && room.grow_total > 0.0 {
-    granted
-      .map(|(size, grant, params)| size - grant + params.basis.unwrap_or(0.0))
-      .sum()
-  } else {
-    granted.map(|(size, ..)| size).sum::<f32>() - room.remaining
+
+  fn shares_room(&self) -> bool {
+    self.room.remaining > 0.0 && self.room.grow_total > 0.0
+  }
+
+  /// Counts a flex child laid out as `result` at the main size `grant`.
+  pub(super) fn add_granted(&mut self, result: &LayoutResult, grant: f32, basis: Option<f32>) {
+    let size = main_size(result, self.vertical);
+    self.granted += if self.shares_room() {
+      size - grant + basis.unwrap_or(0.0)
+    } else {
+      size
+    };
+  }
+
+  pub(super) fn total(&self) -> f32 {
+    if !self.room.remaining.is_finite() {
+      0.0
+    } else if self.shares_room() {
+      self.granted
+    } else {
+      self.granted - self.room.remaining
+    }
   }
 }
 
@@ -115,36 +130,38 @@ impl LayoutEngine {
   /// is laid out at zero size and its result marked dropped; a collapsed child
   /// is laid out with its own line collapsed (see [`Self::is_collapsed`]).
   /// Returns which children collapsed, so a later layout of them (stretching)
-  /// collapses them again.
+  /// collapses them again; empty when none did, as on almost every line.
   pub(super) fn shrink_flex_line(
     &self,
     glyph_engine: &mut GlyphEngine,
     line: &FlexShrinkLine<'_>,
-    results: &mut [Arc<LayoutResult>],
+    results: &mut [ChildLayout],
     child_overrides: Option<&[Option<ChildLayoutOverride>]>,
   ) -> Vec<bool> {
-    let mut collapsed = vec![false; results.len()];
+    let mut collapsed = Vec::new();
     for (index, outcome) in self.shrink_outcomes(line, results) {
       let child = &line.children[index];
       match outcome {
         ShrinkOutcome::Keep => {}
         ShrinkOutcome::Resize(new_main) => {
-          if new_main == main_size(&results[index], line.vertical) {
+          if new_main == main_size(&results[index].result, line.vertical) {
             continue;
           }
           let child_constraints = shrunk_constraints(line, new_main);
-          results[index] = self.layout_child_node(glyph_engine, child_overrides, index, child, child_constraints);
+          results[index].result =
+            self.layout_child_node(glyph_engine, child_overrides, index, child, child_constraints);
         }
         ShrinkOutcome::Collapsed(new_main) => {
+          collapsed.resize(results.len(), false);
           collapsed[index] = true;
-          results[index] = self.layout_collapsed(glyph_engine, child, shrunk_constraints(line, new_main));
+          results[index].result = self.layout_collapsed(glyph_engine, child, shrunk_constraints(line, new_main));
         }
         ShrinkOutcome::Drop => {
           let zero = Constraints::tight(Size::default());
           let mut dropped = self.layout_child_node(glyph_engine, child_overrides, index, child, zero);
           Arc::make_mut(&mut dropped).size = Size::default();
           Arc::make_mut(&mut dropped).dropped = true;
-          results[index] = dropped;
+          results[index].result = dropped;
         }
       }
     }
@@ -182,7 +199,7 @@ impl LayoutEngine {
   }
 
   /// What the overflow does to each shrinking child, by child index.
-  fn shrink_outcomes(&self, line: &FlexShrinkLine<'_>, results: &[Arc<LayoutResult>]) -> Vec<(usize, ShrinkOutcome)> {
+  fn shrink_outcomes(&self, line: &FlexShrinkLine<'_>, results: &[ChildLayout]) -> Vec<(usize, ShrinkOutcome)> {
     if line.shrink_total <= 0.0 || !line.max_main.is_finite() {
       return Vec::new();
     }
@@ -203,13 +220,16 @@ impl LayoutEngine {
     // orders or limits shares exactly as before them.
     let mut whole_pixels = false;
     for (index, child) in line.children.iter().enumerate() {
-      let factor = line.params[index].shrink;
-      if child.is_overlay_declaration() || factor <= 0.0 {
+      if child.is_overlay_declaration() {
+        continue;
+      }
+      let factor = child.state_flex().map_or(0.0, |params| params.shrink);
+      if factor <= 0.0 {
         continue;
       }
       whole_pixels |= child.shrink_rule() != ShrinkRule::default();
       indices.push(index);
-      items.push(self.shrink_item(child, &results[index], factor, line.vertical));
+      items.push(self.shrink_item(child, &results[index].result, factor, line.vertical));
     }
     let space = LineSpace {
       overflow,

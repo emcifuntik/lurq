@@ -18,8 +18,8 @@ use crate::{
   layout::{
     Alignment, Constraints, Offset, Size, StackAlignment,
     layout_kind::{
-      FlexParams, FlexWrap, FrameConstraints, Justify, LayoutKind, Overflow, Position, ScrollAxis, ScrollDirection,
-      ScrollState, ShrinkLimit,
+      FlexWrap, FrameConstraints, Justify, LayoutKind, Overflow, Position, ScrollAxis, ScrollDirection, ScrollState,
+      ShrinkLimit,
     },
     layout_result::{ChildLayout, LayoutResult, SubtreeHolds},
     quad::{ClipRect, Quad, QuadContent},
@@ -58,7 +58,7 @@ mod shrink_sharing;
 mod text_input_quads;
 mod text_layout_output;
 
-use flex_shrink::{FlexShrinkLine, FreeRoom, line_overflow, occupies_line};
+use flex_shrink::{FlexShrinkLine, FreeRoom, LineOverflow, main_size, occupies_line};
 pub(crate) use text_layout_output::TextLayoutOutput;
 use text_layout_output::{TextInputOutput, TextOutput};
 
@@ -240,6 +240,10 @@ pub(crate) struct LayoutEngine {
   /// The lines being laid out collapsed by their parent's shrink step
   /// (`flex_shrink::is_collapsed`).
   collapsed_lines: RefCell<Vec<usize>>,
+  /// What a flex child holds in its line's `child_layouts` until the line
+  /// knows its share of the free room (`layout_flex`). Told apart by address;
+  /// never left in a finished result.
+  awaiting_room: Arc<LayoutResult>,
   /// Device pixels per logical pixel of the paint, for geometry that must
   /// match painted glyphs (rich-text links and underlines).
   paint_scale: Cell<f32>,
@@ -512,6 +516,14 @@ impl LayoutEngine {
       #[cfg(feature = "screenshot")]
       sensitive_quads: RefCell::new(Vec::new()),
       collapsed_lines: RefCell::new(Vec::new()),
+      awaiting_room: Arc::new(LayoutResult {
+        size: Size::default(),
+        children: Vec::new(),
+        text_layout: None,
+        dropped: false,
+        holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
+      }),
       paint_scale: Cell::new(1.0),
     }
   }
@@ -2818,155 +2830,126 @@ impl LayoutEngine {
 
     let mut grow_total = 0.0_f32;
     let mut shrink_total = 0.0_f32;
-    let mut non_flex_results: Vec<Option<Arc<LayoutResult>>> = Vec::with_capacity(children.len());
-    let mut flex_params_list: Vec<FlexParams> = Vec::with_capacity(children.len());
+    // The one Vec of this line, kept as the result's children. The first pass
+    // lays out the children sized on their own; a child that waits for its
+    // share of the free room holds `self.awaiting_room` until the second.
+    let mut child_layouts: Vec<ChildLayout> = Vec::with_capacity(children.len());
 
     for child in children {
-      if child.is_overlay_declaration() {
-        flex_params_list.push(FlexParams {
-          grow: 0.0,
-          shrink: 0.0,
-          basis: None,
-        });
-        non_flex_results.push(Some(Arc::new(LayoutResult {
+      let result = if child.is_overlay_declaration() {
+        Arc::new(LayoutResult {
           size: Size::default(),
           children: Vec::new().into(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
-        })));
-        continue;
-      }
-
-      let flex_params = child.state_flex();
-
-      if let Some(params) = flex_params {
-        grow_total += params.grow;
-        shrink_total += params.shrink;
-        flex_params_list.push(params);
-        if params.grow == 0.0 && params.basis.is_none() {
-          let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
-          non_flex_results.push(Some(self.layout_child_node(
-            glyph_engine,
-            child_overrides,
-            non_flex_results.len(),
-            child,
-            child_constraints,
-          )));
-        } else {
-          non_flex_results.push(None);
-        }
+        })
       } else {
-        flex_params_list.push(FlexParams {
-          grow: 0.0,
-          shrink: 0.0,
-          basis: None,
-        });
-        let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
-        non_flex_results.push(Some(self.layout_child_node(
-          glyph_engine,
-          child_overrides,
-          non_flex_results.len(),
-          child,
-          child_constraints,
-        )));
-      }
+        let flex_params = child.state_flex();
+        if let Some(params) = flex_params {
+          grow_total += params.grow;
+          shrink_total += params.shrink;
+        }
+        if flex_params.is_some_and(|params| params.grow != 0.0 || params.basis.is_some()) {
+          self.awaiting_room.clone()
+        } else {
+          let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
+          self.layout_child_node(glyph_engine, child_overrides, child_layouts.len(), child, child_constraints)
+        }
+      };
+      child_layouts.push(ChildLayout {
+        offset: Offset::default(),
+        result,
+      });
     }
 
-    let non_flex_main: f32 = non_flex_results
+    let non_flex_main: f32 = child_layouts
       .iter()
-      .filter_map(|r| r.as_ref())
-      .map(|r| if vertical { r.size.height } else { r.size.width })
+      .filter(|layout| !Arc::ptr_eq(&layout.result, &self.awaiting_room))
+      .map(|layout| main_size(&layout.result, vertical))
       .sum();
 
     let remaining = max_main - total_spacing - non_flex_main;
 
-    let mut results: Vec<Arc<LayoutResult>> = Vec::with_capacity(children.len());
-    // The main size each flex child is laid out at.
-    let mut grants: Vec<Option<f32>> = vec![None; children.len()];
+    let mut overflow = LineOverflow::new(FreeRoom { remaining, grow_total }, vertical);
     for (i, child) in children.iter().enumerate() {
-      if let Some(existing) = non_flex_results[i].take() {
-        results.push(existing);
-      } else {
-        let params = &flex_params_list[i];
-        // An unbounded main axis has no free space to grow into: a growing
-        // child gets its basis, or its natural size without one. Growing by
-        // an infinite remainder would lay it out at an infinite size.
-        if !remaining.is_finite() && params.basis.is_none() {
-          let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
-          results.push(self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints));
-          continue;
-        }
-        let basis_size = params.basis.unwrap_or(0.0);
-        let flex_size = if remaining.is_finite() && remaining > 0.0 && grow_total > 0.0 {
-          basis_size + remaining * (params.grow / grow_total)
-        } else {
-          basis_size
-        };
-        grants[i] = Some(flex_size);
-        let child_constraints = if vertical {
-          Constraints {
-            min_width: 0.0,
-            max_width: constraints.max_width,
-            min_height: flex_size,
-            max_height: flex_size,
-          }
-        } else {
-          Constraints {
-            min_width: flex_size,
-            max_width: flex_size,
-            min_height: 0.0,
-            max_height: constraints.max_height,
-          }
-        };
-        results.push(self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints));
+      if !Arc::ptr_eq(&child_layouts[i].result, &self.awaiting_room) {
+        continue;
       }
+      let params = child.state_flex().expect("only a flex child waits for free room");
+      // An unbounded main axis has no free space to grow into: a growing
+      // child gets its basis, or its natural size without one. Growing by
+      // an infinite remainder would lay it out at an infinite size.
+      if !remaining.is_finite() && params.basis.is_none() {
+        let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
+        child_layouts[i].result = self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints);
+        continue;
+      }
+      let basis_size = params.basis.unwrap_or(0.0);
+      let flex_size = if remaining.is_finite() && remaining > 0.0 && grow_total > 0.0 {
+        basis_size + remaining * (params.grow / grow_total)
+      } else {
+        basis_size
+      };
+      let child_constraints = if vertical {
+        Constraints {
+          min_width: 0.0,
+          max_width: constraints.max_width,
+          min_height: flex_size,
+          max_height: flex_size,
+        }
+      } else {
+        Constraints {
+          min_width: flex_size,
+          max_width: flex_size,
+          min_height: 0.0,
+          max_height: constraints.max_height,
+        }
+      };
+      let result = self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints);
+      overflow.add_granted(&result, flex_size, params.basis);
+      child_layouts[i].result = result;
     }
 
-    let overflow = line_overflow(
-      &results,
-      &flex_params_list,
-      &grants,
-      FreeRoom { remaining, grow_total },
-      vertical,
-    );
     let collapsed = self.shrink_flex_line(
       glyph_engine,
       &FlexShrinkLine {
         children,
-        params: &flex_params_list,
         constraints,
         max_main,
-        overflow,
+        overflow: overflow.total(),
         spacing,
         shrink_total,
         vertical,
         collapsed: self.is_collapsed(node),
       },
-      &mut results,
+      &mut child_layouts,
       child_overrides,
     );
 
-    let max_cross: f32 = results
+    let max_cross: f32 = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
-      .map(|(r, _)| if vertical { r.size.width } else { r.size.height })
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
+      .map(|(layout, _)| {
+        let r = &layout.result;
+        if vertical { r.size.width } else { r.size.height }
+      })
       .fold(0.0_f32, f32::max);
 
     // Dropped children take no spacing.
-    let line_child_count = results
+    let line_child_count = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
       .count();
     let total_spacing = spacing * (line_child_count as f32 - 1.0).max(0.0);
-    let total_main: f32 = results
+    let total_main: f32 = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
-      .map(|(r, _)| if vertical { r.size.height } else { r.size.width })
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
+      .map(|(layout, _)| main_size(&layout.result, vertical))
       .sum::<f32>()
       + total_spacing;
 
@@ -2980,10 +2963,10 @@ impl LayoutEngine {
 
     if matches!(align, Alignment::Stretch) {
       for (i, child) in children.iter().enumerate() {
-        if !occupies_line(child, &results[i]) {
+        if !occupies_line(child, &child_layouts[i].result) {
           continue;
         }
-        let r = &results[i];
+        let r = &child_layouts[i].result;
         let child_cross = if vertical { r.size.width } else { r.size.height };
         if child_cross < container_cross {
           let stretch_constraints = if vertical {
@@ -3001,7 +2984,7 @@ impl LayoutEngine {
               max_height: container_cross,
             }
           };
-          results[i] = if collapsed[i] {
+          child_layouts[i].result = if collapsed.get(i) == Some(&true) {
             self.layout_collapsed(glyph_engine, child, stretch_constraints)
           } else {
             self.layout_child_node(glyph_engine, child_overrides, i, child, stretch_constraints)
@@ -3010,7 +2993,7 @@ impl LayoutEngine {
       }
     }
 
-    let child_layouts = self.position_flex_line(children, results, &size, spacing, align, justify, vertical);
+    self.position_flex_line(children, &mut child_layouts, &size, spacing, align, justify, vertical);
 
     LayoutResult {
       size,
@@ -3087,13 +3070,13 @@ impl LayoutEngine {
   fn position_flex_line(
     &self,
     children: &[Node],
-    results: Vec<Arc<LayoutResult>>,
+    child_layouts: &mut [ChildLayout],
     container_size: &Size,
     spacing: f32,
     align: Alignment,
     justify: Justify,
     vertical: bool,
-  ) -> Vec<ChildLayout> {
+  ) {
     let container_main = if vertical {
       container_size.height
     } else {
@@ -3104,17 +3087,17 @@ impl LayoutEngine {
     } else {
       container_size.height
     };
-    let children_main: f32 = results
+    let children_main: f32 = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
-      .map(|(r, _)| if vertical { r.size.height } else { r.size.width })
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
+      .map(|(layout, _)| main_size(&layout.result, vertical))
       .sum();
     let free_space = (container_main - children_main).max(0.0);
-    let layout_child_count = results
+    let layout_child_count = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
       .count();
     let n = layout_child_count as f32;
 
@@ -3139,22 +3122,18 @@ impl LayoutEngine {
       }
     };
 
-    let mut child_layouts = Vec::with_capacity(results.len());
     let mut main_cursor = leading;
     let mut positioned_layout_children = 0usize;
 
-    for (i, result) in results.into_iter().enumerate() {
-      if !occupies_line(&children[i], &result) {
+    for (layout, child) in child_layouts.iter_mut().zip(children.iter()) {
+      let result = &layout.result;
+      if !occupies_line(child, result) {
         // A dropped child sits, at zero size, where the next child starts.
-        let offset = match (result.dropped, vertical) {
+        layout.offset = match (result.dropped, vertical) {
           (false, _) => Offset::default(),
           (true, true) => Offset::new(0.0, main_cursor),
           (true, false) => Offset::new(main_cursor, 0.0),
         };
-        child_layouts.push(ChildLayout {
-          offset,
-          result: result.into(),
-        });
         continue;
       }
 
@@ -3175,7 +3154,7 @@ impl LayoutEngine {
       } else {
         Offset::new(main_cursor, cross_offset)
       };
-      let offset = Self::apply_relative_position(&children[i], offset);
+      layout.offset = Self::apply_relative_position(child, offset);
 
       positioned_layout_children += 1;
       main_cursor += child_main
@@ -3184,13 +3163,7 @@ impl LayoutEngine {
         } else {
           0.0
         };
-      child_layouts.push(ChildLayout {
-        offset,
-        result: result.into(),
-      });
     }
-
-    child_layouts
   }
 
   fn layout_flex_wrap(
@@ -3211,72 +3184,36 @@ impl LayoutEngine {
       constraints.max_width
     };
 
-    let mut child_results: Vec<Option<Arc<LayoutResult>>> = children
-      .iter()
-      .enumerate()
-      .map(|(index, child)| {
-        // Keep natural children intrinsic, but resolve percentage frames
-        // against the finite content constraints, as in the non-wrap path.
-        // The container's min cross-constraint must not stretch wrapped items.
-        let c = Self::non_flex_child_constraints(child, constraints, vertical);
-        Some(self.layout_child_node(glyph_engine, child_overrides, index, child, c))
-      })
-      .collect();
-
-    let mut lines: Vec<Vec<usize>> = vec![vec![]];
-    let mut line_main = 0.0_f32;
-
-    for (i, r) in child_results.iter().enumerate() {
-      let r = r.as_ref().unwrap();
-      let child_main = if vertical { r.size.height } else { r.size.width };
-      let needed = if lines.last().unwrap().is_empty() {
-        child_main
-      } else {
-        spacing + child_main
-      };
-
-      if !lines.last().unwrap().is_empty() && line_main + needed > max_main {
-        lines.push(vec![i]);
-        line_main = child_main;
-      } else {
-        lines.last_mut().unwrap().push(i);
-        line_main += needed;
-      }
+    let mut child_layouts: Vec<ChildLayout> = Vec::with_capacity(children.len());
+    for (index, child) in children.iter().enumerate() {
+      // Keep natural children intrinsic, but resolve percentage frames
+      // against the finite content constraints, as in the non-wrap path.
+      // The container's min cross-constraint must not stretch wrapped items.
+      let c = Self::non_flex_child_constraints(child, constraints, vertical);
+      child_layouts.push(ChildLayout {
+        offset: Offset::default(),
+        result: self.layout_child_node(glyph_engine, child_overrides, index, child, c),
+      });
     }
 
-    let mut all_layouts = Vec::with_capacity(children.len());
-    all_layouts.resize_with(children.len(), || ChildLayout {
-      offset: Offset::default(),
-      result: LayoutResult {
-        size: Size::default(),
-        children: vec![].into(),
-        text_layout: None,
-        dropped: false,
-        holds: SubtreeHolds::UNKNOWN,
-        generation: 0,
-      }
-      .into(),
-    });
     let mut cross_cursor = 0.0_f32;
     let mut max_main_used = 0.0_f32;
+    let mut line_start = 0;
 
-    for line_indices in &lines {
-      let line_cross: f32 = line_indices
+    while line_start < child_layouts.len() {
+      let line_end = wrap_line_end(&child_layouts, line_start, spacing, max_main, vertical);
+      let line = &mut child_layouts[line_start..line_end];
+
+      let line_cross: f32 = line
         .iter()
-        .map(|&i| {
-          let r = child_results[i].as_ref().unwrap();
+        .map(|layout| {
+          let r = &layout.result;
           if vertical { r.size.width } else { r.size.height }
         })
         .fold(0.0_f32, f32::max);
 
-      let children_main: f32 = line_indices
-        .iter()
-        .map(|&i| {
-          let r = child_results[i].as_ref().unwrap();
-          if vertical { r.size.height } else { r.size.width }
-        })
-        .sum::<f32>();
-      let line_main_total = children_main + spacing * (line_indices.len() as f32 - 1.0).max(0.0);
+      let children_main: f32 = line.iter().map(|layout| main_size(&layout.result, vertical)).sum::<f32>();
+      let line_main_total = children_main + spacing * (line.len() as f32 - 1.0).max(0.0);
       max_main_used = max_main_used.max(line_main_total);
 
       let container_main = if vertical {
@@ -3285,7 +3222,7 @@ impl LayoutEngine {
         max_main.min(constraints.max_width)
       };
       let free_space = (container_main - children_main).max(0.0);
-      let n = line_indices.len() as f32;
+      let n = line.len() as f32;
       let (leading, gap) = match justify {
         Justify::Start => (0.0, spacing),
         Justify::End => (free_space - spacing * (n - 1.0), spacing),
@@ -3308,17 +3245,12 @@ impl LayoutEngine {
       };
 
       let mut main_cursor = leading;
-      for (j, &idx) in line_indices.iter().enumerate() {
-        let result = child_results[idx].take().unwrap();
-        let child_main = if vertical {
-          result.size.height
-        } else {
-          result.size.width
-        };
+      for (j, layout) in line.iter_mut().enumerate() {
+        let child_main = main_size(&layout.result, vertical);
         let child_cross = if vertical {
-          result.size.width
+          layout.result.size.width
         } else {
-          result.size.height
+          layout.result.size.height
         };
         let cross_offset = align.cross_offset(line_cross, child_cross) + cross_cursor;
         let offset = if vertical {
@@ -3326,15 +3258,12 @@ impl LayoutEngine {
         } else {
           Offset::new(main_cursor, cross_offset)
         };
-        let offset = Self::apply_relative_position(&children[idx], offset);
+        layout.offset = Self::apply_relative_position(&children[line_start + j], offset);
         main_cursor += child_main + if j < (n as usize - 1) { gap } else { 0.0 };
-        all_layouts[idx] = ChildLayout {
-          offset,
-          result: result.into(),
-        };
       }
 
       cross_cursor += line_cross + spacing;
+      line_start = line_end;
     }
 
     let total_cross = (cross_cursor - spacing).max(0.0);
@@ -3346,7 +3275,7 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: all_layouts.into(),
+      children: child_layouts.into(),
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3364,10 +3293,9 @@ impl LayoutEngine {
   ) -> LayoutResult {
     let children = node.children();
     let child_constraints = constraints.loosen_width().loosen_height();
-    let results: Vec<Arc<LayoutResult>> = children
-      .iter()
-      .enumerate()
-      .map(|(index, child)| match child.position() {
+    let mut child_layouts: Vec<ChildLayout> = Vec::with_capacity(children.len());
+    for (index, child) in children.iter().enumerate() {
+      let result = match child.position() {
         Position::Absolute { width, height, .. } => {
           let resolved_width = width.and_then(|size| Self::resolve_dimension(size, constraints.max_width));
           let resolved_height = height.and_then(|size| Self::resolve_dimension(size, constraints.max_height));
@@ -3387,40 +3315,34 @@ impl LayoutEngine {
           result
         }
         _ => self.layout_child_node(glyph_engine, child_overrides, index, child, child_constraints),
-      })
-      .collect();
+      };
+      child_layouts.push(ChildLayout {
+        offset: Offset::default(),
+        result,
+      });
+    }
 
-    let normal_results: Vec<&LayoutResult> = children
+    let (max_width, max_height) = children
       .iter()
-      .zip(results.iter())
+      .zip(child_layouts.iter())
       .filter(|(child, _)| !matches!(child.position(), Position::Absolute { .. }))
-      .map(|(_, result)| result.as_ref())
-      .collect();
-
-    let max_width = normal_results.iter().map(|r| r.size.width).fold(0.0_f32, f32::max);
-    let max_height = normal_results.iter().map(|r| r.size.height).fold(0.0_f32, f32::max);
+      .fold((0.0_f32, 0.0_f32), |(width, height), (_, layout)| {
+        (width.max(layout.result.size.width), height.max(layout.result.size.height))
+      });
     let size = constraints.constrain(Size::new(max_width, max_height));
 
-    let child_layouts: Vec<ChildLayout> = results
-      .into_iter()
-      .zip(children.iter())
-      .map(|(result, child)| {
-        let offset = match child.position() {
-          Position::Absolute { x, y, .. } => Self::apply_relative_position(child, Offset::new(x, y)),
-          _ => {
-            let child_align = child
-              .align_self()
-              .map(|align| align.to_stack_alignment())
-              .unwrap_or(align);
-            Self::apply_relative_position(child, child_align.resolve_offset(size, result.size))
-          }
-        };
-        ChildLayout {
-          offset,
-          result: result.into(),
+    for (layout, child) in child_layouts.iter_mut().zip(children.iter()) {
+      layout.offset = match child.position() {
+        Position::Absolute { x, y, .. } => Self::apply_relative_position(child, Offset::new(x, y)),
+        _ => {
+          let child_align = child
+            .align_self()
+            .map(|align| align.to_stack_alignment())
+            .unwrap_or(align);
+          Self::apply_relative_position(child, child_align.resolve_offset(size, layout.result.size))
         }
-      })
-      .collect();
+      };
+    }
 
     LayoutResult {
       size,
@@ -3775,6 +3697,20 @@ impl LayoutEngine {
 
     self.layout_node(glyph_engine, child, constraints)
   }
+}
+
+/// Where the wrapped line starting at child `start` ends: a line takes at least
+/// one child, and then every child that still fits on it.
+fn wrap_line_end(child_layouts: &[ChildLayout], start: usize, spacing: f32, max_main: f32, vertical: bool) -> usize {
+  let mut line_main = main_size(&child_layouts[start].result, vertical);
+  for (index, layout) in child_layouts.iter().enumerate().skip(start + 1) {
+    let needed = spacing + main_size(&layout.result, vertical);
+    if line_main + needed > max_main {
+      return index;
+    }
+    line_main += needed;
+  }
+  child_layouts.len()
 }
 
 fn multiline_preferred_height(
