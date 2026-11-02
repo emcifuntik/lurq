@@ -213,7 +213,10 @@ pub(crate) fn clear_overrides(node: &mut crate::node::Node) {
   }
   #[cfg(test)]
   crate::core::layout_dirty::visit();
-  node.animation_overrides.clear();
+  // Writing through the lazy box would allocate it for a node holding none.
+  if !node.animation_overrides.is_empty() {
+    node.animation_overrides.clear();
+  }
   for child in &mut node.children {
     clear_overrides(child);
   }

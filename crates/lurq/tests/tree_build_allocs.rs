@@ -5,7 +5,7 @@ use std::{
 };
 
 use lurq::{
-  app::Tree,
+  app::{App, Tree},
   components::{Column, Rect, Row},
   core::NodeId,
   layout::Alignment,
@@ -85,5 +85,25 @@ fn deep_set_root_preserves_identified_nodes_without_matching_allocations() {
       assert_eq!(after, before);
       assert_eq!(allocations, 0, "depth={depth}, named={named}");
     }
+  }
+}
+
+/// A first layout stores one cached result per node, inline. On a flat column
+/// only the root's temporary `Vec`s come on top of one result per node (2.0
+/// allocations per node when a box held each node's cached results).
+#[test]
+fn first_layout_allocates_no_cache_box_per_node() {
+  let mut app = App::new();
+  let nodes = 1_001;
+  for _ in 0..2 {
+    let mut tree = Tree::new();
+    tree.resize(1200, 800);
+    tree.set_root(Column::with(0.0, Alignment::Start, (1..nodes).map(|_| Element::from(Rect::new(100.0, 20.0)))));
+
+    ALLOCS.set(Some(0));
+    tree.bench_layout_only_shared(&mut app, false);
+    let allocations = ALLOCS.replace(None).unwrap();
+
+    assert!(allocations <= nodes + 16, "{allocations} allocations over {nodes} nodes");
   }
 }

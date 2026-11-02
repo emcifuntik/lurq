@@ -658,9 +658,13 @@ pub(crate) struct RareStyle {
   pub(crate) caret_mode: Option<CaretMode>,
 }
 
+pub(crate) type AnimationOverrides = Vec<(crate::animation::AnimatableProperty, crate::animation::AnimatableValue)>;
+
 empty_default!(EventHandlers);
 empty_default!(StateStyles);
 empty_default!(RareStyle);
+empty_default!(AnimationOverrides);
+empty_default!(Vec<Transition>);
 
 pub(crate) struct Node {
   pub(crate) node_id: NodeId,
@@ -739,8 +743,10 @@ pub(crate) struct Node {
   pub(crate) state_styles: LazyBox<StateStyles>,
   pub(crate) opacity: f32,
   pub(crate) transform: Transform2D,
-  pub(crate) animation_overrides: Vec<(crate::animation::AnimatableProperty, crate::animation::AnimatableValue)>,
-  pub(crate) transitions: Vec<Transition>,
+  /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
+  pub(crate) animation_overrides: LazyBox<AnimationOverrides>,
+  /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
+  pub(crate) transitions: LazyBox<Vec<Transition>>,
   /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
   pub(crate) animation: Option<Box<Animation>>,
   pub(crate) layout_cache: crate::node::layout_cache::LayoutCache,
@@ -1870,8 +1876,8 @@ impl Node {
       state_styles: LazyBox::new(),
       opacity: DEFAULT_OPACITY,
       transform: Transform2D::IDENTITY,
-      animation_overrides: Vec::new(),
-      transitions: Vec::new(),
+      animation_overrides: LazyBox::new(),
+      transitions: LazyBox::new(),
       animation: None,
       layout_cache: Default::default(),
       children,
@@ -3761,7 +3767,7 @@ impl Node {
       .map(|radius| radius.resolve(radii));
     if let Some(mut br) = r {
       let overrides = &self.animation_overrides;
-      for (prop, val) in overrides {
+      for (prop, val) in overrides.iter() {
         if let crate::animation::AnimatableValue::Float(v) = val {
           match prop {
             crate::animation::AnimatableProperty::BorderRadiusTopLeft => br.top_left = *v,
@@ -3784,7 +3790,7 @@ impl Node {
       .or_else(|| self.border.as_deref().cloned());
     let overrides = &self.animation_overrides;
     if let Some(ref mut borders) = b {
-      for (prop, val) in overrides {
+      for (prop, val) in overrides.iter() {
         match (prop, val) {
           (crate::animation::AnimatableProperty::BorderColor, crate::animation::AnimatableValue::Color(c)) => {
             borders.set_color(*c);
@@ -3997,7 +4003,7 @@ impl Node {
       .state_styles
       .layout_frame(&self.style_state)
       .map_or(base, |frame| merge_frame(base, frame));
-    for (prop, val) in &self.animation_overrides {
+    for (prop, val) in self.animation_overrides.iter() {
       if let crate::animation::AnimatableValue::Float(v) = val {
         match prop {
           crate::animation::AnimatableProperty::Width => {
@@ -4608,7 +4614,7 @@ impl Node {
       state_styles: self.state_styles.clone(),
       opacity: self.opacity,
       transform: self.transform,
-      animation_overrides: Vec::new(),
+      animation_overrides: LazyBox::new(),
       transitions: self.transitions.clone(),
       animation: self.animation.clone(),
       layout_cache: Default::default(),

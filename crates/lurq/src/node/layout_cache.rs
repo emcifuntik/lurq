@@ -6,16 +6,16 @@ use std::{
 #[cfg(test)]
 use crate::layout::layout_result::SubtreeHolds;
 use crate::layout::{Constraints, layout_result::LayoutResult};
-use crate::node::lazy_box::{LazyBox, empty_default};
 
 /// Up to two layout results of one node, most recently used first.
 ///
 /// The front entry is the layout the node was last laid out as or served
 /// from, so its constraints are the ones the node's parent last gave it.
 pub struct LayoutCache {
-  // Keep the two result slots off Node's stack footprint as tracking grows.
-  // An unlaid node needs neither the slots nor an allocation for them.
-  inner: RefCell<LazyBox<CachedLayouts>>,
+  // The first entry stays inline: every laid-out node holds one, and a box for
+  // it was as many allocations in a first layout. Only a node laid out under
+  // other constraints as well pays for the box with the two result slots.
+  inner: RefCell<CachedLayouts>,
   // Inline: a rebuilt tree validates every node, and a box here was as many
   // allocations. Without the RefCell it costs Node no more than the box did.
   validated: Cell<Option<ValidatedLayout>>,
@@ -59,40 +59,101 @@ struct CachedLayout {
   result: Arc<LayoutResult>,
 }
 
-#[derive(Default)]
-struct CachedLayouts {
+struct TwoLayouts {
   slots: [Option<CachedLayout>; 2],
   front: usize,
 }
 
-empty_default!(CachedLayouts);
+#[derive(Default)]
+enum CachedLayouts {
+  #[default]
+  Empty,
+  One(CachedLayout),
+  /// Keeps its box when cleared: a node laid out under two constraints once
+  /// tends to be again.
+  Two(Box<TwoLayouts>),
+}
 
 impl CachedLayouts {
   fn front(&self) -> Option<&CachedLayout> {
-    self.slots[self.front].as_ref()
+    match self {
+      Self::Empty => None,
+      Self::One(cached) => Some(cached),
+      Self::Two(two) => two.slots[two.front].as_ref(),
+    }
+  }
+
+  fn front_index(&self) -> usize {
+    match self {
+      Self::Two(two) => two.front,
+      _ => 0,
+    }
+  }
+
+  /// `index` comes from [`Self::find`]; a single entry is the front one already.
+  fn set_front(&mut self, index: usize) {
+    if let Self::Two(two) = self {
+      two.front = index;
+    }
+  }
+
+  fn entries(&self) -> [Option<&CachedLayout>; 2] {
+    match self {
+      Self::Empty => [None, None],
+      Self::One(cached) => [Some(cached), None],
+      Self::Two(two) => [two.slots[0].as_ref(), two.slots[1].as_ref()],
+    }
+  }
+
+  fn entry_mut(&mut self, index: usize) -> Option<&mut CachedLayout> {
+    match self {
+      Self::Empty => None,
+      Self::One(cached) => Some(cached),
+      Self::Two(two) => two.slots[index].as_mut(),
+    }
   }
 
   fn find(&self, constraints: Constraints) -> Option<usize> {
-    self.slots.iter().position(|slot| {
-      slot.as_ref().is_some_and(|cached| cached.constraints == constraints)
+    self.entries().iter().position(|slot| {
+      slot.is_some_and(|cached| cached.constraints == constraints)
     })
   }
 
   fn clear(&mut self) {
-    self.slots = [None, None];
+    match self {
+      Self::Two(two) => two.slots = [None, None],
+      _ => *self = Self::Empty,
+    }
   }
 
   fn store(&mut self, constraints: Constraints, result: Arc<LayoutResult>) {
-    let index = self.find(constraints).unwrap_or(1 - self.front);
-    self.slots[index] = Some(CachedLayout { constraints, result });
-    self.front = index;
+    let index = self.find(constraints);
+    let entry = CachedLayout { constraints, result };
+    match self {
+      Self::Empty => *self = Self::One(entry),
+      Self::One(cached) if index.is_some() => *cached = entry,
+      Self::One(_) => {
+        let Self::One(first) = std::mem::take(self) else {
+          unreachable!("matched just above");
+        };
+        *self = Self::Two(Box::new(TwoLayouts {
+          slots: [Some(first), Some(entry)],
+          front: 1,
+        }));
+      }
+      Self::Two(two) => {
+        let index = index.unwrap_or(1 - two.front);
+        two.slots[index] = Some(entry);
+        two.front = index;
+      }
+    }
   }
 }
 
 impl LayoutCache {
   pub fn new() -> Self {
     Self {
-      inner: RefCell::new(LazyBox::new()),
+      inner: RefCell::new(CachedLayouts::Empty),
       validated: Cell::new(None),
       watch: crate::core::layout_dirty::LayoutWatch::new(),
       tracking_generation: Cell::new(0),
@@ -119,8 +180,8 @@ impl LayoutCache {
     }
     let mut entries = self.inner.borrow_mut();
     let index = entries.find(constraints)?;
-    if index != entries.front {
-      entries.front = index;
+    if index != entries.front_index() {
+      entries.set_front(index);
       self.descendants_match_front.set(false);
     }
     Some(entries.front()?.result.clone())
@@ -145,7 +206,7 @@ impl LayoutCache {
   pub(crate) fn record_validation(&self, constraints: Constraints, generation: u64) {
     let mut entries = self.inner.borrow_mut();
     if let Some(index) = entries.find(constraints) {
-      let result = &mut entries.slots[index].as_mut().unwrap().result;
+      let result = &mut entries.entry_mut(index).unwrap().result;
       if result.generation != generation {
         Arc::make_mut(result).generation = generation;
       }
@@ -168,8 +229,8 @@ impl LayoutCache {
   pub(crate) fn record_reuse(&self, constraints: Constraints, result: &Arc<LayoutResult>) {
     let mut entries = self.inner.borrow_mut();
     match entries.find(constraints) {
-      Some(index) if index == entries.front => return,
-      Some(index) => entries.front = index,
+      Some(index) if index == entries.front_index() => return,
+      Some(index) => entries.set_front(index),
       None => entries.store(constraints, result.clone()),
     }
     self.descendants_match_front.set(false);
@@ -210,8 +271,8 @@ impl LayoutCache {
   /// every caller drops that node right after reconciling (`Tree::set_root`,
   /// `Tree::rebuild`, the component slots, the live slot replacement, the
   /// overlays), and each old node is preserved from at most once, so moving
-  /// the box saves cloning it for every node of a rebuilt tree. `old` serves
-  /// nothing afterwards; only its flags stay as they were.
+  /// the entries saves cloning them for every node of a rebuilt tree. `old`
+  /// serves nothing afterwards; only its flags stay as they were.
   pub(crate) fn preserve_from(&self, old: &Self) {
     self.watch.mark();
     self.override_clear_generation.set(old.override_clear_generation.get());
@@ -257,7 +318,7 @@ impl LayoutCache {
   pub fn invalidate(&self) {
     self.watch.mark();
     self.validated.take();
-    *self.inner.borrow_mut() = LazyBox::new();
+    *self.inner.borrow_mut() = CachedLayouts::Empty;
     self.descendants_match_front.set(true);
     self.clear_dirty();
   }
@@ -318,13 +379,13 @@ impl LayoutCache {
   pub(crate) fn estimated_memory_bytes(&self) -> usize {
     let borrow = self.inner.borrow();
     let cached_bytes = borrow
-      .slots
-      .iter()
+      .entries()
+      .into_iter()
       .flatten()
       .map(|cached| cached.result.estimated_memory_bytes() + std::mem::size_of::<[usize; 2]>())
       .sum::<usize>();
-    let slots_bytes = if borrow.front().is_some() {
-      std::mem::size_of::<CachedLayouts>()
+    let slots_bytes = if matches!(*borrow, CachedLayouts::Two(_)) {
+      std::mem::size_of::<TwoLayouts>()
     } else {
       0
     };
@@ -560,5 +621,68 @@ mod tests {
       Some((292.0, 292.0))
     );
     assert!(cache.get(constraints(310.0)).is_some(), "the newer entry stays");
+  }
+
+  /// A first layout stores one entry per node: it must stay inline, and only
+  /// a second set of constraints may pay for the box of two slots.
+  #[test]
+  fn only_a_second_set_of_constraints_boxes_the_entries() {
+    let cache = LayoutCache::new();
+    assert!(matches!(*cache.inner.borrow(), CachedLayouts::Empty));
+
+    cache.store(constraints(100.0), result(40.0));
+    assert!(matches!(*cache.inner.borrow(), CachedLayouts::One(_)));
+    cache.store(constraints(100.0), result(41.0));
+    assert!(matches!(*cache.inner.borrow(), CachedLayouts::One(_)), "the same constraints replace the entry");
+    assert_eq!(cache.get(constraints(100.0)).map(|cached| cached.size.width), Some(41.0));
+    cache.record_reuse(constraints(100.0), &result(41.0).into());
+    assert!(matches!(*cache.inner.borrow(), CachedLayouts::One(_)), "the only entry is the front one already");
+
+    cache.store(constraints(90.0), result(38.0));
+    assert!(matches!(*cache.inner.borrow(), CachedLayouts::Two(_)));
+    assert_eq!(cache.get(constraints(100.0)).map(|cached| cached.size.width), Some(41.0));
+    assert_eq!(cache.get(constraints(90.0)).map(|cached| cached.size.width), Some(38.0));
+
+    cache.invalidate();
+    assert!(matches!(*cache.inner.borrow(), CachedLayouts::Empty));
+  }
+
+  /// An entry stored inline is pushed out like one in a slot: a new store
+  /// replaces the entry behind the front one, whichever came first.
+  #[test]
+  fn a_third_set_of_constraints_replaces_the_entry_behind_the_front_one() {
+    let cache = LayoutCache::new();
+    cache.store(constraints(100.0), result(100.0));
+    cache.store(constraints(90.0), result(90.0));
+    cache.store(constraints(80.0), result(80.0));
+    assert!(cache.get(constraints(100.0)).is_none(), "the inline entry was behind the front one");
+    assert!(cache.get(constraints(90.0)).is_some());
+
+    let cache = LayoutCache::new();
+    cache.store(constraints(100.0), result(100.0));
+    cache.store(constraints(90.0), result(90.0));
+    assert!(cache.get(constraints(100.0)).is_some());
+    cache.store(constraints(80.0), result(80.0));
+    assert!(cache.get(constraints(90.0)).is_none(), "the served inline entry was the front one");
+    assert!(cache.get(constraints(100.0)).is_some());
+  }
+
+  /// A dirty store drops the other entries whether the cache holds one inline
+  /// or two boxed, and a preserved cache keeps the inline entry it took over.
+  #[test]
+  fn an_inline_entry_is_cleared_and_preserved_like_a_boxed_one() {
+    let cache = LayoutCache::new();
+    cache.store(constraints(100.0), result(100.0));
+    cache.mark_local_dirty();
+    assert!(cache.get(constraints(100.0)).is_none(), "a dirty cache serves nothing");
+    cache.store(constraints(90.0), result(90.0));
+    assert!(matches!(*cache.inner.borrow(), CachedLayouts::One(_)), "the stale entry is gone");
+    assert!(cache.get(constraints(100.0)).is_none());
+    assert!(cache.get_repairable(constraints(90.0)).is_some());
+
+    let new = LayoutCache::new();
+    new.preserve_from(&cache);
+    assert!(!cache.has_cached_result());
+    assert_eq!(new.cached_entry().map(|(front, size)| (front.max_width, size.width)), Some((90.0, 90.0)));
   }
 }
