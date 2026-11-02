@@ -344,7 +344,6 @@ pub(crate) trait NodeUpdate {
   /// the MCP `lurq_read_tree`). A no-op unless a tooling feature is enabled.
   fn describe(&mut self, name: Arc<str>, value: Arc<str>);
   fn child(&mut self, child: Node);
-  fn with_children(&mut self, children: impl IntoIterator<Item = Node>);
   fn id(&mut self, id: impl Into<Arc<str>>);
   fn class(&mut self, class: impl Into<Arc<str>>);
   fn classes(&mut self, classes: impl IntoIterator<Item: Into<Arc<str>>>);
@@ -792,11 +791,6 @@ impl NodeUpdate for Node {
 
   fn child(&mut self, child: Node) {
     self.children.push(child);
-    self.layout_cache.invalidate();
-  }
-
-  fn with_children(&mut self, children: impl IntoIterator<Item = Node>) {
-    self.children.extend(children);
     self.layout_cache.invalidate();
   }
 
@@ -3659,6 +3653,38 @@ impl Node {
 
   pub(crate) fn remove_class(&mut self, class: &str) {
     self.classes.retain(|existing| existing.as_ref() != class);
+  }
+
+  // The components' `child` and `with_children` move each child's node out of
+  // its box here, in a frame of its own, never inlined. Moved in the generic
+  // builder instead, the node (over 1 KiB) sits in that builder's frame, and an
+  // element tree built recursively (`Row::with(.., items.iter().map(build))`)
+  // keeps that frame on the stack once per level while the children below are
+  // built: when an inlining change outlined `Row::with` and `Column::with`, it
+  // cost the deep_chain probe 55 of 346 levels on a 1 MiB stack (LUR-13).
+
+  /// `NodeUpdate::child` for a built element.
+  #[inline(never)]
+  pub(crate) fn push_child_element(&mut self, child: crate::node::Element) {
+    NodeUpdate::child(self, child.into_node());
+  }
+
+  /// The children of a `with_children`, grown as `Vec::extend` grows them, so
+  /// a build allocates as before.
+  pub(crate) fn extend_child_elements(&mut self, mut children: impl Iterator<Item = crate::node::Element>) {
+    self.children.reserve(children.size_hint().0);
+    while let Some(child) = children.next() {
+      if self.children.len() == self.children.capacity() {
+        self.children.reserve(children.size_hint().0.saturating_add(1));
+      }
+      self.push_child_node(child);
+    }
+    self.layout_cache.invalidate();
+  }
+
+  #[inline(never)]
+  fn push_child_node(&mut self, child: crate::node::Element) {
+    self.children.push(child.into_node());
   }
 
   #[cfg(feature = "devtools")]

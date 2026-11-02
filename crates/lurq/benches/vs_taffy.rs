@@ -72,35 +72,70 @@ fn check_agreement(name: &str, spec: &Spec) {
 
 // ---- benches ----
 
-/// `VS_TAFFY_PROBE="<lurq|taffy> <depth> <stack bytes>"` lays out one deep
+/// `VS_TAFFY_PROBE="<engine> <depth> <stack bytes>"` lays out one deep
 /// chain on a thread with that stack and exits; an overflow aborts the
 /// process, so a script bisects the deepest chain that fits.
+///
+/// Engines: `lurq` and `taffy` build and lay out the chain. The phases of
+/// `lurq` alone: `lurq-element` runs only the recursive `lurq_element`;
+/// `lurq-set-root` builds the elements in a loop and runs only `set_root`;
+/// `lurq-layout` builds them in a loop, so only `set_root` and the layout
+/// recurse.
 fn probe(arg: &str) -> ! {
   let mut parts = arg.split_whitespace();
-  let lurq = parts.next() == Some("lurq");
+  let engine = parts.next().unwrap().to_owned();
   let depth: usize = parts.next().unwrap().parse().unwrap();
   let stack: usize = parts.next().unwrap().parse().unwrap();
   std::thread::Builder::new()
     .stack_size(stack)
     .spawn(move || {
       let spec = deep_chain(depth);
-      if lurq {
-        let mut app = App::new();
-        let mut tree = Tree::new();
-        tree.resize(VIEW_W as u32, VIEW_H as u32);
-        tree.set_root(lurq_element(&spec));
-        tree.bench_layout_only_shared(&mut app, true);
-        // Dropping a deep tree recurses as well; keep it out of the probe.
-        std::mem::forget(tree);
-      } else {
+      if engine == "taffy" {
         let mut built = taffy_build(&spec);
         taffy_compute(&mut built);
+        return;
       }
+      let element = if engine == "lurq" || engine == "lurq-element" {
+        lurq_element(&spec)
+      } else {
+        lurq_chain_element(depth)
+      };
+      // Dropping a deep tree or spec recurses as well; keep it out of the probe.
+      std::mem::forget(spec);
+      if engine == "lurq-element" {
+        std::mem::forget(element);
+        return;
+      }
+      let mut app = App::new();
+      let mut tree = Tree::new();
+      tree.resize(VIEW_W as u32, VIEW_H as u32);
+      tree.set_root(element);
+      if engine != "lurq-set-root" {
+        tree.bench_layout_only_shared(&mut app, true);
+      }
+      std::mem::forget(tree);
     })
     .unwrap()
     .join()
     .unwrap();
   std::process::exit(0)
+}
+
+/// `lurq_element(&deep_chain(depth))`, built bottom-up in a loop.
+fn lurq_chain_element(depth: usize) -> lurq::node::Element {
+  use lurq::{
+    components::{Column, Rect, Row},
+    layout::Alignment,
+  };
+  let mut element = Rect::new(10.0, 10.0).into();
+  for i in 0..depth {
+    element = if i % 2 == 0 {
+      Row::with(0.0, Alignment::Start, [element]).padding(1.0).into()
+    } else {
+      Column::with(0.0, Alignment::Start, [element]).padding(1.0).into()
+    };
+  }
+  element
 }
 
 fn bench(c: &mut Criterion) {
