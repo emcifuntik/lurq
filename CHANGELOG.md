@@ -1,6 +1,24 @@
 # Changelog
 
-## 0.54.0 — 2026-11-02
+## 0.55.0-beta.1 — 2026-11-02
+
+A beta of a layout performance rework. Cargo picks a pre-release only when asked: depend on `lurq = "=0.55.0-beta.1"` to try it. Layout results are meant to be exactly those of 0.54.0, and the public API is unchanged.
+
+Performance (measured in one process against 0.54.0 and taffy 0.15.1 laying out the same trees, which all three place identically; Windows, release build):
+
+- Laying out a tree where nothing changed costs about 35 ns, whatever its size, as taffy's does. In 0.54.0 it walked the whole tree and took 0.9 ms on 10,000 nodes and 0.5 ms on 5,461 nested ones. Dirt is now recorded where it happens (state styles, element handles, animations, scroll, text input) instead of being found by walking the tree, and the engine copies the theme only when it changed.
+- Laying every node out again is 2 to 15 times faster: 10,000 rects in a column 3.2 ms → 1.6 ms (taffy 2.3 ms), 5,461 nested rows and columns 3.8 ms → 1.0 ms (taffy 10.3 ms), a chain of 64 containers 195 µs → 13 µs. A cached subtree is no longer copied when it is served, a laid-out parent no longer walks its subtree again, and flex lines allocate one `Vec` per container instead of six.
+- A resize that leaves most of the tree's constraints alone lays out only what they reach: the 5,461 nested nodes at a new window width 622 µs → 0.36 µs (taffy 4.4 µs).
+- A first layout is 1.4 to 3.3 times faster (nested 7.0 ms → 2.2 ms, taffy 10.1 ms; a column of 10,000 8.4 ms → 5.9 ms, taffy 5.9 ms), and building and rebuilding an element tree allocates almost nothing per node instead of two allocations: `set_root` takes over the old tree's layout caches and watches instead of cloning them, a node's layout watch is made when something first reads it, and an element reuses the box its predecessor was moved out of.
+- A 1 MiB stack, the size of the Windows main thread, lays out 377 nested containers in a release build (102 in 0.51.2): rare paths of leaf and scroll layout and the child-adding steps of `Row::with` and `Column::with` no longer sit in the frames that stay on the stack across the recursion.
+
+Behaviour changes:
+
+- None intended. What to report if you try the beta: a layout that does not update after a change (a hover, focus or active style that changes size or padding, an element handle mutation, an animation, scrolling, text input); runtime state lost across a component's render (scroll offsets, text input state including styled spans, focus, element ids); a stack overflow on a deep tree.
+
+Added:
+
+- `benches/vs_taffy.rs` lays out the same 12 trees with lurq and taffy in six modes (build, cold, rebuild, forced, resize, noop), after checking that both place every leaf alike, and probes the deepest tree a given stack lays out (`VS_TAFFY_PROBE`). `benches/vs_taffy_allocs.rs` counts the allocations of each mode. The `layout` and `render_list` benches lay out now; before they timed only building the tree. `scripts/check.ps1` runs the test suite and the release-only stack-depth test.
 
 Added:
 
