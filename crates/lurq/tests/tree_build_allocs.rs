@@ -168,10 +168,7 @@ fn rebuilding_a_laid_out_tree_allocates_no_watch_per_node() {
     tree.set_root(root);
     tree.bench_layout_only_shared(&mut app, false);
     let allocations = ALLOCS.replace(None).unwrap();
-    assert!(
-      allocations <= 16,
-      "{allocations} allocations rebuilding {nodes} nodes"
-    );
+    assert!(allocations <= 16, "{allocations} allocations rebuilding {nodes} nodes");
   }
 }
 

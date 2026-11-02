@@ -43,6 +43,8 @@ mod node_boxes {
   const KEPT: usize = 16;
 
   thread_local! {
+    // The boxes themselves are kept: each goes back out as an element's box.
+    #[allow(clippy::vec_box)]
     static EMPTY: RefCell<Vec<Box<MaybeUninit<Node>>>> = const { RefCell::new(Vec::new()) };
   }
 
