@@ -2877,7 +2877,16 @@ impl LayoutEngine {
       if !Arc::ptr_eq(&child_layouts[i].result, &self.awaiting_room) {
         continue;
       }
-      let params = child.state_flex().expect("only a flex child waits for free room");
+      // Only a flex child waits for free room, but its flex params are read
+      // again here: a state style that changed since the first pass (its
+      // interaction state is shared across clones) may have taken them away.
+      // Such a child is laid out as the first pass would have laid it out
+      // now; the change marks its layout dirty, so the next pass agrees.
+      let Some(params) = child.state_flex() else {
+        let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
+        child_layouts[i].result = self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints);
+        continue;
+      };
       // An unbounded main axis has no free space to grow into: a growing
       // child gets its basis, or its natural size without one. Growing by
       // an infinite remainder would lay it out at an infinite size.
