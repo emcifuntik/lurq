@@ -4263,12 +4263,7 @@ mod tests {
     let node = Node::column(0.0, Alignment::Stretch, vec![Node::text("unchanged")]);
     let constraints = Constraints::loose(Size::new(320.0, 180.0));
     let compute = |glyph_engine: &mut GlyphEngine| {
-      engine.compute(
-        glyph_engine,
-        &node,
-        constraints,
-        false,
-      );
+      engine.compute(glyph_engine, &node, constraints, false);
     };
 
     compute(&mut glyph_engine);
@@ -4388,12 +4383,7 @@ mod tests {
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::loose(Size::new(400.0, 10_000.0));
     let compute = |engine: &LayoutEngine, glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        false,
-      )
+      engine.compute(glyph_engine, node, constraints, false)
     };
 
     let old: Node = crate::node::Element::from(crate::components::Spacer::new().height(2000.0)).into_node();
@@ -4440,14 +4430,7 @@ mod tests {
     let engine = LayoutEngine::new();
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::loose(Size::new(300.0, 1000.0));
-    let compute = |glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        false,
-      )
-    };
+    let compute = |glyph_engine: &mut GlyphEngine, node: &Node| engine.compute(glyph_engine, node, constraints, false);
     let mut root: Node = crate::node::Element::from(
       crate::components::ScrollVertical::new(
         crate::components::Column::new()
@@ -4492,12 +4475,7 @@ mod tests {
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::loose(Size::new(400.0, 100_000.0));
     let compute = |engine: &LayoutEngine, glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        false,
-      )
+      engine.compute(glyph_engine, node, constraints, false)
     };
     let column = |spacer_height: f32| -> Node {
       crate::node::Element::from(
@@ -4551,12 +4529,7 @@ mod tests {
     // reconcile, which this engine-only test mimics.
     root.clear_guards();
 
-    engine.compute(
-      &mut glyph_engine,
-      &root,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &root, constraints, false);
 
     assert!(
       !root.children[1].layout_cache.is_dirty(),
@@ -4580,12 +4553,7 @@ mod tests {
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::tight(Size::new(400.0, 300.0));
     let compute = |engine: &LayoutEngine, glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        false,
-      )
+      engine.compute(glyph_engine, node, constraints, false)
     };
 
     let element_ref = crate::core::ElementRefMut::new();
@@ -4642,12 +4610,7 @@ mod tests {
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::tight(Size::new(400.0, 300.0));
     let compute = |engine: &LayoutEngine, glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        false,
-      )
+      engine.compute(glyph_engine, node, constraints, false)
     };
     let stack = |x: f32, y: f32| -> Node {
       crate::node::Element::from(
@@ -4686,20 +4649,10 @@ mod tests {
     let node = Node::text_input(Signal::new("Hello".to_owned()));
     let constraints = Constraints::loose(Size::new(400.0, 400.0));
 
-    engine.compute(
-      &mut glyph_engine,
-      &node,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &node, constraints, false);
     assert!(engine.last_recalculated());
 
-    engine.compute(
-      &mut glyph_engine,
-      &node,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &node, constraints, false);
     assert!(!engine.last_recalculated());
   }
 
@@ -4710,24 +4663,14 @@ mod tests {
     let node = Node::text_input(Signal::new("Hello".to_owned()));
     let constraints = Constraints::loose(Size::new(400.0, 400.0));
 
-    engine.compute(
-      &mut glyph_engine,
-      &node,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &node, constraints, false);
 
     let NodeKind::TextInput { state, .. } = node.node_kind() else {
       panic!("expected text input node");
     };
     state.move_left(false);
 
-    engine.compute(
-      &mut glyph_engine,
-      &node,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &node, constraints, false);
     assert!(engine.last_recalculated());
   }
 
@@ -4741,24 +4684,14 @@ mod tests {
       .placeholder("Display name")
       .text_input_overflow(TextInputOverflow::Scroll);
 
-    engine.compute(
-      &mut glyph_engine,
-      &old,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &old, constraints, false);
 
     let mut new = Node::text_input(value)
       .placeholder("Display name")
       .text_input_overflow(TextInputOverflow::Scroll);
     new.preserve_runtime_state_from(&old);
 
-    engine.compute(
-      &mut glyph_engine,
-      &new,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &new, constraints, false);
 
     assert!(!engine.last_recalculated());
   }
@@ -4770,22 +4703,12 @@ mod tests {
     let constraints = Constraints::tight(Size::new(200.0, 40.0));
     let old = Node::stack(StackAlignment::TopStart, vec![Node::text("1")]);
 
-    engine.compute(
-      &mut glyph_engine,
-      &old,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &old, constraints, false);
 
     let mut new = Node::stack(StackAlignment::TopStart, vec![Node::text("22")]);
     new.preserve_runtime_state_from(&old);
 
-    let result = engine.compute(
-      &mut glyph_engine,
-      &new,
-      constraints,
-      false,
-    );
+    let result = engine.compute(&mut glyph_engine, &new, constraints, false);
 
     assert!(new.layout_cache.has_cached_result());
     assert_eq!(result.size.width, 200.0);
@@ -4801,22 +4724,12 @@ mod tests {
     let constraints = Constraints::tight(Size::new(20.0, 20.0));
     let old = Node::stack(StackAlignment::TopStart, vec![Node::text("1")]);
 
-    engine.compute(
-      &mut glyph_engine,
-      &old,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &old, constraints, false);
 
     let mut new = Node::stack(StackAlignment::TopStart, vec![Node::text("this is too wide")]);
     new.preserve_runtime_state_from(&old);
 
-    engine.compute(
-      &mut glyph_engine,
-      &new,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &new, constraints, false);
 
     assert!(engine.last_recalculated());
   }
@@ -4828,12 +4741,7 @@ mod tests {
     let constraints = Constraints::loose(Size::new(400.0, 40.0));
     let old = Node::row(8.0, Alignment::Start, vec![Node::text("1"), Node::text("tail")]);
 
-    engine.compute(
-      &mut glyph_engine,
-      &old,
-      constraints,
-      false,
-    );
+    engine.compute(&mut glyph_engine, &old, constraints, false);
 
     let mut new = Node::row(
       8.0,
@@ -4842,12 +4750,7 @@ mod tests {
     );
     new.preserve_runtime_state_from(&old);
 
-    let result = engine.compute(
-      &mut glyph_engine,
-      &new,
-      constraints,
-      false,
-    );
+    let result = engine.compute(&mut glyph_engine, &new, constraints, false);
 
     let first = &result.children[0];
     let second = &result.children[1];

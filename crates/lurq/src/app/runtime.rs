@@ -7223,9 +7223,7 @@ fn build_overlay_node(
   let measured = crate::app::profiler::producer::layout_compute(
     #[cfg(feature = "perf_profile")]
     profiling,
-    || {
-      layout_engine.compute(glyph_engine, &measure_node, measure_constraints, theme_changed)
-    },
+    || layout_engine.compute(glyph_engine, &measure_node, measure_constraints, theme_changed),
   );
   if pending_runtime_layout_dirty {
     invalidate_layout_cache_recursive(&node);
