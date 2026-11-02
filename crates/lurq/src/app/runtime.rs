@@ -5595,21 +5595,12 @@ impl Tree {
     let constraints = self
       .layout_constraints_override
       .unwrap_or_else(|| Constraints::tight(self.viewport_logical()));
-    let theme = app.theme();
-    self.layout_engine.set_shadows(theme.shared_shadows());
-    Some(self.layout_engine.compute(
-      &mut app.shared.glyph_engine.lock(),
-      root,
-      constraints,
-      theme.palette().clone(),
-      theme.border_sizes().clone(),
-      theme.spacing().clone(),
-      theme.radii().clone(),
-      *theme.caret(),
-      theme.scrollbar().clone(),
-      theme.typography().clone(),
-      force_dirty,
-    ))
+    self.layout_engine.set_theme(app.theme());
+    Some(
+      self
+        .layout_engine
+        .compute(&mut app.shared.glyph_engine.lock(), root, constraints, force_dirty),
+    )
   }
 
   /// The text selected in the selectable texts (`Text::selectable`,
@@ -6238,61 +6229,14 @@ impl Tree {
       let constraints = self
         .layout_constraints_override
         .unwrap_or_else(|| Constraints::tight(self.viewport_logical()));
-      let theme_version = self
-        .root_ctx
-        .as_ref()
-        .map(|ctx| ctx.theme().version())
-        .unwrap_or_else(|| app.theme().version());
-      self.layout_engine.set_shadows(
-        self
-          .root_ctx
-          .as_ref()
-          .map(|ctx| ctx.theme().shared_shadows())
-          .unwrap_or_else(|| app.theme().shared_shadows()),
-      );
-      #[cfg(feature = "markdown")]
-      self.layout_engine.set_text_marks(
-        self
-          .root_ctx
-          .as_ref()
-          .map(|ctx| ctx.theme().shared_text_marks())
-          .unwrap_or_else(|| app.theme().shared_text_marks()),
-      );
-      let typography = self
-        .root_ctx
-        .as_ref()
-        .map(|ctx| ctx.theme().typography().clone())
-        .unwrap_or_else(|| app.theme().typography().clone());
-      let palette = self
-        .root_ctx
-        .as_ref()
-        .map(|ctx| ctx.theme().palette().clone())
-        .unwrap_or_else(|| app.theme().palette().clone());
-      let spacing = self
-        .root_ctx
-        .as_ref()
-        .map(|ctx| ctx.theme().spacing().clone())
-        .unwrap_or_else(|| app.theme().spacing().clone());
-      let radii = self
-        .root_ctx
-        .as_ref()
-        .map(|ctx| ctx.theme().radii().clone())
-        .unwrap_or_else(|| app.theme().radii().clone());
-      let caret = self
-        .root_ctx
-        .as_ref()
-        .map(|ctx| *ctx.theme().caret())
-        .unwrap_or_else(|| *app.theme().caret());
-      let scrollbar = self
-        .root_ctx
-        .as_ref()
-        .map(|ctx| ctx.theme().scrollbar().clone())
-        .unwrap_or_else(|| app.theme().scrollbar().clone());
-      let border_sizes = self
-        .root_ctx
-        .as_ref()
-        .map(|ctx| ctx.theme().border_sizes().clone())
-        .unwrap_or_else(|| app.theme().border_sizes().clone());
+      let theme = self.root_ctx.as_ref().map(Ctx::theme).unwrap_or_else(|| app.theme());
+      let theme_version = theme.version();
+      // The whole pass, overlays and the overlay host's root included, lays
+      // out with the theme as it is now, even if a focus callback below
+      // changes it; that change lays out next pass.
+      self.layout_engine.set_theme(theme);
+      #[cfg(feature = "canvas")]
+      let canvas_font = crate::canvas::CanvasFont::from_style(theme.typography().default_style());
       let theme_changed = self.last_theme_version != theme_version;
       let (mut layout, base_overlay_index) = crate::app::profiler::producer::layout_compute(
         #[cfg(feature = "perf_profile")]
@@ -6302,13 +6246,6 @@ impl Tree {
             &mut app.shared.glyph_engine.lock(),
             root,
             constraints,
-            palette.clone(),
-            border_sizes.clone(),
-            spacing.clone(),
-            radii.clone(),
-            caret,
-            scrollbar.clone(),
-            typography.clone(),
             theme_changed,
           )
         },
@@ -6318,13 +6255,6 @@ impl Tree {
         base_overlay_index,
         &mut app.shared.glyph_engine.lock(),
         constraints,
-        palette.clone(),
-        border_sizes.clone(),
-        spacing.clone(),
-        radii.clone(),
-        caret,
-        scrollbar.clone(),
-        typography.clone(),
         theme_changed,
       );
       // Focus/blur callbacks may mutate App services; the glyph lock used to
@@ -6349,19 +6279,9 @@ impl Tree {
           #[cfg(feature = "perf_profile")]
           &mut self.profiling,
           || {
-            self.layout_engine.compute(
-              &mut app.shared.glyph_engine.lock(),
-              root,
-              constraints,
-              palette.clone(),
-              border_sizes.clone(),
-              spacing.clone(),
-              radii.clone(),
-              caret,
-              scrollbar.clone(),
-              typography.clone(),
-              theme_changed,
-            )
+            self
+              .layout_engine
+              .compute(&mut app.shared.glyph_engine.lock(), root, constraints, theme_changed)
           },
         );
       }
@@ -6387,7 +6307,7 @@ impl Tree {
           crate::node::transform::Transform2D::IDENTITY,
           self.scale_factor,
           &self.window,
-          &crate::canvas::CanvasFont::from_style(typography.default_style()),
+          &canvas_font,
           &canvas_text,
           &mut self.canvas_registry,
         );
@@ -6471,20 +6391,12 @@ impl Tree {
     }
   }
 
-  #[allow(clippy::too_many_arguments)]
   fn sync_overlay_host_from_layout(
     &mut self,
     mut old_parts: OverlayHostReuse,
     mut base_overlay_index: OverlayLayoutIndex,
     glyph_engine: &mut crate::app::glyph_engine::GlyphEngine,
     constraints: Constraints,
-    palette: crate::app::theme::ThemePalette,
-    border_sizes: crate::app::theme::ThemeBorderSizes,
-    spacing: crate::app::theme::ThemeSpacing,
-    radii: crate::app::theme::ThemeRadii,
-    caret: crate::app::theme::ThemeCaret,
-    scrollbar: crate::layout::scrollbar::ScrollBarStyle,
-    typography: crate::app::theme::ThemeTypography,
     theme_changed: bool,
   ) -> Option<OwnedElementRef> {
     let Some(base) = self.root.take() else {
@@ -6505,13 +6417,6 @@ impl Tree {
       glyph_engine,
       &self.layout_engine,
       constraints,
-      palette.clone(),
-      border_sizes.clone(),
-      spacing.clone(),
-      radii.clone(),
-      caret,
-      scrollbar.clone(),
-      typography.clone(),
       theme_changed,
       &mut layers,
       #[cfg(feature = "perf_profile")]
@@ -6548,19 +6453,9 @@ impl Tree {
           #[cfg(feature = "perf_profile")]
           &mut self.profiling,
           || {
-            self.layout_engine.compute_with_overlay_index(
-              glyph_engine,
-              overlay,
-              constraints,
-              palette.clone(),
-              border_sizes.clone(),
-              spacing.clone(),
-              radii.clone(),
-              caret,
-              scrollbar.clone(),
-              typography.clone(),
-              theme_changed,
-            )
+            self
+              .layout_engine
+              .compute_with_overlay_index(glyph_engine, overlay, constraints, theme_changed)
           },
         );
         let (origin_x, origin_y) = match overlay.position() {
@@ -6576,13 +6471,6 @@ impl Tree {
           glyph_engine,
           &self.layout_engine,
           constraints,
-          palette.clone(),
-          border_sizes.clone(),
-          spacing.clone(),
-          radii.clone(),
-          caret,
-          scrollbar.clone(),
-          typography.clone(),
           theme_changed,
           &mut layers,
           #[cfg(feature = "perf_profile")]
@@ -7097,13 +6985,6 @@ fn build_overlays_from_layout_index(
   glyph_engine: &mut crate::app::glyph_engine::GlyphEngine,
   layout_engine: &LayoutEngine,
   constraints: Constraints,
-  palette: crate::app::theme::ThemePalette,
-  border_sizes: crate::app::theme::ThemeBorderSizes,
-  spacing: crate::app::theme::ThemeSpacing,
-  radii: crate::app::theme::ThemeRadii,
-  caret: crate::app::theme::ThemeCaret,
-  scrollbar: crate::layout::scrollbar::ScrollBarStyle,
-  typography: crate::app::theme::ThemeTypography,
   theme_changed: bool,
   layers: &mut OverlayLayers,
   #[cfg(feature = "perf_profile")] profiling: &mut crate::app::profiler::producer::WindowProfiler,
@@ -7137,13 +7018,6 @@ fn build_overlays_from_layout_index(
                   glyph_engine,
                   &menu.clone_for_reuse(),
                   measure_constraints,
-                  palette.clone(),
-                  border_sizes.clone(),
-                  spacing.clone(),
-                  radii.clone(),
-                  caret,
-                  scrollbar.clone(),
-                  typography.clone(),
                   theme_changed,
                 )
                 .as_ref()
@@ -7189,13 +7063,6 @@ fn build_overlays_from_layout_index(
           glyph_engine,
           layout_engine,
           constraints,
-          palette.clone(),
-          border_sizes.clone(),
-          spacing.clone(),
-          radii.clone(),
-          caret,
-          scrollbar.clone(),
-          typography.clone(),
           theme_changed,
           #[cfg(feature = "perf_profile")]
           profiling,
@@ -7336,13 +7203,6 @@ fn build_overlay_node(
   glyph_engine: &mut crate::app::glyph_engine::GlyphEngine,
   layout_engine: &LayoutEngine,
   constraints: Constraints,
-  palette: crate::app::theme::ThemePalette,
-  border_sizes: crate::app::theme::ThemeBorderSizes,
-  spacing: crate::app::theme::ThemeSpacing,
-  radii: crate::app::theme::ThemeRadii,
-  caret: crate::app::theme::ThemeCaret,
-  scrollbar: crate::layout::scrollbar::ScrollBarStyle,
-  typography: crate::app::theme::ThemeTypography,
   theme_changed: bool,
   #[cfg(feature = "perf_profile")] profiling: &mut crate::app::profiler::producer::WindowProfiler,
 ) -> (Node, ElementRect) {
@@ -7364,19 +7224,7 @@ fn build_overlay_node(
     #[cfg(feature = "perf_profile")]
     profiling,
     || {
-      layout_engine.compute(
-        glyph_engine,
-        &measure_node,
-        measure_constraints,
-        palette,
-        border_sizes,
-        spacing,
-        radii,
-        caret,
-        scrollbar,
-        typography,
-        theme_changed,
-      )
+      layout_engine.compute(glyph_engine, &measure_node, measure_constraints, theme_changed)
     },
   );
   if pending_runtime_layout_dirty {

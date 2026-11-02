@@ -10,8 +10,8 @@ use crate::{
     ctx::{ModalSpec, OverlaySpec},
     glyph_engine::GlyphEngine,
     theme::{
-      CaretMode, PaletteColor, ThemeBorderSizes, ThemeCaret, ThemePalette, ThemeRadii, ThemeShadows, ThemeSpacing,
-      ThemeTypography,
+      CaretMode, PaletteColor, Theme, ThemeBorderSizes, ThemeCaret, ThemePalette, ThemeRadii, ThemeShadows,
+      ThemeSpacing, ThemeTypography,
     },
   },
   core::{ElementRect, ElementRef},
@@ -221,6 +221,9 @@ impl Clone for OverlayLayoutRecord {
 pub(crate) struct LayoutEngine {
   last_recalculated: Cell<bool>,
   text_input_caret_visible: Cell<bool>,
+  /// The theme the values below were copied from, and its version then
+  /// (`set_theme`). `None` until a theme is set: the values are the defaults.
+  theme_seen: RefCell<Option<(Theme, u64)>>,
   palette: RefCell<ThemePalette>,
   border_sizes: RefCell<ThemeBorderSizes>,
   spacing: RefCell<ThemeSpacing>,
@@ -508,6 +511,7 @@ impl LayoutEngine {
     Self {
       last_recalculated: Cell::new(false),
       text_input_caret_visible: Cell::new(true),
+      theme_seen: RefCell::new(None),
       palette: RefCell::new(ThemePalette::default()),
       border_sizes: RefCell::new(ThemeBorderSizes::default()),
       spacing: RefCell::new(ThemeSpacing::default()),
@@ -542,90 +546,70 @@ impl LayoutEngine {
     self.paint_scale.set(scale);
   }
 
+  /// Takes the theme values layout and paint read until the next call. They
+  /// are copied only when `theme` is another theme, or the same one at
+  /// another version, than the last call's: a pass on an unchanged theme
+  /// copies nothing. Changing the values does not mark any node dirty; a
+  /// caller that switches themes lays out with `force_dirty`.
+  pub(crate) fn set_theme(&self, theme: &Theme) {
+    let version = theme.version();
+    if self
+      .theme_seen
+      .borrow()
+      .as_ref()
+      .is_some_and(|(seen, seen_version)| *seen_version == version && seen.same_theme(theme))
+    {
+      return;
+    }
+    *self.palette.borrow_mut() = theme.palette().clone();
+    *self.border_sizes.borrow_mut() = theme.border_sizes().clone();
+    *self.spacing.borrow_mut() = theme.spacing().clone();
+    *self.radii.borrow_mut() = theme.radii().clone();
+    *self.caret.borrow_mut() = *theme.caret();
+    *self.scrollbar.borrow_mut() = theme.scrollbar().clone();
+    *self.typography.borrow_mut() = theme.typography().clone();
+    *self.shadows.borrow_mut() = theme.shared_shadows();
+    #[cfg(feature = "markdown")]
+    {
+      *self.text_marks.borrow_mut() = theme.shared_text_marks();
+    }
+    // The version read before the copies: a change made meanwhile shows as
+    // a newer version next call and is copied then.
+    *self.theme_seen.borrow_mut() = Some((theme.clone(), version));
+  }
+
+  /// Lays `node` out under the theme of the last [`Self::set_theme`] (the
+  /// defaults before any).
   pub(crate) fn compute(
     &self,
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
-    palette: ThemePalette,
-    border_sizes: ThemeBorderSizes,
-    spacing: ThemeSpacing,
-    radii: ThemeRadii,
-    caret: ThemeCaret,
-    scrollbar: ScrollBarStyle,
-    typography: ThemeTypography,
     force_dirty: bool,
   ) -> Arc<LayoutResult> {
-    self.compute_inner(
-      glyph_engine,
-      node,
-      constraints,
-      palette,
-      border_sizes,
-      spacing,
-      radii,
-      caret,
-      scrollbar,
-      typography,
-      force_dirty,
-    )
+    self.compute_inner(glyph_engine, node, constraints, force_dirty)
   }
 
-  #[allow(clippy::too_many_arguments)]
   pub(crate) fn compute_with_overlay_index(
     &self,
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
-    palette: ThemePalette,
-    border_sizes: ThemeBorderSizes,
-    spacing: ThemeSpacing,
-    radii: ThemeRadii,
-    caret: ThemeCaret,
-    scrollbar: ScrollBarStyle,
-    typography: ThemeTypography,
     force_dirty: bool,
   ) -> (Arc<LayoutResult>, OverlayLayoutIndex) {
-    let result = self.compute_inner(
-      glyph_engine,
-      node,
-      constraints,
-      palette,
-      border_sizes,
-      spacing,
-      radii,
-      caret,
-      scrollbar,
-      typography,
-      force_dirty,
-    );
+    let result = self.compute_inner(glyph_engine, node, constraints, force_dirty);
     let index = Self::collect_overlay_index(node, &result);
     (result, index)
   }
 
-  #[allow(clippy::too_many_arguments)]
   fn compute_inner(
     &self,
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
-    palette: ThemePalette,
-    border_sizes: ThemeBorderSizes,
-    spacing: ThemeSpacing,
-    radii: ThemeRadii,
-    caret: ThemeCaret,
-    scrollbar: ScrollBarStyle,
-    typography: ThemeTypography,
     force_dirty: bool,
   ) -> Arc<LayoutResult> {
     self.last_recalculated.set(false);
-    *self.palette.borrow_mut() = palette;
-    *self.border_sizes.borrow_mut() = border_sizes;
-    *self.spacing.borrow_mut() = spacing;
-    *self.radii.borrow_mut() = radii;
-    *self.caret.borrow_mut() = caret;
-    *self.scrollbar.borrow_mut() = scrollbar;
-    *self.typography.borrow_mut() = typography;
     Self::mark_layout_dirty(node, force_dirty);
     let result = self.layout_node(glyph_engine, node, constraints);
     node.clear_guards();
@@ -4283,13 +4267,6 @@ mod tests {
         glyph_engine,
         &node,
         constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
         false,
       );
     };
@@ -4299,6 +4276,90 @@ mod tests {
 
     compute(&mut glyph_engine);
     assert!(!engine.last_recalculated());
+  }
+
+  /// `set_theme` copies the theme only when it changed. A change between two
+  /// computes still lays out and paints with the new spacing, typography and
+  /// palette; another theme at the same version is a change too; and a pass
+  /// on the unchanged theme serves the cache, painting with the values it
+  /// already holds.
+  #[test]
+  fn theme_change_between_computes_takes_effect_and_unchanged_theme_serves_cache() {
+    use crate::{
+      app::theme::SpacingSize,
+      components::{Rect, Row, Text},
+      node::Element,
+    };
+
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let constraints = Constraints::loose(Size::new(400.0, 200.0));
+    let node: Node = Element::from(
+      Row::new()
+        .spacing(SpacingSize::Md)
+        .child(Rect::new(10.0, 10.0).background(PaletteColor::Accent))
+        .child(Text::new("label")),
+    )
+    .into_node();
+    let style = |font_size: f32| TextStyle {
+      font_size,
+      ..TextStyle::default()
+    };
+    let themed = |spacing: f32, font_size: f32, accent: &str| {
+      let theme = Theme::new();
+      theme.set_spacing_value(SpacingSize::Md, spacing);
+      theme.set_default_text_style(style(font_size));
+      theme.set_palette_color(PaletteColor::Accent, Color::from_hex(accent));
+      theme
+    };
+    // A pass as the runtime runs it: a changed theme forces a relayout.
+    let pass = |glyph_engine: &mut GlyphEngine, theme: &Theme, force_dirty: bool| {
+      engine.set_theme(theme);
+      let result = engine.compute(glyph_engine, &node, constraints, force_dirty);
+      let quads = engine.resolve_quads(&node, &result);
+      let accent = quads.iter().find_map(|quad| match quad.content {
+        QuadContent::Rect { color, .. } => Some(color.to_hex()),
+        _ => None,
+      });
+      let font_size = quads.iter().find_map(|quad| match &quad.content {
+        QuadContent::Text { style, .. } => Some(style.font_size),
+        _ => None,
+      });
+      (result.children[1].offset.x, result.size.height, accent, font_size)
+    };
+
+    let theme = themed(4.0, 12.0, "#112233");
+    let (gap, small_height, accent, font_size) = pass(&mut glyph_engine, &theme, true);
+    assert_eq!(gap, 14.0);
+    assert_eq!(accent.as_deref(), Some("#112233"));
+    assert_eq!(font_size, Some(12.0));
+
+    theme.set_spacing_value(SpacingSize::Md, 9.0);
+    theme.set_default_text_style(style(30.0));
+    theme.set_palette_color(PaletteColor::Accent, Color::from_hex("#445566"));
+    let (gap, height, accent, font_size) = pass(&mut glyph_engine, &theme, true);
+    assert_eq!(gap, 19.0, "the new spacing lays out");
+    assert!(height > small_height, "the new typography lays out");
+    assert_eq!(accent.as_deref(), Some("#445566"), "the new palette paints");
+    assert_eq!(font_size, Some(30.0), "the new typography paints");
+
+    let (gap, cached_height, accent, font_size) = pass(&mut glyph_engine, &theme, false);
+    assert!(!engine.last_recalculated(), "an unchanged theme serves the cache");
+    assert_eq!((gap, cached_height), (19.0, height));
+    assert_eq!(accent.as_deref(), Some("#445566"));
+    assert_eq!(font_size, Some(30.0));
+
+    // Versions count each theme's own changes, so a separate theme can
+    // match this one's version with other values.
+    let other = themed(2.0, 12.0, "#778899");
+    for _ in 0..3 {
+      other.set_spacing_value(SpacingSize::Md, 2.0);
+    }
+    assert_eq!(other.version(), theme.version());
+    let (gap, _, accent, font_size) = pass(&mut glyph_engine, &other, true);
+    assert_eq!(gap, 12.0);
+    assert_eq!(accent.as_deref(), Some("#778899"));
+    assert_eq!(font_size, Some(12.0));
   }
 
   #[test]
@@ -4331,13 +4392,6 @@ mod tests {
         glyph_engine,
         node,
         constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
         false,
       )
     };
@@ -4391,13 +4445,6 @@ mod tests {
         glyph_engine,
         node,
         constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
         false,
       )
     };
@@ -4449,13 +4496,6 @@ mod tests {
         glyph_engine,
         node,
         constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
         false,
       )
     };
@@ -4515,13 +4555,6 @@ mod tests {
       &mut glyph_engine,
       &root,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -4551,13 +4584,6 @@ mod tests {
         glyph_engine,
         node,
         constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
         false,
       )
     };
@@ -4620,13 +4646,6 @@ mod tests {
         glyph_engine,
         node,
         constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
         false,
       )
     };
@@ -4671,13 +4690,6 @@ mod tests {
       &mut glyph_engine,
       &node,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
     assert!(engine.last_recalculated());
@@ -4686,13 +4698,6 @@ mod tests {
       &mut glyph_engine,
       &node,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
     assert!(!engine.last_recalculated());
@@ -4709,13 +4714,6 @@ mod tests {
       &mut glyph_engine,
       &node,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -4728,13 +4726,6 @@ mod tests {
       &mut glyph_engine,
       &node,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
     assert!(engine.last_recalculated());
@@ -4754,13 +4745,6 @@ mod tests {
       &mut glyph_engine,
       &old,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -4773,13 +4757,6 @@ mod tests {
       &mut glyph_engine,
       &new,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -4797,13 +4774,6 @@ mod tests {
       &mut glyph_engine,
       &old,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -4814,13 +4784,6 @@ mod tests {
       &mut glyph_engine,
       &new,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -4842,13 +4805,6 @@ mod tests {
       &mut glyph_engine,
       &old,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -4859,13 +4815,6 @@ mod tests {
       &mut glyph_engine,
       &new,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -4883,13 +4832,6 @@ mod tests {
       &mut glyph_engine,
       &old,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -4904,13 +4846,6 @@ mod tests {
       &mut glyph_engine,
       &new,
       constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
       false,
     );
 
@@ -5182,19 +5117,7 @@ mod tests {
     constraints: Constraints,
     force_dirty: bool,
   ) -> Arc<LayoutResult> {
-    engine.compute(
-      glyph_engine,
-      node,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      force_dirty,
-    )
+    engine.compute(glyph_engine, node, constraints, force_dirty)
   }
 
   #[test]

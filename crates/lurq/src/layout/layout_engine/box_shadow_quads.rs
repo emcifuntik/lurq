@@ -6,7 +6,6 @@
 
 use super::{LayoutEngine, transformed_quad_frame};
 use crate::{
-  app::theme::ThemeShadows,
   layout::{
     layout_result::LayoutResult,
     quad::{ClipRect, Quad, QuadContent},
@@ -20,12 +19,6 @@ use crate::{
 };
 
 impl LayoutEngine {
-  /// Replaces the shadow table [`ShadowStyle`](crate::app::theme::ShadowStyle)
-  /// roles resolve against. Shared, so a pass does not copy it.
-  pub(crate) fn set_shadows(&self, shadows: std::sync::Arc<ThemeShadows>) {
-    *self.shadows.borrow_mut() = shadows;
-  }
-
   pub(super) fn has_inset_box_shadow(&self, node: &Node) -> bool {
     node
       .effective_box_shadow()

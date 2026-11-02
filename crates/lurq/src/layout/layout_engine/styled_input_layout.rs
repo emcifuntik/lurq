@@ -40,8 +40,4 @@ impl LayoutEngine {
       .collect();
     Some((text, styles))
   }
-
-  pub(crate) fn set_text_marks(&self, marks: Arc<crate::app::theme::ThemeTextMarks>) {
-    *self.text_marks.borrow_mut() = marks;
-  }
 }
