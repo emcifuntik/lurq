@@ -24,6 +24,7 @@ fn config(raw: &str, width: f32, padding: f32) -> InputConfig {
         text: base.clone(),
         padding,
         fill: None,
+        lines: Default::default(),
       })
       .collect(),
   }

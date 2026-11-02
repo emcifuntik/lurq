@@ -1,6 +1,6 @@
 [package]
 name = "lurq"
-version = "0.51.2"
+version = "0.53.0"
 edition = "2024"
 description = "A Rust UI toolkit with typed components, retained state, reactive signals, GPU rendering, and DevTools."
 license = "MIT"
@@ -178,6 +178,10 @@ name = "spinner_pacing"
 required-features = ["winit", "wgpu"]
 
 [[example]]
+name = "styled_editor"
+required-features = ["markdown", "winit", "wgpu", "clipboard"]
+
+[[example]]
 name = "text_interaction_probe"
 required-features = ["winit", "dx12", "perf_profile"]
 
@@ -210,10 +214,20 @@ name = "text_pipeline"
 harness = false
 required-features = ["markdown"]
 
+[[bench]]
+name = "styled_input"
+harness = false
+required-features = ["markdown"]
+
 [[test]]
 name = "native_macos"
 harness = false
 required-features = ["winit"]
+
+[[test]]
+name = "native_macos_occluded_capture"
+harness = false
+required-features = ["winit", "wgpu", "screenshot"]
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSGraphicsContext", "NSWindow"] }

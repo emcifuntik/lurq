@@ -18,6 +18,7 @@ fn layout(source: &str, width: f32) -> Arc<DecoratedInputLayout> {
       text: base,
       padding: 3.0,
       fill: Some((Color::new(2, 3, 4, 255), 3.0)),
+      lines: Default::default(),
     }],
   })
 }
@@ -65,6 +66,7 @@ fn input_tokens_rtl_metrics_tracking_are_logical_pixels() {
         text: token,
         padding: 3.0,
         fill: Some((Color::new(2, 3, 4, 255), 3.0)),
+        lines: Default::default(),
       }],
     })
   };
@@ -456,6 +458,7 @@ fn input_tokens_rtl_token_internal_blanks_and_negative_tracking_have_finite_raw_
         text: base,
         padding: 3.0,
         fill: Some((Color::new(1, 2, 3, 255), 3.0)),
+        lines: Default::default(),
       }],
     });
     assert_eq!(output.carets[output.default_caret(source.len())].byte, source.len());

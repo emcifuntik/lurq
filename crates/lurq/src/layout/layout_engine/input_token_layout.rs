@@ -1,10 +1,12 @@
 //! Styled paragraph geometry and paint share the exact input layout.
+use std::sync::Arc;
+
 use super::{DEFAULT_TEXT_INPUT_WIDTH, LayoutEngine, TextInputOutput, multiline_preferred_height};
 pub(crate) use crate::app::glyph_engine::input_tokens::DecoratedInputLayout as TokenLayout;
 use crate::{
   app::glyph_engine::{
     GlyphEngine,
-    input_tokens::{InputConfig, TokenStyle},
+    input_tokens::{InputConfig, TextLines, TokenStyle},
   },
   components::InputTokens,
   layout::{Constraints, Size, text_style::TextStyle},
@@ -21,13 +23,7 @@ impl LayoutEngine {
     tokens: InputTokens,
     scrollbar_lane: f32,
   ) -> crate::layout::layout_result::LayoutResult {
-    let wrap = state.overflow() == TextInputOverflow::Multiline;
-    let max_width = if wrap {
-      constraints.max_width
-    } else {
-      constraints.constrain(Size::new(DEFAULT_TEXT_INPUT_WIDTH, 0.0)).width
-    };
-    let width = if max_width.is_nan() { 0.0 } else { max_width.max(0.0) };
+    let width = Self::decorated_input_width(state, constraints);
     let styles = tokens
       .tokens
       .iter()
@@ -55,11 +51,35 @@ impl LayoutEngine {
             .background
             .resolve(&self.palette.borrow())
             .map(|color| (color, radius)),
+          lines: TextLines::default(),
         }
       })
       .collect();
+    self.layout_decorated_input(
+      glyphs,
+      state,
+      base,
+      constraints,
+      (tokens.source, styles),
+      scrollbar_lane,
+    )
+  }
+
+  /// Lays out `source` with a text style per range, sharing the geometry
+  /// with paint: input tokens and styled spans both draw this way.
+  pub(super) fn layout_decorated_input(
+    &self,
+    glyphs: &mut GlyphEngine,
+    state: &TextInputState,
+    base: &TextStyle,
+    constraints: Constraints,
+    (source, styles): (Arc<str>, Vec<TokenStyle>),
+    scrollbar_lane: f32,
+  ) -> crate::layout::layout_result::LayoutResult {
+    let wrap = state.overflow() == TextInputOverflow::Multiline;
+    let width = Self::decorated_input_width(state, constraints);
     let layout = glyphs.decorated_input(InputConfig {
-      source: tokens.source,
+      source,
       base: base.clone(),
       styles,
       width,
@@ -89,5 +109,16 @@ impl LayoutEngine {
       scrollbar_lane,
     };
     Self::text_input_result(state, output)
+  }
+
+  /// The width a decorated input lays its text out in: the room it is given
+  /// when it wraps, its own width when it scrolls.
+  fn decorated_input_width(state: &TextInputState, constraints: Constraints) -> f32 {
+    let max_width = if state.overflow() == TextInputOverflow::Multiline {
+      constraints.max_width
+    } else {
+      constraints.constrain(Size::new(DEFAULT_TEXT_INPUT_WIDTH, 0.0)).width
+    };
+    if max_width.is_nan() { 0.0 } else { max_width.max(0.0) }
   }
 }

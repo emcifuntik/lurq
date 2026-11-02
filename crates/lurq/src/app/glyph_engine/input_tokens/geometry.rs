@@ -1,9 +1,9 @@
-use std::{collections::BTreeMap, mem::size_of};
+use std::mem::size_of;
 
 use cosmic_text::LayoutLine;
 
 use super::{
-  rows::{padding::Padding, visual_bounds},
+  rows::{padding::Padding, row_extent},
   *,
 };
 use crate::layout::text_style::TextAlign;
@@ -64,9 +64,7 @@ impl DecoratedInputLayout {
     let top = self.size.height;
     let band_top = (height - row.max_ascent - row.max_descent) * 0.5;
     let baseline = top + band_top + row.max_ascent;
-    let bounds = visual_bounds(&row.glyphs);
-    let right = bounds.values().map(|bound| bound.1).fold(0.0_f32, f32::max);
-    let left = bounds.values().map(|bound| bound.0).fold(right, f32::min);
+    let (left, right) = row_extent(&row.glyphs);
     let width = (right - left).max(0.0);
     let shift = 0.0;
     self.append_clusters(&row, styles, metrics, padding, offset, top, height, baseline, shift);
@@ -126,21 +124,16 @@ impl DecoratedInputLayout {
     baseline: f32,
     shift: f32,
   ) {
-    let mut clusters = BTreeMap::new();
-    let mut bands: BTreeMap<_, (f32, f32)> = BTreeMap::new();
-    for glyph in &row.glyphs {
-      let key = (glyph.start, glyph.end);
-      clusters.entry(key).or_insert(glyph);
-      let band = bands.entry(key).or_insert((0.0, 0.0));
-      band.0 = band.0.max(metrics[glyph.metadata].0);
-      band.1 = band.1.max(metrics[glyph.metadata].1);
-    }
-    let bounds = visual_bounds(&row.glyphs);
-    let mut visual: Vec<_> = clusters.into_iter().collect();
-    visual.sort_by(|a, b| bounds[&a.0].0.total_cmp(&bounds[&b.0].0).then(a.0.cmp(&b.0)));
+    let visual = row_clusters(&row.glyphs, metrics);
     let mut fragment: Option<(usize, f32, f32, f32, f32)> = None;
-    for (range, glyph) in visual {
-      let (left, right) = bounds[&range];
+    for RowCluster {
+      range,
+      glyph,
+      left,
+      right,
+      band,
+    } in visual
+    {
       let (left_pad, right_pad) = padding.edges.get(&range).copied().unwrap_or((0.0, 0.0));
       let body_left = left + left_pad + shift;
       let body_right = right - right_pad + shift;
@@ -172,7 +165,7 @@ impl DecoratedInputLayout {
         self.push_fragment(part, baseline);
       }
       if let Some(token) = token {
-        let (ascent, descent) = bands[&range];
+        let (ascent, descent) = band;
         fragment = Some(
           fragment.map_or((token, left + shift, right + shift, ascent, descent), |old| {
             (
@@ -214,20 +207,47 @@ impl DecoratedInputLayout {
   }
 
   fn push_fragment(&mut self, (token, left, right, ascent, descent): (usize, f32, f32, f32, f32), baseline: f32) {
-    if let Some((color, radius)) = self.config.styles[token].fill {
-      let style = &self.config.styles[token].text;
-      let height = (style.font_size * style.line_height).max(ascent + descent);
+    let width = (right - left).max(0.0);
+    let style = &self.config.styles[token];
+    let (font_size, line_height, color, lines) = (
+      style.text.font_size,
+      style.text.line_height,
+      style.text.color,
+      style.lines,
+    );
+    if let Some((fill, radius)) = style.fill {
+      let height = (font_size * line_height).max(ascent + descent);
       let y = baseline - ascent - (height - ascent - descent) * 0.5;
-      self.fragments.push(InputFragment {
-        x: left,
-        y,
-        width: (right - left).max(0.0),
-        height,
-        color,
-        radius,
-        row: self.rows.len(),
-      });
+      self.push_rect(left, y, width, height, fill, radius);
     }
+    // The font's own line metrics are not at hand here; these are the usual
+    // positions in ems, kept at least a pixel thick.
+    let thickness = (font_size / 14.0).max(1.0);
+    if lines.underline {
+      self.push_rect(left, baseline + font_size * 0.08, width, thickness, color, 0.0);
+    }
+    if lines.strikethrough {
+      self.push_rect(
+        left,
+        baseline - font_size * 0.28 - thickness * 0.5,
+        width,
+        thickness,
+        color,
+        0.0,
+      );
+    }
+  }
+
+  fn push_rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Color, radius: f32) {
+    self.fragments.push(InputFragment {
+      x,
+      y,
+      width,
+      height,
+      color,
+      radius,
+      row: self.rows.len(),
+    });
   }
 
   fn ensure_row_boundaries(&mut self, offset: usize, coverage: Range<usize>, y: f32, height: f32, shift: f32) {
@@ -330,6 +350,17 @@ impl DecoratedInputLayout {
       .min_by(|a, b| (a.1.x - x).abs().total_cmp(&(b.1.x - x).abs()))
       .map_or(0, |(index, _)| index)
   }
+  /// The source range of the character cluster drawn under a point, if any.
+  #[cfg(feature = "markdown")]
+  pub(crate) fn cluster_at(&self, x: f32, y: f32) -> Option<Range<usize>> {
+    let row = self.rows.iter().find(|row| row.y <= y && y < row.y + row.height)?;
+    self
+      .intervals
+      .iter()
+      .find(|part| part.y == row.y && part.x <= x && x < part.right && !part.range.is_empty())
+      .map(|part| part.range.clone())
+  }
+
   pub(crate) fn vertical(&self, caret: usize, down: bool) -> usize {
     let position = self.carets[caret];
     let row = if down {
@@ -404,4 +435,44 @@ fn style_heap(style: &crate::layout::text_style::TextStyle) -> usize {
     } else {
       2 * size_of::<usize>()
     }
+}
+
+/// A cluster of a laid-out row: its source range, its first glyph, its
+/// left and right, and the tallest ascent and descent of its glyphs.
+struct RowCluster<'a> {
+  range: (usize, usize),
+  glyph: &'a LayoutGlyph,
+  left: f32,
+  right: f32,
+  band: (f32, f32),
+}
+
+/// A row's clusters from left to right (ties in source order).
+fn row_clusters<'a>(glyphs: &'a [LayoutGlyph], metrics: &[(f32, f32)]) -> Vec<RowCluster<'a>> {
+  let mut order: Vec<usize> = (0..glyphs.len()).collect();
+  order.sort_unstable_by_key(|&index| (glyphs[index].start, glyphs[index].end, index));
+  let mut clusters: Vec<RowCluster<'a>> = Vec::with_capacity(glyphs.len());
+  for index in order {
+    let glyph = &glyphs[index];
+    let range = (glyph.start, glyph.end);
+    let left = glyph.x.min(glyph.x + glyph.w);
+    let right = glyph.x.max(glyph.x + glyph.w);
+    let (ascent, descent) = metrics[glyph.metadata];
+    match clusters.last_mut() {
+      Some(cluster) if cluster.range == range => {
+        cluster.left = cluster.left.min(left);
+        cluster.right = cluster.right.max(right);
+        cluster.band = (cluster.band.0.max(ascent), cluster.band.1.max(descent));
+      }
+      _ => clusters.push(RowCluster {
+        range,
+        glyph,
+        left,
+        right,
+        band: (ascent.max(0.0), descent.max(0.0)),
+      }),
+    }
+  }
+  clusters.sort_by(|a, b| a.left.total_cmp(&b.left).then(a.range.cmp(&b.range)));
+  clusters
 }

@@ -20,6 +20,63 @@ impl TextInput {
     self
   }
 
+  /// Makes this a styled input: `spans` holds the styled runs of the value
+  /// as UTF-8 byte ranges ([`super::StyledSpan`]). The input draws them with
+  /// the theme's text marks, moves them with every edit, keeps them in its
+  /// undo history and writes them back to the signal; the app sets both
+  /// signals to load a model. Typed text takes the style of the text before
+  /// the caret, except that a link does not grow past its end. A styled
+  /// input ignores [`Self::tokens`]; masked, it is plain.
+  #[cfg(feature = "markdown")]
+  pub fn spans(mut self, spans: Signal<Vec<super::StyledSpan>>) -> Self {
+    self.update_node(|node| {
+      if let crate::node::node_kind::NodeKind::TextInput { state, .. } = node.node_kind() {
+        state.set_spans_signal(spans);
+      }
+    });
+    self
+  }
+
+  /// Runs after every change a styled input makes to its text or spans
+  /// (typing, deleting, pasting, styling, undo) with a [`super::StyledChange`]:
+  /// the text and spans it now holds, shared rather than copied, and what the
+  /// edit was. An app's own writes of the signals do not run it.
+  #[cfg(feature = "markdown")]
+  pub fn on_styled_change(mut self, f: impl Fn(&super::StyledChange) + Send + Sync + 'static) -> Self {
+    self.update_node(|node| {
+      if let crate::node::node_kind::NodeKind::TextInput { state, .. } = node.node_kind() {
+        state.add_styled_change_handler(f);
+      }
+    });
+    self
+  }
+
+  /// What copying or cutting from a styled input puts on the clipboard: `f`
+  /// gets the selection with its spans (offsets from its start) and returns
+  /// the text to copy, such as Markdown. Without it the plain text is copied.
+  #[cfg(feature = "markdown")]
+  pub fn copy_format(mut self, f: impl Fn(&super::StyledText) -> String + Send + Sync + 'static) -> Self {
+    self.update_node(|node| {
+      if let crate::node::node_kind::NodeKind::TextInput { state, .. } = node.node_kind() {
+        state.set_copy_format(f);
+      }
+    });
+    self
+  }
+
+  /// Runs when a person clicks a link of a styled input with the platform's
+  /// shortcut modifier held (Ctrl, or Cmd on macOS); the app opens the
+  /// target. A plain click places the caret, as in any text.
+  #[cfg(feature = "markdown")]
+  pub fn on_link_click(mut self, f: impl Fn(&super::LinkClick) + Send + Sync + 'static) -> Self {
+    self.update_node(|node| {
+      if let crate::node::node_kind::NodeKind::TextInput { state, .. } = node.node_kind() {
+        state.add_link_click_handler(f);
+      }
+    });
+    self
+  }
+
   /// Retained selection/edit control for this input; use one controller per keyed value.
   pub fn controller(mut self, controller: super::TextInputController) -> Self {
     self.update_node(|node| {

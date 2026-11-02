@@ -25,6 +25,7 @@ fn fixture() -> (GlyphEngine, std::sync::Arc<DecoratedInputLayout>, Quad) {
       text: token,
       padding: 3.0,
       fill: None,
+      lines: Default::default(),
     }],
     width: 150.0,
     min_width: 150.0,

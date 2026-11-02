@@ -22,7 +22,7 @@ impl LayoutEngine {
     style: &TextStyle,
     placeholder: Option<&TextStyle>,
   ) -> QuadContent {
-    if let Some(layout) = state.token_layout() {
+    if let Some(layout) = state.painted_layout() {
       return QuadContent::DecoratedInput { layout };
     }
     let display = super::text_input_display_style(state, style, placeholder).clone();
@@ -51,7 +51,7 @@ impl LayoutEngine {
     opacity: f32,
     quads: &mut Vec<Quad>,
   ) {
-    let Some(layout) = state.token_layout() else {
+    let Some(layout) = state.painted_layout() else {
       return;
     };
     let padding = self.resolved_padding_for_size(node, result.size);

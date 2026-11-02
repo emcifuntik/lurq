@@ -1211,6 +1211,36 @@ impl WgpuRenderEngine {
     self.vertex_buffer = Some(vertex_buffer);
     self.index_buffer = Some(index_buffer);
   }
+
+  /// The texture a frame is drawn into when the surface gives none and a capture waits for that frame: AppKit hands
+  /// out no drawable while the window is occluded, and the capture would otherwise wait until it shows again.
+  #[cfg_attr(not(feature = "screenshot"), allow(unused_variables))]
+  fn offscreen_capture_target(
+    &self,
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+  ) -> Option<FrameTarget> {
+    #[cfg(feature = "screenshot")]
+    if self.pending_frame_capture.is_some() {
+      return Some(FrameTarget::Offscreen(device.create_texture(
+        &wgpu::TextureDescriptor {
+          label: Some("lurq_offscreen_capture_frame"),
+          size: wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+          },
+          mip_level_count: 1,
+          sample_count: 1,
+          dimension: wgpu::TextureDimension::D2,
+          format: config.format,
+          usage: config.usage,
+          view_formats: &config.view_formats,
+        },
+      )));
+    }
+    None
+  }
 }
 
 fn supported_present_mode(requested: wgpu::PresentMode, supported: &[wgpu::PresentMode]) -> wgpu::PresentMode {
@@ -1353,7 +1383,9 @@ impl RenderEngine for WgpuRenderEngine {
       .as_ref()
       .map(|context| context.phase(crate::app::profiler::Phase::RenderAcquire));
     let output = match surface.get_current_texture() {
-      wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+      wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
+        FrameTarget::Surface(texture)
+      }
       // The surface fell out of sync with the window — common on Vulkan during a
       // live resize (VK_ERROR_OUT_OF_DATE_KHR). Reconfigure to the current size
       // and retry once; without this the frame is skipped and the window stalls
@@ -1361,23 +1393,31 @@ impl RenderEngine for WgpuRenderEngine {
       wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
         surface.configure(device, config);
         match surface.get_current_texture() {
-          wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
-          _ => return false,
+          wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
+            FrameTarget::Surface(texture)
+          }
+          _ => match self.offscreen_capture_target(device, config) {
+            Some(target) => target,
+            None => return false,
+          },
         }
       }
-      _ => {
-        profile_if! {
-          self.last_profile = RenderProfile {
-            init: _init_dur,
-            acquire: profile_elapsed!(_acquire_start),
-            total: profile_elapsed!(_total_start),
-            ..RenderProfile::default()
-          };
+      _ => match self.offscreen_capture_target(device, config) {
+        Some(target) => target,
+        None => {
+          profile_if! {
+            self.last_profile = RenderProfile {
+              init: _init_dur,
+              acquire: profile_elapsed!(_acquire_start),
+              total: profile_elapsed!(_total_start),
+              ..RenderProfile::default()
+            };
+          }
+          return false;
         }
-        return false;
-      }
+      },
     };
-    let view = output.texture.create_view(&wgpu::TextureViewDescriptor {
+    let view = output.texture().create_view(&wgpu::TextureViewDescriptor {
       format: Some(render_target_format(config.format)),
       ..Default::default()
     });
@@ -2348,7 +2388,7 @@ impl RenderEngine for WgpuRenderEngine {
     let frame_capture = self
       .pending_frame_capture
       .take()
-      .and_then(|capture| encode_wgpu_frame_capture(device, &mut encoder, &output.texture, config.format, capture));
+      .and_then(|capture| encode_wgpu_frame_capture(device, &mut encoder, output.texture(), config.format, capture));
 
     let _submit_start = profile_scope!();
     #[cfg(feature = "perf_profile")]
@@ -2434,6 +2474,28 @@ impl RenderEngine for WgpuRenderEngine {
   #[cfg(feature = "perf_profile")]
   fn last_profile(&self) -> Option<RenderProfile> {
     Some(self.last_profile)
+  }
+}
+
+/// Where a frame is drawn: the window surface's texture, or a texture of the surface's size and format that a capture
+/// is taken from and that is never shown.
+enum FrameTarget {
+  Surface(wgpu::SurfaceTexture),
+  Offscreen(wgpu::Texture),
+}
+
+impl FrameTarget {
+  fn texture(&self) -> &wgpu::Texture {
+    match self {
+      Self::Surface(output) => &output.texture,
+      Self::Offscreen(texture) => texture,
+    }
+  }
+
+  fn present(self) {
+    if let Self::Surface(output) = self {
+      output.present();
+    }
   }
 }
 

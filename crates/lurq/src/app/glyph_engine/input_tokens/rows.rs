@@ -39,13 +39,14 @@ pub(super) fn paragraph(
   bytes: usize,
   config: &InputConfig,
 ) {
-  let paragraph = Paragraph::new(original, config);
+  let padded = config.styles.iter().any(|style| style.padding != 0.0);
+  let paragraph = Paragraph::new(original, config, padded);
   let context = Arc::new(RowContext {
     styles: paragraph.styles.clone(),
     metrics: paragraph.metrics.clone(),
     blank_words: paragraph.blank_words.clone(),
   });
-  if config.styles.iter().all(|style| style.padding == 0.0) {
+  if !padded {
     public_rows(rows, &paragraph, context, offset, bytes, config);
     return;
   }
@@ -197,9 +198,7 @@ pub(super) fn finish(output: &mut DecoratedInputLayout, mut rows: Vec<PreparedRo
     .iter()
     .filter_map(|row| row.line.as_ref())
     .map(|row| {
-      let bounds = visual_bounds(&row.glyphs);
-      let right = bounds.values().map(|bound| bound.1).fold(0.0_f32, f32::max);
-      let left = bounds.values().map(|bound| bound.0).fold(right, f32::min);
+      let (left, right) = row_extent(&row.glyphs);
       right - left
     })
     .fold(0.0_f32, f32::max);
@@ -366,6 +365,20 @@ fn fragment_delta(order: &BTreeMap<usize, Option<usize>>, cluster: &Cluster, con
     delta -= cost(cluster.token);
   }
   delta
+}
+
+/// The left and right of a row's glyphs, as the bounds of its clusters fold
+/// to them: the right is never left of 0, the left never right of the right.
+pub(super) fn row_extent(glyphs: &[LayoutGlyph]) -> (f32, f32) {
+  let right = glyphs
+    .iter()
+    .map(|glyph| glyph.x.max(glyph.x + glyph.w))
+    .fold(0.0_f32, f32::max);
+  let left = glyphs
+    .iter()
+    .map(|glyph| glyph.x.min(glyph.x + glyph.w))
+    .fold(right, f32::min);
+  (left, right)
 }
 
 pub(super) fn visual_bounds(glyphs: &[LayoutGlyph]) -> BTreeMap<(usize, usize), (f32, f32)> {

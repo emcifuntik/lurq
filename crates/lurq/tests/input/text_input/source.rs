@@ -126,6 +126,7 @@ fn decorated_state(width: f32) -> (TextInputState, Arc<crate::layout::quad::Deco
       text: base,
       padding: 3.0,
       fill: None,
+      lines: Default::default(),
     }],
   });
   state.set_token_layout(Some(layout.clone()));

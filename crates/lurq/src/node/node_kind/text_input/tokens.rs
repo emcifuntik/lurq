@@ -37,12 +37,31 @@ impl TextInputState {
     inner.token_layout = layout;
   }
 
+  /// The decorated layout that editing and hit testing use: the one laid
+  /// out over the current value, never while composing or masked.
   pub(crate) fn token_layout(&self) -> Option<Arc<TokenLayout>> {
-    let tokens = self.tokens()?;
+    let value = self.value();
     let inner = self.inner.lock();
+    if inner.mask.is_some() || inner.composition.is_some() {
+      return None;
+    }
     inner
       .token_layout
       .clone()
-      .filter(|layout| layout.config.source == tokens.source)
+      .filter(|layout| layout.config.source.as_ref() == value)
+  }
+
+  /// The decorated layout that paint draws: also a styled input's while it
+  /// composes, laid out over the displayed text.
+  pub(crate) fn painted_layout(&self) -> Option<Arc<TokenLayout>> {
+    let shown = self.composed_text().unwrap_or_else(|| self.value());
+    let inner = self.inner.lock();
+    if inner.mask.is_some() {
+      return None;
+    }
+    inner
+      .token_layout
+      .clone()
+      .filter(|layout| layout.config.source.as_ref() == shown)
   }
 }

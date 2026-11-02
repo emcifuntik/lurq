@@ -20,6 +20,7 @@ fn config(source: &str, wrap: bool) -> InputConfig {
       text: base,
       padding: 3.0,
       fill: None,
+      lines: Default::default(),
     }],
   }
 }

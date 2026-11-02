@@ -25,14 +25,17 @@ pub(super) struct Paragraph {
 }
 
 impl Paragraph {
-  pub(super) fn new(original: &ShapeLine, config: &InputConfig) -> Self {
+  /// The paragraph's glyph styles and metrics; `with_clusters`, also the
+  /// clusters that padded rows are broken and filled by. Rows without
+  /// padding are laid out by cosmic-text and need none.
+  pub(super) fn new(original: &ShapeLine, config: &InputConfig, with_clusters: bool) -> Self {
     let mut shape = original.clone();
     let mut styles = Vec::new();
     let mut metrics = Vec::new();
     let mut blank_words = Vec::new();
     let mut word_id = 0;
-    let mut clusters: BTreeMap<(usize, usize), Cluster> = BTreeMap::new();
     let mut ends = BTreeSet::new();
+    let mut clusters: BTreeMap<(usize, usize), Cluster> = BTreeMap::new();
     for (span_index, span) in shape.spans.iter_mut().enumerate() {
       for (word_index, word) in span.words.iter_mut().enumerate() {
         word_id += 1;
@@ -48,6 +51,9 @@ impl Paragraph {
             .metrics_opt
             .map_or(config.base.font_size, |metrics| metrics.font_size);
           metrics.push((glyph.ascent * em, glyph.descent * em));
+          if !with_clusters {
+            continue;
+          }
           let token = style.checked_sub(1);
           let entry = clusters.entry((glyph.start, glyph.end)).or_insert_with(|| Cluster {
             range: glyph.start..glyph.end,
@@ -61,6 +67,15 @@ impl Paragraph {
           entry.advance_bound += glyph.width(config.base.font_size).abs();
         }
       }
+    }
+    if !with_clusters {
+      return Self {
+        shape,
+        styles,
+        metrics,
+        blank_words,
+        clusters: Vec::new(),
+      };
     }
     let visual = shape.layout(
       config.base.font_size,

@@ -29,6 +29,8 @@ mod slider;
 mod slot;
 mod spacer;
 mod stack;
+#[cfg(feature = "markdown")]
+pub(crate) mod styled_text;
 #[cfg(feature = "svg")]
 mod svg;
 mod text;
@@ -80,6 +82,10 @@ pub use slider::Slider;
 pub use slot::Slot;
 pub use spacer::Spacer;
 pub use stack::Stack;
+#[cfg(feature = "markdown")]
+pub use styled_text::{
+  LinkClick, MarkPresence, SelectionStyle, SpanStyle, StyledChange, StyledEdit, StyledSpan, StyledText, TextMark,
+};
 #[cfg(feature = "svg")]
 pub use svg::Svg;
 pub use text::{Text, TextOverflow};
@@ -717,6 +723,18 @@ macro_rules! impl_into_node {
 
       pub fn off_paste(mut self, f: impl $crate::node::IntoPasteEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::off_paste(node, f));
+        self
+      }
+
+      /// A trackpad swipe between pages ended over this element: two fingers moved sideways that nothing under the
+      /// pointer scrolled with. Go back or forward by the event's `direction`, as a browser does.
+      pub fn on_history_swipe(mut self, f: impl $crate::node::IntoHistorySwipeEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_history_swipe(node, f));
+        self
+      }
+
+      pub fn off_history_swipe(mut self, f: impl $crate::node::IntoHistorySwipeEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_history_swipe(node, f));
         self
       }
 

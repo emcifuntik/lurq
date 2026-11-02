@@ -55,6 +55,8 @@ mod sensitive_quads;
 mod shrink_distribution;
 mod shrink_floors;
 mod shrink_sharing;
+#[cfg(feature = "markdown")]
+mod styled_input_layout;
 mod text_input_quads;
 mod text_layout_output;
 
@@ -226,6 +228,9 @@ pub(crate) struct LayoutEngine {
   scrollbar: RefCell<ScrollBarStyle>,
   typography: RefCell<ThemeTypography>,
   shadows: RefCell<Arc<ThemeShadows>>,
+  /// How the marks of styled text inputs look.
+  #[cfg(feature = "markdown")]
+  text_marks: RefCell<Arc<crate::app::theme::ThemeTextMarks>>,
   /// Open state of the `Select` whose trigger is being painted, if any.
   select_open: Cell<Option<bool>>,
   /// Caret of the focused text input recorded by the last quad resolution,
@@ -510,6 +515,8 @@ impl LayoutEngine {
       scrollbar: RefCell::new(ScrollBarStyle::default()),
       typography: RefCell::new(ThemeTypography::default()),
       shadows: RefCell::new(Arc::new(ThemeShadows::default())),
+      #[cfg(feature = "markdown")]
+      text_marks: RefCell::new(Arc::new(crate::app::theme::ThemeTextMarks::default())),
       select_open: Cell::new(None),
       ime_cursor_area: Cell::new(None),
       opacity_groups: RefCell::new(Vec::new()),
@@ -1417,7 +1424,7 @@ impl LayoutEngine {
               (
                 abs_x + padding.left - scroll_x,
                 abs_y + padding.top - scroll_y
-                  + if state.token_layout().is_some() {
+                  + if state.painted_layout().is_some() {
                     text_input_vertical_offset(state, content_height)
                   } else {
                     0.0

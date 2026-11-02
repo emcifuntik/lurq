@@ -8,7 +8,7 @@ mod tests;
 
 fn paint_input_glyphs(
   engine: &mut GlyphEngine,
-  layout: &DecoratedInputLayout,
+  layout: &std::sync::Arc<DecoratedInputLayout>,
   quad: &Quad,
   scale: f32,
   order: usize,
@@ -21,6 +21,20 @@ fn paint_input_glyphs(
     transformed_text_raster_scale(quad.transform)
   };
   let origin = (quad.x, quad.y);
+  // The common case, an untransformed input without text shadows, reuses
+  // the glyph commands of the frame before.
+  if quad.transform.is_identity() && layout.glyphs.iter().all(|glyph| glyph.shadow.is_none()) {
+    let start = out.len();
+    engine.rasterize_input_glyphs(layout, origin, scale, out);
+    for command in &mut out[start..] {
+      command.order = order;
+      command.clip = clip;
+      if quad.opacity < 1.0 {
+        command.color[3] *= quad.opacity.clamp(0.0, 1.0);
+      }
+    }
+    return;
+  }
   let xf_origin = quad
     .transform_origin
     .map(|[x, y]| [(quad.x + x) * scale, (quad.y + y) * scale])
@@ -56,7 +70,7 @@ fn paint_input_glyphs(
 
 pub(super) fn resolve_input_quad(
   engine: &mut GlyphEngine,
-  layout: &DecoratedInputLayout,
+  layout: &std::sync::Arc<DecoratedInputLayout>,
   quad: &Quad,
   scale: f32,
   order: usize,

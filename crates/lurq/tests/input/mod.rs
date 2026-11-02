@@ -42,6 +42,8 @@ mod text_input {
   mod scrollbar_lane;
   mod soft_wrap_selection;
   mod style;
+  #[cfg(feature = "markdown")]
+  mod styled;
   mod tokens;
   mod typing_updates_value;
   mod vertical_rows;

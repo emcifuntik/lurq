@@ -11,8 +11,8 @@ use crate::{
   animation::{Animation, Transition},
   app::{
     events::{
-      DragEvent, DropEvent, FileDragEvent, FileDropEvent, KeyboardEvent, MouseButton, MouseButtonMask, MouseEvent,
-      PasteEvent, ScrollEvent, TextInputEvent,
+      DragEvent, DropEvent, FileDragEvent, FileDropEvent, HistorySwipeEvent, KeyboardEvent, MouseButton,
+      MouseButtonMask, MouseEvent, PasteEvent, ScrollEvent, TextInputEvent,
     },
     theme::{CaretMode, TypographyStyle},
   },
@@ -193,6 +193,25 @@ where
   F: Fn(FileDropEvent) + Send + Sync + 'static,
 {
   fn into_event_handler(self) -> EventHandler<FileDropEvent> {
+    EventHandler::from_event(self)
+  }
+}
+
+pub trait IntoHistorySwipeEventHandler {
+  fn into_event_handler(self) -> EventHandler<HistorySwipeEvent>;
+}
+
+impl IntoHistorySwipeEventHandler for EventHandler<HistorySwipeEvent> {
+  fn into_event_handler(self) -> EventHandler<HistorySwipeEvent> {
+    self
+  }
+}
+
+impl<F> IntoHistorySwipeEventHandler for F
+where
+  F: Fn(HistorySwipeEvent) + Send + Sync + 'static,
+{
+  fn into_event_handler(self) -> EventHandler<HistorySwipeEvent> {
     EventHandler::from_event(self)
   }
 }
@@ -457,6 +476,8 @@ pub(crate) trait NodeUpdate {
   fn off_scroll_reach_top(&mut self, f: impl IntoScrollEventHandler);
   fn on_scroll_reach_bottom(&mut self, f: impl IntoScrollEventHandler);
   fn off_scroll_reach_bottom(&mut self, f: impl IntoScrollEventHandler);
+  fn on_history_swipe(&mut self, f: impl IntoHistorySwipeEventHandler);
+  fn off_history_swipe(&mut self, f: impl IntoHistorySwipeEventHandler);
   fn opacity(&mut self, value: f32);
   fn transform(&mut self, t: Transform2D);
   fn transition(&mut self, spec: Transition);
@@ -642,6 +663,7 @@ pub struct EventHandlers {
   pub on_scroll_end: Vec<Callback<ScrollEvent>>,
   pub on_scroll_reach_top: Vec<Callback<ScrollEvent>>,
   pub on_scroll_reach_bottom: Vec<Callback<ScrollEvent>>,
+  pub on_history_swipe: Vec<Callback<HistorySwipeEvent>>,
 }
 
 /// The styles few nodes set, behind one guard: a guard holds a watch handle
@@ -1510,6 +1532,18 @@ impl NodeUpdate for Node {
     self
       .events
       .on_scroll_reach_bottom
+      .retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_history_swipe(&mut self, f: impl IntoHistorySwipeEventHandler) {
+    self.events.on_history_swipe.push(f.into_event_handler());
+  }
+
+  fn off_history_swipe(&mut self, f: impl IntoHistorySwipeEventHandler) {
+    let handler = f.into_event_handler();
+    self
+      .events
+      .on_history_swipe
       .retain(|existing| !existing.same_handler(&handler));
   }
 
@@ -2815,6 +2849,17 @@ impl Node {
 
   pub fn on_paste(mut self, f: impl IntoPasteEventHandler) -> Self {
     NodeUpdate::on_paste(&mut self, f);
+    self
+  }
+
+  /// A trackpad swipe between pages ended over this element; see [`HistorySwipeEvent`].
+  pub fn on_history_swipe(mut self, f: impl IntoHistorySwipeEventHandler) -> Self {
+    NodeUpdate::on_history_swipe(&mut self, f);
+    self
+  }
+
+  pub fn off_history_swipe(mut self, f: impl IntoHistorySwipeEventHandler) -> Self {
+    NodeUpdate::off_history_swipe(&mut self, f);
     self
   }
 

@@ -21,6 +21,8 @@ mod radius;
 mod role_name;
 mod shadow;
 mod spacing;
+#[cfg(feature = "markdown")]
+mod text_marks;
 mod typography;
 
 pub use border::{BorderSize, ThemeBorderSizes};
@@ -40,6 +42,8 @@ pub use radius::{RadiusSize, ThemeRadii};
 pub use role_name::RoleName;
 pub use shadow::{ShadowStyle, ThemeShadows};
 pub use spacing::{SpacingSize, ThemeSpacing};
+#[cfg(feature = "markdown")]
+pub use text_marks::{TextMarkStyle, ThemeTextMarks};
 pub use typography::{ThemeFonts, ThemeTypography, TypographyStyle};
 
 #[derive(Clone)]
@@ -58,6 +62,8 @@ struct ThemeInner {
   caret: ThemeCaret,
   scrollbar: ScrollBarStyle,
   typography: ThemeTypography,
+  #[cfg(feature = "markdown")]
+  text_marks: Arc<ThemeTextMarks>,
   #[cfg(feature = "markdown")]
   markdown: ThemeMarkdown,
   #[cfg(feature = "form")]
@@ -91,6 +97,8 @@ impl Default for Theme {
         caret: ThemeCaret::default(),
         scrollbar: ScrollBarStyle::default(),
         typography: ThemeTypography::default(),
+        #[cfg(feature = "markdown")]
+        text_marks: Arc::new(ThemeTextMarks::default()),
         #[cfg(feature = "markdown")]
         markdown: ThemeMarkdown::default(),
         #[cfg(feature = "form")]
@@ -308,6 +316,31 @@ impl Theme {
   #[cfg(feature = "markdown")]
   pub fn set_markdown(&self, markdown: ThemeMarkdown) {
     self.mutate_inner(|inner| inner.markdown = markdown);
+  }
+
+  /// How the marks of styled text inputs look.
+  #[cfg(feature = "markdown")]
+  pub fn text_marks(&self) -> ThemeRef<'_, ThemeTextMarks> {
+    ThemeRef {
+      inner: self.inner.read().unwrap_or_else(std::sync::PoisonError::into_inner),
+      value: |inner| &inner.text_marks,
+    }
+  }
+
+  #[cfg(feature = "markdown")]
+  pub fn set_text_marks(&self, text_marks: ThemeTextMarks) {
+    self.mutate_inner(|inner| inner.text_marks = Arc::new(text_marks));
+  }
+
+  /// The shared text marks, for layout without copying them.
+  #[cfg(feature = "markdown")]
+  pub(crate) fn shared_text_marks(&self) -> Arc<ThemeTextMarks> {
+    self
+      .inner
+      .read()
+      .unwrap_or_else(std::sync::PoisonError::into_inner)
+      .text_marks
+      .clone()
   }
 
   pub fn fonts(&self) -> ThemeFonts {

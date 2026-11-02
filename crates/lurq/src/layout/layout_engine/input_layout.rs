@@ -12,6 +12,10 @@ impl LayoutEngine {
     constraints: Constraints,
     scrollbar_lane: f32,
   ) -> LayoutResult {
+    #[cfg(feature = "markdown")]
+    if let Some(styled) = self.styled_input_styles(state, style) {
+      return self.layout_decorated_input(glyph_engine, state, style, constraints, styled, scrollbar_lane);
+    }
     if let Some(tokens) = state.tokens().filter(|tokens| !tokens.tokens.is_empty()) {
       return self.layout_input_tokens(glyph_engine, state, style, constraints, tokens, scrollbar_lane);
     }

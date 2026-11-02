@@ -37,6 +37,7 @@ mod file_drag;
 mod frame_pacing;
 #[cfg(test)]
 mod frame_pacing_tests;
+mod history_swipes;
 mod ime;
 mod loop_wait;
 #[cfg(test)]
@@ -856,6 +857,9 @@ impl ManagedWindow {
           TouchPhase::Moved => ScrollPhase::Scroll,
           TouchPhase::Ended | TouchPhase::Cancelled => ScrollPhase::End,
         };
+        if phase == TouchPhase::Started {
+          self.tree.set_history_swipes(history_swipes::enabled());
+        }
         self
           .tree
           .scroll(self.cursor_pos.0 as f32, self.cursor_pos.1 as f32, dx, dy, scroll_phase);
@@ -1293,6 +1297,9 @@ impl ManagedSecondaryWindow {
           TouchPhase::Moved => ScrollPhase::Scroll,
           TouchPhase::Ended | TouchPhase::Cancelled => ScrollPhase::End,
         };
+        if phase == TouchPhase::Started {
+          tree.set_history_swipes(history_swipes::enabled());
+        }
         tree.scroll(self.cursor_pos.0 as f32, self.cursor_pos.1 as f32, dx, dy, scroll_phase);
         self.apply_cursor(tree);
         self.check_redraw(tree);

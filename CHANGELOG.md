@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.53.0 — 2026-10-29
+
+Added:
+
+- Trackpad swipes between pages, as browsers go back and forward. `on_history_swipe` (on `Element` builders and every component) gets a `HistorySwipeEvent` with a `direction` (`HistoryDirection::Back` for fingers to the right, `Forward` to the left) when two fingers that moved across the window sideways lift: far enough (120 logical pixels), mostly sideways (twice as far as up or down), and without a scroll container moving with them or a scroll handler preventing their default, so horizontal scrolling is unchanged and a sideways list at its edge lets the next swipe through. The event goes to the elements under the pointer, innermost first, until one stops its propagation. The momentum after a swipe is never a second one, and a swipe that interrupts that momentum still counts. Mouse wheels (scrolls without phases) and lurq's synthetic input make none. On macOS the swipes follow System Settings › Trackpad › "Swipe between pages" with two fingers (`NSEvent.isSwipeTrackingFromScrollEventsEnabled`, read as each gesture starts); set to three fingers only, AppKit sends a swipe event winit does not report, and no swipe is recognized. Other platforms report no scroll phases and have no swipes yet. lurq's `Router` does not follow swipes by itself: call `RouterHandle::back` / `forward` from `on_history_swipe`. `Tree::set_history_swipes` (hidden) turns the recognizer on in tests.
+
+## 0.52.1 — 2026-10-29
+
+Fixes:
+
+- A screenshot of a macOS window nobody could see never completed. While the window is occluded (its application hidden, the window minimized or fully covered) Metal hands out no drawable and wgpu's `get_current_texture` answers `Occluded`, so the frame the capture waited for was skipped, and the next frame without a capture failed it as superseded: `WindowHandle::screenshot` wrote nothing and MCP `lurq_screenshot` answered "superseded before a frame was rendered". When the surface gives no texture and a capture waits, the wgpu renderer now draws that frame into a texture of the surface's size and format, takes the capture from it and presents nothing. Frames without a capture are still skipped while the window cannot be seen.
+
+## 0.52.0 — 2026-10-28
+
+Added:
+
+- Styled text inputs, with the `markdown` feature. `TextInput::spans(Signal<Vec<StyledSpan>>)` makes an input edit bold, italic, inline code, strikethrough and links over its plain `Signal<String>` value, as UTF-8 byte ranges the app owns: the input draws the runs with the new theme roles `ThemeTextMarks` (`Theme::text_marks`, `set_text_marks`), moves them with every edit (typing, deleting, cut, paste, input method composition), keeps them in the same undo history as the text and writes them back. Typed text takes the style of the text before the caret, except that a link does not grow past its end. `TextInputController` gains `toggle_mark`, `set_mark`, `set_link`, `set_pending_style` (the style of the next typed text, for Ctrl+B while typing), `selection_style` (all, some or none per mark, for a toolbar), `styled_text`, `selected_styled_text` and `replace_selection_styled` (a paste handler's parsed spans). `TextInput::on_styled_change` reports every change the input makes as a `StyledChange` (the `StyledEdit`, the spans shared rather than copied, and the text on demand), `copy_format` sets what Ctrl+C copies from the styled selection (such as Markdown), and `on_link_click` reports a link clicked with Ctrl (Cmd on macOS). `TextInputHandle::copied_text` tells what Ctrl+C would copy. See the *Styled text inputs* guide and `examples/styled_editor.rs`. Plain inputs are unchanged.
+
+Performance:
+
+- A decorated input (input tokens, styled spans) without padded tokens no longer builds the cluster index padded rows need, about 40% less layout time for a long paragraph.
+- A wrapped decorated input lays out a paragraph at a time and keeps each paragraph's layout, so an edit lays out only the paragraph it changed. Justified text and single-line inputs still lay out whole.
+- A long left-to-right paragraph of a decorated input is shaped in chunks cut after spaces at places its own words choose; each chunk is kept, so an edit shapes only the chunk it changed. The paragraph lays out exactly as when shaped whole. Paragraphs with right-to-left text, bidi controls or tabs are shaped whole.
+- A decorated input keeps its glyph commands between frames: moving the caret, selecting and scrolling no longer place every glyph again. Its rows find their clusters with sorted lists instead of ordered maps.
+
 ## 0.51.2 — 2026-10-26
 
 Fixes:

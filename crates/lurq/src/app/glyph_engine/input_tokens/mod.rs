@@ -18,6 +18,7 @@ use crate::{
 };
 
 mod alignment;
+mod chunks;
 #[cfg(test)]
 #[path = "../../../../tests/input/text_input/crlf_geometry.rs"]
 mod crlf_tests;
@@ -28,6 +29,7 @@ mod paint;
 #[path = "../../../../tests/input/text_input/paint_oracle.rs"]
 pub(crate) mod paint_oracle;
 mod paragraphs;
+mod pieces;
 mod rows;
 #[cfg(test)]
 #[path = "../../../../tests/input/text_input/scroll_geometry.rs"]
@@ -42,6 +44,14 @@ pub(crate) struct TokenStyle {
   pub(crate) text: TextStyle,
   pub(crate) padding: f32,
   pub(crate) fill: Option<(Color, f32)>,
+  /// Lines under and through the range's text, in its color.
+  pub(crate) lines: TextLines,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TextLines {
+  pub(crate) underline: bool,
+  pub(crate) strikethrough: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -116,6 +126,23 @@ struct InputRow {
   rtl: bool,
 }
 
+impl DecoratedInputLayout {
+  fn empty(config: InputConfig, revision: u64) -> Self {
+    Self {
+      config,
+      revision,
+      glyphs: Vec::new(),
+      fragments: Vec::new(),
+      carets: Vec::new(),
+      rows: Vec::new(),
+      intervals: Vec::new(),
+      size: Size::default(),
+      line_height: 1.0,
+      viewport_width: 0.0,
+    }
+  }
+}
+
 impl std::fmt::Debug for DecoratedInputLayout {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("DecoratedInputLayout").finish_non_exhaustive()
@@ -126,12 +153,23 @@ impl std::fmt::Debug for DecoratedInputLayout {
 pub(crate) struct InputCache {
   revision: u64,
   entries: VecDeque<Arc<DecoratedInputLayout>>,
+  /// Laid-out paragraphs, so an edit lays out only the paragraph it changed.
+  paragraphs: pieces::ParagraphCache,
+  /// Glyph commands of the layouts drawn last.
+  raster: paint::RasterCache,
+  /// Shaped chunks of long paragraphs, so an edit shapes only its chunk.
+  chunks: chunks::ChunkCache,
+  /// Shapes every paragraph whole, for tests that compare the two.
+  whole_paragraphs: bool,
 }
 
 impl InputCache {
   pub(super) fn clear(&mut self) {
     self.revision = self.revision.wrapping_add(1);
     self.entries.clear();
+    self.paragraphs.clear();
+    self.raster.clear();
+    self.chunks.clear();
   }
   fn find(&self, key: &InputConfig) -> Option<Arc<DecoratedInputLayout>> {
     self.entries.iter().find(|layout| &layout.config == key).cloned()
@@ -143,6 +181,9 @@ impl InputCache {
         .iter()
         .map(|layout| layout.allocated_bytes())
         .sum::<usize>()
+      + self.paragraphs.estimated_memory_bytes()
+      + self.raster.estimated_memory_bytes()
+      + self.chunks.estimated_memory_bytes()
   }
   fn insert(&mut self, layout: Arc<DecoratedInputLayout>) {
     // A fixed entry count alone is not a text-memory bound.
@@ -165,18 +206,7 @@ impl GlyphEngine {
     if let Some(layout) = self.input_cache.find(&config) {
       return layout;
     }
-    let mut output = DecoratedInputLayout {
-      config,
-      revision: self.input_cache.revision,
-      glyphs: Vec::new(),
-      fragments: Vec::new(),
-      carets: Vec::new(),
-      rows: Vec::new(),
-      intervals: Vec::new(),
-      size: Size::default(),
-      line_height: 1.0,
-      viewport_width: 0.0,
-    };
+    let mut output = DecoratedInputLayout::empty(config, self.input_cache.revision);
     self.shape_input(&mut output);
     let output = Arc::new(output);
     self.input_cache.insert(output.clone());
@@ -184,6 +214,20 @@ impl GlyphEngine {
   }
 
   fn shape_input(&mut self, output: &mut DecoratedInputLayout) {
+    // Wrapped text is laid out a paragraph at a time from the paragraph
+    // cache. Justified rows stretch to the widest paragraph, and a single
+    // scrolling line has no paragraphs, so those lay out whole.
+    if output.config.wrap && output.config.base.text_align != crate::layout::text_style::TextAlign::Justified {
+      self.shape_paragraphs(output);
+    } else {
+      self.shape_rows(output);
+    }
+    output.finish_carets();
+    output.align_viewport();
+  }
+
+  /// Lays out the rows of all of `output`'s text, unaligned.
+  fn shape_rows(&mut self, output: &mut DecoratedInputLayout) {
     let config = &output.config;
     // CR and LF each become one ASCII space in Scroll, preserving every raw
     // UTF-8 byte offset. Only presentation is flattened; config.source stays raw.
@@ -197,7 +241,11 @@ impl GlyphEngine {
     let mut prepared = Vec::new();
     for line in &mut buffer.lines {
       let bytes = line.text().len();
-      let shape = line.shape(&mut self.font_system, 8);
+      let chunked = self.shape_in_chunks(line.text(), line.attrs_list());
+      let shape = match &chunked {
+        Some(shape) => shape,
+        None => line.shape(&mut self.font_system, 8),
+      };
       rows::paragraph(&mut prepared, shape, offset, bytes, &output.config);
       let ending = offset + bytes..offset + bytes + line.ending().as_str().len();
       rows::set_ending(&mut prepared, ending.clone());
@@ -205,7 +253,5 @@ impl GlyphEngine {
     }
     rows::finish(output, prepared);
     self.buffer_pool.push(buffer);
-    output.finish_carets();
-    output.align_viewport();
   }
 }

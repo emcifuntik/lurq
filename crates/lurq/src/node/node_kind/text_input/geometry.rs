@@ -23,6 +23,7 @@ impl TextInputState {
     let old_composition = old_inner.composition.clone();
     let old_undo_stack = old_inner.undo_stack.clone();
     let old_redo_stack = old_inner.redo_stack.clone();
+    let old_styled = old_inner.styled.clone();
     let layout_dirty = if layout_signature_matches {
       old.layout_dirty.load(Ordering::Relaxed)
     } else {
@@ -47,6 +48,7 @@ impl TextInputState {
     inner.composition = old_composition;
     inner.undo_stack = old_undo_stack;
     inner.redo_stack = old_redo_stack;
+    inner.styled.copy_runtime_state_from(&old_styled);
     self.layout_dirty.store(layout_dirty, Ordering::Relaxed);
   }
 

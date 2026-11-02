@@ -45,6 +45,7 @@ mod loop_wake {
   #[cfg(feature = "tokio")]
   mod tokio_work_wakes_loop;
 }
+mod history_swipe;
 mod modal_resize;
 mod mouse_leave;
 mod outside_press;

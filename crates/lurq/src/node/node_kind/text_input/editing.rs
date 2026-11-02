@@ -10,6 +10,22 @@ impl TextInputState {
   }
 
   pub(crate) fn replace_selection_text(&self, text: &str, keyboard: &KeyboardEvent) -> bool {
+    self.replace_selection_with(text, None, keyboard)
+  }
+
+  /// Replaces the selection with text that brings its own spans; a plain
+  /// input takes only the text.
+  #[cfg(feature = "markdown")]
+  pub(crate) fn replace_selection_styled(&self, inserted: &styled::InsertedText, keyboard: &KeyboardEvent) -> bool {
+    self.replace_selection_with(&inserted.text, Some(inserted), keyboard)
+  }
+
+  fn replace_selection_with(
+    &self,
+    text: &str,
+    styled_insert: Option<&styled::InsertedText>,
+    keyboard: &KeyboardEvent,
+  ) -> bool {
     if text.is_empty() && !self.has_selection() {
       return false;
     }
@@ -23,14 +39,17 @@ impl TextInputState {
     }
 
     self.push_undo_snapshot();
-    let mut caret = self
-      .delete_selection_if_present()
-      .unwrap_or_else(|| self.inner.lock().caret);
-    self.value.update(|value| {
-      caret = clamp_to_char_boundary(value, caret);
-      value.insert_str(caret, text);
-      caret += text.len();
-    });
+    let styled = self.styled_before_edit();
+    let (start, end) = {
+      let value = self.value();
+      let inner = self.inner.lock();
+      selection_range_indices(&value, inner.selection_anchor, inner.caret).unwrap_or_else(|| {
+        let caret = clamp_to_char_boundary(&value, inner.caret);
+        (caret, caret)
+      })
+    };
+    self.value.update(|value| value.replace_range(start..end, text));
+    let caret = start + text.len();
     let value = self.value();
     let mut inner = self.inner.lock();
     // A controller command must not be mistaken for an external whole-value
@@ -40,6 +59,10 @@ impl TextInputState {
     inner.caret = caret;
     inner.selection_anchor = None;
     drop(inner);
+    match styled_insert {
+      Some(inserted) => self.styled_after_insert(styled, start..end, inserted),
+      None => self.styled_after_edit(styled, start..end, text.len()),
+    }
     self.mark_layout_dirty();
     true
   }
@@ -78,15 +101,19 @@ impl TextInputState {
     }
 
     self.push_undo_snapshot();
+    let styled = self.styled_before_edit();
+    let mut removed = 0..0;
     self.value.update(|value| {
       caret = clamp_to_char_boundary(value, caret);
       if caret > 0 {
         let previous = previous_char_boundary(value, caret);
         value.replace_range(previous..caret, "");
+        removed = previous..caret;
         caret = previous;
       }
     });
     self.inner.lock().caret = caret;
+    self.styled_after_edit(styled, removed, 0);
     self.mark_layout_dirty();
     true
   }
@@ -117,11 +144,15 @@ impl TextInputState {
     }
 
     self.push_undo_snapshot();
+    let styled = self.styled_before_edit();
+    let mut removed = caret..caret;
     self.value.update(|value| {
       let next = next_char_boundary(value, caret);
       value.replace_range(caret..next, "");
+      removed = caret..next;
     });
     self.inner.lock().caret = caret;
+    self.styled_after_edit(styled, removed, 0);
     self.mark_layout_dirty();
     true
   }

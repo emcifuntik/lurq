@@ -51,9 +51,9 @@ pub use gradient::{Gradient, GradientKind, GradientStop};
 pub use node::FormData;
 pub use node::{
   BackgroundSize, ButtonKind, EventHandler, HitTestBehavior, IntoDragEventHandler, IntoDropEventHandler,
-  IntoFileDragEventHandler, IntoFileDropEventHandler, IntoPasteEventHandler,
-  IntoEventHandler, IntoKeyboardEventHandler, IntoMouseEventHandler, IntoScrollEventHandler, IntoTextInputEventHandler,
-  IntoVoidEventHandler, VoidEventHandler,
+  IntoEventHandler, IntoFileDragEventHandler, IntoFileDropEventHandler, IntoHistorySwipeEventHandler,
+  IntoKeyboardEventHandler, IntoMouseEventHandler, IntoPasteEventHandler, IntoScrollEventHandler,
+  IntoTextInputEventHandler, IntoVoidEventHandler, VoidEventHandler,
 };
 pub(crate) use node::{Node, NodeUpdate, SyntheticNodeRole};
 pub use radius_value::RadiusValue;

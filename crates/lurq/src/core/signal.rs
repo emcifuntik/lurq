@@ -156,6 +156,12 @@ impl<T: SignalValue> Signal<T> {
     f(&value)
   }
 
+  /// How many times the value was replaced or mutated.
+  #[cfg_attr(not(feature = "markdown"), allow(dead_code))]
+  pub(crate) fn version(&self) -> u64 {
+    self.inner.version.load(Ordering::Acquire)
+  }
+
   pub fn with_untracked<R>(&self, f: impl FnOnce(&T) -> R) -> R
   where
     T: Send + Sync + 'static,

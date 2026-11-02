@@ -3,6 +3,9 @@ use std::{ops::Range, sync::Arc};
 
 use parking_lot::Mutex;
 
+#[cfg(feature = "markdown")]
+mod styled;
+
 use crate::{
   app::{ctx::Ctx, events::KeyboardEvent},
   core::{ElementRef, ElementRefMut, NodeId},
