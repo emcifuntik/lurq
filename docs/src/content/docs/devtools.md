@@ -157,7 +157,7 @@ The main tree exposes this through internal tree methods such as debug overlay s
 Enable frame profiling at compile time:
 
 ```toml
-lurq = { version = "0.53.0", features = ["winit", "wgpu", "devtools", "perf_profile"] }
+lurq = { version = "0.54.0", features = ["winit", "wgpu", "devtools", "perf_profile"] }
 ```
 
 The profiler tab uses frame snapshots from the tree. A commit records:

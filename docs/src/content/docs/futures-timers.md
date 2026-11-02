@@ -262,7 +262,7 @@ An offstage component (`ctx.mount_offstage`, `Router::mount_offstage`) is still 
 Enable `tokio` and configure a live runtime handle to spawn futures and streams on Tokio. Add a direct Tokio dependency when application code uses its APIs:
 
 ```toml
-lurq = { version = "0.53.0", features = ["tokio"] }
+lurq = { version = "0.54.0", features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
 ```
 

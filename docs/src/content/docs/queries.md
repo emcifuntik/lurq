@@ -8,7 +8,7 @@ description: Shared async data through named query functions, reactive handles, 
 Enable the optional `query` feature:
 
 ```toml
-lurq = { version = "0.53.0", features = ["query"] }
+lurq = { version = "0.54.0", features = ["query"] }
 ```
 
 A query is a named async read whose arguments identify a cached result. Components observing the same query share data and a running request. The client retains results when components unmount, so returning to a screen can reuse its data.

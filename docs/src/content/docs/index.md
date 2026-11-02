@@ -7,7 +7,7 @@ description: Documentation for the lurq Rust UI toolkit.
 
 `lurq` is a Rust UI toolkit with typed component builders, retained runtime state, reactive signals, GPU-backed rendering, and an in-app DevTools window.
 
-The guides describe **0.53.0**. Migration guides and dated performance reports retain their historical scope.
+The guides describe **0.54.0**. Migration guides and dated performance reports retain their historical scope.
 
 The docs are organized around the questions that come up while building:
 
