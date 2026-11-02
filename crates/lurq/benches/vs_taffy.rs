@@ -7,9 +7,9 @@
 //! - `build`: building the tree only (lurq: `set_root` on one `Tree`, over the previous root; taffy: new nodes).
 //! - `cold`: a new tree every iteration, building it plus its first layout. Dropping the tree is left out of the time
 //!   in both engines.
-//! - `rebuild`: a freshly built tree over one already laid out, plus layout (lurq: `set_root` on one `Tree`, which keeps
-//!   what the previous root's caches allow; taffy has no equivalent, the closest is `clear`, new nodes and a compute,
-//!   which keeps only the storage). Dropping the previous tree is part of the time in both engines.
+//! - `rebuild`: a freshly built tree over one already laid out, plus layout (lurq: `set_root` on one `Tree`, which
+//!   keeps what the previous root's caches allow; taffy has no equivalent, the closest is `clear`, new nodes and a
+//!   compute, which keeps only the storage). Dropping the previous tree is part of the time in both engines.
 //! - `forced`: every node laid out again on a tree already laid out (lurq: `force_dirty`; taffy: `mark_dirty` on every
 //!   leaf).
 //! - `resize`: the root's width cycles through three values, so caches miss wherever a width reaches.

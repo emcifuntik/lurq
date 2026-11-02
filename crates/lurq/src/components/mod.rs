@@ -128,7 +128,9 @@ macro_rules! impl_into_node {
 
       pub(crate) fn tag_name() -> std::sync::Arc<str> {
         static TAG_NAME: std::sync::OnceLock<std::sync::Arc<str>> = std::sync::OnceLock::new();
-        TAG_NAME.get_or_init(|| std::sync::Arc::from(stringify!($struct_name))).clone()
+        TAG_NAME
+          .get_or_init(|| std::sync::Arc::from(stringify!($struct_name)))
+          .clone()
       }
 
       pub fn node_id(&self) -> $crate::core::NodeId {

@@ -52,9 +52,11 @@ fn sidebar_with_content(item_count: usize) -> Element {
 
 fn assert_text_laid_out(rt: &Tree) {
   let layout = rt.last_layout().expect("render-list benchmark must run layout");
-  assert!(rt.resolve_quads(layout).iter().any(|quad| {
-    matches!(quad.content, QuadContent::Text { .. }) && quad.width > 0.0 && quad.height > 0.0
-  }));
+  assert!(
+    rt.resolve_quads(layout)
+      .iter()
+      .any(|quad| { matches!(quad.content, QuadContent::Text { .. }) && quad.width > 0.0 && quad.height > 0.0 })
+  );
 }
 
 fn bench_full_pass(c: &mut Criterion) {
@@ -88,9 +90,7 @@ fn bench_rebuild_no_change(c: &mut Criterion) {
       rt.resize(1200, 800);
       rt.set_root(sidebar_with_content(count));
       rt.pass_headless(&mut app);
-      b.iter(|| {
-        rt.pass_headless(&mut app)
-      });
+      b.iter(|| rt.pass_headless(&mut app));
       assert_text_laid_out(&rt);
     });
   }

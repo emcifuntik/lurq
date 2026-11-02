@@ -780,7 +780,10 @@ impl LayoutEngine {
     // Shared handles can be measured by a second tree first. Its walk may
     // consume the handle's flag, but cannot consume this node's notification.
     let local_changed = node.layout_cache.inspected_generation.get() != 0
-      && node.layout_cache.watch.local_changed_since(node.layout_cache.inspected_generation.get());
+      && node
+        .layout_cache
+        .watch
+        .local_changed_since(node.layout_cache.inspected_generation.get());
     let mut local_dirty = force_dirty
       || local_changed
       || node.text_content.is_changed()
@@ -838,7 +841,9 @@ impl LayoutEngine {
       child_dirty |= Self::mark_layout_dirty(child, force_dirty);
     }
 
-    node.layout_cache.record_dirty_scan(generation, local_dirty, child_dirty || scroll_offset_dirty);
+    node
+      .layout_cache
+      .record_dirty_scan(generation, local_dirty, child_dirty || scroll_offset_dirty);
 
     node.layout_cache.is_dirty()
   }
@@ -2865,7 +2870,13 @@ impl LayoutEngine {
           self.awaiting_room.clone()
         } else {
           let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
-          self.layout_child_node(glyph_engine, child_overrides, child_layouts.len(), child, child_constraints)
+          self.layout_child_node(
+            glyph_engine,
+            child_overrides,
+            child_layouts.len(),
+            child,
+            child_constraints,
+          )
         }
       };
       child_layouts.push(ChildLayout {
@@ -3231,7 +3242,10 @@ impl LayoutEngine {
         })
         .fold(0.0_f32, f32::max);
 
-      let children_main: f32 = line.iter().map(|layout| main_size(&layout.result, vertical)).sum::<f32>();
+      let children_main: f32 = line
+        .iter()
+        .map(|layout| main_size(&layout.result, vertical))
+        .sum::<f32>();
       let line_main_total = children_main + spacing * (line.len() as f32 - 1.0).max(0.0);
       max_main_used = max_main_used.max(line_main_total);
 
@@ -3346,7 +3360,10 @@ impl LayoutEngine {
       .zip(child_layouts.iter())
       .filter(|(child, _)| !matches!(child.position(), Position::Absolute { .. }))
       .fold((0.0_f32, 0.0_f32), |(width, height), (_, layout)| {
-        (width.max(layout.result.size.width), height.max(layout.result.size.height))
+        (
+          width.max(layout.result.size.width),
+          height.max(layout.result.size.height),
+        )
       });
     let size = constraints.constrain(Size::new(max_width, max_height));
 
@@ -3609,7 +3626,8 @@ impl LayoutEngine {
         children: vec![ChildLayout {
           offset: Offset::new(-state.scroll_x(), -state.scroll_y()),
           result: child_result.into(),
-        }].into(),
+        }]
+        .into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -3655,7 +3673,8 @@ impl LayoutEngine {
       children: vec![ChildLayout {
         offset: Offset::new(-state.scroll_x(), -state.scroll_y()),
         result: child_result.into(),
-      }].into(),
+      }]
+      .into(),
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3688,7 +3707,8 @@ impl LayoutEngine {
       children: vec![ChildLayout {
         offset: Offset::default(),
         result: child_result.into(),
-      }].into(),
+      }]
+      .into(),
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -4146,22 +4166,29 @@ mod tests {
         3 => node.active_style(style),
         _ => node.drag_over_style(style),
       };
-      let node = Node::row(0.0, Alignment::Start, vec![
-        styled(
-          Node::column(0.0, Alignment::Start, vec![]).width(20.0).height(10.0),
-          Style::new().width(40.0),
-        ),
-        styled(
-          Node::column(0.0, Alignment::Start, vec![
-            Node::column(0.0, Alignment::Start, vec![]).width(10.0).height(10.0),
-          ]).padding(1.0),
-          Style::new().padding(5.0),
-        ),
-        styled(
-          Node::column(0.0, Alignment::Start, vec![]).height(10.0),
-          Style::new().flex(1.0),
-        ),
-      ]);
+      let node = Node::row(
+        0.0,
+        Alignment::Start,
+        vec![
+          styled(
+            Node::column(0.0, Alignment::Start, vec![]).width(20.0).height(10.0),
+            Style::new().width(40.0),
+          ),
+          styled(
+            Node::column(
+              0.0,
+              Alignment::Start,
+              vec![Node::column(0.0, Alignment::Start, vec![]).width(10.0).height(10.0)],
+            )
+            .padding(1.0),
+            Style::new().padding(5.0),
+          ),
+          styled(
+            Node::column(0.0, Alignment::Start, vec![]).height(10.0),
+            Style::new().flex(1.0),
+          ),
+        ],
+      );
       if index == 1 {
         for child in node.children() {
           child.set_style_focused(true);
@@ -4175,7 +4202,10 @@ mod tests {
         let result = engine.layout_node(&mut glyph_engine, &node, Constraints::tight(Size::new(200.0, 100.0)));
         assert_eq!(result.children[0].result.size.width, if enabled { 40.0 } else { 20.0 });
         assert_eq!(result.children[1].result.size.width, if enabled { 20.0 } else { 12.0 });
-        assert_eq!(result.children[1].result.children[0].offset.x, if enabled { 5.0 } else { 1.0 });
+        assert_eq!(
+          result.children[1].result.children[0].offset.x,
+          if enabled { 5.0 } else { 1.0 }
+        );
         assert_eq!(result.children[2].result.size.width, if enabled { 140.0 } else { 0.0 });
       }
     }
@@ -4894,10 +4924,12 @@ mod tests {
     let engine = LayoutEngine::new();
     let mut glyph_engine = GlyphEngine::new();
     let reference = crate::core::ElementRefMut::new();
-    let build = || Node::stack(
-      StackAlignment::TopStart,
-      vec![fixed(50.0, 50.0).ref_element(reference.clone())],
-    );
+    let build = || {
+      Node::stack(
+        StackAlignment::TopStart,
+        vec![fixed(50.0, 50.0).ref_element(reference.clone())],
+      )
+    };
     let first = build();
     let second = build();
     let constraints = Constraints::tight(Size::new(400.0, 300.0));
@@ -4939,7 +4971,10 @@ mod tests {
       assert_eq!(actual.size, expected.size);
       assert_eq!(actual.children.len(), expected.children.len());
       for (actual, expected) in actual.children.iter().zip(&expected.children) {
-        assert_eq!((actual.offset.x, actual.offset.y), (expected.offset.x, expected.offset.y));
+        assert_eq!(
+          (actual.offset.x, actual.offset.y),
+          (expected.offset.x, expected.offset.y)
+        );
         same_geometry(&actual.result, &expected.result);
       }
     }
@@ -5007,7 +5042,11 @@ mod tests {
   }
 
   fn nested_in_columns(node: Node) -> Node {
-    Node::column(0.0, Alignment::Start, vec![Node::column(0.0, Alignment::Start, vec![node])])
+    Node::column(
+      0.0,
+      Alignment::Start,
+      vec![Node::column(0.0, Alignment::Start, vec![node])],
+    )
   }
 
   /// Layout tracks a node before anything creates its interaction state, so
@@ -5024,15 +5063,30 @@ mod tests {
       let constraints = Constraints::loose(Size::new(200.0, 100.0));
       let width = |result: &LayoutResult| result.children[0].result.children[0].result.size.width;
       let target = &root.children[0].children[0];
-      assert_eq!(width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)), 20.0);
-      assert!(!target.style_state.has_shared_storage(), "layout left the state unallocated");
+      assert_eq!(
+        width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)),
+        20.0
+      );
+      assert!(
+        !target.style_state.has_shared_storage(),
+        "layout left the state unallocated"
+      );
 
       assert!(set_state(target, true));
 
-      assert!(root.layout_cache.needs_dirty_scan(), "the change reached the root's watch");
-      assert_eq!(width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)), 40.0);
+      assert!(
+        root.layout_cache.needs_dirty_scan(),
+        "the change reached the root's watch"
+      );
+      assert_eq!(
+        width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)),
+        40.0
+      );
       assert!(set_state(target, false));
-      assert_eq!(width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)), 20.0);
+      assert_eq!(
+        width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)),
+        20.0
+      );
     }
   }
 
@@ -5072,7 +5126,12 @@ mod tests {
 
     assert!(!engine.last_recalculated());
     assert!(!new.style_state.has_shared_storage());
-    assert!(new.children().iter().all(|child| !child.style_state.has_shared_storage()));
+    assert!(
+      new
+        .children()
+        .iter()
+        .all(|child| !child.style_state.has_shared_storage())
+    );
   }
 
   /// Each rebuild takes the layouts of the tree before it. The tree it
@@ -5091,7 +5150,12 @@ mod tests {
       let mut new = build();
       new.preserve_runtime_state_from(&old);
       assert!(!old.layout_cache.has_cached_result());
-      assert!(old.children().iter().all(|child| !child.layout_cache.has_cached_result()));
+      assert!(
+        old
+          .children()
+          .iter()
+          .all(|child| !child.layout_cache.has_cached_result())
+      );
 
       let result = compute_at(&engine, &mut glyph_engine, &new, constraints, false);
 

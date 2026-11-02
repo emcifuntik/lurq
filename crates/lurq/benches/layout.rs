@@ -87,9 +87,12 @@ fn bench_layout_compute(c: &mut Criterion) {
       // Also runs in Criterion's test mode: rebuilding alone never measures text.
       let layout = compute().expect("text benchmark must run layout");
       assert_eq!(layout.children.len(), count);
-      assert!(layout.children.iter().all(|child| {
-        child.result.size.width > 0.0 && child.result.size.height > 0.0
-      }));
+      assert!(
+        layout
+          .children
+          .iter()
+          .all(|child| { child.result.size.width > 0.0 && child.result.size.height > 0.0 })
+      );
       drop(layout);
       b.iter(compute);
     });
@@ -135,9 +138,7 @@ fn bench_layout_cached(c: &mut Criterion) {
       rt.resize(1200, 800);
       rt.set_root(build_flat_rects(count));
       rt.bench_layout_only(&mut app, false);
-      b.iter(|| {
-        rt.bench_layout_only(&mut app, false)
-      });
+      b.iter(|| rt.bench_layout_only(&mut app, false));
     });
   }
 

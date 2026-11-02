@@ -48,7 +48,11 @@ static GLOBAL: Counting = Counting;
 fn chain(names: &[Arc<str>], named: bool) -> Element {
   let mut element: Element = Rect::new(10.0, 10.0).into();
   for (index, name) in names.iter().enumerate() {
-    element = if named { element.id(name.clone()) } else { element.key(name.clone()) };
+    element = if named {
+      element.id(name.clone())
+    } else {
+      element.key(name.clone())
+    };
     element = if index % 2 == 0 {
       Row::with(0.0, Alignment::Start, [element]).into()
     } else {
@@ -98,13 +102,20 @@ fn first_layout_allocates_no_cache_box_per_node() {
   for _ in 0..2 {
     let mut tree = Tree::new();
     tree.resize(1200, 800);
-    tree.set_root(Column::with(0.0, Alignment::Start, (1..nodes).map(|_| Element::from(Rect::new(100.0, 20.0)))));
+    tree.set_root(Column::with(
+      0.0,
+      Alignment::Start,
+      (1..nodes).map(|_| Element::from(Rect::new(100.0, 20.0))),
+    ));
 
     ALLOCS.set(Some(0));
     tree.bench_layout_only_shared(&mut app, false);
     let allocations = ALLOCS.replace(None).unwrap();
 
-    assert!(allocations <= nodes + 16, "{allocations} allocations over {nodes} nodes");
+    assert!(
+      allocations <= nodes + 16,
+      "{allocations} allocations over {nodes} nodes"
+    );
   }
 }
 
@@ -180,11 +191,17 @@ fn layout_allocates_one_vec_per_container() {
     ALLOCS.set(Some(0));
     tree.bench_layout_only_shared(&mut app, false);
     let first = ALLOCS.replace(None).unwrap();
-    assert!(first <= limit, "{name}: first layout: {first} allocations, limit {limit}");
+    assert!(
+      first <= limit,
+      "{name}: first layout: {first} allocations, limit {limit}"
+    );
 
     ALLOCS.set(Some(0));
     tree.bench_layout_only_shared(&mut app, true);
     let forced = ALLOCS.replace(None).unwrap();
-    assert!(forced <= limit, "{name}: forced layout: {forced} allocations, limit {limit}");
+    assert!(
+      forced <= limit,
+      "{name}: forced layout: {forced} allocations, limit {limit}"
+    );
   }
 }

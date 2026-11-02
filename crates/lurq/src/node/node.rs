@@ -1113,15 +1113,21 @@ impl NodeUpdate for Node {
   }
 
   fn border_inside(&mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) {
-    self.border.set(Some(Box::new(Borders::all(Border::inside(width, color)))));
+    self
+      .border
+      .set(Some(Box::new(Borders::all(Border::inside(width, color)))));
   }
 
   fn border_outside(&mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) {
-    self.border.set(Some(Box::new(Borders::all(Border::outside(width, color)))));
+    self
+      .border
+      .set(Some(Box::new(Borders::all(Border::outside(width, color)))));
   }
 
   fn border_center(&mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) {
-    self.border.set(Some(Box::new(Borders::all(Border::center(width, color)))));
+    self
+      .border
+      .set(Some(Box::new(Borders::all(Border::center(width, color)))));
   }
 
   fn border(&mut self, border: Border) {
@@ -2529,17 +2535,23 @@ impl Node {
   }
 
   pub fn border_inside(mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) -> Self {
-    self.border.set(Some(Box::new(Borders::all(Border::inside(width, color)))));
+    self
+      .border
+      .set(Some(Box::new(Borders::all(Border::inside(width, color)))));
     self
   }
 
   pub fn border_outside(mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) -> Self {
-    self.border.set(Some(Box::new(Borders::all(Border::outside(width, color)))));
+    self
+      .border
+      .set(Some(Box::new(Borders::all(Border::outside(width, color)))));
     self
   }
 
   pub fn border_center(mut self, width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) -> Self {
-    self.border.set(Some(Box::new(Borders::all(Border::center(width, color)))));
+    self
+      .border
+      .set(Some(Box::new(Borders::all(Border::center(width, color)))));
     self
   }
 
@@ -3843,10 +3855,7 @@ impl Node {
   }
 
   pub fn get_border(&self) -> Option<Borders> {
-    let mut b = self
-      .state_style()
-      .border
-      .or_else(|| self.border.as_deref().cloned());
+    let mut b = self.state_style().border.or_else(|| self.border.as_deref().cloned());
     let overrides = &self.animation_overrides;
     if let Some(ref mut borders) = b {
       for (prop, val) in overrides.iter() {
@@ -3930,7 +3939,9 @@ impl Node {
 
   pub(crate) fn take_element_override_cleared(&self) -> bool {
     self.element_ref.as_ref().is_some_and(|reference| {
-      self.layout_cache.take_override_cleared(reference.override_clear_generation())
+      self
+        .layout_cache
+        .take_override_cleared(reference.override_clear_generation())
     })
   }
 
@@ -4165,7 +4176,10 @@ impl Node {
     for child in &self.children {
       child.clear_guards();
     }
-    self.layout_cache.guards_generation.set(self.layout_cache.watch.generation());
+    self
+      .layout_cache
+      .guards_generation
+      .set(self.layout_cache.watch.generation());
   }
 
   pub(crate) fn sync_dynamic_content_recursive(&mut self) {
@@ -4267,18 +4281,17 @@ impl Node {
       let mut claimed = vec![false; old.children.len()];
       for index in 0..self.children.len() {
         let child = &self.children[index];
-        let matched = old
-          .children
-          .get(index)
-          .filter(|old_child| !claimed[index] && child.can_preserve_runtime_state_from(old_child))
-          .map(|_| index)
-          .or_else(|| {
-            old
-              .children
-              .iter()
-              .enumerate()
-              .find_map(|(offset, old_child)| (!claimed[offset] && child.identity_matches(old_child)).then_some(offset))
-          });
+        let matched =
+          old
+            .children
+            .get(index)
+            .filter(|old_child| !claimed[index] && child.can_preserve_runtime_state_from(old_child))
+            .map(|_| index)
+            .or_else(|| {
+              old.children.iter().enumerate().find_map(|(offset, old_child)| {
+                (!claimed[offset] && child.identity_matches(old_child)).then_some(offset)
+              })
+            });
         if let Some(offset) = matched {
           claimed[offset] = true;
           self.children[index].preserve_runtime_state_from(&old.children[offset]);
@@ -4517,7 +4530,11 @@ impl Node {
     // positions need no claimed-child buffer, even for identified children.
     let reorderable = self.children.iter().any(Node::has_stable_identity);
     let positional = !reorderable
-      || self.children.iter().zip(&old.children).all(|(child, old_child)| child.can_reuse_id_from(old_child));
+      || self
+        .children
+        .iter()
+        .zip(&old.children)
+        .all(|(child, old_child)| child.can_reuse_id_from(old_child));
     if positional {
       for (child, old_child) in self.children.iter_mut().zip(old.children.iter_mut()) {
         child.preserve_ids_from(old_child);
@@ -4899,6 +4916,7 @@ mod tests {
   #[test]
   fn built_in_tag_names_share_storage() {
     use std::sync::Arc;
+
     use crate::components::{Column, Rect, Row};
 
     let a = Node::new();
@@ -4986,11 +5004,16 @@ mod tests {
 
   #[test]
   fn layout_state_fields_follow_style_precedence_and_updates() {
-    use crate::node::{Style, dimension::Dimension, padding::Padding};
-    use crate::layout::layout_kind::{FlexParams, FrameConstraints};
+    use crate::{
+      layout::layout_kind::{FlexParams, FrameConstraints},
+      node::{Style, dimension::Dimension, padding::Padding},
+    };
 
     let mut node = Node::column(0.0, Alignment::Start, vec![])
-      .width(10.0).height(20.0).padding(1.0).flex(1.0)
+      .width(10.0)
+      .height(20.0)
+      .padding(1.0)
+      .flex(1.0)
       .focused_style(Style::new().width(30.0).padding(2.0).flex(2.0))
       .focus_visible_style(Style::new().height(40.0))
       .hovered_style(Style::new().padding_left(3.0))
@@ -5003,11 +5026,16 @@ mod tests {
       node.set_style_active(bits & 8 != 0);
       node.set_style_drag_over(bits & 16 != 0);
       let style = node.state_style();
-      let frame = style.frame.map_or(node.frame, |frame| super::merge_frame(node.frame, frame));
+      let frame = style
+        .frame
+        .map_or(node.frame, |frame| super::merge_frame(node.frame, frame));
       for _ in 0..2 {
         assert!(node.effective_frame(FrameConstraints::default()) == frame);
         assert!(node.state_frame() == Some(frame));
-        assert_eq!(node.effective_padding(&Padding::default()), style.padding.unwrap_or(node.padding));
+        assert_eq!(
+          node.effective_padding(&Padding::default()),
+          style.padding.unwrap_or(node.padding)
+        );
         assert!(node.state_flex() == style.flex.or(node.flex));
       }
     }
@@ -5128,7 +5156,8 @@ mod tests {
             }
             .into(),
           },
-        ].into(),
+        ]
+        .into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -5173,14 +5202,16 @@ mod tests {
                 generation: 0,
               }
               .into(),
-            }].into(),
+            }]
+            .into(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
             generation: 0,
           }
           .into(),
-        }].into(),
+        }]
+        .into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -5221,7 +5252,8 @@ mod tests {
             generation: 0,
           }
           .into(),
-        }].into(),
+        }]
+        .into(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,

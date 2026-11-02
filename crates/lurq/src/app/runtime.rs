@@ -7132,21 +7132,22 @@ fn build_overlays_from_layout_index(
             #[cfg(feature = "perf_profile")]
             profiling,
             || {
-              layout_engine.compute(
-                glyph_engine,
-                &menu.clone_for_reuse(),
-                measure_constraints,
-                palette.clone(),
-                border_sizes.clone(),
-                spacing.clone(),
-                radii.clone(),
-                caret,
-                scrollbar.clone(),
-                typography.clone(),
-                theme_changed,
-              )
-              .as_ref()
-              .clone()
+              layout_engine
+                .compute(
+                  glyph_engine,
+                  &menu.clone_for_reuse(),
+                  measure_constraints,
+                  palette.clone(),
+                  border_sizes.clone(),
+                  spacing.clone(),
+                  radii.clone(),
+                  caret,
+                  scrollbar.clone(),
+                  typography.clone(),
+                  theme_changed,
+                )
+                .as_ref()
+                .clone()
             },
           )
         };
@@ -10016,8 +10017,7 @@ mod layout_tracking_tests {
       let mut tree = Tree::new();
       tree.resize(400, 300);
       tree.set_root(
-        crate::components::Stack::new()
-          .child(crate::components::Rect::new(50.0, 50.0).ref_element(reference.clone())),
+        crate::components::Stack::new().child(crate::components::Rect::new(50.0, 50.0).ref_element(reference.clone())),
       );
       tree
     };
@@ -10031,7 +10031,10 @@ mod layout_tracking_tests {
     let report = second.pass_headless(&mut app);
 
     assert!(report.layout_updated);
-    assert_eq!(second.last_layout().unwrap().children[0].result.size, Size::new(80.0, 70.0));
+    assert_eq!(
+      second.last_layout().unwrap().children[0].result.size,
+      Size::new(80.0, 70.0)
+    );
   }
 
   #[test]
@@ -10042,8 +10045,7 @@ mod layout_tracking_tests {
       let mut tree = Tree::new();
       tree.resize(400, 300);
       tree.set_root(
-        crate::components::Stack::new()
-          .child(crate::components::Rect::new(50.0, 50.0).ref_element(reference.clone())),
+        crate::components::Stack::new().child(crate::components::Rect::new(50.0, 50.0).ref_element(reference.clone())),
       );
       tree
     };
@@ -10108,7 +10110,10 @@ mod layout_tracking_tests {
     let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
     assert!(visits < 40, "resource polling visited {visits} nodes");
     let root = tree.root.as_ref().unwrap();
-    assert!(matches!(root.children[1].children[0].node_kind(), NodeKind::Image { .. }));
+    assert!(matches!(
+      root.children[1].children[0].node_kind(),
+      NodeKind::Image { .. }
+    ));
     assert!(matches!(root.children[1].children[1].node_kind(), NodeKind::Svg { .. }));
     let result = tree.bench_layout_only_shared(&mut app, false).unwrap();
     assert_eq!(result.children[1].result.children[0].result.size, Size::new(2.0, 3.0));

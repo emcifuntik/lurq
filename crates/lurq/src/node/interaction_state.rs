@@ -41,7 +41,13 @@ impl InteractionState {
       return [false; 5];
     };
     let inner = inner.lock().unwrap();
-    [inner.focused, inner.focus_visible, inner.hovered, inner.active, inner.drag_over]
+    [
+      inner.focused,
+      inner.focus_visible,
+      inner.hovered,
+      inner.active,
+      inner.drag_over,
+    ]
   }
 
   pub fn is_hovered(&self) -> bool {
@@ -60,7 +66,10 @@ impl InteractionState {
   /// came from the keyboard (or a key was pressed since), or the node is a
   /// text input. See the focus-navigation guide for the full rules.
   pub fn is_focus_visible(&self) -> bool {
-    self.inner.get().is_some_and(|inner| inner.lock().unwrap().focus_visible)
+    self
+      .inner
+      .get()
+      .is_some_and(|inner| inner.lock().unwrap().focus_visible)
   }
 
   /// Files from the OS are dragged over the node (`on_file_drag_enter` fired

@@ -114,9 +114,10 @@ impl CachedLayouts {
   }
 
   fn find(&self, constraints: Constraints) -> Option<usize> {
-    self.entries().iter().position(|slot| {
-      slot.is_some_and(|cached| cached.constraints == constraints)
-    })
+    self
+      .entries()
+      .iter()
+      .position(|slot| slot.is_some_and(|cached| cached.constraints == constraints))
   }
 
   fn clear(&mut self) {
@@ -579,7 +580,11 @@ mod tests {
 
     assert!(!old.has_cached_result(), "the old cache keeps no entry");
     assert!(old.get_shared(constraints(960.0)).is_none());
-    assert_eq!(Arc::strong_count(&front), 2, "only the new cache holds the result besides this test");
+    assert_eq!(
+      Arc::strong_count(&front),
+      2,
+      "only the new cache holds the result besides this test"
+    );
     assert_eq!(new.constraints().map(|front| front.max_width), Some(960.0));
     assert!(Arc::ptr_eq(&new.get_shared(constraints(960.0)).unwrap(), &front));
     assert!(Arc::ptr_eq(&new.get_shared(constraints(1440.0)).unwrap(), &older));
@@ -599,7 +604,10 @@ mod tests {
     assert!(new.is_local_dirty());
     assert!(new.is_descendant_dirty());
     assert!(new.has_cached_result());
-    assert!(new.get_shared(constraints(960.0)).is_none(), "a dirty cache serves nothing");
+    assert!(
+      new.get_shared(constraints(960.0)).is_none(),
+      "a dirty cache serves nothing"
+    );
   }
 
   /// A reused override becomes the front entry, and comes back if the
@@ -633,14 +641,26 @@ mod tests {
     cache.store(constraints(100.0), result(40.0));
     assert!(matches!(*cache.inner.borrow(), CachedLayouts::One(_)));
     cache.store(constraints(100.0), result(41.0));
-    assert!(matches!(*cache.inner.borrow(), CachedLayouts::One(_)), "the same constraints replace the entry");
-    assert_eq!(cache.get(constraints(100.0)).map(|cached| cached.size.width), Some(41.0));
+    assert!(
+      matches!(*cache.inner.borrow(), CachedLayouts::One(_)),
+      "the same constraints replace the entry"
+    );
+    assert_eq!(
+      cache.get(constraints(100.0)).map(|cached| cached.size.width),
+      Some(41.0)
+    );
     cache.record_reuse(constraints(100.0), &result(41.0).into());
-    assert!(matches!(*cache.inner.borrow(), CachedLayouts::One(_)), "the only entry is the front one already");
+    assert!(
+      matches!(*cache.inner.borrow(), CachedLayouts::One(_)),
+      "the only entry is the front one already"
+    );
 
     cache.store(constraints(90.0), result(38.0));
     assert!(matches!(*cache.inner.borrow(), CachedLayouts::Two(_)));
-    assert_eq!(cache.get(constraints(100.0)).map(|cached| cached.size.width), Some(41.0));
+    assert_eq!(
+      cache.get(constraints(100.0)).map(|cached| cached.size.width),
+      Some(41.0)
+    );
     assert_eq!(cache.get(constraints(90.0)).map(|cached| cached.size.width), Some(38.0));
 
     cache.invalidate();
@@ -655,7 +675,10 @@ mod tests {
     cache.store(constraints(100.0), result(100.0));
     cache.store(constraints(90.0), result(90.0));
     cache.store(constraints(80.0), result(80.0));
-    assert!(cache.get(constraints(100.0)).is_none(), "the inline entry was behind the front one");
+    assert!(
+      cache.get(constraints(100.0)).is_none(),
+      "the inline entry was behind the front one"
+    );
     assert!(cache.get(constraints(90.0)).is_some());
 
     let cache = LayoutCache::new();
@@ -663,7 +686,10 @@ mod tests {
     cache.store(constraints(90.0), result(90.0));
     assert!(cache.get(constraints(100.0)).is_some());
     cache.store(constraints(80.0), result(80.0));
-    assert!(cache.get(constraints(90.0)).is_none(), "the served inline entry was the front one");
+    assert!(
+      cache.get(constraints(90.0)).is_none(),
+      "the served inline entry was the front one"
+    );
     assert!(cache.get(constraints(100.0)).is_some());
   }
 
@@ -676,13 +702,19 @@ mod tests {
     cache.mark_local_dirty();
     assert!(cache.get(constraints(100.0)).is_none(), "a dirty cache serves nothing");
     cache.store(constraints(90.0), result(90.0));
-    assert!(matches!(*cache.inner.borrow(), CachedLayouts::One(_)), "the stale entry is gone");
+    assert!(
+      matches!(*cache.inner.borrow(), CachedLayouts::One(_)),
+      "the stale entry is gone"
+    );
     assert!(cache.get(constraints(100.0)).is_none());
     assert!(cache.get_repairable(constraints(90.0)).is_some());
 
     let new = LayoutCache::new();
     new.preserve_from(&cache);
     assert!(!cache.has_cached_result());
-    assert_eq!(new.cached_entry().map(|(front, size)| (front.max_width, size.width)), Some((90.0, 90.0)));
+    assert_eq!(
+      new.cached_entry().map(|(front, size)| (front.max_width, size.width)),
+      Some((90.0, 90.0))
+    );
   }
 }

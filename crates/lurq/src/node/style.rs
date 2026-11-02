@@ -351,7 +351,10 @@ impl StateStyles {
       return [0; 3];
     }
     let states = state.layout_states();
-    let state_bits = states.iter().enumerate().fold(0, |bits, (index, active)| bits | ((*active as u32) << index));
+    let state_bits = states
+      .iter()
+      .enumerate()
+      .fold(0, |bits, (index, active)| bits | ((*active as u32) << index));
     let cached = self.layout_sources.0.load(Ordering::Relaxed);
     if cached & 0xff == state_bits {
       return [(cached >> 8) as u8, (cached >> 16) as u8, (cached >> 24) as u8];
@@ -360,7 +363,8 @@ impl StateStyles {
     for (index, active) in states.into_iter().enumerate() {
       if active && let Some(style) = self.style_at(index as u8 + 1) {
         for (field, present) in [style.frame.is_some(), style.padding.is_some(), style.flex.is_some()]
-          .into_iter().enumerate()
+          .into_iter()
+          .enumerate()
         {
           if present {
             fields[field] = index as u8 + 1;
@@ -374,15 +378,21 @@ impl StateStyles {
   }
 
   pub(crate) fn layout_frame(&self, state: &InteractionState) -> Option<FrameConstraints> {
-    self.style_at(self.layout_sources(state)[0]).and_then(|style| style.frame)
+    self
+      .style_at(self.layout_sources(state)[0])
+      .and_then(|style| style.frame)
   }
 
   pub(crate) fn layout_padding(&self, state: &InteractionState) -> Option<Padding> {
-    self.style_at(self.layout_sources(state)[1]).and_then(|style| style.padding)
+    self
+      .style_at(self.layout_sources(state)[1])
+      .and_then(|style| style.padding)
   }
 
   pub(crate) fn layout_flex(&self, state: &InteractionState) -> Option<FlexParams> {
-    self.style_at(self.layout_sources(state)[2]).and_then(|style| style.flex)
+    self
+      .style_at(self.layout_sources(state)[2])
+      .and_then(|style| style.flex)
   }
 
   pub(crate) fn affects_layout(&self) -> bool {
