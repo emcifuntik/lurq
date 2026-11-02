@@ -4868,6 +4868,30 @@ mod tests {
     assert!(visits < 20, "validated rebuilt tree visited {visits} nodes");
   }
 
+  /// A first layout attaches every node to its parent's watch, which marks
+  /// the parent and its ancestors. One mark per parent covers all its
+  /// children: a mark per child walked up the ancestors for every node, and
+  /// made the first layout of a wide wrapping row cost more than a forced one.
+  #[test]
+  fn first_layout_notifies_each_parent_once_for_all_its_children() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let row = || Node::row(4.0, Alignment::Start, (0..1000).map(|_| fixed(50.0, 30.0)).collect()).wrap();
+    let root = Node::column(0.0, Alignment::Start, vec![row(), row()]);
+    let constraints = Constraints::tight(Size::new(1200.0, 800.0));
+    crate::core::layout_dirty::NOTIFIED.with(|notified| notified.set(0));
+
+    let result = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+
+    let notified = crate::core::layout_dirty::NOTIFIED.with(|notified| notified.get());
+    // The root's mark, and each row's, which reaches the root as well.
+    assert_eq!(notified, 5, "a first layout of 2003 nodes notified {notified} watches");
+    // 22 items of 50 with gaps of 4 fit in 1200.
+    let line_start = &result.children[0].result.children[22];
+    assert_eq!((line_start.offset.x, line_start.offset.y), (0.0, 34.0));
+    assert_eq!(result.children[1].offset.y, result.children[0].result.size.height);
+  }
+
   /// The setters and styles of the interaction states that can move layout
   /// on their own (focus-visible needs focus, which creates the state first).
   fn interaction_states() -> [(fn(&Node, bool) -> bool, fn(Node, crate::node::Style) -> Node); 4] {

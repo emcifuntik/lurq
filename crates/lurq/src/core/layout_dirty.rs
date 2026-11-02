@@ -44,6 +44,8 @@ impl LayoutWatch {
   }
 
   fn mark_generation(&self, generation: u64) {
+    #[cfg(test)]
+    NOTIFIED.with(|notified| notified.set(notified.get() + 1));
     self.generation.fetch_max(generation, Ordering::Relaxed);
     let parent = self.parent.lock().upgrade();
     if let Some(parent) = parent {
@@ -51,16 +53,18 @@ impl LayoutWatch {
     }
   }
 
-  pub(crate) fn set_parent(&self, parent: &Arc<Self>) {
+  /// Makes `parent` the watch this one notifies. Returns whether it is a new
+  /// parent: the caller then marks `parent` with
+  /// [`Self::mark_descendant`], once for all the children it attaches, so a
+  /// first layout does not notify the ancestors once per child.
+  #[must_use]
+  pub(crate) fn set_parent(&self, parent: &Arc<Self>) -> bool {
     let mut current = self.parent.lock();
-    if current.ptr_eq(&Arc::downgrade(parent)) {
-      return;
+    if std::ptr::eq(current.as_ptr(), Arc::as_ptr(parent)) {
+      return false;
     }
     *current = Arc::downgrade(parent);
-    drop(current);
-    // A newly attached subtree must be inspected even if its old parent has
-    // already consumed its dirty marks (the overlay host lays its base first).
-    parent.mark_descendant();
+    true
   }
 
   /// Forgets the parent, as a new watch has none: for a watch a rebuilt node
@@ -101,6 +105,8 @@ impl LayoutSubscribers {
 thread_local! {
   pub(crate) static VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
   pub(crate) static LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+  /// Watches notified of a mark, each ancestor a mark reaches counted.
+  pub(crate) static NOTIFIED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]

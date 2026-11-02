@@ -495,7 +495,7 @@ mod tests {
   fn adopting_a_watch_keeps_one_already_made() {
     let parent = LayoutWatch::new();
     let old = LayoutCache::new();
-    old.watch().set_parent(&parent);
+    assert!(old.watch().set_parent(&parent));
 
     let made = LayoutCache::new();
     let own = made.watch().clone();

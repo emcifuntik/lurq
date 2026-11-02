@@ -60,8 +60,9 @@ impl Node {
       state.track_layout(watch);
       subtree.scroll = true;
     }
+    let mut attached = false;
     for child in self.children() {
-      child.layout_cache.watch().set_parent(watch);
+      attached |= child.layout_cache.watch().set_parent(watch);
       let child = child.prepare_layout_tracking();
       subtree.text_input |= child.text_input;
       subtree.select |= child.select;
@@ -71,6 +72,13 @@ impl Node {
       subtree.resource_images |= child.resource_images;
       subtree.resource_svgs |= child.resource_svgs;
       subtree.loading_images |= child.loading_images;
+    }
+    // A newly attached subtree must be inspected even if its old parent has
+    // already consumed its dirty marks (the overlay host lays its base first).
+    // One mark covers every child attached above: a mark per child cost a
+    // first layout a walk up the ancestors for each node.
+    if attached {
+      watch.mark_descendant();
     }
     cache.subtree.set(subtree);
     cache.tracking_generation.set(watch.generation());
