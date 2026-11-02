@@ -1,7 +1,8 @@
 //! Explicit GPU tests: run separately; no adapter absence becomes a passing zero-test gate.
+use std::{sync::atomic::Ordering, time::Duration};
+
 use super::*;
 use crate::node::transform::Transform2D;
-use std::{sync::atomic::Ordering, time::Duration};
 fn take(canvas: &CanvasHandle, renderer: &mut Renderer, device: &Device, queue: &Queue) -> CanvasSnapshot {
   let read = canvas.snapshot();
   renderer.process(device, queue, &[canvas.clone()]);

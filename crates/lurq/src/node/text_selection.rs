@@ -76,11 +76,9 @@ impl CaretPositions {
   /// holders: node states, cached layout results and the shaping cache share
   /// one allocation.
   pub(crate) fn estimated_shared_memory_bytes(&self) -> usize {
-    let positions = self
-      .0
-      .positions
-      .get()
-      .map_or(0, |positions| positions.capacity() * std::mem::size_of::<CaretPosition>());
+    let positions = self.0.positions.get().map_or(0, |positions| {
+      positions.capacity() * std::mem::size_of::<CaretPosition>()
+    });
     let segments = self.0.segments.capacity() * std::mem::size_of::<CaretSegment>();
     let index = self
       .0

@@ -32,9 +32,7 @@ fn content_id(data: &[u8]) -> u64 {
 /// Fold an override into the id deterministically (splitmix64 finalizer), so
 /// identical construction chains produce identical ids.
 fn mix_id(id: u64, tag: u64, value: u64) -> u64 {
-  let mut x = id
-    ^ tag.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-    ^ value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+  let mut x = id ^ tag.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
   x ^= x >> 30;
   x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
   x ^= x >> 27;

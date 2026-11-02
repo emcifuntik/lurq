@@ -1,3 +1,7 @@
+use std::path::PathBuf;
+
+use serde_json::{Value, json};
+
 use crate::{
   app::{Tree, Window},
   mcp::{
@@ -7,8 +11,6 @@ use crate::{
     shared::{McpToolOutput, McpToolResult},
   },
 };
-use serde_json::{Value, json};
-use std::path::PathBuf;
 
 pub(crate) fn live_windows(tree: &Tree, include_devtools: bool) -> Vec<(String, Window)> {
   let mut windows = vec![("main".into(), tree.window().clone())];

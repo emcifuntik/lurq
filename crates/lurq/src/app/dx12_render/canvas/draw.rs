@@ -1,6 +1,8 @@
 //! Tile/layer draw recording and asset binding for prepared Canvas commands.
-use super::resources::{asset_texture, upload_asset, viewport};
-use super::*;
+use super::{
+  resources::{asset_texture, upload_asset, viewport},
+  *,
+};
 
 impl Renderer {
   pub(super) unsafe fn draw(&mut self, state: &mut Dx12State, id: CanvasId, prepared: &Prepared) -> Result<()> {

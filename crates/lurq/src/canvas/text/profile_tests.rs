@@ -1,4 +1,8 @@
 //! Real Canvas text/cache work with an embedded font, without a GPU/window.
+use std::time::Duration;
+
+use parking_lot::Mutex;
+
 use super::*;
 use crate::{
   app::{
@@ -7,8 +11,6 @@ use crate::{
   },
   canvas::{CanvasHandle, Context2D},
 };
-use parking_lot::Mutex;
-use std::time::Duration;
 
 fn context() -> Context2D {
   let mut fonts = FontSystem::new_with_locale_and_db("en-US".into(), Default::default());

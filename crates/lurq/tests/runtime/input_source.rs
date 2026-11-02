@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use lurq::{
   app::{
     Tree,
-    events::{InputSource, KeyboardEvent, MouseButton, MouseEvent, input_source, is_synthetic_input, with_synthetic_input},
+    events::{
+      InputSource, KeyboardEvent, MouseButton, MouseEvent, input_source, is_synthetic_input, with_synthetic_input,
+    },
     synthetic_input::{SyntheticInput, apply},
   },
   components::Rect,

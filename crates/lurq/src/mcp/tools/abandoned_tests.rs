@@ -15,9 +15,12 @@ fn clicked_tree(clicks: &Arc<Mutex<usize>>) -> Tree {
   let mut tree = Tree::new();
   tree.resize(200, 200);
   let clicks = clicks.clone();
-  tree.set_root(Column::new().width(200.0).height(200.0).child(
-    Rect::new(100.0, 100.0).on_click(move |_: MouseEvent| *clicks.lock().unwrap() += 1),
-  ));
+  tree.set_root(
+    Column::new()
+      .width(200.0)
+      .height(200.0)
+      .child(Rect::new(100.0, 100.0).on_click(move |_: MouseEvent| *clicks.lock().unwrap() += 1)),
+  );
   tree
 }
 

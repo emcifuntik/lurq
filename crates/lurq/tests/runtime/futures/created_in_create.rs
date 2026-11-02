@@ -45,7 +45,12 @@ impl Probe {
   }
 
   fn action(&self) -> Action {
-    self.action.lock().unwrap().clone().expect("the component stored its action")
+    self
+      .action
+      .lock()
+      .unwrap()
+      .clone()
+      .expect("the component stored its action")
   }
 }
 

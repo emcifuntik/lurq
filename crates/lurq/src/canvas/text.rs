@@ -1,9 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
-#[cfg(feature = "perf_profile")]
-use crate::app::profiler::canvas_text::{self as profile, Stage, Timer};
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashContent, Wrap};
 use tiny_skia::{Pixmap, PixmapPaint};
+
+#[cfg(feature = "perf_profile")]
+use crate::app::profiler::canvas_text::{self as profile, Stage, Timer};
 
 mod glyph_cache;
 #[cfg(all(test, feature = "perf_profile"))]

@@ -823,15 +823,12 @@ impl Ctx {
   /// `run_if_idle` leaves it and starts nothing.
   ///
   /// Where it is created decides how long it lives:
-  /// - In `create`, the action gets a slot of its own and lives until the
-  ///   component unmounts. Keep it in the component struct and run it from any
-  ///   render or handler. This is the simplest place for an action.
-  /// - In `render`, the action belongs to its call position, like a hook: each
-  ///   render must make the same `ctx.future`, `ctx.stream` and
-  ///   `ctx.future_action` calls in the same order. A render that skips the call,
-  ///   or makes a different one at its position, drops the action: its run is
-  ///   cancelled and running a clone of it afterwards does nothing but log an
-  ///   error that names the component.
+  /// - In `create`, the action gets a slot of its own and lives until the component unmounts. Keep it in the component
+  ///   struct and run it from any render or handler. This is the simplest place for an action.
+  /// - In `render`, the action belongs to its call position, like a hook: each render must make the same `ctx.future`,
+  ///   `ctx.stream` and `ctx.future_action` calls in the same order. A render that skips the call, or makes a different
+  ///   one at its position, drops the action: its run is cancelled and running a clone of it afterwards does nothing
+  ///   but log an error that names the component.
   pub fn future_action<A, T, E, F, Fut>(&mut self, factory: F) -> FutureAction<A, T, E>
   where
     A: Send + Sync + 'static,

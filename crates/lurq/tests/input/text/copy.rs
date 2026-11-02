@@ -11,14 +11,13 @@ use lurq::{
 };
 
 use crate::support::{
-  selection::{assert_drags_copy_their_glyphs, pairs, rows_copying_other_text, rows_highlighted_elsewhere, Page},
   TestSurface,
+  selection::{Page, assert_drags_copy_their_glyphs, pairs, rows_copying_other_text, rows_highlighted_elsewhere},
 };
 
 const WRAPPED: &str = "A plain text with enough words in it to wrap onto a few lines at the width of the test, with \
 accents (déjà vu), digits 2423 and punctuation; nothing else.";
-const PARAGRAPHS: &str =
-  "First line of the text.\nSecond line, a bit longer than the first one.\n\nFourth line after an \
+const PARAGRAPHS: &str = "First line of the text.\nSecond line, a bit longer than the first one.\n\nFourth line after an \
 empty one.";
 
 fn page(root: impl Into<lurq::node::Element>, scale: f32) -> Page {

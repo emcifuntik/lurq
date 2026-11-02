@@ -25,9 +25,10 @@ fn application_handles_and_parent_tokens_support_explicit_worker_handoff() {
 
 #[cfg(feature = "perf_profile")]
 mod enabled {
+  use std::sync::mpsc;
+
   use super::*;
   use crate::app::profiler::producer::WindowProfiler;
-  use std::sync::mpsc;
 
   #[test]
   fn overlapping_end_during_worker_stall_keeps_first_and_ui_phase_independent() {

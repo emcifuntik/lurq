@@ -226,7 +226,10 @@ mod tests {
     let first = rasterize(&data, 80.0, 80.0);
     let second = rasterize(&data, 80.0, 80.0);
     assert_eq!(first.image_id, second.image_id);
-    assert!(Arc::ptr_eq(&first.data, &second.data), "second raster must be the cached buffer");
+    assert!(
+      Arc::ptr_eq(&first.data, &second.data),
+      "second raster must be the cached buffer"
+    );
 
     let resized = rasterize(&data, 120.0, 120.0);
     assert_ne!(resized.image_id, first.image_id);

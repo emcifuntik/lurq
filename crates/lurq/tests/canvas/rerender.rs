@@ -130,6 +130,8 @@ struct OverlayProps {
   reference: ElementRef,
 }
 
+impl lurq::app::component::DevtoolsInspectable for OverlayProps {}
+
 impl PartialEq for OverlayProps {
   fn eq(&self, other: &Self) -> bool {
     self.by_render == other.by_render

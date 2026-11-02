@@ -162,20 +162,27 @@ fn duplicate_ids_are_reported_once_per_set_not_every_redraw() {
   };
   let counter = std::sync::Arc::new(WarningCounter::default());
   let count = || counter.0.load(std::sync::atomic::Ordering::SeqCst);
+  // Another test may first hit the warning's callsite on its thread, without
+  // this subscriber, and cache that nothing listens to it after this one is
+  // set: rebuild the cache before each call whose warnings are counted.
+  let set_items = |items: Vec<CanvasItem>| {
+    tracing::callsite::rebuild_interest_cache();
+    canvas.set_items(items);
+  };
   tracing::subscriber::with_default(counter.clone(), || {
     for _ in 0..5 {
-      canvas.set_items(items("b"));
+      set_items(items("b").into());
     }
     assert_eq!(count(), 1);
-    canvas.set_items(items("a"));
+    set_items(items("a").into());
     assert_eq!(count(), 1, "the same duplicated ids in another layout");
-    canvas.set_items([
+    set_items(vec![
       CanvasItem::rect("b", "bar", 0.0, 0.0, 4.0, 4.0),
       CanvasItem::rect("b", "bar", 8.0, 0.0, 4.0, 4.0),
     ]);
     assert_eq!(count(), 2, "a different duplicate set is reported");
-    canvas.set_items([CanvasItem::rect("a", "bar", 0.0, 0.0, 4.0, 4.0)]);
-    canvas.set_items(items("b"));
+    set_items(vec![CanvasItem::rect("a", "bar", 0.0, 0.0, 4.0, 4.0)]);
+    set_items(items("b").into());
     assert_eq!(count(), 3, "duplicates that come back are reported again");
   });
 }

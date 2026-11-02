@@ -73,7 +73,11 @@ fn rendered_cache_preserves_color_scale_and_previous_drawing_owners() {
   let large = CanvasFont::new("Lurq Weight Probe", 200.);
   let mut drawn = 0;
   for index in 0.. {
-    drawn += engine.shape("aaaa", &large, 1., Color::new(0, index, 0, 255)).unwrap().data.len();
+    drawn += engine
+      .shape("aaaa", &large, 1., Color::new(0, index, 0, 255))
+      .unwrap()
+      .data
+      .len();
     if drawn > 2 * shape_cache::LIMITS.budget {
       break;
     }
