@@ -278,7 +278,7 @@ MarkdownProps::new(reply).on_link_activate(move |link, event| {
 })
 ```
 
-- A middle click is a press and a release of the middle button on the same link, like a left click: a press released off the link activates nothing, and neither does a press on one link released on another more than a few pixels away. Closer than that, the link under the release activates, as with a left click. The press starts no text selection and no drag of what the link is in, and lurq has no middle-click autoscroll or paste for it to start.
+- A middle click is a press and a release of the middle button on the same link, like a left click: a press released off the link activates nothing, and neither does a press on one link released on another more than a few pixels away. Closer than that, the link under the release activates, as with a left click. The press starts no text selection, no drag of what the link is in and no [middle-button autoscroll](../layout/#middle-button-autoscroll) of the container around it, and lurq has no middle-click paste for it to start.
 - `on_link_activate` runs before `on_link_click`, which still gets the left clicks and Enter when both are set. With `on_link_activate` set, an in-app link no longer navigates the router by itself. Without it, a middle click on a link does nothing.
 - It runs inside the input's dispatch, like `on_link_click`: an MCP client's `lurq_interact` click with `"button": "middle"` or `"modifiers": ["ctrl", "meta"]` reaches it with those, and `is_synthetic_input()` is `true`.
 

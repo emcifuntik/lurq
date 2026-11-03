@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.56.0 — 2026-11-04
+
+Added:
+
+- Middle-button autoscroll, on per scroll container (#78). `middle_button_autoscroll(true)` on `ScrollVertical`, `ScrollHorizontal`, `ScrollBoth` or `VirtualizedList` makes a middle press over the container mark where the button went down. While the button is held, the content scrolls toward the pointer on the axes the container scrolls, faster the farther the pointer is from the mark, and does not move within 12 logical pixels of it. The release, Esc, another press or the pointer leaving the window ends it, and the release is not a middle click. The innermost container with it on that can scroll takes the press, unless an element inside takes the middle button itself: one with a middle-click handler, a middle drag, or `prevent_default` on the press. The container's scroll handlers get the start, steps and end of the scroll, and its scroll-reach handlers run as they do for the wheel. It is off by default. `LayoutKind::ScrollModifier` has a new `middle_button_autoscroll` field.
+
+0.55.0 is left for the layout-performance line, whose `0.55.0-beta.1` is on crates.io.
+
 ## 0.55.0-beta.1 — 2026-11-02
 
 A beta of a layout performance rework. Cargo picks a pre-release only when asked: depend on `lurq = "=0.55.0-beta.1"` to try it. Layout results are meant to be exactly those of 0.54.0, and the public API is unchanged.
@@ -19,6 +27,8 @@ Behaviour changes:
 Added:
 
 - `benches/vs_taffy.rs` lays out the same 12 trees with lurq and taffy in six modes (build, cold, rebuild, forced, resize, noop), after checking that both place every leaf alike, and probes the deepest tree a given stack lays out (`VS_TAFFY_PROBE`). `benches/vs_taffy_allocs.rs` counts the allocations of each mode. The `layout` and `render_list` benches lay out now; before they timed only building the tree. `scripts/check.ps1` runs the test suite and the release-only stack-depth test.
+
+## 0.54.0 — 2026-11-02
 
 Added:
 

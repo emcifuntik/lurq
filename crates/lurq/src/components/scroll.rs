@@ -18,6 +18,13 @@ impl ScrollVertical {
     self.update_node(|node| crate::node::NodeUpdate::culling(node, enabled));
     self
   }
+
+  /// Middle-button autoscroll, off by default; see
+  /// [`Node::middle_button_autoscroll`](crate::node::node::Node::middle_button_autoscroll).
+  pub fn middle_button_autoscroll(mut self, enabled: bool) -> Self {
+    self.update_node(|node| crate::node::NodeUpdate::middle_button_autoscroll(node, enabled));
+    self
+  }
 }
 
 impl Default for ScrollVertical {
@@ -40,6 +47,13 @@ impl ScrollHorizontal {
     self.update_node(|node| crate::node::NodeUpdate::culling(node, enabled));
     self
   }
+
+  /// Middle-button autoscroll, off by default; see
+  /// [`Node::middle_button_autoscroll`](crate::node::node::Node::middle_button_autoscroll).
+  pub fn middle_button_autoscroll(mut self, enabled: bool) -> Self {
+    self.update_node(|node| crate::node::NodeUpdate::middle_button_autoscroll(node, enabled));
+    self
+  }
 }
 
 impl Default for ScrollHorizontal {
@@ -60,6 +74,13 @@ impl ScrollBoth {
 
   pub fn culling(mut self, enabled: bool) -> Self {
     self.update_node(|node| crate::node::NodeUpdate::culling(node, enabled));
+    self
+  }
+
+  /// Middle-button autoscroll, off by default; see
+  /// [`Node::middle_button_autoscroll`](crate::node::node::Node::middle_button_autoscroll).
+  pub fn middle_button_autoscroll(mut self, enabled: bool) -> Self {
+    self.update_node(|node| crate::node::NodeUpdate::middle_button_autoscroll(node, enabled));
     self
   }
 }

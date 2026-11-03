@@ -425,6 +425,30 @@ its first frame is full. When the items are swapped for others whose keys all di
 same list), the measured heights go but their average stays as the estimate, so the new rows are windowed where the
 list opens, about a viewport's worth, instead of bootstrapped again.
 
+### Middle-button autoscroll
+
+A scroll container can scroll the way browsers do while the middle button is held: `.middle_button_autoscroll(true)` on
+`ScrollVertical`, `ScrollHorizontal`, `ScrollBoth` or `VirtualizedList` turns it on for that container; it is off by
+default, so an app picks the containers that have it (a long chat, not a code editor, for example).
+
+```rust
+VirtualizedList::new(ctx, entries)
+  .middle_button_autoscroll(true)
+  .flex(1.0)
+  .mount_keyed::<Entry, _, _, _>(|entry| entry.id, |entry| entry.clone())
+```
+
+A middle press over the container draws a mark where the button went down. While the button is held, the content
+scrolls toward the pointer, faster the farther the pointer is from the mark, on the axes the container scrolls; within
+about 12 logical pixels of the mark it stands still. Releasing the button, pressing Esc or the pointer leaving the window
+ends it, and that release clicks nothing. The container's `on_scroll` handlers (and its scroll-reach handlers) hear each
+step, so a `VirtualizedList` mounts the rows it scrolls to.
+
+The innermost container under the pointer that has it on and has content to scroll takes the press. A press on an
+element that takes the middle button itself is left to it: an `on_mouse_click(MouseButton::Middle, ...)` handler, a drag
+that starts with the middle button, or a `on_mouse_down` handler that calls `prevent_default()` (as a Markdown link does
+when the app takes middle clicks). The wheel, the scrollbar and text selection are unchanged.
+
 ### Row state in a virtualized list
 
 A row that scrolls out of the rendered window (the viewport and `overscan_px` beyond it) is unmounted, and it is created

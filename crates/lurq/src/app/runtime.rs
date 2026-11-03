@@ -65,6 +65,7 @@ use crate::{
   },
 };
 
+mod autoscroll;
 #[cfg(all(test, feature = "screenshot"))]
 mod capture_redaction_tests;
 #[cfg(test)]
@@ -673,6 +674,8 @@ pub struct Tree {
   hover_path: Vec<NodeId>,
   active_path: Vec<NodeId>,
   dragging_scroll: Option<ScrollDrag>,
+  /// The middle-button autoscroll under way (`middle_button_autoscroll`).
+  autoscroll: Option<autoscroll::Autoscroll>,
   dragging_slider: Option<SliderDrag>,
   dragging_text_selection: Option<TextSelectionDrag>,
   /// Where the selection in the selectable texts started, which a Shift
@@ -1056,6 +1059,7 @@ impl Tree {
       hover_path: Vec::new(),
       active_path: Vec::new(),
       dragging_scroll: None,
+      autoscroll: None,
       dragging_slider: None,
       dragging_text_selection: None,
       selectable_text_anchor: None,
@@ -1436,6 +1440,7 @@ impl Tree {
   #[cfg_attr(not(feature = "winit"), allow(dead_code))]
   pub(crate) fn has_active_tick_sources(&self) -> bool {
     self.perf_overlay_enabled
+      || self.autoscroll_moving()
       || self.has_active_timeline()
       || self.has_continuous_redraw_image()
       || self.click_tracker.has_pending()
@@ -3119,6 +3124,7 @@ impl Tree {
     };
     #[cfg(not(feature = "screenshot"))]
     let perf_overlay = self.perf_overlay_enabled.then_some(self.perf_overlay_stats);
+    self.push_autoscroll_mark(&mut rects, quad_count + 19_000, scale);
     push_perf_meter(
       &mut rects,
       &mut glyphs,
@@ -3367,6 +3373,10 @@ impl Tree {
     #[cfg(feature = "perf_profile")]
     let _input = self.profiling.context.input(crate::app::profiler::InputKind::Pointer);
     self.pointer = None;
+    if self.end_autoscroll() {
+      // The release that follows, if it comes, belongs to the autoscroll.
+      self.swallowed_press = Some(MouseButton::Middle);
+    }
     self.clear_hover_path();
     self.apply_reactive_updates_after_event();
   }
@@ -3511,6 +3521,10 @@ impl Tree {
   /// An `on_drag_*` session ends as a miss without reaching a drop target. Does nothing unless
   /// `button` is held.
   pub fn mouse_press_taken_by_os(&mut self, x: f32, y: f32, button: MouseButton) {
+    if button == MouseButton::Middle && self.end_autoscroll() {
+      self.apply_reactive_updates_after_event();
+      return;
+    }
     let pressed = self.click_press.as_ref().is_some_and(|press| press.button == button)
       || self.active_drag.as_ref().is_some_and(|drag| drag.button == button)
       || self.dragging_scroll.is_some()
@@ -3623,6 +3637,13 @@ impl Tree {
     #[cfg(feature = "perf_profile")]
     let _input = self.profiling.context.input(crate::app::profiler::InputKind::Keyboard);
     self.rebuild_if_dirty();
+    if (key == "Escape" || code == "Escape") && self.end_autoscroll() {
+      // Esc ends the autoscroll and does nothing else; the release that
+      // follows clicks nothing.
+      self.swallowed_press = Some(MouseButton::Middle);
+      self.apply_reactive_updates_after_event();
+      return;
+    }
     self.note_key_press_modality(&key, ctrl, alt, meta);
     // Keys never reach a node that was dropped since it took focus.
     self.blur_focus_in_dropped_child();
@@ -4119,6 +4140,25 @@ impl Tree {
     let ly = evt.y / scale;
     evt.x = lx;
     evt.y = ly;
+
+    // A middle-button autoscroll takes the pointer's moves; its release, or
+    // any other press, ends it.
+    if self.autoscroll.is_some() {
+      match evt.kind {
+        MouseEventKind::Move => {
+          self.autoscroll_pointer_moved(lx, ly);
+          return;
+        }
+        MouseEventKind::Up if button == MouseButton::Middle => {
+          self.end_autoscroll();
+          self.suppress_click((lx, ly), button);
+        }
+        MouseEventKind::Down => {
+          self.end_autoscroll();
+        }
+        _ => {}
+      }
+    }
 
     // Handle active scrollbar drag
     if let Some(ref drag) = self.dragging_scroll.clone() {
@@ -4693,6 +4733,19 @@ impl Tree {
     if let Some((drag, part)) = scrollbar_press {
       drop(hits);
       self.press_scrollbar(drag, part, lx, ly);
+      return;
+    }
+
+    // A middle press on a scroll container that turned autoscroll on starts
+    // it, unless a handler prevented the press's default or an element inside
+    // the container takes the middle button itself.
+    if button == MouseButton::Middle
+      && matches!(evt.kind, MouseEventKind::Down)
+      && !evt.default_prevented()
+      && let Some(target) = autoscroll::autoscroll_target(&hits)
+    {
+      drop(hits);
+      self.begin_autoscroll(target, lx, ly);
       return;
     }
 
@@ -5638,7 +5691,7 @@ impl Tree {
     {
       return false;
     }
-    if self.perf_overlay_enabled {
+    if self.perf_overlay_enabled || self.autoscroll.is_some() {
       return false;
     }
     #[cfg(feature = "devtools")]
@@ -6108,6 +6161,7 @@ impl Tree {
     let component_dirty_before_rebuild = self.root_ctx.as_ref().is_some_and(Ctx::any_dirty);
     self.transition_engine.begin_frame();
     self.animation_engine.begin_frame();
+    self.step_autoscroll();
     self.rebuild_if_dirty();
     self.apply_focus_request();
     self.rebuild_if_dirty();
