@@ -47,6 +47,7 @@ fn make_scroll(child: Node, direction: ScrollDirection) -> Node {
       state: ScrollState::new(),
       direction,
       culling: true,
+      middle_button_autoscroll: false,
     },
     frame: FrameConstraints::default(),
     padding: Padding::default(),

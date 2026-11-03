@@ -485,6 +485,7 @@ pub(crate) trait NodeUpdate {
   fn scrollbar(&mut self, style: ScrollBarStyle);
   fn scrollbar_hovered(&mut self, f: impl Fn(ScrollBarStyle) -> ScrollBarStyle + Send + Sync + 'static);
   fn culling(&mut self, enabled: bool);
+  fn middle_button_autoscroll(&mut self, enabled: bool);
   fn hit_test(&mut self, behavior: HitTestBehavior);
   fn pointer_events_none(&mut self);
   fn ref_element(&mut self, element_ref: impl Into<CoreElementRef>);
@@ -1547,6 +1548,16 @@ impl NodeUpdate for Node {
   fn culling(&mut self, enabled: bool) {
     if let LayoutKind::ScrollModifier { culling, .. } = &mut self.layout_kind {
       *culling = enabled;
+    }
+  }
+
+  fn middle_button_autoscroll(&mut self, enabled: bool) {
+    if let LayoutKind::ScrollModifier {
+      middle_button_autoscroll,
+      ..
+    } = &mut self.layout_kind
+    {
+      *middle_button_autoscroll = enabled;
     }
   }
 
@@ -3002,6 +3013,34 @@ impl Node {
       *culling = enabled;
     }
     self
+  }
+
+  /// Middle-button autoscroll for a scroll container, off by default: with it
+  /// on, pressing the middle button over the container and moving the pointer
+  /// away from where it went down scrolls the content toward the pointer,
+  /// faster the farther the pointer is (on the axes the container scrolls),
+  /// until the button is released, Esc is pressed or the pointer leaves the
+  /// window. A mark is drawn where the button went down. The innermost
+  /// container under the pointer that has it on and can scroll takes the
+  /// press; a press on an element that takes the middle button itself (a
+  /// handler that calls `prevent_default` on the press, a middle-click or
+  /// middle-drag handler) is left to that element. Does nothing on a node
+  /// that does not scroll.
+  pub fn middle_button_autoscroll(mut self, enabled: bool) -> Self {
+    NodeUpdate::middle_button_autoscroll(&mut self, enabled);
+    self
+  }
+
+  /// Whether a middle-button press may autoscroll this scroll container
+  /// ([`Self::middle_button_autoscroll`]).
+  pub(crate) fn has_middle_button_autoscroll(&self) -> bool {
+    matches!(
+      self.layout_kind,
+      LayoutKind::ScrollModifier {
+        middle_button_autoscroll: true,
+        ..
+      }
+    )
   }
 
   pub fn hit_test(mut self, behavior: HitTestBehavior) -> Self {

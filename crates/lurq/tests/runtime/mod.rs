@@ -46,6 +46,7 @@ mod loop_wake {
   mod tokio_work_wakes_loop;
 }
 mod history_swipe;
+mod middle_autoscroll;
 mod modal_resize;
 mod mouse_leave;
 mod outside_press;

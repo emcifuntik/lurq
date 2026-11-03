@@ -81,6 +81,8 @@ struct VirtualizedListOptions {
   /// an already-visible row does not move. Used to restore a selection after
   /// navigation without persisting scroll offsets.
   reveal_key: Option<String>,
+  /// Middle-button autoscroll; see [`VirtualizedList::middle_button_autoscroll`].
+  middle_button_autoscroll: bool,
 }
 
 /// A vertically scrolling list that mounts only the rows in and near its
@@ -240,6 +242,15 @@ impl<'a, T> VirtualizedList<'a, T> {
 
   pub fn with_scroll_state(mut self, scroll_state: ScrollState) -> Self {
     self.options.scroll_state = Some(scroll_state);
+    self
+  }
+
+  /// Middle-button autoscroll, off by default: pressing the middle button
+  /// over the list and moving the pointer away scrolls it, faster the farther
+  /// the pointer is, until the release. See
+  /// [`Node::middle_button_autoscroll`](crate::node::node::Node::middle_button_autoscroll).
+  pub fn middle_button_autoscroll(mut self, enabled: bool) -> Self {
+    self.options.middle_button_autoscroll = enabled;
     self
   }
 
@@ -504,7 +515,9 @@ where
     // applied through a macro.
     macro_rules! configure_scroll {
       ($scroll:expr) => {{
-        let mut scroll = $scroll.with_scroll_state(scroll_state.clone());
+        let mut scroll = $scroll
+          .with_scroll_state(scroll_state.clone())
+          .middle_button_autoscroll(options.middle_button_autoscroll);
         if let Some(style) = options.scrollbar.clone() {
           scroll = scroll.scrollbar(style);
         }
