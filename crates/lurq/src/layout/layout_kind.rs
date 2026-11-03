@@ -38,6 +38,10 @@ pub enum LayoutKind {
     state: ScrollState,
     direction: ScrollDirection,
     culling: bool,
+    /// A middle-button press scrolls the container by how far the pointer
+    /// moves from where the button went down; see
+    /// [`Node::middle_button_autoscroll`](crate::node::node::Node::middle_button_autoscroll).
+    middle_button_autoscroll: bool,
   },
 }
 

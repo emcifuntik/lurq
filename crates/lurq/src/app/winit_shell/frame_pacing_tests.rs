@@ -650,3 +650,49 @@ fn on_a_virtual_clock_twelve_steps_draw_twelve_frames_a_second() {
     "a frame per step: {in_first_second} frames in the first second"
   );
 }
+
+#[test]
+fn a_middle_button_autoscroll_moves_the_content_at_every_refresh_and_then_lets_the_loop_wait() {
+  use crate::{
+    components::{Column, ScrollVertical},
+    layout::layout_kind::ScrollState,
+  };
+
+  let state = ScrollState::new();
+  let mut rows = Column::new().spacing(0.0);
+  for _ in 0..200 {
+    rows = rows.child(Rect::new(150.0, 20.0));
+  }
+  let mut tree = Tree::new();
+  tree.set_root(
+    ScrollVertical::new(rows)
+      .with_scroll_state(state.clone())
+      .middle_button_autoscroll(true)
+      .size(200.0, 100.0),
+  );
+  let mut shell = Shell::new(tree);
+  shell.run_for(Duration::from_millis(50));
+  let before = shell.frames().len();
+  shell.tree.mouse_down(80.0, 30.0, MouseButton::Middle);
+  shell.tree.mouse_move(80.0, 90.0);
+  shell.run_for(Duration::from_millis(300));
+  let scrolled = state.scroll_y();
+  let frames = shell.frames().len() - before;
+  assert!(
+    (14..=20).contains(&frames),
+    "the autoscroll runs at the display's rate: {frames} frames in 0.3 s"
+  );
+  assert!(scrolled > 50.0, "and moves the content: {scrolled}");
+
+  shell.tree.mouse_up(80.0, 90.0, MouseButton::Middle);
+  shell.run_for(Duration::from_millis(100));
+  assert_eq!(state.scroll_y(), scrolled, "the release stops it");
+  assert!(!shell.tree.has_active_tick_sources());
+  let needs = LoopNeeds {
+    polling: shell.tree.needs_polling(),
+    next_redraw: shell.tree.next_scheduled_redraw(),
+    next_timer: shell.tree.next_timer_at(),
+    ..LoopNeeds::default()
+  };
+  assert_eq!(LoopWait::of(needs, Instant::now()), LoopWait::Wait, "the loop waits");
+}
