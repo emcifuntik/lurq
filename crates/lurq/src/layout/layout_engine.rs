@@ -10,18 +10,18 @@ use crate::{
     ctx::{ModalSpec, OverlaySpec},
     glyph_engine::GlyphEngine,
     theme::{
-      CaretMode, PaletteColor, ThemeBorderSizes, ThemeCaret, ThemePalette, ThemeRadii, ThemeShadows, ThemeSpacing,
-      ThemeTypography,
+      CaretMode, PaletteColor, Theme, ThemeBorderSizes, ThemeCaret, ThemePalette, ThemeRadii, ThemeShadows,
+      ThemeSpacing, ThemeTypography,
     },
   },
   core::{ElementRect, ElementRef},
   layout::{
     Alignment, Constraints, Offset, Size, StackAlignment,
     layout_kind::{
-      FlexParams, FlexWrap, FrameConstraints, Justify, LayoutKind, Overflow, Position, ScrollAxis, ScrollDirection,
-      ScrollState, ShrinkLimit,
+      FlexWrap, FrameConstraints, Justify, LayoutKind, Overflow, Position, ScrollAxis, ScrollDirection, ScrollState,
+      ShrinkLimit,
     },
-    layout_result::{ChildLayout, LayoutResult},
+    layout_result::{ChildLayout, LayoutResult, SubtreeHolds},
     quad::{ClipRect, Quad, QuadContent},
     scrollbar::{ScrollBarPlacement, ScrollBarStyle, ScrollBarVisibility},
     text_style::TextStyle,
@@ -61,7 +61,7 @@ mod text_highlights;
 mod text_input_quads;
 mod text_layout_output;
 
-use flex_shrink::{FlexShrinkLine, FreeRoom, line_overflow, occupies_line};
+use flex_shrink::{FlexShrinkLine, FreeRoom, LineOverflow, main_size, occupies_line};
 pub(crate) use text_layout_output::TextLayoutOutput;
 use text_layout_output::{TextInputOutput, TextOutput};
 
@@ -136,7 +136,7 @@ pub(crate) struct ResolvedPadding {
 #[derive(Clone)]
 struct ChildLayoutOverride {
   constraints: Constraints,
-  result: LayoutResult,
+  result: Arc<LayoutResult>,
 }
 
 #[derive(Default)]
@@ -221,6 +221,9 @@ impl Clone for OverlayLayoutRecord {
 pub(crate) struct LayoutEngine {
   last_recalculated: Cell<bool>,
   text_input_caret_visible: Cell<bool>,
+  /// The theme the values below were copied from, and its version then
+  /// (`set_theme`). `None` until a theme is set: the values are the defaults.
+  theme_seen: RefCell<Option<(Theme, u64)>>,
   palette: RefCell<ThemePalette>,
   border_sizes: RefCell<ThemeBorderSizes>,
   spacing: RefCell<ThemeSpacing>,
@@ -246,6 +249,10 @@ pub(crate) struct LayoutEngine {
   /// The lines being laid out collapsed by their parent's shrink step
   /// (`flex_shrink::is_collapsed`).
   collapsed_lines: RefCell<Vec<usize>>,
+  /// What a flex child holds in its line's `child_layouts` until the line
+  /// knows its share of the free room (`layout_flex`). Told apart by address;
+  /// never left in a finished result.
+  awaiting_room: Arc<LayoutResult>,
   /// Device pixels per logical pixel of the paint, for geometry that must
   /// match painted glyphs (rich-text links and underlines).
   paint_scale: Cell<f32>,
@@ -504,6 +511,7 @@ impl LayoutEngine {
     Self {
       last_recalculated: Cell::new(false),
       text_input_caret_visible: Cell::new(true),
+      theme_seen: RefCell::new(None),
       palette: RefCell::new(ThemePalette::default()),
       border_sizes: RefCell::new(ThemeBorderSizes::default()),
       spacing: RefCell::new(ThemeSpacing::default()),
@@ -520,6 +528,14 @@ impl LayoutEngine {
       #[cfg(feature = "screenshot")]
       sensitive_quads: RefCell::new(Vec::new()),
       collapsed_lines: RefCell::new(Vec::new()),
+      awaiting_room: Arc::new(LayoutResult {
+        size: Size::default(),
+        children: Vec::new(),
+        text_layout: None,
+        dropped: false,
+        holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
+      }),
       paint_scale: Cell::new(1.0),
     }
   }
@@ -530,90 +546,70 @@ impl LayoutEngine {
     self.paint_scale.set(scale);
   }
 
+  /// Takes the theme values layout and paint read until the next call. They
+  /// are copied only when `theme` is another theme, or the same one at
+  /// another version, than the last call's: a pass on an unchanged theme
+  /// copies nothing. Changing the values does not mark any node dirty; a
+  /// caller that switches themes lays out with `force_dirty`.
+  pub(crate) fn set_theme(&self, theme: &Theme) {
+    let version = theme.version();
+    if self
+      .theme_seen
+      .borrow()
+      .as_ref()
+      .is_some_and(|(seen, seen_version)| *seen_version == version && seen.same_theme(theme))
+    {
+      return;
+    }
+    *self.palette.borrow_mut() = theme.palette().clone();
+    *self.border_sizes.borrow_mut() = theme.border_sizes().clone();
+    *self.spacing.borrow_mut() = theme.spacing().clone();
+    *self.radii.borrow_mut() = theme.radii().clone();
+    *self.caret.borrow_mut() = *theme.caret();
+    *self.scrollbar.borrow_mut() = theme.scrollbar().clone();
+    *self.typography.borrow_mut() = theme.typography().clone();
+    *self.shadows.borrow_mut() = theme.shared_shadows();
+    #[cfg(feature = "markdown")]
+    {
+      *self.text_marks.borrow_mut() = theme.shared_text_marks();
+    }
+    // The version read before the copies: a change made meanwhile shows as
+    // a newer version next call and is copied then.
+    *self.theme_seen.borrow_mut() = Some((theme.clone(), version));
+  }
+
+  /// Lays `node` out under the theme of the last [`Self::set_theme`] (the
+  /// defaults before any).
   pub(crate) fn compute(
     &self,
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
-    palette: ThemePalette,
-    border_sizes: ThemeBorderSizes,
-    spacing: ThemeSpacing,
-    radii: ThemeRadii,
-    caret: ThemeCaret,
-    scrollbar: ScrollBarStyle,
-    typography: ThemeTypography,
     force_dirty: bool,
-  ) -> LayoutResult {
-    self.compute_inner(
-      glyph_engine,
-      node,
-      constraints,
-      palette,
-      border_sizes,
-      spacing,
-      radii,
-      caret,
-      scrollbar,
-      typography,
-      force_dirty,
-    )
+  ) -> Arc<LayoutResult> {
+    self.compute_inner(glyph_engine, node, constraints, force_dirty)
   }
 
-  #[allow(clippy::too_many_arguments)]
   pub(crate) fn compute_with_overlay_index(
     &self,
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
-    palette: ThemePalette,
-    border_sizes: ThemeBorderSizes,
-    spacing: ThemeSpacing,
-    radii: ThemeRadii,
-    caret: ThemeCaret,
-    scrollbar: ScrollBarStyle,
-    typography: ThemeTypography,
     force_dirty: bool,
-  ) -> (LayoutResult, OverlayLayoutIndex) {
-    let result = self.compute_inner(
-      glyph_engine,
-      node,
-      constraints,
-      palette,
-      border_sizes,
-      spacing,
-      radii,
-      caret,
-      scrollbar,
-      typography,
-      force_dirty,
-    );
+  ) -> (Arc<LayoutResult>, OverlayLayoutIndex) {
+    let result = self.compute_inner(glyph_engine, node, constraints, force_dirty);
     let index = Self::collect_overlay_index(node, &result);
     (result, index)
   }
 
-  #[allow(clippy::too_many_arguments)]
   fn compute_inner(
     &self,
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
-    palette: ThemePalette,
-    border_sizes: ThemeBorderSizes,
-    spacing: ThemeSpacing,
-    radii: ThemeRadii,
-    caret: ThemeCaret,
-    scrollbar: ScrollBarStyle,
-    typography: ThemeTypography,
     force_dirty: bool,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     self.last_recalculated.set(false);
-    *self.palette.borrow_mut() = palette;
-    *self.border_sizes.borrow_mut() = border_sizes;
-    *self.spacing.borrow_mut() = spacing;
-    *self.radii.borrow_mut() = radii;
-    *self.caret.borrow_mut() = caret;
-    *self.scrollbar.borrow_mut() = scrollbar;
-    *self.typography.borrow_mut() = typography;
     Self::mark_layout_dirty(node, force_dirty);
     let result = self.layout_node(glyph_engine, node, constraints);
     node.clear_guards();
@@ -739,6 +735,12 @@ impl LayoutEngine {
   }
 
   fn mark_layout_dirty(node: &Node, force_dirty: bool) -> bool {
+    node.prepare_layout_tracking();
+    if !force_dirty && !node.layout_cache.needs_dirty_scan() {
+      return node.layout_cache.is_dirty();
+    }
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
     // Overlay/modal declaration nodes are invisible to layout: flex/stack
     // walks skip them and their content is laid out inside the overlay host
     // instead. They never receive a cached result, so any dirt attributed to
@@ -751,6 +753,7 @@ impl LayoutEngine {
     // cache invalidated by a layout-affecting change (e.g. a reconciled subtree
     // patched in via a component slot replacement). It must be laid out, and its
     // ancestors must recompute to reposition it, so propagate dirtiness upward.
+    let generation = node.layout_cache.watch().generation();
     let text_input_dirty = match node.node_kind() {
       // A multiline input scrolled by wheel or scrollbar lays out again to
       // keep its offset in its text, and stops following its caret.
@@ -758,8 +761,18 @@ impl LayoutEngine {
       NodeKind::Select { state } => state.take_layout_dirty(),
       _ => false,
     };
-    let mut local_dirty =
-      force_dirty || node.text_content.is_changed() || text_input_dirty || !node.layout_cache.has_cached_result();
+    // Shared handles can be measured by a second tree first. Its walk may
+    // consume the handle's flag, but cannot consume this node's notification.
+    let local_changed = node.layout_cache.inspected_generation.get() != 0
+      && node
+        .layout_cache
+        .watch()
+        .local_changed_since(node.layout_cache.inspected_generation.get());
+    let mut local_dirty = force_dirty
+      || local_changed
+      || node.text_content.is_changed()
+      || text_input_dirty
+      || !node.layout_cache.has_cached_result();
 
     // A cached result that contradicts the node's own fixed frame is stale no
     // matter how it got there (observed in production: retained-tree diffs can
@@ -805,19 +818,18 @@ impl LayoutEngine {
       local_dirty = true;
     }
 
-    let mut child_dirty = false;
+    // A base/overlay compute may already have consumed a child's marks.
+    // Its revision still asks this parent to repair its own older snapshot.
+    let mut child_dirty = node.layout_cache.inspected_generation.get() != 0 && node.layout_cache.needs_dirty_scan();
     for child in node.children() {
       child_dirty |= Self::mark_layout_dirty(child, force_dirty);
     }
 
-    if local_dirty {
-      node.layout_cache.mark_local_dirty();
-    }
-    if child_dirty || scroll_offset_dirty {
-      node.layout_cache.mark_descendant_dirty();
-    }
+    node
+      .layout_cache
+      .record_dirty_scan(generation, local_dirty, child_dirty || scroll_offset_dirty);
 
-    local_dirty || child_dirty || scroll_offset_dirty
+    node.layout_cache.is_dirty()
   }
 
   pub(crate) fn resolve_quads(&self, node: &Node, result: &LayoutResult) -> Vec<Quad> {
@@ -1508,7 +1520,7 @@ impl LayoutEngine {
     }
 
     #[cfg(feature = "raster")]
-    if let Some(ref bg_image) = *node.background_image {
+    if let Some(bg_image) = node.background_image.as_deref() {
       let placement = background_image_placement(
         node.background_size,
         result.size.width,
@@ -1950,7 +1962,7 @@ impl LayoutEngine {
     }
   }
 
-  fn layout_node(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> LayoutResult {
+  fn layout_node(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> Arc<LayoutResult> {
     // A collapsed line's cache holds layouts its parent did not collapse.
     if !self.is_collapsed(node)
       && let Some(cached) = self.layout_node_from_cache(glyph_engine, node, constraints)
@@ -1966,13 +1978,15 @@ impl LayoutEngine {
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
-  ) -> Option<LayoutResult> {
+  ) -> Option<Arc<LayoutResult>> {
     if !node.layout_cache.is_dirty() {
-      return node.layout_cache.get(constraints).and_then(|cached| {
+      return node.layout_cache.get_shared(constraints).and_then(|cached| {
         if !Self::cached_result_matches_node_tree(node, &cached) {
           return None;
         }
-        Some(self.prepare_cached_result(node, cached))
+        let prepared = self.prepare_cached_result(node, cached);
+        node.layout_cache.record_validation(constraints, prepared.generation);
+        Some(prepared)
       });
     }
 
@@ -2002,14 +2016,17 @@ impl LayoutEngine {
     // geometry. Patch dirty child results into the cached tree and only force
     // this parent to relayout if the child no longer fits the cached parent or
     // the parent layout kind needs to reposition siblings around the new size.
-    let mut cached = node.layout_cache.get_repairable(constraints)?;
+    let cached = node.layout_cache.get_repairable(constraints)?;
     if !Self::cached_result_matches_node_tree(node, &cached) {
       return None;
     }
 
+    let mut cached = cached.as_ref().clone();
     let mut child_overrides = vec![None; cached.children.len()];
     for (index, child) in node.children().iter().enumerate() {
-      if !child.layout_cache.is_dirty() {
+      if !child.layout_cache.is_dirty()
+        && cached.children[index].result.generation == child.layout_cache.watch().generation()
+      {
         continue;
       }
 
@@ -2053,15 +2070,20 @@ impl LayoutEngine {
           Some(&child_overrides),
         ));
       }
-      cached.children[index].result = repaired.into();
+      cached.children[index].result = repaired;
     }
 
-    let prepared = self.prepare_cached_result(node, cached);
-    node.layout_cache.store(constraints, prepared.clone());
+    let prepared = self.prepare_cached_result(node, Arc::new(cached));
+    node.layout_cache.store_shared(constraints, prepared.clone());
     Some(prepared)
   }
 
-  fn cached_result_matches_node_tree(node: &Node, result: &LayoutResult) -> bool {
+  fn cached_result_matches_node_tree(node: &Node, result: &Arc<LayoutResult>) -> bool {
+    if result.generation == node.layout_cache.watch().generation() || node.layout_cache.matches_validated(result) {
+      return true;
+    }
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
     // A cached subtree whose geometry contradicts any node's fixed frame is
     // stale no matter how clean its flags are — observed in production as a
     // virtualized list's rows column serving a previous window's result
@@ -2079,7 +2101,7 @@ impl LayoutEngine {
     {
       return false;
     }
-    result.children.len() == node.children().len()
+    let matches = result.children.len() == node.children().len()
       && node
         .children()
         .iter()
@@ -2109,7 +2131,13 @@ impl LayoutEngine {
             }
           }
           Self::cached_result_matches_node_tree(child, &child_layout.result)
-        })
+        });
+    if matches {
+      // Remember this exact snapshot too: a rebuilt parent can still hold
+      // the old generation of an otherwise unchanged descendant.
+      node.layout_cache.remember_validation(result);
+    }
+    matches
   }
 
   fn child_fits_cached_parent(offset: Offset, child_size: Size, parent_size: Size) -> bool {
@@ -2174,18 +2202,48 @@ impl LayoutEngine {
   /// Serving a cached result skips text layout, so the text output of every
   /// text leaf in it is written back as well: the node's text state otherwise
   /// keeps what the last real layout, possibly at other constraints, wrote.
-  fn prepare_cached_result(&self, node: &Node, mut cached: LayoutResult) -> LayoutResult {
-    self.prepare_layout_result_tree(node, &mut cached, true);
+  fn prepare_cached_result(&self, node: &Node, mut cached: Arc<LayoutResult>) -> Arc<LayoutResult> {
+    if !cached.holds.scroll {
+      if cached.holds.text {
+        Self::restore_text_layout_tree(node, &cached);
+      }
+      if cached.generation != node.layout_cache.watch().generation() {
+        Arc::make_mut(&mut cached).generation = node.layout_cache.watch().generation();
+      }
+      return cached;
+    }
+    self.prepare_layout_result_tree(node, Arc::make_mut(&mut cached), true);
     cached
   }
 
+  /// Syncs the scroll containers in `result` with it and, for a served cache
+  /// entry, restores its text outputs. Only the subtrees holding either are
+  /// visited, and only those holding a scroll container are copied: the
+  /// rest stay shared with the caches that hold them. Serving a cached tree
+  /// would otherwise copy all of it, and preparing every freshly laid-out
+  /// parent would walk and copy its whole subtree again.
   fn prepare_layout_result_tree(&self, node: &Node, result: &mut LayoutResult, restore_text_layout: bool) {
+    result.generation = node.layout_cache.watch().generation();
     if restore_text_layout {
       Self::restore_text_layout_output(node, result);
     }
     for (child_node, child_layout) in node.children().iter().zip(result.children.iter_mut()) {
-      self.prepare_layout_result_tree(child_node, Arc::make_mut(&mut child_layout.result), restore_text_layout);
+      if child_layout.result.holds.scroll {
+        self.prepare_layout_result_tree(child_node, Arc::make_mut(&mut child_layout.result), restore_text_layout);
+      } else if restore_text_layout && child_layout.result.holds.text {
+        Self::restore_text_layout_tree(child_node, &child_layout.result);
+      }
     }
+    result.holds = result.children.iter().fold(
+      SubtreeHolds {
+        scroll: matches!(node.layout_kind(), LayoutKind::ScrollModifier { .. }),
+        text: result.text_layout.is_some(),
+      },
+      |holds, child| SubtreeHolds {
+        scroll: holds.scroll || child.result.holds.scroll,
+        text: holds.text || child.result.holds.text,
+      },
+    );
 
     if let LayoutKind::ScrollModifier { state, direction, .. } = node.layout_kind() {
       let content_width = result.children.first().map(|c| c.result.size.width).unwrap_or(0.0);
@@ -2215,7 +2273,7 @@ impl LayoutEngine {
     node: &Node,
     constraints: Constraints,
     child_overrides: Option<&[Option<ChildLayoutOverride>]>,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     #[cfg(feature = "perf_profile")]
     let profile_start = Instant::now();
     #[cfg(feature = "perf_profile")]
@@ -2233,10 +2291,13 @@ impl LayoutEngine {
       .unwrap_or(0);
 
     self.last_recalculated.set(true);
+    #[cfg(test)]
+    crate::core::layout_dirty::LAYOUTS.with(|layouts| layouts.set(layouts.get() + 1));
     let mut result = self.layout_node_box(glyph_engine, node, constraints, child_overrides);
     Self::apply_runtime_rect(node, &mut result);
     self.prepare_layout_result_tree(node, &mut result, false);
-    node.layout_cache.store(constraints, result.clone());
+    let result = Arc::new(result);
+    node.layout_cache.store_shared(constraints, result.clone());
     #[cfg(feature = "perf_profile")]
     {
       let elapsed = profile_start.elapsed();
@@ -2355,6 +2416,9 @@ impl LayoutEngine {
     }
   }
 
+  // Leaf controls and scroll layout have large temporaries. Keep them out of
+  // the dispatch frame that stays on the stack while containers recurse.
+  #[inline(never)]
   fn layout_leaf(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> LayoutResult {
     match node.node_kind() {
       NodeKind::Text { state, style, .. } => {
@@ -2410,9 +2474,11 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       NodeKind::Slider { .. } => {
@@ -2430,9 +2496,11 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       NodeKind::Select { state } => {
@@ -2449,18 +2517,22 @@ impl LayoutEngine {
           .unwrap_or(DEFAULT_SELECT_HEIGHT);
         return LayoutResult {
           size: constraints.constrain(Size::new(width, height)),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "canvas")]
       NodeKind::Canvas { .. } => {
         return LayoutResult {
           size: constraints.constrain(node.intrinsic_size.unwrap_or(Size::new(300.0, 150.0))),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "raster")]
@@ -2470,9 +2542,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "raster")]
@@ -2482,9 +2556,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "image")]
@@ -2494,9 +2570,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(feature = "svg")]
@@ -2506,9 +2584,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.viewbox_width(), data.viewbox_height()));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       #[cfg(all(feature = "svg", feature = "resources"))]
@@ -2518,9 +2598,11 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![],
+          children: vec![].into(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         };
       }
       // Its paragraph places it (`inline_links`); on its own it has no box.
@@ -2536,9 +2618,11 @@ impl LayoutEngine {
     let preferred = node.intrinsic_size.unwrap_or_default();
     LayoutResult {
       size: constraints.constrain(preferred),
-      children: vec![],
+      children: vec![].into(),
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -2566,9 +2650,11 @@ impl LayoutEngine {
     };
     LayoutResult {
       size,
-      children: vec![],
+      children: vec![].into(),
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -2712,9 +2798,11 @@ impl LayoutEngine {
     if children.is_empty() {
       return LayoutResult {
         size: constraints.constrain(Size::default()),
-        children: vec![],
+        children: vec![].into(),
         text_layout: None,
         dropped: false,
+        holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       };
     }
 
@@ -2741,153 +2829,141 @@ impl LayoutEngine {
 
     let mut grow_total = 0.0_f32;
     let mut shrink_total = 0.0_f32;
-    let mut non_flex_results: Vec<Option<LayoutResult>> = Vec::with_capacity(children.len());
-    let mut flex_params_list: Vec<FlexParams> = Vec::with_capacity(children.len());
+    // The one Vec of this line, kept as the result's children. The first pass
+    // lays out the children sized on their own; a child that waits for its
+    // share of the free room holds `self.awaiting_room` until the second.
+    let mut child_layouts: Vec<ChildLayout> = Vec::with_capacity(children.len());
 
     for child in children {
-      if child.is_overlay_declaration() {
-        flex_params_list.push(FlexParams {
-          grow: 0.0,
-          shrink: 0.0,
-          basis: None,
-        });
-        non_flex_results.push(Some(LayoutResult {
+      let result = if child.is_overlay_declaration() {
+        Arc::new(LayoutResult {
           size: Size::default(),
-          children: Vec::new(),
+          children: Vec::new().into(),
           text_layout: None,
           dropped: false,
-        }));
-        continue;
-      }
-
-      let flex_params = child.state_flex();
-
-      if let Some(params) = flex_params {
-        grow_total += params.grow;
-        shrink_total += params.shrink;
-        flex_params_list.push(params);
-        if params.grow == 0.0 && params.basis.is_none() {
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
+        })
+      } else {
+        let flex_params = child.state_flex();
+        if let Some(params) = flex_params {
+          grow_total += params.grow;
+          shrink_total += params.shrink;
+        }
+        if flex_params.is_some_and(|params| params.grow != 0.0 || params.basis.is_some()) {
+          self.awaiting_room.clone()
+        } else {
           let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
-          non_flex_results.push(Some(self.layout_child_node(
+          self.layout_child_node(
             glyph_engine,
             child_overrides,
-            non_flex_results.len(),
+            child_layouts.len(),
             child,
             child_constraints,
-          )));
-        } else {
-          non_flex_results.push(None);
+          )
         }
-      } else {
-        flex_params_list.push(FlexParams {
-          grow: 0.0,
-          shrink: 0.0,
-          basis: None,
-        });
-        let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
-        non_flex_results.push(Some(self.layout_child_node(
-          glyph_engine,
-          child_overrides,
-          non_flex_results.len(),
-          child,
-          child_constraints,
-        )));
-      }
+      };
+      child_layouts.push(ChildLayout {
+        offset: Offset::default(),
+        result,
+      });
     }
 
-    let non_flex_main: f32 = non_flex_results
+    let non_flex_main: f32 = child_layouts
       .iter()
-      .filter_map(|r| r.as_ref())
-      .map(|r| if vertical { r.size.height } else { r.size.width })
+      .filter(|layout| !Arc::ptr_eq(&layout.result, &self.awaiting_room))
+      .map(|layout| main_size(&layout.result, vertical))
       .sum();
 
     let remaining = max_main - total_spacing - non_flex_main;
 
-    let mut results: Vec<LayoutResult> = Vec::with_capacity(children.len());
-    // The main size each flex child is laid out at.
-    let mut grants: Vec<Option<f32>> = vec![None; children.len()];
+    let mut overflow = LineOverflow::new(FreeRoom { remaining, grow_total }, vertical);
     for (i, child) in children.iter().enumerate() {
-      if let Some(existing) = non_flex_results[i].take() {
-        results.push(existing);
-      } else {
-        let params = &flex_params_list[i];
-        // An unbounded main axis has no free space to grow into: a growing
-        // child gets its basis, or its natural size without one. Growing by
-        // an infinite remainder would lay it out at an infinite size.
-        if !remaining.is_finite() && params.basis.is_none() {
-          let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
-          results.push(self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints));
-          continue;
-        }
-        let basis_size = params.basis.unwrap_or(0.0);
-        let flex_size = if remaining.is_finite() && remaining > 0.0 && grow_total > 0.0 {
-          basis_size + remaining * (params.grow / grow_total)
-        } else {
-          basis_size
-        };
-        grants[i] = Some(flex_size);
-        let child_constraints = if vertical {
-          Constraints {
-            min_width: 0.0,
-            max_width: constraints.max_width,
-            min_height: flex_size,
-            max_height: flex_size,
-          }
-        } else {
-          Constraints {
-            min_width: flex_size,
-            max_width: flex_size,
-            min_height: 0.0,
-            max_height: constraints.max_height,
-          }
-        };
-        results.push(self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints));
+      if !Arc::ptr_eq(&child_layouts[i].result, &self.awaiting_room) {
+        continue;
       }
+      // Only a flex child waits for free room, but its flex params are read
+      // again here: a state style that changed since the first pass (its
+      // interaction state is shared across clones) may have taken them away.
+      // Such a child is laid out as the first pass would have laid it out
+      // now; the change marks its layout dirty, so the next pass agrees.
+      let Some(params) = child.state_flex() else {
+        let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
+        child_layouts[i].result = self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints);
+        continue;
+      };
+      // An unbounded main axis has no free space to grow into: a growing
+      // child gets its basis, or its natural size without one. Growing by
+      // an infinite remainder would lay it out at an infinite size.
+      if !remaining.is_finite() && params.basis.is_none() {
+        let child_constraints = Self::non_flex_child_constraints(child, constraints, vertical);
+        child_layouts[i].result = self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints);
+        continue;
+      }
+      let basis_size = params.basis.unwrap_or(0.0);
+      let flex_size = if remaining.is_finite() && remaining > 0.0 && grow_total > 0.0 {
+        basis_size + remaining * (params.grow / grow_total)
+      } else {
+        basis_size
+      };
+      let child_constraints = if vertical {
+        Constraints {
+          min_width: 0.0,
+          max_width: constraints.max_width,
+          min_height: flex_size,
+          max_height: flex_size,
+        }
+      } else {
+        Constraints {
+          min_width: flex_size,
+          max_width: flex_size,
+          min_height: 0.0,
+          max_height: constraints.max_height,
+        }
+      };
+      let result = self.layout_child_node(glyph_engine, child_overrides, i, child, child_constraints);
+      overflow.add_granted(&result, flex_size, params.basis);
+      child_layouts[i].result = result;
     }
 
-    let overflow = line_overflow(
-      &results,
-      &flex_params_list,
-      &grants,
-      FreeRoom { remaining, grow_total },
-      vertical,
-    );
     let collapsed = self.shrink_flex_line(
       glyph_engine,
       &FlexShrinkLine {
         children,
-        params: &flex_params_list,
         constraints,
         max_main,
-        overflow,
+        overflow: overflow.total(),
         spacing,
         shrink_total,
         vertical,
         collapsed: self.is_collapsed(node),
       },
-      &mut results,
+      &mut child_layouts,
       child_overrides,
     );
 
-    let max_cross: f32 = results
+    let max_cross: f32 = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
-      .map(|(r, _)| if vertical { r.size.width } else { r.size.height })
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
+      .map(|(layout, _)| {
+        let r = &layout.result;
+        if vertical { r.size.width } else { r.size.height }
+      })
       .fold(0.0_f32, f32::max);
 
     // Dropped children take no spacing.
-    let line_child_count = results
+    let line_child_count = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
       .count();
     let total_spacing = spacing * (line_child_count as f32 - 1.0).max(0.0);
-    let total_main: f32 = results
+    let total_main: f32 = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
-      .map(|(r, _)| if vertical { r.size.height } else { r.size.width })
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
+      .map(|(layout, _)| main_size(&layout.result, vertical))
       .sum::<f32>()
       + total_spacing;
 
@@ -2901,10 +2977,10 @@ impl LayoutEngine {
 
     if matches!(align, Alignment::Stretch) {
       for (i, child) in children.iter().enumerate() {
-        if !occupies_line(child, &results[i]) {
+        if !occupies_line(child, &child_layouts[i].result) {
           continue;
         }
-        let r = &results[i];
+        let r = &child_layouts[i].result;
         let child_cross = if vertical { r.size.width } else { r.size.height };
         if child_cross < container_cross {
           let stretch_constraints = if vertical {
@@ -2922,7 +2998,7 @@ impl LayoutEngine {
               max_height: container_cross,
             }
           };
-          results[i] = if collapsed[i] {
+          child_layouts[i].result = if collapsed.get(i) == Some(&true) {
             self.layout_collapsed(glyph_engine, child, stretch_constraints)
           } else {
             self.layout_child_node(glyph_engine, child_overrides, i, child, stretch_constraints)
@@ -2931,13 +3007,15 @@ impl LayoutEngine {
       }
     }
 
-    let child_layouts = self.position_flex_line(children, &results, &size, spacing, align, justify, vertical);
+    self.position_flex_line(children, &mut child_layouts, &size, spacing, align, justify, vertical);
 
     LayoutResult {
       size,
       children: child_layouts.into(),
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3006,13 +3084,13 @@ impl LayoutEngine {
   fn position_flex_line(
     &self,
     children: &[Node],
-    results: &[LayoutResult],
+    child_layouts: &mut [ChildLayout],
     container_size: &Size,
     spacing: f32,
     align: Alignment,
     justify: Justify,
     vertical: bool,
-  ) -> Vec<ChildLayout> {
+  ) {
     let container_main = if vertical {
       container_size.height
     } else {
@@ -3023,17 +3101,17 @@ impl LayoutEngine {
     } else {
       container_size.height
     };
-    let children_main: f32 = results
+    let children_main: f32 = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
-      .map(|(r, _)| if vertical { r.size.height } else { r.size.width })
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
+      .map(|(layout, _)| main_size(&layout.result, vertical))
       .sum();
     let free_space = (container_main - children_main).max(0.0);
-    let layout_child_count = results
+    let layout_child_count = child_layouts
       .iter()
       .zip(children.iter())
-      .filter(|(r, child)| occupies_line(child, r))
+      .filter(|(layout, child)| occupies_line(child, &layout.result))
       .count();
     let n = layout_child_count as f32;
 
@@ -3058,22 +3136,18 @@ impl LayoutEngine {
       }
     };
 
-    let mut child_layouts = Vec::with_capacity(results.len());
     let mut main_cursor = leading;
     let mut positioned_layout_children = 0usize;
 
-    for (i, result) in results.iter().enumerate() {
-      if !occupies_line(&children[i], result) {
+    for (layout, child) in child_layouts.iter_mut().zip(children.iter()) {
+      let result = &layout.result;
+      if !occupies_line(child, result) {
         // A dropped child sits, at zero size, where the next child starts.
-        let offset = match (result.dropped, vertical) {
+        layout.offset = match (result.dropped, vertical) {
           (false, _) => Offset::default(),
           (true, true) => Offset::new(0.0, main_cursor),
           (true, false) => Offset::new(main_cursor, 0.0),
         };
-        child_layouts.push(ChildLayout {
-          offset,
-          result: result.clone().into(),
-        });
         continue;
       }
 
@@ -3094,7 +3168,7 @@ impl LayoutEngine {
       } else {
         Offset::new(main_cursor, cross_offset)
       };
-      let offset = Self::apply_relative_position(&children[i], offset);
+      layout.offset = Self::apply_relative_position(child, offset);
 
       positioned_layout_children += 1;
       main_cursor += child_main
@@ -3103,13 +3177,7 @@ impl LayoutEngine {
         } else {
           0.0
         };
-      child_layouts.push(ChildLayout {
-        offset,
-        result: result.clone().into(),
-      });
     }
-
-    child_layouts
   }
 
   fn layout_flex_wrap(
@@ -3130,70 +3198,39 @@ impl LayoutEngine {
       constraints.max_width
     };
 
-    let mut child_results: Vec<Option<LayoutResult>> = children
-      .iter()
-      .enumerate()
-      .map(|(index, child)| {
-        // Keep natural children intrinsic, but resolve percentage frames
-        // against the finite content constraints, as in the non-wrap path.
-        // The container's min cross-constraint must not stretch wrapped items.
-        let c = Self::non_flex_child_constraints(child, constraints, vertical);
-        Some(self.layout_child_node(glyph_engine, child_overrides, index, child, c))
-      })
-      .collect();
-
-    let mut lines: Vec<Vec<usize>> = vec![vec![]];
-    let mut line_main = 0.0_f32;
-
-    for (i, r) in child_results.iter().enumerate() {
-      let r = r.as_ref().unwrap();
-      let child_main = if vertical { r.size.height } else { r.size.width };
-      let needed = if lines.last().unwrap().is_empty() {
-        child_main
-      } else {
-        spacing + child_main
-      };
-
-      if !lines.last().unwrap().is_empty() && line_main + needed > max_main {
-        lines.push(vec![i]);
-        line_main = child_main;
-      } else {
-        lines.last_mut().unwrap().push(i);
-        line_main += needed;
-      }
+    let mut child_layouts: Vec<ChildLayout> = Vec::with_capacity(children.len());
+    for (index, child) in children.iter().enumerate() {
+      // Keep natural children intrinsic, but resolve percentage frames
+      // against the finite content constraints, as in the non-wrap path.
+      // The container's min cross-constraint must not stretch wrapped items.
+      let c = Self::non_flex_child_constraints(child, constraints, vertical);
+      child_layouts.push(ChildLayout {
+        offset: Offset::default(),
+        result: self.layout_child_node(glyph_engine, child_overrides, index, child, c),
+      });
     }
 
-    let mut all_layouts = Vec::with_capacity(children.len());
-    all_layouts.resize_with(children.len(), || ChildLayout {
-      offset: Offset::default(),
-      result: LayoutResult {
-        size: Size::default(),
-        children: vec![],
-        text_layout: None,
-        dropped: false,
-      }
-      .into(),
-    });
     let mut cross_cursor = 0.0_f32;
     let mut max_main_used = 0.0_f32;
+    let mut line_start = 0;
 
-    for line_indices in &lines {
-      let line_cross: f32 = line_indices
+    while line_start < child_layouts.len() {
+      let line_end = wrap_line_end(&child_layouts, line_start, spacing, max_main, vertical);
+      let line = &mut child_layouts[line_start..line_end];
+
+      let line_cross: f32 = line
         .iter()
-        .map(|&i| {
-          let r = child_results[i].as_ref().unwrap();
+        .map(|layout| {
+          let r = &layout.result;
           if vertical { r.size.width } else { r.size.height }
         })
         .fold(0.0_f32, f32::max);
 
-      let children_main: f32 = line_indices
+      let children_main: f32 = line
         .iter()
-        .map(|&i| {
-          let r = child_results[i].as_ref().unwrap();
-          if vertical { r.size.height } else { r.size.width }
-        })
+        .map(|layout| main_size(&layout.result, vertical))
         .sum::<f32>();
-      let line_main_total = children_main + spacing * (line_indices.len() as f32 - 1.0).max(0.0);
+      let line_main_total = children_main + spacing * (line.len() as f32 - 1.0).max(0.0);
       max_main_used = max_main_used.max(line_main_total);
 
       let container_main = if vertical {
@@ -3202,7 +3239,7 @@ impl LayoutEngine {
         max_main.min(constraints.max_width)
       };
       let free_space = (container_main - children_main).max(0.0);
-      let n = line_indices.len() as f32;
+      let n = line.len() as f32;
       let (leading, gap) = match justify {
         Justify::Start => (0.0, spacing),
         Justify::End => (free_space - spacing * (n - 1.0), spacing),
@@ -3225,17 +3262,12 @@ impl LayoutEngine {
       };
 
       let mut main_cursor = leading;
-      for (j, &idx) in line_indices.iter().enumerate() {
-        let result = child_results[idx].take().unwrap();
-        let child_main = if vertical {
-          result.size.height
-        } else {
-          result.size.width
-        };
+      for (j, layout) in line.iter_mut().enumerate() {
+        let child_main = main_size(&layout.result, vertical);
         let child_cross = if vertical {
-          result.size.width
+          layout.result.size.width
         } else {
-          result.size.height
+          layout.result.size.height
         };
         let cross_offset = align.cross_offset(line_cross, child_cross) + cross_cursor;
         let offset = if vertical {
@@ -3243,15 +3275,12 @@ impl LayoutEngine {
         } else {
           Offset::new(main_cursor, cross_offset)
         };
-        let offset = Self::apply_relative_position(&children[idx], offset);
+        layout.offset = Self::apply_relative_position(&children[line_start + j], offset);
         main_cursor += child_main + if j < (n as usize - 1) { gap } else { 0.0 };
-        all_layouts[idx] = ChildLayout {
-          offset,
-          result: result.into(),
-        };
       }
 
       cross_cursor += line_cross + spacing;
+      line_start = line_end;
     }
 
     let total_cross = (cross_cursor - spacing).max(0.0);
@@ -3263,9 +3292,11 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: all_layouts,
+      children: child_layouts.into(),
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3279,10 +3310,9 @@ impl LayoutEngine {
   ) -> LayoutResult {
     let children = node.children();
     let child_constraints = constraints.loosen_width().loosen_height();
-    let results: Vec<LayoutResult> = children
-      .iter()
-      .enumerate()
-      .map(|(index, child)| match child.position() {
+    let mut child_layouts: Vec<ChildLayout> = Vec::with_capacity(children.len());
+    for (index, child) in children.iter().enumerate() {
+      let result = match child.position() {
         Position::Absolute { width, height, .. } => {
           let resolved_width = width.and_then(|size| Self::resolve_dimension(size, constraints.max_width));
           let resolved_height = height.and_then(|size| Self::resolve_dimension(size, constraints.max_height));
@@ -3294,54 +3324,53 @@ impl LayoutEngine {
           };
           let mut result = self.layout_child_node(glyph_engine, child_overrides, index, child, positioned_constraints);
           if let Some(width) = resolved_width {
-            result.size.width = width;
+            Arc::make_mut(&mut result).size.width = width;
           }
           if let Some(height) = resolved_height {
-            result.size.height = height;
+            Arc::make_mut(&mut result).size.height = height;
           }
           result
         }
         _ => self.layout_child_node(glyph_engine, child_overrides, index, child, child_constraints),
-      })
-      .collect();
+      };
+      child_layouts.push(ChildLayout {
+        offset: Offset::default(),
+        result,
+      });
+    }
 
-    let normal_results: Vec<&LayoutResult> = children
+    let (max_width, max_height) = children
       .iter()
-      .zip(results.iter())
+      .zip(child_layouts.iter())
       .filter(|(child, _)| !matches!(child.position(), Position::Absolute { .. }))
-      .map(|(_, result)| result)
-      .collect();
-
-    let max_width = normal_results.iter().map(|r| r.size.width).fold(0.0_f32, f32::max);
-    let max_height = normal_results.iter().map(|r| r.size.height).fold(0.0_f32, f32::max);
+      .fold((0.0_f32, 0.0_f32), |(width, height), (_, layout)| {
+        (
+          width.max(layout.result.size.width),
+          height.max(layout.result.size.height),
+        )
+      });
     let size = constraints.constrain(Size::new(max_width, max_height));
 
-    let child_layouts: Vec<ChildLayout> = results
-      .into_iter()
-      .zip(children.iter())
-      .map(|(result, child)| {
-        let offset = match child.position() {
-          Position::Absolute { x, y, .. } => Self::apply_relative_position(child, Offset::new(x, y)),
-          _ => {
-            let child_align = child
-              .align_self()
-              .map(|align| align.to_stack_alignment())
-              .unwrap_or(align);
-            Self::apply_relative_position(child, child_align.resolve_offset(size, result.size))
-          }
-        };
-        ChildLayout {
-          offset,
-          result: result.into(),
+    for (layout, child) in child_layouts.iter_mut().zip(children.iter()) {
+      layout.offset = match child.position() {
+        Position::Absolute { x, y, .. } => Self::apply_relative_position(child, Offset::new(x, y)),
+        _ => {
+          let child_align = child
+            .align_self()
+            .map(|align| align.to_stack_alignment())
+            .unwrap_or(align);
+          Self::apply_relative_position(child, child_align.resolve_offset(size, layout.result.size))
         }
-      })
-      .collect();
+      };
+    }
 
     LayoutResult {
       size,
       children: child_layouts.into(),
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3544,6 +3573,7 @@ impl LayoutEngine {
     }
   }
 
+  #[inline(never)]
   fn layout_scroll(
     &self,
     glyph_engine: &mut GlyphEngine,
@@ -3580,9 +3610,12 @@ impl LayoutEngine {
         children: vec![ChildLayout {
           offset: Offset::new(-state.scroll_x(), -state.scroll_y()),
           result: child_result.into(),
-        }],
+        }]
+        .into(),
         text_layout: None,
         dropped: false,
+        holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       };
     }
 
@@ -3624,9 +3657,12 @@ impl LayoutEngine {
       children: vec![ChildLayout {
         offset: Offset::new(-state.scroll_x(), -state.scroll_y()),
         result: child_result.into(),
-      }],
+      }]
+      .into(),
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3640,9 +3676,11 @@ impl LayoutEngine {
     let Some(child) = node.children().first() else {
       return LayoutResult {
         size: Size::new(0.0, 0.0),
-        children: Vec::new(),
+        children: Vec::new().into(),
         text_layout: None,
         dropped: false,
+        holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       };
     };
     let child_result = self.layout_child_node(glyph_engine, child_overrides, 0, child, constraints);
@@ -3653,9 +3691,12 @@ impl LayoutEngine {
       children: vec![ChildLayout {
         offset: Offset::default(),
         result: child_result.into(),
-      }],
+      }]
+      .into(),
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 
@@ -3666,7 +3707,7 @@ impl LayoutEngine {
     index: usize,
     child: &Node,
     constraints: Constraints,
-  ) -> LayoutResult {
+  ) -> Arc<LayoutResult> {
     if let Some(Some(child_override)) = child_overrides.and_then(|overrides| overrides.get(index)) {
       if child_override.constraints == constraints {
         // The override was laid out before this parent layout began, which
@@ -3679,6 +3720,20 @@ impl LayoutEngine {
 
     self.layout_node(glyph_engine, child, constraints)
   }
+}
+
+/// Where the wrapped line starting at child `start` ends: a line takes at least
+/// one child, and then every child that still fits on it.
+fn wrap_line_end(child_layouts: &[ChildLayout], start: usize, spacing: f32, max_main: f32, vertical: bool) -> usize {
+  let mut line_main = main_size(&child_layouts[start].result, vertical);
+  for (index, layout) in child_layouts.iter().enumerate().skip(start + 1) {
+    let needed = spacing + main_size(&layout.result, vertical);
+    if line_main + needed > max_main {
+      return index;
+    }
+    line_main += needed;
+  }
+  child_layouts.len()
 }
 
 fn multiline_preferred_height(
@@ -3946,12 +4001,12 @@ fn node_is_plain_logical_wrapper(node: &Node) -> bool {
   matches!(node.layout_kind(), LayoutKind::LogicalModifier)
     && matches!(node.node_kind(), NodeKind::Empty)
     && node.color.as_ref().is_none()
-    && node.gradient.as_ref().is_none()
+    && node.rare_style.gradient.is_none()
     && node.border_radius.as_ref().is_none()
     && node.border.as_ref().is_none()
-    && node.box_shadow.as_ref().is_none()
-    && node.caret_color.as_ref().is_none()
-    && node.caret_mode.as_ref().is_none()
+    && node.rare_style.box_shadow.is_none()
+    && node.rare_style.caret_color.is_none()
+    && node.rare_style.caret_mode.is_none()
     && node.scrollbar_style.as_ref().is_none()
     && node.state_styles.hovered.is_none()
     && node.state_styles.active.is_none()
@@ -4044,16 +4099,112 @@ fn rect_intersects_clip(x: f32, y: f32, width: f32, height: f32, clip: ClipRect)
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::{app::glyph_engine::GlyphEngine, core::Signal, node::Node};
+  use crate::{
+    app::glyph_engine::GlyphEngine,
+    core::Signal,
+    node::{Node, dsl::scroll_vertical},
+  };
+
+  #[test]
+  fn layout_does_not_build_state_styles() {
+    use crate::node::{Style, style::STYLE_OPERATIONS};
+
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let constraints = Constraints::loose(Size::new(200.0, 100.0));
+    for node in [
+      Node::column(0.0, Alignment::Start, vec![]).width(20.0).height(10.0),
+      Node::column(0.0, Alignment::Start, vec![])
+        .width(20.0)
+        .height(10.0)
+        .hovered_style(Style::new().width(60.0).padding(5.0).flex(2.0)),
+    ] {
+      for hovered in [false, true] {
+        node.set_style_hovered(hovered);
+        let operations = STYLE_OPERATIONS.with(|counts| counts.get());
+        let result = engine.layout_node_uncached_with_child_overrides(&mut glyph_engine, &node, constraints, None);
+        assert_eq!(STYLE_OPERATIONS.with(|counts| counts.get()), operations);
+        assert_eq!(result.size.height, 10.0);
+      }
+    }
+  }
+
+  #[test]
+  fn interaction_state_styles_relayout_frame_padding_and_flex() {
+    use crate::node::Style;
+
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let setters: [fn(&Node, bool) -> bool; 5] = [
+      Node::set_style_focused,
+      Node::set_style_focus_visible,
+      Node::set_style_hovered,
+      Node::set_style_active,
+      Node::set_style_drag_over,
+    ];
+    for (index, set_state) in setters.into_iter().enumerate() {
+      let styled = |node: Node, style: Style| match index {
+        0 => node.focused_style(style),
+        1 => node.focus_visible_style(style),
+        2 => node.hovered_style(style),
+        3 => node.active_style(style),
+        _ => node.drag_over_style(style),
+      };
+      let node = Node::row(
+        0.0,
+        Alignment::Start,
+        vec![
+          styled(
+            Node::column(0.0, Alignment::Start, vec![]).width(20.0).height(10.0),
+            Style::new().width(40.0),
+          ),
+          styled(
+            Node::column(
+              0.0,
+              Alignment::Start,
+              vec![Node::column(0.0, Alignment::Start, vec![]).width(10.0).height(10.0)],
+            )
+            .padding(1.0),
+            Style::new().padding(5.0),
+          ),
+          styled(
+            Node::column(0.0, Alignment::Start, vec![]).height(10.0),
+            Style::new().flex(1.0),
+          ),
+        ],
+      );
+      if index == 1 {
+        for child in node.children() {
+          child.set_style_focused(true);
+        }
+      }
+      for enabled in [false, true, false] {
+        for child in node.children() {
+          set_state(child, enabled);
+        }
+        LayoutEngine::mark_layout_dirty(&node, false);
+        let result = engine.layout_node(&mut glyph_engine, &node, Constraints::tight(Size::new(200.0, 100.0)));
+        assert_eq!(result.children[0].result.size.width, if enabled { 40.0 } else { 20.0 });
+        assert_eq!(result.children[1].result.size.width, if enabled { 20.0 } else { 12.0 });
+        assert_eq!(
+          result.children[1].result.children[0].offset.x,
+          if enabled { 5.0 } else { 1.0 }
+        );
+        assert_eq!(result.children[2].result.size.width, if enabled { 140.0 } else { 0.0 });
+      }
+    }
+  }
 
   fn dirty_child_with_cached_constraints(child: Node, constraints: Constraints) -> Node {
     child.layout_cache.store(
       constraints,
       LayoutResult {
         size: constraints.constrain(Size::new(10.0, 10.0)),
-        children: Vec::new(),
+        children: Vec::new().into(),
         text_layout: None,
         dropped: false,
+        holds: SubtreeHolds::UNKNOWN,
+        generation: 0,
       },
     );
     child.layout_cache.mark_local_dirty();
@@ -4112,19 +4263,7 @@ mod tests {
     let node = Node::column(0.0, Alignment::Stretch, vec![Node::text("unchanged")]);
     let constraints = Constraints::loose(Size::new(320.0, 180.0));
     let compute = |glyph_engine: &mut GlyphEngine| {
-      engine.compute(
-        glyph_engine,
-        &node,
-        constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
-        false,
-      );
+      engine.compute(glyph_engine, &node, constraints, false);
     };
 
     compute(&mut glyph_engine);
@@ -4132,6 +4271,90 @@ mod tests {
 
     compute(&mut glyph_engine);
     assert!(!engine.last_recalculated());
+  }
+
+  /// `set_theme` copies the theme only when it changed. A change between two
+  /// computes still lays out and paints with the new spacing, typography and
+  /// palette; another theme at the same version is a change too; and a pass
+  /// on the unchanged theme serves the cache, painting with the values it
+  /// already holds.
+  #[test]
+  fn theme_change_between_computes_takes_effect_and_unchanged_theme_serves_cache() {
+    use crate::{
+      app::theme::SpacingSize,
+      components::{Rect, Row, Text},
+      node::Element,
+    };
+
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let constraints = Constraints::loose(Size::new(400.0, 200.0));
+    let node: Node = Element::from(
+      Row::new()
+        .spacing(SpacingSize::Md)
+        .child(Rect::new(10.0, 10.0).background(PaletteColor::Accent))
+        .child(Text::new("label")),
+    )
+    .into_node();
+    let style = |font_size: f32| TextStyle {
+      font_size,
+      ..TextStyle::default()
+    };
+    let themed = |spacing: f32, font_size: f32, accent: &str| {
+      let theme = Theme::new();
+      theme.set_spacing_value(SpacingSize::Md, spacing);
+      theme.set_default_text_style(style(font_size));
+      theme.set_palette_color(PaletteColor::Accent, Color::from_hex(accent));
+      theme
+    };
+    // A pass as the runtime runs it: a changed theme forces a relayout.
+    let pass = |glyph_engine: &mut GlyphEngine, theme: &Theme, force_dirty: bool| {
+      engine.set_theme(theme);
+      let result = engine.compute(glyph_engine, &node, constraints, force_dirty);
+      let quads = engine.resolve_quads(&node, &result);
+      let accent = quads.iter().find_map(|quad| match quad.content {
+        QuadContent::Rect { color, .. } => Some(color.to_hex()),
+        _ => None,
+      });
+      let font_size = quads.iter().find_map(|quad| match &quad.content {
+        QuadContent::Text { style, .. } => Some(style.font_size),
+        _ => None,
+      });
+      (result.children[1].offset.x, result.size.height, accent, font_size)
+    };
+
+    let theme = themed(4.0, 12.0, "#112233");
+    let (gap, small_height, accent, font_size) = pass(&mut glyph_engine, &theme, true);
+    assert_eq!(gap, 14.0);
+    assert_eq!(accent.as_deref(), Some("#112233"));
+    assert_eq!(font_size, Some(12.0));
+
+    theme.set_spacing_value(SpacingSize::Md, 9.0);
+    theme.set_default_text_style(style(30.0));
+    theme.set_palette_color(PaletteColor::Accent, Color::from_hex("#445566"));
+    let (gap, height, accent, font_size) = pass(&mut glyph_engine, &theme, true);
+    assert_eq!(gap, 19.0, "the new spacing lays out");
+    assert!(height > small_height, "the new typography lays out");
+    assert_eq!(accent.as_deref(), Some("#445566"), "the new palette paints");
+    assert_eq!(font_size, Some(30.0), "the new typography paints");
+
+    let (gap, cached_height, accent, font_size) = pass(&mut glyph_engine, &theme, false);
+    assert!(!engine.last_recalculated(), "an unchanged theme serves the cache");
+    assert_eq!((gap, cached_height), (19.0, height));
+    assert_eq!(accent.as_deref(), Some("#445566"));
+    assert_eq!(font_size, Some(30.0));
+
+    // Versions count each theme's own changes, so a separate theme can
+    // match this one's version with other values.
+    let other = themed(2.0, 12.0, "#778899");
+    for _ in 0..3 {
+      other.set_spacing_value(SpacingSize::Md, 2.0);
+    }
+    assert_eq!(other.version(), theme.version());
+    let (gap, _, accent, font_size) = pass(&mut glyph_engine, &other, true);
+    assert_eq!(gap, 12.0);
+    assert_eq!(accent.as_deref(), Some("#778899"));
+    assert_eq!(font_size, Some(12.0));
   }
 
   #[test]
@@ -4160,19 +4383,7 @@ mod tests {
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::loose(Size::new(400.0, 10_000.0));
     let compute = |engine: &LayoutEngine, glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
-        false,
-      )
+      engine.compute(glyph_engine, node, constraints, false)
     };
 
     let old: Node = crate::node::Element::from(crate::components::Spacer::new().height(2000.0)).into_node();
@@ -4219,21 +4430,7 @@ mod tests {
     let engine = LayoutEngine::new();
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::loose(Size::new(300.0, 1000.0));
-    let compute = |glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
-        false,
-      )
-    };
+    let compute = |glyph_engine: &mut GlyphEngine, node: &Node| engine.compute(glyph_engine, node, constraints, false);
     let mut root: Node = crate::node::Element::from(
       crate::components::ScrollVertical::new(
         crate::components::Column::new()
@@ -4278,19 +4475,7 @@ mod tests {
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::loose(Size::new(400.0, 100_000.0));
     let compute = |engine: &LayoutEngine, glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
-        false,
-      )
+      engine.compute(glyph_engine, node, constraints, false)
     };
     let column = |spacer_height: f32| -> Node {
       crate::node::Element::from(
@@ -4344,19 +4529,7 @@ mod tests {
     // reconcile, which this engine-only test mimics.
     root.clear_guards();
 
-    engine.compute(
-      &mut glyph_engine,
-      &root,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &root, constraints, false);
 
     assert!(
       !root.children[1].layout_cache.is_dirty(),
@@ -4380,19 +4553,7 @@ mod tests {
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::tight(Size::new(400.0, 300.0));
     let compute = |engine: &LayoutEngine, glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
-        false,
-      )
+      engine.compute(glyph_engine, node, constraints, false)
     };
 
     let element_ref = crate::core::ElementRefMut::new();
@@ -4449,19 +4610,7 @@ mod tests {
     let mut glyph_engine = GlyphEngine::new();
     let constraints = Constraints::tight(Size::new(400.0, 300.0));
     let compute = |engine: &LayoutEngine, glyph_engine: &mut GlyphEngine, node: &Node| {
-      engine.compute(
-        glyph_engine,
-        node,
-        constraints,
-        ThemePalette::default(),
-        ThemeBorderSizes::default(),
-        ThemeSpacing::default(),
-        ThemeRadii::default(),
-        ThemeCaret::default(),
-        ScrollBarStyle::default(),
-        ThemeTypography::default(),
-        false,
-      )
+      engine.compute(glyph_engine, node, constraints, false)
     };
     let stack = |x: f32, y: f32| -> Node {
       crate::node::Element::from(
@@ -4500,34 +4649,10 @@ mod tests {
     let node = Node::text_input(Signal::new("Hello".to_owned()));
     let constraints = Constraints::loose(Size::new(400.0, 400.0));
 
-    engine.compute(
-      &mut glyph_engine,
-      &node,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &node, constraints, false);
     assert!(engine.last_recalculated());
 
-    engine.compute(
-      &mut glyph_engine,
-      &node,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &node, constraints, false);
     assert!(!engine.last_recalculated());
   }
 
@@ -4538,38 +4663,14 @@ mod tests {
     let node = Node::text_input(Signal::new("Hello".to_owned()));
     let constraints = Constraints::loose(Size::new(400.0, 400.0));
 
-    engine.compute(
-      &mut glyph_engine,
-      &node,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &node, constraints, false);
 
     let NodeKind::TextInput { state, .. } = node.node_kind() else {
       panic!("expected text input node");
     };
     state.move_left(false);
 
-    engine.compute(
-      &mut glyph_engine,
-      &node,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &node, constraints, false);
     assert!(engine.last_recalculated());
   }
 
@@ -4583,38 +4684,14 @@ mod tests {
       .placeholder("Display name")
       .text_input_overflow(TextInputOverflow::Scroll);
 
-    engine.compute(
-      &mut glyph_engine,
-      &old,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &old, constraints, false);
 
     let mut new = Node::text_input(value)
       .placeholder("Display name")
       .text_input_overflow(TextInputOverflow::Scroll);
     new.preserve_runtime_state_from(&old);
 
-    engine.compute(
-      &mut glyph_engine,
-      &new,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &new, constraints, false);
 
     assert!(!engine.last_recalculated());
   }
@@ -4626,36 +4703,12 @@ mod tests {
     let constraints = Constraints::tight(Size::new(200.0, 40.0));
     let old = Node::stack(StackAlignment::TopStart, vec![Node::text("1")]);
 
-    engine.compute(
-      &mut glyph_engine,
-      &old,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &old, constraints, false);
 
     let mut new = Node::stack(StackAlignment::TopStart, vec![Node::text("22")]);
     new.preserve_runtime_state_from(&old);
 
-    let result = engine.compute(
-      &mut glyph_engine,
-      &new,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    let result = engine.compute(&mut glyph_engine, &new, constraints, false);
 
     assert!(new.layout_cache.has_cached_result());
     assert_eq!(result.size.width, 200.0);
@@ -4671,36 +4724,12 @@ mod tests {
     let constraints = Constraints::tight(Size::new(20.0, 20.0));
     let old = Node::stack(StackAlignment::TopStart, vec![Node::text("1")]);
 
-    engine.compute(
-      &mut glyph_engine,
-      &old,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &old, constraints, false);
 
     let mut new = Node::stack(StackAlignment::TopStart, vec![Node::text("this is too wide")]);
     new.preserve_runtime_state_from(&old);
 
-    engine.compute(
-      &mut glyph_engine,
-      &new,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &new, constraints, false);
 
     assert!(engine.last_recalculated());
   }
@@ -4712,19 +4741,7 @@ mod tests {
     let constraints = Constraints::loose(Size::new(400.0, 40.0));
     let old = Node::row(8.0, Alignment::Start, vec![Node::text("1"), Node::text("tail")]);
 
-    engine.compute(
-      &mut glyph_engine,
-      &old,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    engine.compute(&mut glyph_engine, &old, constraints, false);
 
     let mut new = Node::row(
       8.0,
@@ -4733,22 +4750,433 @@ mod tests {
     );
     new.preserve_runtime_state_from(&old);
 
-    let result = engine.compute(
-      &mut glyph_engine,
-      &new,
-      constraints,
-      ThemePalette::default(),
-      ThemeBorderSizes::default(),
-      ThemeSpacing::default(),
-      ThemeRadii::default(),
-      ThemeCaret::default(),
-      ScrollBarStyle::default(),
-      ThemeTypography::default(),
-      false,
-    );
+    let result = engine.compute(&mut glyph_engine, &new, constraints, false);
 
     let first = &result.children[0];
     let second = &result.children[1];
     assert!(second.offset.x >= first.offset.x + first.result.size.width + 8.0);
+  }
+
+  #[test]
+  fn shared_handle_change_survives_another_tree_consuming_its_dirty_flag() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let reference = crate::core::ElementRefMut::new();
+    let build = || {
+      Node::stack(
+        StackAlignment::TopStart,
+        vec![fixed(50.0, 50.0).ref_element(reference.clone())],
+      )
+    };
+    let first = build();
+    let second = build();
+    let constraints = Constraints::tight(Size::new(400.0, 300.0));
+    compute_at(&engine, &mut glyph_engine, &first, constraints, false);
+    compute_at(&engine, &mut glyph_engine, &second, constraints, false);
+    reference.set_relative_bounds(30.0, 40.0, 80.0, 70.0);
+    compute_at(&engine, &mut glyph_engine, &first, constraints, false);
+
+    let result = compute_at(&engine, &mut glyph_engine, &second, constraints, false);
+
+    assert_eq!(result.children[0].result.size, Size::new(80.0, 70.0));
+    assert_eq!((result.children[0].offset.x, result.children[0].offset.y), (30.0, 40.0));
+  }
+
+  #[test]
+  fn unchanged_large_tree_skips_layout_walks() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let root = Node::column(0.0, Alignment::Start, (0..10_000).map(|_| fixed(10.0, 1.0)).collect());
+    let constraints = Constraints::tight(Size::new(400.0, 20_000.0));
+    compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+
+    compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    assert!(visits < 20, "unchanged layout visited {visits} nodes");
+  }
+
+  #[test]
+  fn one_deep_leaf_change_only_visits_its_path_and_reflows_its_siblings() {
+    fn branch(depth: usize) -> Node {
+      if depth == 0 {
+        return fixed(10.0, 1.0);
+      }
+      Node::column(0.0, Alignment::Start, (0..10).map(|_| branch(depth - 1)).collect())
+    }
+    fn same_geometry(actual: &LayoutResult, expected: &LayoutResult) {
+      assert_eq!(actual.size, expected.size);
+      assert_eq!(actual.children.len(), expected.children.len());
+      for (actual, expected) in actual.children.iter().zip(&expected.children) {
+        assert_eq!(
+          (actual.offset.x, actual.offset.y),
+          (expected.offset.x, expected.offset.y)
+        );
+        same_geometry(&actual.result, &expected.result);
+      }
+    }
+
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let mut root = branch(4);
+    let constraints = Constraints::loose(Size::new(400.0, 20_000.0));
+    let old = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+    // Start from carried caches as well: checking the rebuilt snapshot once
+    // must not make later changes walk its unaffected branches again.
+    let mut rebuilt = branch(4);
+    rebuilt.preserve_runtime_state_from(&root);
+    root = rebuilt;
+    let before = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+    same_geometry(&before, &old);
+    let leaf = &mut root.children[0].children[0].children[0].children[0];
+    crate::node::node::NodeUpdate::height(leaf, 2.0);
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+    crate::core::layout_dirty::LAYOUTS.with(|layouts| layouts.set(0));
+
+    let repaired = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    let layouts = crate::core::layout_dirty::LAYOUTS.with(|layouts| layouts.get());
+    assert!(visits < 100, "one changed leaf visited {visits} nodes");
+    assert_eq!(layouts, 5, "only the leaf and its four ancestors need layout");
+    assert_eq!(repaired.children[1].offset.y, before.children[1].offset.y + 1.0);
+    assert!(Arc::ptr_eq(
+      &repaired.children[1].result.children[0].result,
+      &before.children[1].result.children[0].result,
+    ));
+    let fresh = compute_at(&engine, &mut glyph_engine, &root, constraints, true);
+    same_geometry(&repaired, &fresh);
+  }
+
+  #[test]
+  fn validated_rebuilt_tree_skips_later_layout_walks() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let build = || Node::column(0.0, Alignment::Start, (0..1000).map(|_| fixed(10.0, 1.0)).collect());
+    let old = build();
+    let constraints = Constraints::tight(Size::new(400.0, 2000.0));
+    compute_at(&engine, &mut glyph_engine, &old, constraints, false);
+    let mut new = build();
+    new.preserve_runtime_state_from(&old);
+    compute_at(&engine, &mut glyph_engine, &new, constraints, false);
+    crate::core::layout_dirty::VISITS.with(|visits| visits.set(0));
+
+    compute_at(&engine, &mut glyph_engine, &new, constraints, false);
+
+    let visits = crate::core::layout_dirty::VISITS.with(|visits| visits.get());
+    assert!(visits < 20, "validated rebuilt tree visited {visits} nodes");
+  }
+
+  /// A first layout attaches every node to its parent's watch, which marks
+  /// the parent and its ancestors. One mark per parent covers all its
+  /// children: a mark per child walked up the ancestors for every node, and
+  /// made the first layout of a wide wrapping row cost more than a forced one.
+  #[test]
+  fn first_layout_notifies_each_parent_once_for_all_its_children() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let row = || Node::row(4.0, Alignment::Start, (0..1000).map(|_| fixed(50.0, 30.0)).collect()).wrap();
+    let root = Node::column(0.0, Alignment::Start, vec![row(), row()]);
+    let constraints = Constraints::tight(Size::new(1200.0, 800.0));
+    crate::core::layout_dirty::NOTIFIED.with(|notified| notified.set(0));
+
+    let result = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+
+    let notified = crate::core::layout_dirty::NOTIFIED.with(|notified| notified.get());
+    // The root's mark, and each row's, which reaches the root as well.
+    assert_eq!(notified, 5, "a first layout of 2003 nodes notified {notified} watches");
+    // 22 items of 50 with gaps of 4 fit in 1200.
+    let line_start = &result.children[0].result.children[22];
+    assert_eq!((line_start.offset.x, line_start.offset.y), (0.0, 34.0));
+    assert_eq!(result.children[1].offset.y, result.children[0].result.size.height);
+  }
+
+  /// The setters and styles of the interaction states that can move layout
+  /// on their own (focus-visible needs focus, which creates the state first).
+  fn interaction_states() -> [(fn(&Node, bool) -> bool, fn(Node, crate::node::Style) -> Node); 4] {
+    [
+      (Node::set_style_hovered, Node::hovered_style),
+      (Node::set_style_focused, Node::focused_style),
+      (Node::set_style_active, Node::active_style),
+      (Node::set_style_drag_over, Node::drag_over_style),
+    ]
+  }
+
+  fn nested_in_columns(node: Node) -> Node {
+    Node::column(
+      0.0,
+      Alignment::Start,
+      vec![Node::column(0.0, Alignment::Start, vec![node])],
+    )
+  }
+
+  /// Layout tracks a node before anything creates its interaction state, so
+  /// the state binds the watch when it is created. A lost binding would serve
+  /// the root's clean cached layout through the update fast path.
+  #[test]
+  fn interaction_state_created_after_tracking_marks_its_node_dirty() {
+    use crate::node::Style;
+
+    for (set_state, styled) in interaction_states() {
+      let engine = LayoutEngine::new();
+      let mut glyph_engine = GlyphEngine::new();
+      let root = nested_in_columns(styled(fixed(20.0, 10.0), Style::new().width(40.0)));
+      let constraints = Constraints::loose(Size::new(200.0, 100.0));
+      let width = |result: &LayoutResult| result.children[0].result.children[0].result.size.width;
+      let target = &root.children[0].children[0];
+      assert_eq!(
+        width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)),
+        20.0
+      );
+      assert!(
+        !target.style_state.has_shared_storage(),
+        "layout left the state unallocated"
+      );
+
+      assert!(set_state(target, true));
+
+      assert!(
+        root.layout_cache.needs_dirty_scan(),
+        "the change reached the root's watch"
+      );
+      assert_eq!(
+        width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)),
+        40.0
+      );
+      assert!(set_state(target, false));
+      assert_eq!(
+        width(&compute_at(&engine, &mut glyph_engine, &root, constraints, false)),
+        20.0
+      );
+    }
+  }
+
+  /// A clone shares the state, so a change through it must still reach the
+  /// original node even though cloning came after the original's tracking.
+  #[test]
+  fn interaction_state_cloned_after_tracking_marks_the_original_node_dirty() {
+    use crate::node::Style;
+
+    for (set_state, styled) in interaction_states() {
+      let engine = LayoutEngine::new();
+      let mut glyph_engine = GlyphEngine::new();
+      let root = nested_in_columns(styled(fixed(20.0, 10.0), Style::new().width(40.0)));
+      let constraints = Constraints::loose(Size::new(200.0, 100.0));
+      compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+      let clone = root.children[0].children[0].clone_for_reuse();
+
+      assert!(set_state(&clone, true));
+
+      let result = compute_at(&engine, &mut glyph_engine, &root, constraints, false);
+      assert_eq!(result.children[0].result.children[0].result.size.width, 40.0);
+    }
+  }
+
+  #[test]
+  fn revalidating_a_rebuilt_tree_leaves_interaction_states_unallocated() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let build = || Node::column(0.0, Alignment::Start, (0..10).map(|_| fixed(10.0, 1.0)).collect());
+    let old = build();
+    let constraints = Constraints::tight(Size::new(400.0, 200.0));
+    compute_at(&engine, &mut glyph_engine, &old, constraints, false);
+    let mut new = build();
+    new.preserve_runtime_state_from(&old);
+
+    compute_at(&engine, &mut glyph_engine, &new, constraints, false);
+
+    assert!(!engine.last_recalculated());
+    assert!(!new.style_state.has_shared_storage());
+    assert!(
+      new
+        .children()
+        .iter()
+        .all(|child| !child.style_state.has_shared_storage())
+    );
+  }
+
+  /// Each rebuild takes the layouts of the tree before it. The tree it
+  /// replaced has none left, so nothing can be reading them: every rebuilt
+  /// tree in the chain still lays out nothing.
+  #[test]
+  fn a_chain_of_rebuilds_serves_the_layouts_taken_from_the_old_trees() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let build = || Node::column(0.0, Alignment::Start, (0..10).map(|_| fixed(10.0, 1.0)).collect());
+    let constraints = Constraints::tight(Size::new(400.0, 200.0));
+    let mut old = build();
+    let laid = compute_at(&engine, &mut glyph_engine, &old, constraints, false);
+
+    for _ in 0..3 {
+      let mut new = build();
+      new.preserve_runtime_state_from(&old);
+      assert!(!old.layout_cache.has_cached_result());
+      assert!(
+        old
+          .children()
+          .iter()
+          .all(|child| !child.layout_cache.has_cached_result())
+      );
+
+      let result = compute_at(&engine, &mut glyph_engine, &new, constraints, false);
+
+      assert!(!engine.last_recalculated(), "the rebuilt tree serves the old layout");
+      assert_eq!(result.size, laid.size);
+      assert_eq!(result.children.len(), laid.children.len());
+      assert_eq!(result.children[9].offset.y, laid.children[9].offset.y);
+      old = new;
+    }
+  }
+
+  fn fixed(width: f32, height: f32) -> Node {
+    Node::new().frame(FrameConstraints {
+      width: Some(Dimension::Px(width)),
+      height: Some(Dimension::Px(height)),
+      ..FrameConstraints::default()
+    })
+  }
+
+  fn compute_at(
+    engine: &LayoutEngine,
+    glyph_engine: &mut GlyphEngine,
+    node: &Node,
+    constraints: Constraints,
+    force_dirty: bool,
+  ) -> Arc<LayoutResult> {
+    engine.compute(glyph_engine, node, constraints, force_dirty)
+  }
+
+  #[test]
+  fn serving_an_unchanged_tree_shares_its_cached_subtrees() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let constraints = Constraints::tight(Size::new(400.0, 300.0));
+    let node = Node::column(
+      4.0,
+      Alignment::Start,
+      (0..3)
+        .map(|_| Node::row(2.0, Alignment::Start, vec![fixed(20.0, 10.0), fixed(30.0, 10.0)]))
+        .collect(),
+    );
+
+    let first = compute_at(&engine, &mut glyph_engine, &node, constraints, false);
+    let served = compute_at(&engine, &mut glyph_engine, &node, constraints, false);
+
+    assert!(!engine.last_recalculated());
+    assert!(Arc::ptr_eq(&first, &served));
+    assert_eq!(
+      first.holds,
+      SubtreeHolds {
+        scroll: false,
+        text: false
+      }
+    );
+    for (row, served_row) in first.children.iter().zip(&served.children) {
+      assert!(Arc::ptr_eq(&row.result, &served_row.result));
+    }
+  }
+
+  #[test]
+  fn holds_record_the_scroll_containers_and_texts_below() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let node = Node::column(
+      0.0,
+      Alignment::Start,
+      vec![
+        fixed(10.0, 10.0),
+        Node::text("label"),
+        Node::column(0.0, Alignment::Start, vec![scroll_vertical(fixed(10.0, 500.0))]),
+      ],
+    );
+
+    let result = compute_at(
+      &engine,
+      &mut glyph_engine,
+      &node,
+      Constraints::tight(Size::new(200.0, 100.0)),
+      false,
+    );
+
+    assert_eq!(
+      result.holds,
+      SubtreeHolds {
+        scroll: true,
+        text: true
+      }
+    );
+    let holds: Vec<_> = result.children.iter().map(|child| child.result.holds).collect();
+    assert_eq!(
+      holds,
+      [
+        SubtreeHolds {
+          scroll: false,
+          text: false
+        },
+        SubtreeHolds {
+          scroll: false,
+          text: true
+        },
+        SubtreeHolds {
+          scroll: true,
+          text: false
+        },
+      ]
+    );
+  }
+
+  #[test]
+  fn nested_scroll_container_follows_its_scroll_through_cached_and_fresh_layouts() {
+    let engine = LayoutEngine::new();
+    let mut glyph_engine = GlyphEngine::new();
+    let constraints = Constraints::tight(Size::new(200.0, 300.0));
+    let scroll = scroll_vertical(Node::column(
+      0.0,
+      Alignment::Start,
+      (0..10).map(|_| fixed(50.0, 20.0)).collect(),
+    ))
+    .frame(FrameConstraints {
+      height: Some(Dimension::Px(50.0)),
+      ..FrameConstraints::default()
+    });
+    let node = Node::column(
+      0.0,
+      Alignment::Start,
+      vec![
+        fixed(10.0, 10.0),
+        Node::column(
+          0.0,
+          Alignment::Start,
+          vec![Node::row(0.0, Alignment::Start, vec![scroll])],
+        ),
+      ],
+    );
+    let content_offset = |result: &LayoutResult| {
+      let scroll = &result.children[1].result.children[0].result.children[0].result;
+      scroll.children[0].offset.y
+    };
+    let state = match node.children()[1].children()[0].children()[0].layout_kind() {
+      LayoutKind::ScrollModifier { state, .. } => state.clone(),
+      _ => unreachable!(),
+    };
+
+    compute_at(&engine, &mut glyph_engine, &node, constraints, false);
+    state.set_scroll(0.0, 30.0);
+    let scrolled = compute_at(&engine, &mut glyph_engine, &node, constraints, false);
+    assert_eq!(content_offset(&scrolled), -30.0);
+
+    // Served from the cache: nothing changed.
+    let served = compute_at(&engine, &mut glyph_engine, &node, constraints, false);
+    assert!(!engine.last_recalculated());
+    assert_eq!(content_offset(&served), -30.0);
+
+    // Every node laid out again.
+    let fresh = compute_at(&engine, &mut glyph_engine, &node, constraints, true);
+    assert_eq!(content_offset(&fresh), -30.0);
+
+    state.set_scroll(0.0, 10.0);
+    let rescrolled = compute_at(&engine, &mut glyph_engine, &node, constraints, false);
+    assert_eq!(content_offset(&rescrolled), -10.0);
   }
 }

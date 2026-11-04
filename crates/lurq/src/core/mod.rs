@@ -4,6 +4,7 @@ pub mod effect;
 pub mod element_ref;
 pub mod guard;
 pub mod id_gen;
+pub(crate) mod layout_dirty;
 pub mod memo;
 mod notify;
 mod reactivity;

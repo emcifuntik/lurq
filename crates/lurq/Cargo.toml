@@ -1,6 +1,6 @@
 [package]
 name = "lurq"
-version = "0.56.0"
+version = "0.57.0"
 edition = "2024"
 description = "A Rust UI toolkit with typed components, retained state, reactive signals, GPU rendering, and DevTools."
 license = "MIT"
@@ -139,6 +139,7 @@ wgpu-hal = { version = "=29.0.3", features = ["metal"], optional = true }
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 raw-window-handle = "0.6"
+taffy = "0.15.1"
 
 # Extra Win32 surface for the dx12_capture_check example's bare test window.
 [target.'cfg(windows)'.dev-dependencies]
@@ -202,6 +203,14 @@ harness = false
 
 [[bench]]
 name = "render_list"
+harness = false
+
+[[bench]]
+name = "vs_taffy"
+harness = false
+
+[[bench]]
+name = "vs_taffy_allocs"
 harness = false
 
 [[bench]]

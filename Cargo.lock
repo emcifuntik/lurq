@@ -1913,7 +1913,7 @@ checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
 name = "lurq"
-version = "0.56.0"
+version = "0.57.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -1944,6 +1944,7 @@ dependencies = [
  "rmcp",
  "serde_json",
  "swash",
+ "taffy",
  "tiny-skia",
  "tokio",
  "tokio-util",
@@ -3638,6 +3639,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "taffy"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31f7bd2d97198df05186f93a3a3c306845f40e8b3c22bf9279cdd7e5cf5fea7d"
+dependencies = [
+ "serde",
+ "slotmap",
+ "smallvec",
 ]
 
 [[package]]

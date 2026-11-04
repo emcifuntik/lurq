@@ -40,6 +40,33 @@ fn row_flex_equal_split() {
   assert_eq!(result.children[1].offset.x, 100.0);
 }
 
+/// Children sized on their own are laid out first and growing ones after them,
+/// but each keeps its place in the line.
+#[test]
+fn row_mixes_sized_and_growing_children_in_order() {
+  let mut rt = rt();
+  let sized = |width: f32| lurq::components::Spacer::new().width(width).height(50.0);
+  let growing = |grow: f32| lurq::components::Spacer::new().height(50.0).flex(grow);
+  let node = lurq::components::Row::with(
+    10.0,
+    Alignment::Start,
+    vec![
+      lurq::node::Element::from(sized(50.0)),
+      growing(1.0).into(),
+      sized(30.0).into(),
+      growing(3.0).into(),
+    ],
+  );
+  rt.set_root(node);
+  let result = rt.pass_layout(Constraints::tight(Size::new(400.0, 100.0))).unwrap();
+  let placed: Vec<(f32, f32)> = result
+    .children
+    .iter()
+    .map(|child| (child.offset.x, child.result.size.width))
+    .collect();
+  assert_eq!(placed, [(0.0, 50.0), (60.0, 72.5), (142.5, 30.0), (182.5, 217.5)]);
+}
+
 #[test]
 fn row_flex_weighted_split() {
   let mut rt = rt();

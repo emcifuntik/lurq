@@ -117,16 +117,13 @@ impl Component for Probe {
       .size(260.0, 480.0)
       .id("links");
 
-    Column::new()
-      .spacing(8.0)
-      .child(status)
-      .child(
-        Row::new()
-          .spacing(12.0)
-          .child(Column::new().id("chat").child(chat))
-          .child(plain)
-          .child(links),
-      )
+    Column::new().spacing(8.0).child(status).child(
+      Row::new()
+        .spacing(12.0)
+        .child(Column::new().id("chat").child(chat))
+        .child(plain)
+        .child(links),
+    )
   }
 }
 

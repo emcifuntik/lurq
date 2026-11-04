@@ -368,6 +368,12 @@ impl Theme {
     self.inner.read().unwrap().version
   }
 
+  /// Whether `other` is this theme or a clone of it: the same values, which
+  /// two separate themes at one version need not be.
+  pub(crate) fn same_theme(&self, other: &Theme) -> bool {
+    Arc::ptr_eq(&self.inner, &other.inner)
+  }
+
   pub(crate) fn track_access(&self) {
     let _ = self.version_signal.get();
   }

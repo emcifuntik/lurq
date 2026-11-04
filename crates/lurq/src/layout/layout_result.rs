@@ -13,6 +13,31 @@ pub struct LayoutResult {
   /// [`ShrinkLimit::Drop`](crate::layout::layout_kind::ShrinkLimit::Drop):
   /// laid out at zero size, neither drawn nor hit.
   pub(crate) dropped: bool,
+  /// What in this subtree a result served from a layout cache must still
+  /// write back into its nodes. Set when the layout engine prepares the
+  /// result; a result built anywhere else may hold anything.
+  pub(crate) holds: SubtreeHolds,
+  /// The subtree generation this geometry was prepared for. Carried caches
+  /// retain their old generation and must be checked against the new nodes.
+  pub(crate) generation: u64,
+}
+
+/// What a laid-out subtree holds that serving it from a cache writes back:
+/// a scroll container syncs its scroll state and its content's offset, a
+/// text leaf restores its text layout output. A subtree holding neither is
+/// served as it is: the layout engine neither walks nor copies it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct SubtreeHolds {
+  pub(crate) scroll: bool,
+  pub(crate) text: bool,
+}
+
+impl SubtreeHolds {
+  /// For a result nobody has looked into yet: it may hold either.
+  pub(crate) const UNKNOWN: Self = Self {
+    scroll: true,
+    text: true,
+  };
 }
 
 #[derive(Clone)]
@@ -35,7 +60,7 @@ impl LayoutResult {
         .text_layout
         .as_ref()
         .map_or(0, |output| output.estimated_memory_bytes())
-      + self.children.capacity() * std::mem::size_of::<ChildLayout>()
+      + self.children.len() * std::mem::size_of::<ChildLayout>()
       + self
         .children
         .iter()
@@ -59,15 +84,24 @@ mod tests {
           children: Vec::new(),
           text_layout: None,
           dropped: false,
+          holds: SubtreeHolds::UNKNOWN,
+          generation: 0,
         }
         .into(),
       }],
       text_layout: None,
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     };
 
-    let cloned = result.clone();
+    let mut cloned = result.clone();
 
+    assert_ne!(result.children.as_ptr(), cloned.children.as_ptr());
+    assert!(Arc::ptr_eq(&result.children[0].result, &cloned.children[0].result));
+    cloned.children[0].offset.x = 3.0;
+    assert_eq!(result.children[0].offset.x, 0.0);
+    assert_eq!(cloned.children[0].offset.x, 3.0);
     assert!(Arc::ptr_eq(&result.children[0].result, &cloned.children[0].result));
   }
 }

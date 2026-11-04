@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use lurq::{
-  app::runtime::Tree,
+  app::{App, runtime::Tree},
   components::{Column, Rect, Row, Text},
   layout::Alignment,
   node::Element,
@@ -61,26 +61,40 @@ fn build_mixed_dashboard() -> Element {
 
 fn bench_layout_compute(c: &mut Criterion) {
   let mut group = c.benchmark_group("layout_compute");
+  // set_root preserves node caches; compute must lay every node out again.
 
   for count in [10, 50, 100, 500, 1000] {
     group.bench_with_input(BenchmarkId::new("flat_rects", count), &count, |b, &count| {
+      let mut app = App::new();
       let mut rt = Tree::new();
       rt.resize(1200, 800);
       b.iter(|| {
         rt.set_root(build_flat_rects(count));
-        rt.rebuild();
+        rt.bench_layout_only(&mut app, true)
       });
     });
   }
 
   for count in [10, 50, 100, 500] {
     group.bench_with_input(BenchmarkId::new("text_heavy", count), &count, |b, &count| {
+      let mut app = App::new();
       let mut rt = Tree::new();
       rt.resize(1200, 800);
-      b.iter(|| {
+      let mut compute = || {
         rt.set_root(build_text_heavy(count));
-        rt.rebuild();
-      });
+        rt.bench_layout_only(&mut app, true)
+      };
+      // Also runs in Criterion's test mode: rebuilding alone never measures text.
+      let layout = compute().expect("text benchmark must run layout");
+      assert_eq!(layout.children.len(), count);
+      assert!(
+        layout
+          .children
+          .iter()
+          .all(|child| { child.result.size.width > 0.0 && child.result.size.height > 0.0 })
+      );
+      drop(layout);
+      b.iter(compute);
     });
   }
 
@@ -90,22 +104,24 @@ fn bench_layout_compute(c: &mut Criterion) {
       BenchmarkId::new("nested_rows", &label),
       &(depth, items),
       |b, &(d, i)| {
+        let mut app = App::new();
         let mut rt = Tree::new();
         rt.resize(1200, 800);
         b.iter(|| {
           rt.set_root(build_nested_rows(d, i));
-          rt.rebuild();
+          rt.bench_layout_only(&mut app, true)
         });
       },
     );
   }
 
   group.bench_function("mixed_dashboard", |b| {
+    let mut app = App::new();
     let mut rt = Tree::new();
     rt.resize(1200, 800);
     b.iter(|| {
       rt.set_root(build_mixed_dashboard());
-      rt.rebuild();
+      rt.bench_layout_only(&mut app, true)
     });
   });
 
@@ -117,13 +133,12 @@ fn bench_layout_cached(c: &mut Criterion) {
 
   for count in [100, 500, 1000] {
     group.bench_with_input(BenchmarkId::new("flat_rects_rebuild", count), &count, |b, &count| {
+      let mut app = App::new();
       let mut rt = Tree::new();
       rt.resize(1200, 800);
       rt.set_root(build_flat_rects(count));
-      rt.rebuild();
-      b.iter(|| {
-        rt.rebuild();
-      });
+      rt.bench_layout_only(&mut app, false);
+      b.iter(|| rt.bench_layout_only(&mut app, false));
     });
   }
 

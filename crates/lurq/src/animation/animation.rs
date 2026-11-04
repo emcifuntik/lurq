@@ -313,12 +313,17 @@ impl AnimationEngine {
   }
 
   fn tick_recursive(&mut self, node: &mut crate::node::Node, now: Instant) -> bool {
+    if !node.prepare_layout_tracking().timeline {
+      return false;
+    }
+    #[cfg(test)]
+    crate::core::layout_dirty::visit();
     let mut needs_layout = false;
     let node_id = node.node_id();
     if node_id.is_assigned() {
       if let Some(spec) = &node.animation {
         self.seen.insert(node_id);
-        let spec = spec.clone();
+        let spec = Animation::clone(spec);
         needs_layout = self.process_node(node, &spec, now);
       }
     }

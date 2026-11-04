@@ -14,7 +14,10 @@ use std::sync::Arc;
 
 use super::LayoutEngine;
 use crate::{
-  layout::{Size, layout_result::LayoutResult},
+  layout::{
+    Size,
+    layout_result::{LayoutResult, SubtreeHolds},
+  },
   node::{
     node::Node,
     node_kind::{NodeKind, PaintedCarets, TextInputOverflow, TextInputOverflowAnchor, TextInputState, TextState},
@@ -214,7 +217,9 @@ impl LayoutEngine {
   pub(super) fn restore_text_layout_tree(node: &Node, result: &LayoutResult) {
     Self::restore_text_layout_output(node, result);
     for (child, child_layout) in node.children().iter().zip(&result.children) {
-      Self::restore_text_layout_tree(child, &child_layout.result);
+      if child_layout.result.holds.text {
+        Self::restore_text_layout_tree(child, &child_layout.result);
+      }
     }
   }
 
@@ -248,9 +253,11 @@ impl LayoutEngine {
   fn leaf_with_output(size: Size, output: TextLayoutOutput) -> LayoutResult {
     LayoutResult {
       size,
-      children: vec![],
+      children: vec![].into(),
       text_layout: Some(Arc::new(output)),
       dropped: false,
+      holds: SubtreeHolds::UNKNOWN,
+      generation: 0,
     }
   }
 }

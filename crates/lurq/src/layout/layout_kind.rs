@@ -115,6 +115,7 @@ struct ScrollStateInner {
   drag_start_scroll_y: f32,
   scrollbar_style: ScrollBarStyle,
   scroll_dirty: bool,
+  layout_subscribers: crate::core::layout_dirty::LayoutSubscribers,
   equal_overflow_scroll_probe_enabled: bool,
   /// Vertical scroll requests that took effect: `set_scroll` calls and
   /// pending requests (see [`PendingScroll::is_request`]) resolved by a
@@ -124,6 +125,10 @@ struct ScrollStateInner {
 }
 
 impl ScrollState {
+  pub(crate) fn track_layout(&self, watch: &Arc<crate::core::layout_dirty::LayoutWatch>) {
+    self.inner.lock().unwrap().layout_subscribers.bind(watch);
+  }
+
   pub fn new() -> Self {
     Self {
       inner: Arc::new(Mutex::new(ScrollStateInner {
@@ -151,6 +156,7 @@ impl ScrollState {
         drag_start_scroll_y: 0.0,
         scrollbar_style: ScrollBarStyle::default(),
         scroll_dirty: false,
+        layout_subscribers: Default::default(),
         equal_overflow_scroll_probe_enabled: false,
         scroll_y_requests: 0,
       })),
@@ -170,6 +176,7 @@ impl ScrollState {
     inner.scroll_x = x.clamp(0.0, inner.max_scroll_x);
     inner.scroll_y = y.clamp(0.0, inner.max_scroll_y);
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
     inner.scroll_y_requests = inner.scroll_y_requests.wrapping_add(1);
   }
 
@@ -179,6 +186,7 @@ impl ScrollState {
     inner.pending_scroll_x = Some(PendingScroll::Offset(x.max(0.0)));
     inner.pending_scroll_y = Some(PendingScroll::Offset(y.max(0.0)));
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   /// Queue the smallest vertical scroll that shows content rows
@@ -187,6 +195,7 @@ impl ScrollState {
     let mut inner = self.inner.lock().unwrap();
     inner.pending_scroll_y = Some(PendingScroll::Reveal { start, end });
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   /// Queue a vertical scroll to the top after the next layout measurement.
@@ -194,6 +203,7 @@ impl ScrollState {
     let mut inner = self.inner.lock().unwrap();
     inner.pending_scroll_y = Some(PendingScroll::Start);
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   /// Queue a vertical scroll to the bottom after the next layout measurement.
@@ -201,6 +211,7 @@ impl ScrollState {
     let mut inner = self.inner.lock().unwrap();
     inner.pending_scroll_y = Some(PendingScroll::End);
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   /// Whether a scroll to the bottom (`scroll_to_bottom_pending`, a stick to
@@ -275,6 +286,7 @@ impl ScrollState {
     let mut inner = self.inner.lock().unwrap();
     inner.pending_scroll_x = Some(PendingScroll::Start);
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   /// Queue a horizontal scroll to the right edge after the next layout measurement.
@@ -282,6 +294,7 @@ impl ScrollState {
     let mut inner = self.inner.lock().unwrap();
     inner.pending_scroll_x = Some(PendingScroll::End);
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   /// Queue a bottom scroll only when the current vertical offset is within `threshold` of the bottom.
@@ -290,6 +303,7 @@ impl ScrollState {
     if inner.max_scroll_y - inner.scroll_y <= threshold.max(0.0) {
       inner.pending_scroll_y = Some(PendingScroll::End);
       inner.scroll_dirty = true;
+      inner.layout_subscribers.mark();
       true
     } else {
       false
@@ -302,6 +316,7 @@ impl ScrollState {
     if inner.max_scroll_x - inner.scroll_x <= threshold.max(0.0) {
       inner.pending_scroll_x = Some(PendingScroll::End);
       inner.scroll_dirty = true;
+      inner.layout_subscribers.mark();
       true
     } else {
       false
@@ -316,6 +331,7 @@ impl ScrollState {
       previous_scroll: inner.scroll_y,
     });
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   /// Preserve the current horizontal viewport position when content is prepended before the next layout.
@@ -326,6 +342,7 @@ impl ScrollState {
       previous_scroll: inner.scroll_x,
     });
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   pub fn scroll_by(&self, dx: f32, dy: f32) {
@@ -350,6 +367,7 @@ impl ScrollState {
     let consumed_y = inner.scroll_y - old_y;
     if consumed_x != 0.0 || consumed_y != 0.0 {
       inner.scroll_dirty = true;
+      inner.layout_subscribers.mark();
     }
 
     (dx - consumed_x, dy - consumed_y)
@@ -468,6 +486,7 @@ impl ScrollState {
       }
     }
     inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
   }
 
   pub fn thumb_rect(&self, style: &crate::layout::scrollbar::ScrollBarStyle) -> (f32, f32, f32, f32) {

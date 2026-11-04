@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use crate::{
   layout::layout_kind::{FlexParams, FrameConstraints},
   node::{
@@ -7,6 +9,7 @@ use crate::{
     box_shadow::BoxShadowValue,
     cursor::CursorIcon,
     dimension::Dimension,
+    interaction_state::InteractionState,
     padding::Padding,
     radius_value::RadiusValue,
     spacing_value::SpacingValue,
@@ -33,10 +36,31 @@ pub(crate) struct StateStyles {
   pub(crate) focus_visible: Option<Style>,
   /// While files from the OS are dragged over the node.
   pub(crate) drag_over: Option<Style>,
+  layout_sources: LayoutStyleSources,
+}
+
+// Style merging replaces each layout field as a whole. Cache its winning
+// state rather than copying paint properties or allocating their shadows.
+// The low byte holds interaction bits; the other bytes select layout fields.
+// The empty StateStyles is shared by LazyBox, so this cache must be Sync.
+#[derive(Default)]
+struct LayoutStyleSources(AtomicU32);
+
+impl Clone for LayoutStyleSources {
+  fn clone(&self) -> Self {
+    Self(AtomicU32::new(self.0.load(Ordering::Relaxed)))
+  }
+}
+
+#[cfg(test)]
+thread_local! {
+  pub(crate) static STYLE_OPERATIONS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 impl Style {
   pub fn new() -> Self {
+    #[cfg(test)]
+    STYLE_OPERATIONS.with(|counts| counts.set((counts.get().0 + 1, counts.get().1)));
     Self::default()
   }
 
@@ -269,6 +293,8 @@ impl Style {
   }
 
   pub(crate) fn merge_from(&mut self, other: &Style) {
+    #[cfg(test)]
+    STYLE_OPERATIONS.with(|counts| counts.set((counts.get().0, counts.get().1 + 1)));
     if other.color.is_some() {
       self.color = other.color.clone();
     }
@@ -305,6 +331,70 @@ impl Style {
 }
 
 impl StateStyles {
+  pub(crate) fn invalidate_layout_style(&mut self) {
+    self.layout_sources.0.store(0, Ordering::Relaxed);
+  }
+
+  fn style_at(&self, index: u8) -> Option<&Style> {
+    match index {
+      1 => self.focused.as_ref(),
+      2 => self.focus_visible.as_ref(),
+      3 => self.hovered.as_ref(),
+      4 => self.active.as_ref(),
+      5 => self.drag_over.as_ref(),
+      _ => None,
+    }
+  }
+
+  fn layout_sources(&self, state: &InteractionState) -> [u8; 3] {
+    if !self.affects_layout() {
+      return [0; 3];
+    }
+    let states = state.layout_states();
+    let state_bits = states
+      .iter()
+      .enumerate()
+      .fold(0, |bits, (index, active)| bits | ((*active as u32) << index));
+    let cached = self.layout_sources.0.load(Ordering::Relaxed);
+    if cached & 0xff == state_bits {
+      return [(cached >> 8) as u8, (cached >> 16) as u8, (cached >> 24) as u8];
+    }
+    let mut fields = [0; 3];
+    for (index, active) in states.into_iter().enumerate() {
+      if active && let Some(style) = self.style_at(index as u8 + 1) {
+        for (field, present) in [style.frame.is_some(), style.padding.is_some(), style.flex.is_some()]
+          .into_iter()
+          .enumerate()
+        {
+          if present {
+            fields[field] = index as u8 + 1;
+          }
+        }
+      }
+    }
+    let sources = state_bits | ((fields[0] as u32) << 8) | ((fields[1] as u32) << 16) | ((fields[2] as u32) << 24);
+    self.layout_sources.0.store(sources, Ordering::Relaxed);
+    fields
+  }
+
+  pub(crate) fn layout_frame(&self, state: &InteractionState) -> Option<FrameConstraints> {
+    self
+      .style_at(self.layout_sources(state)[0])
+      .and_then(|style| style.frame)
+  }
+
+  pub(crate) fn layout_padding(&self, state: &InteractionState) -> Option<Padding> {
+    self
+      .style_at(self.layout_sources(state)[1])
+      .and_then(|style| style.padding)
+  }
+
+  pub(crate) fn layout_flex(&self, state: &InteractionState) -> Option<FlexParams> {
+    self
+      .style_at(self.layout_sources(state)[2])
+      .and_then(|style| style.flex)
+  }
+
   pub(crate) fn affects_layout(&self) -> bool {
     self.hovered.as_ref().is_some_and(Style::affects_layout)
       || self.active.as_ref().is_some_and(Style::affects_layout)

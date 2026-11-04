@@ -118,7 +118,7 @@ macro_rules! impl_into_node {
     impl $struct_name {
       pub(crate) fn from_node(node: $crate::node::Node) -> Self {
         Self {
-          node: Box::new(node.with_tag_name(Self::tag_name())),
+          node: $crate::node::element::boxed_node(node.with_tag_name(Self::tag_name())),
         }
       }
 
@@ -127,7 +127,10 @@ macro_rules! impl_into_node {
       }
 
       pub(crate) fn tag_name() -> std::sync::Arc<str> {
-        std::sync::Arc::from(stringify!($struct_name))
+        static TAG_NAME: std::sync::OnceLock<std::sync::Arc<str>> = std::sync::OnceLock::new();
+        TAG_NAME
+          .get_or_init(|| std::sync::Arc::from(stringify!($struct_name)))
+          .clone()
       }
 
       pub fn node_id(&self) -> $crate::core::NodeId {

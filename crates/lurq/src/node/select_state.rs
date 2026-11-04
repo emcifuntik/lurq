@@ -21,6 +21,7 @@ const TYPE_AHEAD_TIMEOUT: Duration = Duration::from_secs(1);
 pub(crate) struct SelectState {
   inner: Arc<Mutex<SelectInner>>,
   layout_dirty: Arc<AtomicBool>,
+  layout_subscribers: Arc<crate::core::layout_dirty::LayoutSubscribers>,
 }
 
 struct SelectInner {
@@ -129,6 +130,7 @@ impl SelectState {
         type_ahead_at: None,
       })),
       layout_dirty: Arc::new(AtomicBool::new(false)),
+      layout_subscribers: Arc::default(),
     }
   }
 
@@ -367,6 +369,10 @@ impl SelectState {
     self.mark_layout_dirty();
   }
 
+  pub(crate) fn track_layout(&self, watch: &Arc<crate::core::layout_dirty::LayoutWatch>) {
+    self.layout_subscribers.bind(watch);
+  }
+
   pub(crate) fn take_layout_dirty(&self) -> bool {
     self.layout_dirty.swap(false, Ordering::Relaxed)
   }
@@ -377,6 +383,7 @@ impl SelectState {
 
   fn mark_layout_dirty(&self) {
     self.layout_dirty.store(true, Ordering::Relaxed);
+    self.layout_subscribers.mark();
   }
 
   /// Commit option `index`: fire the change callback and, for single-select,

@@ -1,8 +1,8 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use lurq::{
-  app::runtime::Tree,
+  app::{App, runtime::Tree},
   components::{Column, Rect, Row, Text},
-  layout::Alignment,
+  layout::{Alignment, quad::QuadContent},
   node::Element,
 };
 
@@ -50,19 +50,30 @@ fn sidebar_with_content(item_count: usize) -> Element {
     .into()
 }
 
+fn assert_text_laid_out(rt: &Tree) {
+  let layout = rt.last_layout().expect("render-list benchmark must run layout");
+  assert!(
+    rt.resolve_quads(layout)
+      .iter()
+      .any(|quad| { matches!(quad.content, QuadContent::Text { .. }) && quad.width > 0.0 && quad.height > 0.0 })
+  );
+}
+
 fn bench_full_pass(c: &mut Criterion) {
   let mut group = c.benchmark_group("full_pass");
 
   for count in [10, 50, 100, 200] {
     group.bench_with_input(BenchmarkId::new("sidebar_content", count), &count, |b, &count| {
+      let mut app = App::new();
       let mut rt = Tree::new();
       rt.resize(1200, 800);
       rt.set_root(sidebar_with_content(count));
-      rt.rebuild();
+      rt.pass_headless(&mut app);
       b.iter(|| {
         rt.set_root(sidebar_with_content(count));
-        rt.rebuild();
+        rt.pass_headless(&mut app)
       });
+      assert_text_laid_out(&rt);
     });
   }
 
@@ -74,13 +85,13 @@ fn bench_rebuild_no_change(c: &mut Criterion) {
 
   for count in [10, 50, 100] {
     group.bench_with_input(BenchmarkId::new("sidebar_content", count), &count, |b, &count| {
+      let mut app = App::new();
       let mut rt = Tree::new();
       rt.resize(1200, 800);
       rt.set_root(sidebar_with_content(count));
-      rt.rebuild();
-      b.iter(|| {
-        rt.rebuild();
-      });
+      rt.pass_headless(&mut app);
+      b.iter(|| rt.pass_headless(&mut app));
+      assert_text_laid_out(&rt);
     });
   }
 

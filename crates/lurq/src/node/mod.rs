@@ -14,6 +14,7 @@ pub mod gradient;
 pub(crate) mod inline_link;
 pub mod interaction_state;
 pub(crate) mod layout_cache;
+mod layout_tracking;
 pub(crate) mod lazy_box;
 mod letter_spacing;
 pub(crate) mod node;
