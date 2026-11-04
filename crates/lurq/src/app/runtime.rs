@@ -88,6 +88,8 @@ mod outside_press;
 mod overlay_layers;
 mod paste;
 pub use paste::ClipboardReader;
+#[cfg(test)]
+mod refresh_layout_tests;
 mod scroll_into_view;
 mod select_menu;
 mod selected_text_lines;

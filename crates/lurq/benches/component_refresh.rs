@@ -5,6 +5,9 @@
 //! - `leaf_change`: one card's own signal changes; only it renders again.
 //! - `mid_level`: one section's own signal changes; it renders again and its groups and cards, whose props did not
 //!   change, do not.
+//! - `leaf_change_layout`, `mid_level_layout`: the same, each followed by the layout of the refreshed tree
+//!   (`Tree::bench_layout_only_shared`), which lays out the changed nodes and serves the rest from the caches the
+//!   refresh kept (pinned by `app::runtime::refresh_layout_tests`).
 //! - `first_mount`: the whole screen is created and rendered.
 //!
 //! A refresh runs through `Tree::get_element_by_id`, which settles dirty
@@ -156,11 +159,25 @@ fn refresh(tree: &mut Tree) {
   assert!(tree.get_element_by_id("bench-root").is_some());
 }
 
+/// The refresh, then the layout the next pass runs over the refreshed tree.
+fn refresh_and_layout(tree: &mut Tree, app: &mut App) {
+  refresh(tree);
+  assert!(tree.bench_layout_only_shared(app, false).is_some());
+}
+
+fn leaf_signal() -> Signal<u32> {
+  CARD_SIGNALS.with(|signals| signals.borrow()[CARDS * GROUPS * 2 + CARDS * 2 + 4].clone())
+}
+
+fn mid_level_signal() -> Signal<u32> {
+  SECTION_SIGNALS.with(|signals| signals.borrow()[2].clone())
+}
+
 fn bench_component_refresh(c: &mut Criterion) {
   let mut group = c.benchmark_group("component_refresh");
 
   let (mut tree, _app) = mounted();
-  let card = CARD_SIGNALS.with(|signals| signals.borrow()[CARDS * GROUPS * 2 + CARDS * 2 + 4].clone());
+  let card = leaf_signal();
   group.bench_function("leaf_change", |b| {
     b.iter(|| {
       card.update(|value| *value += 1);
@@ -170,11 +187,33 @@ fn bench_component_refresh(c: &mut Criterion) {
   drop(tree);
 
   let (mut tree, _app) = mounted();
-  let section = SECTION_SIGNALS.with(|signals| signals.borrow()[2].clone());
+  let section = mid_level_signal();
   group.bench_function("mid_level", |b| {
     b.iter(|| {
       section.update(|value| *value += 1);
       refresh(&mut tree);
+    });
+  });
+  drop(tree);
+
+  // The same refreshes with the layout after each, which serves what the
+  // refresh did not change from the caches it kept.
+  let (mut tree, mut app) = mounted();
+  let card = leaf_signal();
+  group.bench_function("leaf_change_layout", |b| {
+    b.iter(|| {
+      card.update(|value| *value += 1);
+      refresh_and_layout(&mut tree, &mut app);
+    });
+  });
+  drop(tree);
+
+  let (mut tree, mut app) = mounted();
+  let section = mid_level_signal();
+  group.bench_function("mid_level_layout", |b| {
+    b.iter(|| {
+      section.update(|value| *value += 1);
+      refresh_and_layout(&mut tree, &mut app);
     });
   });
   drop(tree);
