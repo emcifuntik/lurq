@@ -6083,7 +6083,7 @@ impl Tree {
 
     if let Some(root) = &mut self.root {
       for (slot_id, replacement) in replacements {
-        replace_live_component_slot_everywhere(root, slot_id, &replacement, &self.id_gen);
+        replace_live_component_slot_everywhere(root, slot_id, replacement, &self.id_gen);
       }
     }
 
@@ -6093,7 +6093,7 @@ impl Tree {
     self.tree_rebuilt_since_layout = true;
     self.cached_render_list = None;
     self.needs_redraw = true;
-    self.refresh_interaction_state();
+    self.reapply_interaction_state();
     self.apply_focus_request();
     true
   }
@@ -6784,6 +6784,18 @@ impl Tree {
   }
 
   fn refresh_interaction_state(&mut self) {
+    if let Some(root) = self.root.as_ref() {
+      reset_element_ref_flags_recursive(root);
+    }
+    self.reapply_interaction_state();
+  }
+
+  /// Puts the hover, press, focus and file-drag flags back on the nodes of
+  /// their paths still in the tree, and drops the others from the paths. The
+  /// flags are set on those nodes only, so after a component refresh, which
+  /// cleared them on the nodes it replaced and on their replacements, this
+  /// needs no clearing of the whole tree first.
+  fn reapply_interaction_state(&mut self) {
     let Some(root) = self.root.as_ref() else {
       self.hover_path.clear();
       self.active_path.clear();
@@ -6791,8 +6803,6 @@ impl Tree {
       self.clear_focus();
       return;
     };
-
-    reset_element_ref_flags_recursive(root);
 
     let mut hover_path = Vec::new();
     for node_id in &self.hover_path {
@@ -9864,44 +9874,93 @@ fn reset_element_ref_flags_recursive(node: &Node) {
   }
 }
 
+/// Puts a component's fresh output everywhere the live tree holds the
+/// component: its place in the page and, for one declared in a modal or an
+/// overlay, the layer built from that declaration. The output moves into the
+/// last place; any other place takes a copy of it.
 fn replace_live_component_slot_everywhere(
-  node: &mut Node,
+  root: &mut Node,
   slot_id: u64,
-  replacement: &Node,
+  replacement: Box<Node>,
   id_gen: &IdGenerator,
 ) -> bool {
-  let mut replaced = false;
+  let mut places = Vec::new();
+  find_live_component_slot(root, slot_id, &mut Vec::new(), &mut places);
+  let mut replacement = Some(replacement);
+  let count = places.len();
+  for (index, path) in places.iter().enumerate() {
+    let fresh = if index + 1 == count {
+      replacement.take().expect("the output moves into its last place only")
+    } else {
+      replacement
+        .as_ref()
+        .expect("the output is kept for its last place")
+        .clone_boxed()
+    };
+    replace_live_component_root(live_node_at(root, path), fresh, id_gen);
+  }
+  count > 0
+}
+
+/// A step from a live node towards a component's root: into a child, or
+/// into the node of the modal or overlay declared on it.
+#[derive(Clone, Copy)]
+enum LiveStep {
+  Child(usize),
+  Modal,
+  Overlay,
+}
+
+/// The paths of the roots of component `slot_id` in the live tree.
+fn find_live_component_slot(node: &Node, slot_id: u64, path: &mut Vec<LiveStep>, places: &mut Vec<Vec<LiveStep>>) {
   if node.component_slot_id() == Some(slot_id) {
-    let mut replacement = replacement.clone_for_reuse();
-    replacement.adopt_outer_decoration(node);
-    reset_element_ref_flags_recursive(node);
-    replacement.preserve_runtime_state_from(node);
-    #[cfg(feature = "canvas")]
-    detach_canvases_not_carried(canvas_bindings(node), Some(&replacement));
-    replacement.preserve_ids_from(node);
-    node.free_ids(id_gen);
-    replacement.assign_ids(id_gen);
-    *node = replacement;
-    return true;
+    places.push(path.clone());
+    return;
   }
-
-  for child in &mut node.children {
-    replaced |= replace_live_component_slot_everywhere(child, slot_id, replacement, id_gen);
+  for (index, child) in node.children.iter().enumerate() {
+    path.push(LiveStep::Child(index));
+    find_live_component_slot(child, slot_id, path, places);
+    path.pop();
   }
-
-  if let Some(spec) = node.modal_declaration.as_mut() {
-    replaced |= replace_live_component_slot_everywhere(&mut spec.node, slot_id, replacement, id_gen);
+  if let Some(spec) = node.modal_declaration.as_ref() {
+    path.push(LiveStep::Modal);
+    find_live_component_slot(&spec.node, slot_id, path, places);
+    path.pop();
   }
-
-  if let Some(spec) = node.overlay_declaration.as_mut() {
-    replaced |= replace_live_component_slot_everywhere(&mut spec.node, slot_id, replacement, id_gen);
+  if let Some(spec) = node.overlay_declaration.as_ref() {
+    path.push(LiveStep::Overlay);
+    find_live_component_slot(&spec.node, slot_id, path, places);
+    path.pop();
   }
+}
 
-  if replaced {
+/// The node at `path`, marking each node on the way to it as holding a
+/// changed descendant.
+fn live_node_at<'a>(mut node: &'a mut Node, path: &[LiveStep]) -> &'a mut Node {
+  for step in path {
     node.layout_cache.mark_descendant_dirty();
+    node = match step {
+      LiveStep::Child(index) => &mut node.children[*index],
+      LiveStep::Modal => &mut node.modal_declaration.as_mut().expect("the path was found here").node,
+      LiveStep::Overlay => &mut node.overlay_declaration.as_mut().expect("the path was found here").node,
+    };
   }
+  node
+}
 
-  replaced
+/// Replaces a component's root with its fresh output. The flags of the
+/// interaction paths are cleared on both, for `Tree::reapply_interaction_state`.
+fn replace_live_component_root(node: &mut Node, mut replacement: Box<Node>, id_gen: &IdGenerator) {
+  replacement.adopt_outer_decoration(node);
+  reset_element_ref_flags_recursive(node);
+  replacement.preserve_runtime_state_from(node);
+  #[cfg(feature = "canvas")]
+  detach_canvases_not_carried(canvas_bindings(node), Some(&replacement));
+  replacement.preserve_ids_from(node);
+  node.free_ids(id_gen);
+  replacement.assign_ids(id_gen);
+  *node = *replacement;
+  reset_element_ref_flags_recursive(node);
 }
 
 #[cfg(test)]
