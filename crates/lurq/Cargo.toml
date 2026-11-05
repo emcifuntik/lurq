@@ -212,6 +212,10 @@ harness = false
 [[bench]]
 name = "vs_taffy_allocs"
 harness = false
+[[bench]]
+name = "component_refresh"
+harness = false
+
 
 [[bench]]
 name = "text_pipeline"

@@ -47,6 +47,8 @@ pub(crate) mod inline_links;
 mod input_layout;
 pub(crate) mod input_token_layout;
 mod input_token_quads;
+#[cfg(feature = "perf_profile")]
+mod layout_trace;
 mod opacity_groups;
 mod select_quads;
 mod selection_layout;
@@ -256,6 +258,10 @@ pub(crate) struct LayoutEngine {
   /// Device pixels per logical pixel of the paint, for geometry that must
   /// match painted glyphs (rich-text links and underlines).
   paint_scale: Cell<f32>,
+  /// What each pass lays out from scratch, when `LURQ_LAYOUT_TRACE` asks
+  /// (`layout_trace.rs`).
+  #[cfg(feature = "perf_profile")]
+  trace: layout_trace::LayoutTrace,
 }
 
 #[cfg(feature = "raster")]
@@ -537,6 +543,8 @@ impl LayoutEngine {
         generation: 0,
       }),
       paint_scale: Cell::new(1.0),
+      #[cfg(feature = "perf_profile")]
+      trace: layout_trace::LayoutTrace::from_env(),
     }
   }
 
@@ -610,9 +618,13 @@ impl LayoutEngine {
     force_dirty: bool,
   ) -> Arc<LayoutResult> {
     self.last_recalculated.set(false);
+    #[cfg(feature = "perf_profile")]
+    self.trace.begin_pass();
     Self::mark_layout_dirty(node, force_dirty);
     let result = self.layout_node(glyph_engine, node, constraints);
     node.clear_guards();
+    #[cfg(feature = "perf_profile")]
+    self.trace.end_pass(node);
     result
   }
 
@@ -1963,6 +1975,10 @@ impl LayoutEngine {
   }
 
   fn layout_node(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> Arc<LayoutResult> {
+    #[cfg(feature = "perf_profile")]
+    if self.trace.is_on() {
+      return self.layout_node_traced(glyph_engine, node, constraints);
+    }
     // A collapsed line's cache holds layouts its parent did not collapse.
     if !self.is_collapsed(node)
       && let Some(cached) = self.layout_node_from_cache(glyph_engine, node, constraints)
@@ -1971,6 +1987,50 @@ impl LayoutEngine {
     }
 
     self.layout_node_uncached_with_child_overrides(glyph_engine, node, constraints, None)
+  }
+
+  /// [`Self::layout_node`] while `LURQ_LAYOUT_TRACE` records the pass: the
+  /// same steps, with what the trace needs around them. Out of line, so the
+  /// untraced recursion keeps its frames.
+  #[cfg(feature = "perf_profile")]
+  #[inline(never)]
+  fn layout_node_traced(
+    &self,
+    glyph_engine: &mut GlyphEngine,
+    node: &Node,
+    constraints: Constraints,
+  ) -> Arc<LayoutResult> {
+    let entered = self.trace.enter(node);
+    let collapsed = self.is_collapsed(node);
+    // Read before the cache is asked, which may store a repaired result.
+    let cache = &node.layout_cache;
+    let reason = if collapsed {
+      "collapsed"
+    } else if cache.is_local_dirty() {
+      "local-dirty"
+    } else if cache.is_descendant_dirty() {
+      "descendant-dirty"
+    } else if !cache.has_cached_result() {
+      "no-cached-result"
+    } else if !cache.contains(constraints) {
+      "other-constraints"
+    } else {
+      "cached-tree-mismatch"
+    };
+    let cached = if collapsed {
+      None
+    } else {
+      self.layout_node_from_cache(glyph_engine, node, constraints)
+    };
+    let result = match cached {
+      Some(cached) => cached,
+      None => {
+        self.trace.set_reason(reason);
+        self.layout_node_uncached_with_child_overrides(glyph_engine, node, constraints, None)
+      }
+    };
+    self.trace.leave(entered);
+    result
   }
 
   fn layout_node_from_cache(
@@ -1986,6 +2046,8 @@ impl LayoutEngine {
         }
         let prepared = self.prepare_cached_result(node, cached);
         node.layout_cache.record_validation(constraints, prepared.generation);
+        #[cfg(feature = "perf_profile")]
+        self.trace.hit();
         Some(prepared)
       });
     }
@@ -2040,6 +2102,8 @@ impl LayoutEngine {
       if let Some(rect) = child.element_override_rect()
         && (rect.relative_x != original_offset.x || rect.relative_y != original_offset.y)
       {
+        #[cfg(feature = "perf_profile")]
+        self.trace.set_reason("repair-child-moved");
         return Some(self.layout_node_uncached_with_child_overrides(
           glyph_engine,
           node,
@@ -2050,6 +2114,8 @@ impl LayoutEngine {
       // A cleared bounds override leaves the override baked into the cached
       // offset — only a full relayout recovers the child's natural position.
       if child.take_element_override_cleared() {
+        #[cfg(feature = "perf_profile")]
+        self.trace.set_reason("repair-override-cleared");
         return Some(self.layout_node_uncached_with_child_overrides(
           glyph_engine,
           node,
@@ -2063,6 +2129,8 @@ impl LayoutEngine {
           || Self::scroll_sized_by_content(node, constraints)
           || !Self::child_fits_cached_parent(original_offset, repaired.size, cached.size))
       {
+        #[cfg(feature = "perf_profile")]
+        self.trace.set_reason("repair-child-resized");
         return Some(self.layout_node_uncached_with_child_overrides(
           glyph_engine,
           node,
@@ -2075,6 +2143,8 @@ impl LayoutEngine {
 
     let prepared = self.prepare_cached_result(node, Arc::new(cached));
     node.layout_cache.store_shared(constraints, prepared.clone());
+    #[cfg(feature = "perf_profile")]
+    self.trace.repaired();
     Some(prepared)
   }
 
@@ -2293,6 +2363,8 @@ impl LayoutEngine {
     self.last_recalculated.set(true);
     #[cfg(test)]
     crate::core::layout_dirty::LAYOUTS.with(|layouts| layouts.set(layouts.get() + 1));
+    #[cfg(feature = "perf_profile")]
+    self.trace.laid_out(node, constraints);
     let mut result = self.layout_node_box(glyph_engine, node, constraints, child_overrides);
     Self::apply_runtime_rect(node, &mut result);
     self.prepare_layout_result_tree(node, &mut result, false);

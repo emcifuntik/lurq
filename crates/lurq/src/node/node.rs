@@ -630,6 +630,9 @@ pub(crate) enum SyntheticNodeRole {
   SelectChevron {
     open: bool,
   },
+  /// Stands for a child component's root in a component's cached output
+  /// (`node/component_output.rs`); never in the live tree.
+  ComponentSlot,
 }
 
 #[derive(Default, Clone)]
@@ -4272,6 +4275,12 @@ impl Node {
   // Return the positional subtree signature while reconciling it, so each
   // ancestor does not compare the same descendants again on a deep tree.
   fn preserve_runtime_state_and_layout_signature_from(&mut self, old: &Node) -> bool {
+    // A child component in a slot's cached output: the child's own render
+    // carried its state over from its own slot, or it came unchanged from
+    // there. Its layout is compared with the live tree's, never with a cache.
+    if old.is_component_slot_placeholder() {
+      return true;
+    }
     self.layout_cache.adopt_watch_from(&old.layout_cache);
     self.layout_cache.mark_watch();
     #[cfg(feature = "canvas")]
@@ -4376,6 +4385,9 @@ impl Node {
   }
 
   fn can_preserve_runtime_state_from(&self, old: &Node) -> bool {
+    if old.is_component_slot_placeholder() {
+      return self.component_slot_id == old.component_slot_id;
+    }
     // A canvas can keep its backing surface when its lookup id or ref binding
     // changes. Input editing state and an open select menu, however, belong
     // to the identified field.
@@ -4407,6 +4419,9 @@ impl Node {
   }
 
   fn layout_signature_matches(&self, old: &Node) -> bool {
+    if old.is_component_slot_placeholder() {
+      return self.component_slot_id == old.component_slot_id;
+    }
     self.own_layout_signature_matches(old)
       && self.children.len() == old.children.len()
       && self.child_layout_signatures_match(old)
@@ -4678,6 +4693,28 @@ impl Node {
   }
 
   pub(crate) fn clone_for_reuse(&self) -> Self {
+    self.clone_around(
+      self
+        .overlay_declaration
+        .as_ref()
+        .map(|spec| Box::new(spec.clone_for_reuse())),
+      self
+        .modal_declaration
+        .as_ref()
+        .map(|spec| Box::new(spec.clone_for_reuse())),
+      self.clone_children_for_reuse(),
+    )
+  }
+
+  /// [`Self::clone_for_reuse`] of this node alone, around declarations and
+  /// children the caller cloned: a component's cached output clones them its
+  /// own way (`node/component_output.rs`).
+  pub(crate) fn clone_around(
+    &self,
+    overlay_declaration: Option<Box<crate::app::ctx::OverlaySpec>>,
+    modal_declaration: Option<Box<crate::app::ctx::ModalSpec>>,
+    children: Vec<Node>,
+  ) -> Self {
     Self {
       node_id: NodeId::UNASSIGNED,
       tag_name: self.tag_name.clone(),
@@ -4686,15 +4723,9 @@ impl Node {
       element_id: self.element_id.clone(),
       classes: self.classes.clone(),
       outer_decoration: self.outer_decoration.clone(),
-      overlay_declaration: self
-        .overlay_declaration
-        .as_ref()
-        .map(|spec| Box::new(spec.clone_for_reuse())),
+      overlay_declaration,
       dropdown_anchor: self.dropdown_anchor.clone(),
-      modal_declaration: self
-        .modal_declaration
-        .as_ref()
-        .map(|spec| Box::new(spec.clone_for_reuse())),
+      modal_declaration,
       layout_neutral: self.layout_neutral,
       synthetic_role: self.synthetic_role,
       #[cfg(feature = "devtools")]
@@ -4766,7 +4797,7 @@ impl Node {
       transitions: self.transitions.clone(),
       animation: self.animation.clone(),
       layout_cache: Default::default(),
-      children: self.clone_children_for_reuse(),
+      children,
       events: self.events.clone(),
     }
   }
@@ -4776,51 +4807,6 @@ impl Node {
   /// component level) never hold a `Node` temporary in their own frames.
   pub(crate) fn clone_boxed(&self) -> Box<Node> {
     Box::new(self.clone_for_reuse())
-  }
-
-  /// Moves `replacement` into `self`, keeping what the mounting code put on
-  /// the replaced component root. Kept out of the recursive
-  /// [`Self::replace_component_slot_in`] so that its frame holds no `Node`.
-  #[inline(never)]
-  fn replace_with(&mut self, mut replacement: Box<Node>) {
-    replacement.adopt_outer_decoration(self);
-    *self = *replacement;
-  }
-
-  pub(crate) fn replace_component_slot(&mut self, slot_id: u64, replacement: Box<Node>) -> bool {
-    let mut replacement = Some(replacement);
-    self.replace_component_slot_in(slot_id, &mut replacement)
-  }
-
-  pub(crate) fn replace_component_slot_in(&mut self, slot_id: u64, replacement: &mut Option<Box<Node>>) -> bool {
-    if self.component_slot_id == Some(slot_id) {
-      self.replace_with(
-        replacement
-          .take()
-          .expect("component replacement should be available when matching slot is found"),
-      );
-      return true;
-    }
-
-    for child in &mut self.children {
-      if child.replace_component_slot_in(slot_id, replacement) {
-        return true;
-      }
-    }
-
-    if let Some(spec) = self.modal_declaration.as_mut()
-      && spec.node.replace_component_slot_in(slot_id, replacement)
-    {
-      return true;
-    }
-
-    if let Some(spec) = self.overlay_declaration.as_mut()
-      && spec.node.replace_component_slot_in(slot_id, replacement)
-    {
-      return true;
-    }
-
-    false
   }
 
   pub(crate) fn estimated_memory_bytes(&self) -> usize {

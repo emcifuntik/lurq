@@ -126,3 +126,16 @@ DX12 upload details add clocks at whole resource/packing/staging/descriptor oper
 No frame is forced to obtain a sample. This is an on-demand renderer: an idle interval without samples is expected and a frame count divided by capture duration is not GPU throughput or FPS. Use pass cost, pending phase/age, request latency and named workloads for diagnosis. Collection overhead and release-versus-development performance require measurements on the actual binary/fixture; source instrumentation alone is not such evidence.
 
 With the `serde` or `mcp` feature, `SessionStarted::to_json` and `ProfileReport::to_json` provide the same version-1 content-free export used by MCP. Finalized `sample_age_ms` is the age at end; a live read computes age at that read. Applications should retain the source SHA, binary/build command and fixture name beside exported reports.
+
+## Layout trace
+
+To find what a layout pass lays out again, and why, set `LURQ_LAYOUT_TRACE` to a file path in a build with `perf_profile`. Each `LayoutEngine` compute (a pass; the overlay host's second compute in a frame is a pass of its own) appends one tab-separated line per node it lays out without its cache, then a summary line, and flushes, so a windowed build without a console works:
+
+```text
+layout  pass=12  reason=local-dirty  kind=column  tag=Column  id=turn-4  component=TurnView  children=3  constraints=0.0..720.0x0.0..inf
+pass    pass=12  root=OverlayHost  laid_out=41  hits=18  repairs=6  ms=1.284
+```
+
+`reason` is `local-dirty` (the node changed, or was never laid out), `descendant-dirty` (a descendant changed and the cached result could not be repaired in place), `no-cached-result` (its cache was not carried over from the node it replaced), `other-constraints` (cached under other constraints only), `cached-tree-mismatch` (the cached result no longer fits its children), `collapsed`, a `repair-*` reason (repairing a dirty child had to lay the node out again) or `direct`. `component` is the tag of the nearest component root at or above the node. `hits` counts nodes served whole from their cache, `repairs` nodes kept while dirty children were laid out again. Compare traces of two builds on the same scenario rather than timings, which vary between runs.
+
+The trace writes tags, element ids, sizes and constraints, never text or input values. It is a development tool, not part of profiling sessions: without `perf_profile` it is compiled out, and without the variable it costs one branch per node laid out.

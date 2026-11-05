@@ -88,6 +88,8 @@ mod outside_press;
 mod overlay_layers;
 mod paste;
 pub use paste::ClipboardReader;
+#[cfg(test)]
+mod refresh_layout_tests;
 mod scroll_into_view;
 mod select_menu;
 mod selected_text_lines;
@@ -3404,6 +3406,7 @@ impl Tree {
     #[cfg(feature = "perf_profile")]
     let _input = self.profiling.context.input(crate::app::profiler::InputKind::Pointer);
     self.track_pointer(x, y);
+    self.lay_out_rebuilt_for_input();
     self.set_input_modality(focus_visible::InputModality::Pointer);
     let modifiers = MouseModifiers { shift, ctrl, alt, meta };
     if self.swallowed_press == Some(button) {
@@ -3480,6 +3483,7 @@ impl Tree {
     #[cfg(feature = "perf_profile")]
     let _input = self.profiling.context.input(crate::app::profiler::InputKind::Pointer);
     self.track_pointer(x, y);
+    self.lay_out_rebuilt_for_input();
     let modifiers = MouseModifiers { shift, ctrl, alt, meta };
     if self.swallowed_press == Some(button) {
       self.swallowed_press = None;
@@ -3618,6 +3622,7 @@ impl Tree {
     #[cfg(feature = "perf_profile")]
     let _input = self.profiling.context.input(crate::app::profiler::InputKind::Scroll);
     self.track_pointer(x, y);
+    self.lay_out_rebuilt_for_input();
     let horizontal_taken = self.dispatch_scroll(x, y, delta_x, delta_y, phase);
     let scale = self.scale_factor();
     self.recognize_history_swipe(
@@ -5914,6 +5919,30 @@ impl Tree {
     }
   }
 
+  /// Lays out what was rebuilt since the last layout, before a press, a
+  /// release or a wheel hit-tests: a pointer move just before may have
+  /// rebuilt components (a hover that opens a box, pushes a row away) that no
+  /// frame laid out yet. Hit-testing the layout of the frame before sends the
+  /// input to what that frame showed, and drops a wheel over a scroll box that
+  /// has no layout yet. The layout is the one the next frame would run (with
+  /// a reveal and the hover it moves), which then has nothing left to lay out.
+  fn lay_out_rebuilt_for_input(&mut self) {
+    self.rebuild_if_dirty();
+    if !self.tree_rebuilt_since_layout || self.root.is_none() || self.last_layout.is_none() {
+      return;
+    }
+    let Some(mut app) = self.root_ctx.as_ref().and_then(Ctx::app_handle) else {
+      return;
+    };
+    let mut laid_out = self.update_layout(&mut app);
+    if self.resolve_pending_scroll_into_view() {
+      laid_out |= self.update_layout(&mut app);
+    }
+    if laid_out && self.refresh_hover_at_pointer() {
+      self.update_layout(&mut app);
+    }
+  }
+
   fn apply_reactive_updates_after_event(&mut self) {
     if self.root_ctx.as_ref().is_some_and(Ctx::any_dirty) {
       self.needs_redraw = true;
@@ -6083,7 +6112,7 @@ impl Tree {
 
     if let Some(root) = &mut self.root {
       for (slot_id, replacement) in replacements {
-        replace_live_component_slot_everywhere(root, slot_id, &replacement, &self.id_gen);
+        replace_live_component_slot_everywhere(root, slot_id, replacement, &self.id_gen);
       }
     }
 
@@ -6093,7 +6122,7 @@ impl Tree {
     self.tree_rebuilt_since_layout = true;
     self.cached_render_list = None;
     self.needs_redraw = true;
-    self.refresh_interaction_state();
+    self.reapply_interaction_state();
     self.apply_focus_request();
     true
   }
@@ -6784,6 +6813,18 @@ impl Tree {
   }
 
   fn refresh_interaction_state(&mut self) {
+    if let Some(root) = self.root.as_ref() {
+      reset_element_ref_flags_recursive(root);
+    }
+    self.reapply_interaction_state();
+  }
+
+  /// Puts the hover, press, focus and file-drag flags back on the nodes of
+  /// their paths still in the tree, and drops the others from the paths. The
+  /// flags are set on those nodes only, so after a component refresh, which
+  /// cleared them on the nodes it replaced and on their replacements, this
+  /// needs no clearing of the whole tree first.
+  fn reapply_interaction_state(&mut self) {
     let Some(root) = self.root.as_ref() else {
       self.hover_path.clear();
       self.active_path.clear();
@@ -6791,8 +6832,6 @@ impl Tree {
       self.clear_focus();
       return;
     };
-
-    reset_element_ref_flags_recursive(root);
 
     let mut hover_path = Vec::new();
     for node_id in &self.hover_path {
@@ -9864,44 +9903,93 @@ fn reset_element_ref_flags_recursive(node: &Node) {
   }
 }
 
+/// Puts a component's fresh output everywhere the live tree holds the
+/// component: its place in the page and, for one declared in a modal or an
+/// overlay, the layer built from that declaration. The output moves into the
+/// last place; any other place takes a copy of it.
 fn replace_live_component_slot_everywhere(
-  node: &mut Node,
+  root: &mut Node,
   slot_id: u64,
-  replacement: &Node,
+  replacement: Box<Node>,
   id_gen: &IdGenerator,
 ) -> bool {
-  let mut replaced = false;
+  let mut places = Vec::new();
+  find_live_component_slot(root, slot_id, &mut Vec::new(), &mut places);
+  let mut replacement = Some(replacement);
+  let count = places.len();
+  for (index, path) in places.iter().enumerate() {
+    let fresh = if index + 1 == count {
+      replacement.take().expect("the output moves into its last place only")
+    } else {
+      replacement
+        .as_ref()
+        .expect("the output is kept for its last place")
+        .clone_boxed()
+    };
+    replace_live_component_root(live_node_at(root, path), fresh, id_gen);
+  }
+  count > 0
+}
+
+/// A step from a live node towards a component's root: into a child, or
+/// into the node of the modal or overlay declared on it.
+#[derive(Clone, Copy)]
+enum LiveStep {
+  Child(usize),
+  Modal,
+  Overlay,
+}
+
+/// The paths of the roots of component `slot_id` in the live tree.
+fn find_live_component_slot(node: &Node, slot_id: u64, path: &mut Vec<LiveStep>, places: &mut Vec<Vec<LiveStep>>) {
   if node.component_slot_id() == Some(slot_id) {
-    let mut replacement = replacement.clone_for_reuse();
-    replacement.adopt_outer_decoration(node);
-    reset_element_ref_flags_recursive(node);
-    replacement.preserve_runtime_state_from(node);
-    #[cfg(feature = "canvas")]
-    detach_canvases_not_carried(canvas_bindings(node), Some(&replacement));
-    replacement.preserve_ids_from(node);
-    node.free_ids(id_gen);
-    replacement.assign_ids(id_gen);
-    *node = replacement;
-    return true;
+    places.push(path.clone());
+    return;
   }
-
-  for child in &mut node.children {
-    replaced |= replace_live_component_slot_everywhere(child, slot_id, replacement, id_gen);
+  for (index, child) in node.children.iter().enumerate() {
+    path.push(LiveStep::Child(index));
+    find_live_component_slot(child, slot_id, path, places);
+    path.pop();
   }
-
-  if let Some(spec) = node.modal_declaration.as_mut() {
-    replaced |= replace_live_component_slot_everywhere(&mut spec.node, slot_id, replacement, id_gen);
+  if let Some(spec) = node.modal_declaration.as_ref() {
+    path.push(LiveStep::Modal);
+    find_live_component_slot(&spec.node, slot_id, path, places);
+    path.pop();
   }
-
-  if let Some(spec) = node.overlay_declaration.as_mut() {
-    replaced |= replace_live_component_slot_everywhere(&mut spec.node, slot_id, replacement, id_gen);
+  if let Some(spec) = node.overlay_declaration.as_ref() {
+    path.push(LiveStep::Overlay);
+    find_live_component_slot(&spec.node, slot_id, path, places);
+    path.pop();
   }
+}
 
-  if replaced {
+/// The node at `path`, marking each node on the way to it as holding a
+/// changed descendant.
+fn live_node_at<'a>(mut node: &'a mut Node, path: &[LiveStep]) -> &'a mut Node {
+  for step in path {
     node.layout_cache.mark_descendant_dirty();
+    node = match step {
+      LiveStep::Child(index) => &mut node.children[*index],
+      LiveStep::Modal => &mut node.modal_declaration.as_mut().expect("the path was found here").node,
+      LiveStep::Overlay => &mut node.overlay_declaration.as_mut().expect("the path was found here").node,
+    };
   }
+  node
+}
 
-  replaced
+/// Replaces a component's root with its fresh output. The flags of the
+/// interaction paths are cleared on both, for `Tree::reapply_interaction_state`.
+fn replace_live_component_root(node: &mut Node, mut replacement: Box<Node>, id_gen: &IdGenerator) {
+  replacement.adopt_outer_decoration(node);
+  reset_element_ref_flags_recursive(node);
+  replacement.preserve_runtime_state_from(node);
+  #[cfg(feature = "canvas")]
+  detach_canvases_not_carried(canvas_bindings(node), Some(&replacement));
+  replacement.preserve_ids_from(node);
+  node.free_ids(id_gen);
+  replacement.assign_ids(id_gen);
+  *node = *replacement;
+  reset_element_ref_flags_recursive(node);
 }
 
 #[cfg(test)]

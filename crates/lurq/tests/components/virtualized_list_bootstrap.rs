@@ -398,6 +398,8 @@ fn a_list_opened_at_an_offset_lands_there() {
 /// A deep offset in a list whose first rows are short: the content sized from
 /// their estimate stops short of the offset, so the restore is queued again
 /// while the rows measured at the end push the content out, until it lands.
+/// The rows measured after it landed then move the offset by less than a
+/// row, to keep what it shows in place.
 #[test]
 fn a_deep_offset_is_restored_while_the_estimate_grows_to_reach_it() {
   let rendered: Rendered = Arc::default();
@@ -416,10 +418,21 @@ fn a_deep_offset_is_restored_while_the_estimate_grows_to_reach_it() {
   );
   run_pass(&mut tree);
   let mut list = List { tree, scroll, rendered };
-  list.settle();
+  for _ in 0..12 {
+    if (list.scroll_y() - 3000.0).abs() < 0.5 {
+      break;
+    }
+    run_pass(&mut list.tree);
+  }
   assert_near(list.scroll_y(), 3000.0, "opened at the offset");
+  list.settle();
   assert!(
-    list.scroll.content_height() - VIEW_HEIGHT > 3000.0 + 1.0,
+    (list.scroll_y() - 3000.0).abs() < 200.0,
+    "the offset stays where the restore put it, within a row: {}",
+    list.scroll_y()
+  );
+  assert!(
+    list.scroll.content_height() - VIEW_HEIGHT > list.scroll_y() + 1.0,
     "and not at the end of a content of {}",
     list.scroll.content_height()
   );
@@ -460,13 +473,18 @@ fn items_swapped_in_while_an_offset_is_restored_open_at_their_top() {
 #[test]
 fn a_scroll_after_the_restore_stands() {
   // The bootstrap rows hold 1600 px, so the offset is clamped to 1000 and the
-  // restore queued; the wheel then moves the list before it lands.
+  // restore queued. The wheel lays out what the next frame shows first, where
+  // the restore lands, and moves the list from there.
   let mut list = List::mount(ROWS, ROW_HEIGHT, Open::At(8000.0));
   assert_near(list.scroll_y(), 1000.0, "clamped to the bootstrap rows");
   list.wheel(-300.0);
-  assert_near(list.scroll_y(), 700.0, "the wheel moved the list");
+  assert_near(
+    list.scroll_y(),
+    7700.0,
+    "the wheel moved the list from the restored offset",
+  );
   list.settle();
-  assert_near(list.scroll_y(), 700.0, "the person's scroll stands");
+  assert_near(list.scroll_y(), 7700.0, "the person's scroll stands");
 }
 
 /// A list mounted under another key, with the scroll state of the list before

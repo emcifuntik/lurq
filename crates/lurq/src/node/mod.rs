@@ -4,6 +4,7 @@ pub mod border_size_value;
 pub mod box_shadow;
 pub mod checkbox_style;
 pub mod color;
+pub(crate) mod component_output;
 pub mod cursor;
 pub mod dimension;
 pub(crate) mod dsl;

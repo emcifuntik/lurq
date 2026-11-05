@@ -21,6 +21,7 @@ mod lookup_refresh;
 mod measured_rect;
 mod memo;
 mod modal;
+mod nested_refresh;
 mod offstage;
 mod offstage_runtime_state;
 mod provided_context;

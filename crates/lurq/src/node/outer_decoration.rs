@@ -7,9 +7,11 @@
 //! tree, but the component's own render knows nothing of them. When the
 //! component renders again by itself (a dirty refresh, which does not render
 //! the mounting component again), its fresh root replaces the decorated one in
-//! the live tree and in the cached trees of the components above it; the root
-//! being replaced hands its decoration to the fresh one there, so a lookup by
-//! the outer id still finds the component.
+//! the live tree; the root being replaced hands its decoration to the fresh
+//! one there, so a lookup by the outer id still finds the component. The
+//! mounting component's cached output keeps the decoration on its placeholder
+//! for the component (`component_output.rs`), and hands it to the root it is
+//! put together with.
 
 use std::sync::Arc;
 

@@ -133,7 +133,7 @@ WinitWindow::new(app, tree)
 
 ## Input Dispatch
 
-Pointer input is resolved against the latest layout and hit-tested in visual coordinates. The runtime tracks hover, active, focus, drag, scroll, cursor, text selection, and text click counts across retained nodes. Mouse handlers run before pointer defaults such as input focus, text selection, form submit, and outside-click overlay dismissal, so handlers can call `event.prevent_default()` to block those defaults.
+Pointer input is resolved against the latest layout and hit-tested in visual coordinates. A press, a release or a wheel that comes before any frame laid out what an earlier event rebuilt (a hover that opened a box or pushed a row away) lays it out first, so it lands on what the next frame shows. The runtime tracks hover, active, focus, drag, scroll, cursor, text selection, and text click counts across retained nodes. Mouse handlers run before pointer defaults such as input focus, text selection, form submit, and outside-click overlay dismissal, so handlers can call `event.prevent_default()` to block those defaults.
 
 User keyboard handlers run before built-in keyboard defaults. Built-in text behavior handles caret movement, selection replacement, undo/redo, and clipboard shortcuts when the `clipboard` feature is enabled. Call `event.prevent_default()` from an `on_key_down` handler to block those built-in defaults for that key. `TextInput::on_input` runs inside the text-edit default, before the edit is applied, and can mutate the input signal or prevent that edit. Scroll handlers also run before default scroll movement.
 

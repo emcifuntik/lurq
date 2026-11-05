@@ -257,8 +257,8 @@ fn an_outer_id_survives_in_the_cached_tree_of_a_clean_outer_component() {
   run_pass(&mut tree);
   assert_eq!(text_under_id(&mut tree, "outer-id").as_deref(), Some("count-2 at md"));
 
-  // `Top` renders again; `Outer` is clean and hands back its cached tree,
-  // into which the inner component's refresh was spliced.
+  // `Top` renders again; `Outer` is clean and hands back its kept output,
+  // put together with the inner component's own render since.
   probe.top().set(2);
   run_pass(&mut tree);
   assert_eq!(probe.outer_renders(), 1, "the outer component kept its tree");

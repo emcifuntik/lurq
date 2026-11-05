@@ -49,6 +49,13 @@ fn next_component_slot_id() -> u64 {
   NEXT_COMPONENT_SLOT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+static NEXT_RENDER_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Orders the outputs slots keep: a later render has a greater one.
+fn next_render_generation() -> u64 {
+  NEXT_RENDER_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
 #[cfg(feature = "devtools")]
 fn set_component_debug_metadata(node: &mut Node, ctx: &Ctx) {
   node.set_component_props_debug(ctx.props_debug());
@@ -265,9 +272,14 @@ pub(crate) struct ModalSpec {
 
 impl ModalSpec {
   pub(crate) fn clone_for_reuse(&self) -> Self {
+    self.clone_with_node(self.node.clone_for_reuse())
+  }
+
+  /// This declaration around `node`, a clone of its node.
+  pub(crate) fn clone_with_node(&self, node: Node) -> Self {
     Self {
       target: self.target.clone(),
-      node: self.node.clone_for_reuse(),
+      node,
       open_signal: self.open_signal.clone(),
       dismiss_on_escape: self.dismiss_on_escape,
       layer: self.layer,
@@ -277,9 +289,14 @@ impl ModalSpec {
 
 impl OverlaySpec {
   pub(crate) fn clone_for_reuse(&self) -> Self {
+    self.clone_with_node(self.node.clone_for_reuse())
+  }
+
+  /// This declaration around `node`, a clone of its node.
+  pub(crate) fn clone_with_node(&self, node: Node) -> Self {
     Self {
       anchor: self.anchor.clone(),
-      node: self.node.clone_for_reuse(),
+      node,
       placement: self.placement,
       offset_x: self.offset_x,
       offset_y: self.offset_y,
@@ -1092,7 +1109,16 @@ struct ChildSlot {
   key: Option<String>,
   component: Box<dyn AnyComponent>,
   ctx: Ctx,
+  /// The component's own output from its last render, with placeholders for
+  /// the components it mounted (`node/component_output.rs`). It shares its
+  /// runtime state (scroll states, text-input states, canvases) with the
+  /// live tree. Read to hand an unchanged component back to a parent that
+  /// renders again ([`Self::assembled_output`]) and to carry runtime state
+  /// over to the component's next render, the only source of that state for
+  /// a component resuming from offstage.
   rendered: Option<Box<Node>>,
+  /// When `rendered` was rendered ([`next_render_generation`]).
+  rendered_at: u64,
   mounted: bool,
   offstage: bool,
   offstage_dirty: bool,
@@ -1940,6 +1966,11 @@ impl Ctx {
     self.app.as_ref().expect("app ref not set")
   }
 
+  /// The retained app services, if a pass or mount set them.
+  pub(crate) fn app_handle(&self) -> Option<App> {
+    self.app.clone()
+  }
+
   /// Cloneable handle for opening secondary OS windows; safe to capture in
   /// event handlers (see [`crate::app::WindowOpener`]).
   pub fn window_opener(&self) -> crate::app::WindowOpener {
@@ -2289,10 +2320,13 @@ impl Ctx {
         if let Some(previous) = previous.as_ref() {
           element.node.preserve_runtime_state_from(previous);
         }
-        slot.rendered = Some(element.node.clone_boxed());
+        slot.keep_rendered(&element.node);
         return element;
       }
-      return Element::from_boxed_node(slot.rendered.as_ref().unwrap().clone_boxed());
+      let output = slot
+        .assembled_output()
+        .expect("a component that is not rendered again has kept its output");
+      return Element::from_boxed_node(output);
     }
 
     let slot_id = next_component_slot_id();
@@ -2325,7 +2359,7 @@ impl Ctx {
     let component = C::create(&mut child_ctx);
     let wrapper = ComponentWrapper { component };
     let mut element = Element::new();
-    let rendered = if active {
+    if active {
       child_ctx.begin_render();
       element = wrapper.render(&mut child_ctx);
       child_ctx.end_render();
@@ -2337,22 +2371,24 @@ impl Ctx {
         #[cfg(feature = "devtools")]
         &child_ctx,
       );
-      Some(element.node.clone_boxed())
     } else {
       child_ctx.clear_dirty();
-      None
-    };
+    }
 
-    let slot = ChildSlot {
+    let mut slot = ChildSlot {
       id: slot_id,
       key: key.map(str::to_owned),
       component: Box::new(wrapper),
       ctx: child_ctx,
-      rendered,
+      rendered: None,
+      rendered_at: 0,
       mounted: false,
       offstage: !active,
       offstage_dirty: !active,
     };
+    if active {
+      slot.keep_rendered(&element.node);
+    }
 
     if key.is_some() {
       self.insert_child_slot(cursor, slot);
@@ -2415,6 +2451,7 @@ impl Ctx {
         component: Box::new(ForEachSlot),
         ctx: group_ctx,
         rendered: None,
+        rendered_at: 0,
         mounted: false,
         offstage: false,
         offstage_dirty: false,
@@ -2474,7 +2511,7 @@ impl Ctx {
         #[cfg(feature = "devtools")]
         &slot.ctx,
       );
-      slot.rendered = Some(element.node.clone_boxed());
+      slot.keep_rendered(&element.node);
       return element;
     }
 
@@ -2514,16 +2551,18 @@ impl Ctx {
       &child_ctx,
     );
 
-    let slot = ChildSlot {
+    let mut slot = ChildSlot {
       id: slot_id,
       key: Some(key),
       component: Box::new(ForEachSlot),
       ctx: child_ctx,
-      rendered: Some(element.node.clone_boxed()),
+      rendered: None,
+      rendered_at: 0,
       mounted: false,
       offstage: false,
       offstage_dirty: false,
     };
+    slot.keep_rendered(&element.node);
 
     self.insert_child_slot(cursor, slot);
 
@@ -2795,28 +2834,49 @@ impl Ctx {
         if let Some(old) = old_rendered.as_ref() {
           element.node.preserve_runtime_state_from(old);
         }
-        slot.rendered = Some(element.node.clone_boxed());
+        slot.keep_rendered(&element.node);
         replacements.push((slot.id, element.node));
         if needs_followup_refresh {
           Self::mark_dirty_child_slot(&self.dirty_child_slots, dirty_slot_id);
         }
         continue;
       } else {
-        let nested_replacements = slot.ctx.refresh_dirty_subtrees();
-        if let Some(rendered) = &mut slot.rendered {
-          for (slot_id, replacement) in nested_replacements {
-            let mut cached_replacement = Some(replacement.clone_boxed());
-            let _ = rendered.replace_component_slot_in(slot_id, &mut cached_replacement);
-            replacements.push((slot_id, replacement));
-          }
-        } else {
-          replacements.extend(nested_replacements);
-        }
+        // The caches above a component hold a placeholder for it, so its
+        // fresh output only goes to the live tree.
+        replacements.extend(slot.ctx.refresh_dirty_subtrees());
       }
     }
 
     self.update_subtree_dirty_from_children();
     replacements
+  }
+
+  /// The slot of a component this one mounted, `for_each` items included.
+  fn child_slot(&self, id: u64) -> Option<&ChildSlot> {
+    for slot in &self.children {
+      if slot.id == id {
+        return Some(slot);
+      }
+      if slot.is_for_each_group()
+        && let Some(item) = slot.ctx.children.iter().find(|item| item.id == id)
+      {
+        return Some(item);
+      }
+    }
+    None
+  }
+
+  /// The slot of a component anywhere below this one.
+  fn descendant_slot(&self, id: u64) -> Option<&ChildSlot> {
+    for slot in &self.children {
+      if slot.id == id {
+        return Some(slot);
+      }
+      if let Some(found) = slot.ctx.descendant_slot(id) {
+        return Some(found);
+      }
+    }
+    None
   }
 
   #[cfg_attr(not(feature = "perf_profile"), allow(dead_code))]
@@ -2904,6 +2964,78 @@ impl ChildSlot {
       + std::mem::size_of::<Box<dyn AnyComponent>>()
       + self.ctx.estimated_memory_bytes()
   }
+
+  fn is_for_each_group(&self) -> bool {
+    self.key.is_none() && self.component.type_name() == ForEachSlot::TYPE_NAME
+  }
+
+  /// Keeps `node`, the output this slot's component just rendered, with
+  /// placeholders for the components it mounted (`node/component_output.rs`).
+  fn keep_rendered(&mut self, node: &Node) {
+    let mut own = Vec::new();
+    for child in &self.ctx.children {
+      if child.is_for_each_group() {
+        own.extend(child.ctx.children.iter().map(|item| item.id));
+      } else {
+        own.push(child.id);
+      }
+    }
+    own.sort_unstable();
+    self.rendered = Some(node.clone_own_output(&|id| own.binary_search(&id).is_ok()));
+    self.rendered_at = next_render_generation();
+  }
+
+  /// The output of this slot's last render, put together again from its
+  /// cache and those of the components in it, for a parent that mounts the
+  /// component unchanged.
+  fn assembled_output(&self) -> Option<Box<Node>> {
+    self.assemble(&self.ctx, None).map(Box::new)
+  }
+
+  /// `scope` holds every slot whose component's root the output can hold:
+  /// the unchanged component's own slot, which has no slot children.
+  fn assemble(&self, scope: &Ctx, enclosing: Option<&SlotOwners<'_>>) -> Option<Node> {
+    let rendered = self.rendered.as_deref()?;
+    let owners = SlotOwners {
+      ctx: &self.ctx,
+      enclosing,
+    };
+    Some(rendered.clone_with_component_roots(&mut |root: &Node| {
+      let id = root.component_slot_id()?;
+      if root.is_component_slot_placeholder() {
+        let mut output = self.ctx.child_slot(id)?.assemble(scope, Some(&owners))?;
+        output.adopt_outer_decoration(root);
+        return Some(output);
+      }
+      // A root this render was handed, kept whole: take its component's
+      // fresh output when that component rendered again by itself since.
+      let slot = enclosing
+        .and_then(|owners| owners.slot(id))
+        .or_else(|| scope.descendant_slot(id))?;
+      if slot.rendered_at <= self.rendered_at {
+        return None;
+      }
+      let mut output = slot.assemble(scope, Some(&owners))?;
+      output.adopt_outer_decoration(root);
+      Some(output)
+    }))
+  }
+}
+
+/// The components enclosing the one whose output is put together, nearest
+/// first: the slots handed to a component are those of a component around it.
+struct SlotOwners<'a> {
+  ctx: &'a Ctx,
+  enclosing: Option<&'a SlotOwners<'a>>,
+}
+
+impl<'a> SlotOwners<'a> {
+  fn slot(&self, id: u64) -> Option<&'a ChildSlot> {
+    self
+      .ctx
+      .child_slot(id)
+      .or_else(|| self.enclosing.and_then(|owners| owners.slot(id)))
+  }
 }
 
 impl Drop for Ctx {
@@ -2919,6 +3051,67 @@ impl Drop for Ctx {
 #[cfg(test)]
 mod tests {
   use super::Ctx;
+  use crate::{
+    app::component::Component,
+    components::{Column, Rect},
+    node::Element,
+  };
+
+  struct CachedChild;
+
+  impl Component for CachedChild {
+    type Props = ();
+
+    fn create(_ctx: &mut Ctx) -> Self {
+      Self
+    }
+
+    fn render(&self, _ctx: &mut Ctx) -> impl Into<Element> {
+      Column::new()
+        .child(Rect::new(1.0, 1.0))
+        .child(Rect::new(2.0, 2.0))
+        .child(Rect::new(3.0, 3.0))
+    }
+  }
+
+  struct CachedParent;
+
+  impl Component for CachedParent {
+    type Props = ();
+
+    fn create(_ctx: &mut Ctx) -> Self {
+      Self
+    }
+
+    fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+      Column::new().child(ctx.mount::<CachedChild>(()).id("child"))
+    }
+  }
+
+  /// A slot keeps the nodes of its own component only, so a child that
+  /// renders again by itself touches no cache above it.
+  #[test]
+  fn a_slot_keeps_a_placeholder_for_each_component_it_mounted() {
+    let mut root = Ctx::new_root();
+    let output = root.mount::<CachedParent>(());
+    assert_eq!(output.node.children()[0].children().len(), 3);
+
+    let parent = &root.children[0];
+    let kept = &parent
+      .rendered
+      .as_deref()
+      .expect("the parent kept its output")
+      .children()[0];
+    assert!(kept.is_component_slot_placeholder());
+    assert!(kept.children().is_empty());
+    assert_eq!(kept.component_slot_id(), Some(parent.ctx.children[0].id));
+
+    let assembled = parent.assembled_output().expect("the parent's output");
+    let child = &assembled.children()[0];
+    assert!(!child.is_component_slot_placeholder());
+    assert_eq!(child.children().len(), 3);
+    assert_eq!(child.element_id(), Some("child"), "the mounting code's id is put back");
+  }
 
   #[test]
   fn batch_defers_dirty_marking_until_end() {
