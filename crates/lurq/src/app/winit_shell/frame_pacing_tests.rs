@@ -3,7 +3,8 @@
 //! sleeps as [`LoopWait`] says. The render engine models a 60 Hz FIFO swapchain with a frame latency of one: a
 //! frame waits for the vblank after the previous present, as `get_current_texture` does, then takes its render
 //! cost. These tests run on the wall clock, so their bounds leave room for a busy machine; the cadence rule itself
-//! is also checked on a virtual clock, which no scheduling noise reaches.
+//! is also checked on a virtual clock, which no scheduling noise reaches, and so is how long input and timers wait
+//! while frames are paced ([`VirtualShell`]).
 
 use std::{
   collections::VecDeque,
@@ -378,13 +379,36 @@ fn a_minimized_window_draws_no_animation_frames_and_resumes_on_time_when_restore
   }
 }
 
-/// When each click reached the spinner's handler.
-#[derive(Clone, Default)]
-struct ClickLog(Arc<Mutex<Vec<Instant>>>);
+/// The time of a test's loop: a virtual clock that only the loop moves.
+#[derive(Clone)]
+struct Clock(Arc<Mutex<Instant>>);
+
+impl Clock {
+  fn new() -> Self {
+    Self(Arc::new(Mutex::new(Instant::now())))
+  }
+
+  fn now(&self) -> Instant {
+    *self.0.lock().expect("one thread")
+  }
+
+  /// Moves the clock to `at`, never back.
+  fn advance_to(&self, at: Instant) {
+    let mut now = self.0.lock().expect("one thread");
+    *now = (*now).max(at);
+  }
+}
+
+/// When each click reached the spinner's handler, on the loop's clock.
+#[derive(Clone)]
+struct ClickLog {
+  at: Arc<Mutex<Vec<Instant>>>,
+  clock: Clock,
+}
 
 impl PartialEq for ClickLog {
   fn eq(&self, other: &Self) -> bool {
-    Arc::ptr_eq(&self.0, &other.0)
+    Arc::ptr_eq(&self.at, &other.at)
   }
 }
 
@@ -417,49 +441,167 @@ impl Component for ClickableSpinner {
       Rect::new(40.0, 40.0)
         .background("#2563eb")
         .animation(Animation::new(TURN).duration_ms(1000).easing(steps(12)).infinite())
-        .on_click(move |_| clicks.0.lock().expect("one thread").push(Instant::now())),
+        .on_click(move |_| clicks.at.lock().expect("one thread").push(clicks.clock.now())),
     )
+  }
+}
+
+/// The 60 Hz FIFO swapchain of [`VsyncEngine`] on a virtual clock: a present waits for the vblank after the
+/// previous one by moving the clock there.
+struct VirtualVsyncEngine {
+  clock: Clock,
+  epoch: Instant,
+  last_present: Arc<Mutex<Option<Instant>>>,
+}
+
+impl RenderEngine for VirtualVsyncEngine {
+  fn resize(&mut self, _width: u32, _height: u32) {}
+
+  fn render(&mut self, _list: &RenderList, _window: WindowHandle<'_>, _display: DisplayHandle<'_>) -> bool {
+    let mut last_present = self.last_present.lock().expect("one thread");
+    if let Some(previous) = *last_present {
+      let vblanks = vblank_index(self.epoch, REFRESH, previous);
+      self
+        .clock
+        .advance_to(self.epoch + REFRESH * u32::try_from(vblanks).expect("a test runs for less than two years"));
+    }
+    *last_present = Some(self.clock.now());
+    true
+  }
+}
+
+/// The loop of [`Shell`] on a virtual clock, which moves only when the loop sleeps or a present waits for its
+/// vblank: what it measures is the pacing rule's, whatever else the machine runs.
+struct VirtualShell {
+  app: App,
+  tree: Tree,
+  pacing: FramePacing,
+  clock: Clock,
+  last_present: Arc<Mutex<Option<Instant>>>,
+  clicks: VecDeque<Instant>,
+  timer_lateness: Vec<Duration>,
+}
+
+impl VirtualShell {
+  fn new(mut tree: Tree, clock: Clock) -> Self {
+    let last_present = Arc::new(Mutex::new(None));
+    let engine = (clock.clone(), clock.now(), last_present.clone());
+    tree.resize(200, 100);
+    tree.set_render_engine_factory(move || {
+      Box::new(VirtualVsyncEngine {
+        clock: engine.0.clone(),
+        epoch: engine.1,
+        last_present: engine.2.clone(),
+      })
+    });
+    tree.request_redraw();
+    Self {
+      app: App::new(),
+      tree,
+      pacing: FramePacing::default(),
+      clock,
+      last_present,
+      clicks: VecDeque::new(),
+      timer_lateness: Vec::new(),
+    }
+  }
+
+  fn run_for(&mut self, duration: Duration) {
+    let end = self.clock.now() + duration;
+    // A loop that never sleeps would not move the clock: the turns are bounded instead.
+    for _ in 0..100_000 {
+      if self.clock.now() >= end {
+        return;
+      }
+      self.turn(end);
+    }
+    panic!("the loop kept polling without sleeping");
+  }
+
+  fn turn(&mut self, end: Instant) {
+    let now = self.clock.now();
+    self.tree.set_animation_clock(Some(now));
+    while self.clicks.front().is_some_and(|at| *at <= now) {
+      self.clicks.pop_front();
+      self.tree.mouse_down(SPINNER.0, SPINNER.1, MouseButton::Left);
+      self.tree.mouse_up(SPINNER.0, SPINNER.1, MouseButton::Left);
+    }
+    let timer_due = self.tree.next_timer_at().filter(|due| *due <= now);
+    self.tree.tick_timers_at(now);
+    if let Some(due) = timer_due {
+      self.timer_lateness.push(now - due);
+    }
+    self.tree.tick_futures();
+    self.pacing.request_frame(&mut self.tree, || REFRESH, now);
+    self.tree.tick_scheduled_redraw(now);
+    if self.tree.needs_redraw() {
+      if self.tree.pass(&mut self.app, &TestSurface).rendered {
+        let presented = self.last_present.lock().expect("one thread").unwrap_or(now);
+        self.pacing.presented(PresentedFrame {
+          started: now,
+          presented,
+        });
+      }
+      return;
+    }
+    let needs = LoopNeeds {
+      polling: self.tree.needs_polling(),
+      next_redraw: self.tree.next_scheduled_redraw(),
+      next_timer: self.tree.next_timer_at(),
+      ..LoopNeeds::default()
+    };
+    let wake = match LoopWait::of(needs, now) {
+      LoopWait::Poll => return,
+      LoopWait::WaitUntil(at) => at.min(end),
+      LoopWait::Wait => end,
+    };
+    let wake = self.clicks.front().map_or(wake, |click| wake.min(*click));
+    self.clock.advance_to(wake);
   }
 }
 
 #[test]
 fn input_and_timers_are_handled_at_once_while_a_spinner_turns() {
+  let clock = Clock::new();
   let mut app = App::new();
   let mut tree = Tree::new();
   tree.register_keyframes(turn_keyframes());
-  let log = ClickLog::default();
+  let log = ClickLog {
+    at: Arc::default(),
+    clock: clock.clone(),
+  };
   tree.mount_root::<ClickableSpinner>(&mut app, log.clone());
-  let mut shell = Shell::new(tree);
+  let mut shell = VirtualShell::new(tree, clock.clone());
   shell.run_for(Duration::from_millis(100));
 
-  let first_click = Instant::now() + Duration::from_millis(7);
+  let first_click = clock.now() + Duration::from_millis(7);
   let clicks: Vec<Instant> = (0..12).map(|i| first_click + Duration::from_millis(37) * i).collect();
   shell.clicks = clicks.iter().copied().collect();
   shell.timer_lateness.clear();
   shell.run_for(Duration::from_millis(600));
 
-  let clicked_at = log.0.lock().expect("one thread").clone();
+  let clicked_at = log.at.lock().expect("one thread").clone();
   assert_eq!(clicked_at.len(), clicks.len(), "every click is handled");
-  let mut click_latency: Vec<Duration> = clicks
+  let click_latency: Vec<Duration> = clicks
     .iter()
     .zip(&clicked_at)
     .map(|(sent, handled)| *handled - *sent)
     .collect();
-  click_latency.sort();
-  let mut timer_lateness = shell.timer_lateness.clone();
-  timer_lateness.sort();
+  let timer_lateness = shell.timer_lateness.clone();
   assert!(
-    timer_lateness.len() >= 15,
+    timer_lateness.len() >= 20,
     "the 25 ms interval keeps firing: {timer_lateness:?}"
   );
-  // A present within a refresh of the previous one still waits for the vblank, as on a real FIFO swapchain, so an
-  // event that comes during it waits too: the medians tell a loop that sleeps between frames from one that waits
-  // in the swapchain.
-  let median = |sorted: &[Duration]| sorted[sorted.len() / 2];
-  let on_time = Duration::from_millis(3);
+  // The loop sleeps between frames and wakes for an event when it is due. An event that comes while a present waits
+  // for its vblank waits with it, and the pacing rule bounds that wait: a paced frame is asked for half a refresh
+  // after the last present, so its present waits half a refresh at most, and a frame the interval or a click asks
+  // for waits no longer. A loop that waited in the swapchain between frames, asking for each frame right after the
+  // last present, would hold events back for up to a whole refresh.
+  let longest = |latencies: &[Duration]| latencies.iter().copied().max().unwrap_or_default();
+  let bound = REFRESH / 2 + Duration::from_micros(1);
   assert!(
-    median(&click_latency) < on_time && median(&timer_lateness) < on_time,
-    "clicks are handled and timers fire when they are due, not after the next frame:\n  click latency {click_latency:?}\n  timer lateness {timer_lateness:?}"
+    longest(&click_latency) <= bound && longest(&timer_lateness) <= bound,
+    "clicks are handled and timers fire within half a refresh of when they are due:\n  click latency {click_latency:?}\n  timer lateness {timer_lateness:?}"
   );
 }
 
