@@ -423,7 +423,22 @@ replies opened at its end builds and lays out its last 16 only, however long it 
 are scrolled to. A list whose rows are tall passes fewer; one whose rows are short can pass about a viewport's worth so
 its first frame is full. When the items are swapped for others whose keys all differ (another conversation under the
 same list), the measured heights go but their average stays as the estimate, so the new rows are windowed where the
-list opens, about a viewport's worth, instead of bootstrapped again.
+list opens, about a viewport's worth, instead of bootstrapped again. A row whose key stays but whose item changed (the
+same line number in another file) loses its measured height too and counts as the estimate until it is measured again.
+
+Rows the list has not measured count as the average of the rows it has. When measured heights change, because a row
+grew (the person opened it) or the rows scrolled to measure other than their estimate, the first row in view stays
+where it is on screen: the offset moves with the content above it. A list at its end stays at its end instead, and a
+scroll asked for (`set_scroll`, a pending scroll, a reveal) lands where it asked. In a list whose rows differ much in
+height, one tall row measured among few pulls the average up for every row not measured yet; `.estimate_height(|item|
+...)` gives the height of a row not measured yet instead, by kind for example, so the estimate does not move with the
+rows measured, and the list is sized from its first pass without bootstrap rows.
+
+```rust
+VirtualizedList::new(ctx, entries)
+  .estimate_height(|entry| if entry.is_output() { 240.0 } else { 56.0 })
+  .mount_keyed::<EntryRow, _, _, _>(|entry| entry.id, Clone::clone)
+```
 
 ### Middle-button autoscroll
 

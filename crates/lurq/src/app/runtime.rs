@@ -3406,6 +3406,7 @@ impl Tree {
     #[cfg(feature = "perf_profile")]
     let _input = self.profiling.context.input(crate::app::profiler::InputKind::Pointer);
     self.track_pointer(x, y);
+    self.lay_out_rebuilt_for_input();
     self.set_input_modality(focus_visible::InputModality::Pointer);
     let modifiers = MouseModifiers { shift, ctrl, alt, meta };
     if self.swallowed_press == Some(button) {
@@ -3482,6 +3483,7 @@ impl Tree {
     #[cfg(feature = "perf_profile")]
     let _input = self.profiling.context.input(crate::app::profiler::InputKind::Pointer);
     self.track_pointer(x, y);
+    self.lay_out_rebuilt_for_input();
     let modifiers = MouseModifiers { shift, ctrl, alt, meta };
     if self.swallowed_press == Some(button) {
       self.swallowed_press = None;
@@ -3620,6 +3622,7 @@ impl Tree {
     #[cfg(feature = "perf_profile")]
     let _input = self.profiling.context.input(crate::app::profiler::InputKind::Scroll);
     self.track_pointer(x, y);
+    self.lay_out_rebuilt_for_input();
     let horizontal_taken = self.dispatch_scroll(x, y, delta_x, delta_y, phase);
     let scale = self.scale_factor();
     self.recognize_history_swipe(
@@ -5913,6 +5916,30 @@ impl Tree {
         MAX_REACTIVE_FLUSH_PASSES
       );
       self.needs_redraw = true;
+    }
+  }
+
+  /// Lays out what was rebuilt since the last layout, before a press, a
+  /// release or a wheel hit-tests: a pointer move just before may have
+  /// rebuilt components (a hover that opens a box, pushes a row away) that no
+  /// frame laid out yet. Hit-testing the layout of the frame before sends the
+  /// input to what that frame showed, and drops a wheel over a scroll box that
+  /// has no layout yet. The layout is the one the next frame would run (with
+  /// a reveal and the hover it moves), which then has nothing left to lay out.
+  fn lay_out_rebuilt_for_input(&mut self) {
+    self.rebuild_if_dirty();
+    if !self.tree_rebuilt_since_layout || self.root.is_none() || self.last_layout.is_none() {
+      return;
+    }
+    let Some(mut app) = self.root_ctx.as_ref().and_then(Ctx::app_handle) else {
+      return;
+    };
+    let mut laid_out = self.update_layout(&mut app);
+    if self.resolve_pending_scroll_into_view() {
+      laid_out |= self.update_layout(&mut app);
+    }
+    if laid_out && self.refresh_hover_at_pointer() {
+      self.update_layout(&mut app);
     }
   }
 

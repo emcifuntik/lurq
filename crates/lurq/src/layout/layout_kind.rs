@@ -64,13 +64,17 @@ enum PendingScroll {
     start: f32,
     end: f32,
   },
+  /// The offset that keeps what is shown in place after the content above it
+  /// changed height (a virtualized list's anchor row).
+  Anchor(f32),
 }
 
 impl PendingScroll {
   /// A scroll to a place someone asked for (an offset, an edge, a reveal),
-  /// unlike a prepend anchor, which only keeps the current place.
+  /// unlike a prepend anchor or a kept anchor, which only keep the current
+  /// place.
   fn is_request(self) -> bool {
-    !matches!(self, Self::PreservePrependAnchor { .. })
+    !matches!(self, Self::PreservePrependAnchor { .. } | Self::Anchor(_))
   }
 }
 
@@ -194,6 +198,20 @@ impl ScrollState {
   pub(crate) fn reveal_y_pending(&self, start: f32, end: f32) {
     let mut inner = self.inner.lock().unwrap();
     inner.pending_scroll_y = Some(PendingScroll::Reveal { start, end });
+    inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
+  }
+
+  /// Queue the vertical offset that keeps the shown content in place once the
+  /// content above it changed height, resolved after the next layout
+  /// measurement. Not a scroll request: a request already queued wins, and
+  /// it does not count in `scroll_y_requests`.
+  pub(crate) fn keep_scroll_y_pending(&self, y: f32) {
+    let mut inner = self.inner.lock().unwrap();
+    if inner.pending_scroll_y.is_some_and(PendingScroll::is_request) {
+      return;
+    }
+    inner.pending_scroll_y = Some(PendingScroll::Anchor(y.max(0.0)));
     inner.scroll_dirty = true;
     inner.layout_subscribers.mark();
   }
@@ -774,7 +792,7 @@ fn resolve_pending_scroll(
   viewport: f32,
 ) -> f32 {
   match pending {
-    PendingScroll::Offset(offset) => offset,
+    PendingScroll::Offset(offset) | PendingScroll::Anchor(offset) => offset,
     PendingScroll::Start => 0.0,
     PendingScroll::End => max_scroll,
     PendingScroll::PreservePrependAnchor {

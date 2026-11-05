@@ -2,6 +2,7 @@
 mod decoded_image;
 mod dnd;
 mod virtualized_list;
+mod virtualized_list_anchoring;
 mod virtualized_list_bootstrap;
 mod virtualized_list_pending_scroll;
 mod virtualized_list_placement;

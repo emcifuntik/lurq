@@ -58,6 +58,10 @@ const MEASURE_CHUNK: usize = 256;
 /// the rest of the list. See [`VirtualizedList::bootstrap_rows`].
 const DEFAULT_BOOTSTRAP_ROWS: usize = 16;
 
+/// The height an app gives a row before the list measured it; see
+/// [`VirtualizedList::estimate_height`].
+type RowEstimate<T> = Arc<dyn Fn(&T) -> f32 + Send + Sync>;
+
 #[derive(Clone, Default)]
 struct VirtualizedListOptions {
   frame: FrameConstraints,
@@ -90,7 +94,13 @@ struct VirtualizedListOptions {
 /// about as much as one screen of rows. Each row is a component mounted with
 /// [`mount_keyed`](Self::mount_keyed): `key_fn` gives the row's stable key,
 /// `props_fn` its props. Row heights are measured as rows are laid out;
-/// rows never measured count as the average measured height.
+/// rows never measured count as the average measured height, or as the
+/// height [`estimate_height`](Self::estimate_height) gives them.
+///
+/// When measured heights change (a row grows, rows scrolled to measure other
+/// than their estimate), the first row in view stays where it is on screen:
+/// the offset moves with the content above it. A list at its end stays at
+/// its end instead.
 ///
 /// # Row state
 ///
@@ -118,6 +128,7 @@ pub struct VirtualizedList<'a, T> {
   ctx: &'a mut Ctx,
   items: Arc<Vec<T>>,
   options: VirtualizedListOptions,
+  estimate: Option<RowEstimate<T>>,
 }
 
 impl<'a, T> VirtualizedList<'a, T> {
@@ -137,6 +148,7 @@ impl<'a, T> VirtualizedList<'a, T> {
         bootstrap_rows: DEFAULT_BOOTSTRAP_ROWS,
         ..VirtualizedListOptions::default()
       },
+      estimate: None,
     }
   }
 
@@ -160,6 +172,18 @@ impl<'a, T> VirtualizedList<'a, T> {
   /// short passes about a viewport's worth so its first frame is full.
   pub fn bootstrap_rows(mut self, rows: usize) -> Self {
     self.options.bootstrap_rows = rows.max(1);
+    self
+  }
+
+  /// The height of a row the list has not measured yet, instead of the
+  /// average of the rows it measured. A list whose rows differ much in height
+  /// (a chat of short messages and long outputs) estimates them by kind, so
+  /// one tall row measured does not move every row not measured with it, and
+  /// the list is sized from the start without bootstrap rows. Taken as the
+  /// same estimate on every render: an estimate that changes for the same
+  /// items is not seen until the items change.
+  pub fn estimate_height(mut self, estimate: impl Fn(&T) -> f32 + Send + Sync + 'static) -> Self {
+    self.estimate = Some(Arc::new(move |item| estimate(item).max(0.0)));
     self
   }
 
@@ -292,6 +316,7 @@ impl<'a, T> VirtualizedList<'a, T> {
       key_fn: Arc::new(key_fn),
       props_fn: Arc::new(props_fn),
       options: self.options.clone(),
+      estimate: self.estimate,
     };
 
     match self.options.list_key.as_deref() {
@@ -310,6 +335,7 @@ struct VirtualizedMountListProps<T, KF, PF> {
   key_fn: Arc<KF>,
   props_fn: Arc<PF>,
   options: VirtualizedListOptions,
+  estimate: Option<RowEstimate<T>>,
 }
 
 impl<T, KF, PF> PartialEq for VirtualizedMountListProps<T, KF, PF> {
@@ -342,6 +368,13 @@ struct VirtualizedRuntime<T> {
   /// (another conversation under the same list) so the new rows are windowed
   /// where the list opens instead of bootstrapped from its top again.
   estimate: Option<f32>,
+  /// The app's estimate of a row not measured yet
+  /// (`VirtualizedList::estimate_height`), used instead of `estimate`.
+  row_estimate: Option<RowEstimate<T>>,
+  /// The first row in view as the last render placed the window: its key and
+  /// its top in the content. Measured heights that move that top move the
+  /// offset with it (see `keep_shown_first`).
+  shown_first: Option<ShownFirst>,
   /// Where the list opens, when the bootstrap rows could not be taken from
   /// there or could not hold it: the content of the first layout is those
   /// rows alone, so a queued scroll to the end lands on them, and an offset
@@ -403,6 +436,15 @@ enum BootstrapRestore {
   },
 }
 
+/// See `VirtualizedRuntime::shown_first`.
+struct ShownFirst {
+  key: String,
+  top: f32,
+  /// `ScrollState::scroll_y_requests` at the render: a scroll request that
+  /// took effect since puts the list where it asked, which stands.
+  scroll_y_requests: u64,
+}
+
 struct ScrollAnchor {
   key: String,
   offset: f32,
@@ -417,6 +459,8 @@ impl<T> Default for VirtualizedRuntime<T> {
     Self {
       heights: HashMap::new(),
       estimate: None,
+      row_estimate: None,
+      shown_first: None,
       bootstrap_restore: None,
       items_snapshot: Arc::new(Vec::new()),
       order: Vec::new(),
@@ -460,13 +504,14 @@ where
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let (items, key_fn, props_fn, mut options) = {
+    let (items, key_fn, props_fn, mut options, estimate) = {
       let props = ctx.props::<Self::Props>();
       (
         props.items.clone(),
         props.key_fn.clone(),
         props.props_fn.clone(),
         props.options.clone(),
+        props.estimate.clone(),
       )
     };
     let _ = self.revision.get();
@@ -487,7 +532,7 @@ where
       .clone()
       .unwrap_or_else(|| self.scroll_state.clone());
     *self.active_scroll_state.lock() = scroll_state.clone();
-    let rows = self.rows(ctx, &items, &*key_fn, &*props_fn, &options, &scroll_state);
+    let rows = self.rows(ctx, &items, &*key_fn, &*props_fn, &options, estimate, &scroll_state);
 
     // Re-render only when the scroll position drifts past half the overscan
     // margin from where the window was last built — everything closer is
@@ -574,6 +619,9 @@ where
     let mut changed = false;
     {
       let mut runtime = self.runtime.lock();
+      let scroll_state = self.active_scroll_state.lock().clone();
+      let scroll_y_requests = scroll_state.scroll_y_requests();
+      let mut heights_changed = false;
       let rendered_refs: Vec<(String, ElementRef)> = runtime
         .rendered_refs
         .iter()
@@ -588,11 +636,11 @@ where
         let previous = runtime.heights.insert(key, height);
         if previous.is_none_or(|old| (old - height).abs() > HEIGHT_EPSILON) {
           runtime.prefix_dirty = true;
+          heights_changed = true;
           changed = true;
         }
       }
 
-      let scroll_state = self.active_scroll_state.lock().clone();
       let scroll_y = scroll_state.scroll_y();
       let viewport_height = scroll_state.viewport_height();
 
@@ -734,6 +782,12 @@ where
 
       changed |= runtime.restore_bootstrap_scroll(&scroll_state);
       changed |= runtime.apply_pending_reveal(&scroll_state);
+      // The row recorded at the render stands for every layout until the next
+      // render, the scrolls between them included.
+      if heights_changed && scroll_state.scroll_y_requests() == scroll_y_requests {
+        let shown_first = runtime.shown_first.take();
+        runtime.keep_shown_first(shown_first, &scroll_state);
+      }
     }
 
     if changed {
@@ -860,9 +914,14 @@ where
     key_fn: &KF,
     props_fn: &PF,
     options: &VirtualizedListOptions,
+    estimate: Option<RowEstimate<T>>,
     scroll_state: &ScrollState,
   ) -> Column {
     let mut runtime = self.runtime.lock();
+    if estimate.is_some() != runtime.row_estimate.is_some() {
+      runtime.prefix_dirty = true;
+    }
+    runtime.row_estimate = estimate;
 
     // A scroll the app queued for this pass (`scroll_to_bottom_pending`,
     // `set_scroll_pending`, ...) wins over keeping the current rows in place:
@@ -943,8 +1002,31 @@ where
         // bootstrap window — teleporting the scroll (clamped against the
         // collapsed content) and blanking the viewport when the same-shaped
         // list is swapped in place (e.g. a preview re-decoded into a new
-        // allocation while scrolled deep).
+        // allocation while scrolled deep). A key whose item changed is another
+        // row under the same key (another document's line 12): its height
+        // goes too, so it counts as the estimate until it is measured, not
+        // as the height of the row it replaced.
         runtime.heights.retain(|key, _| current_keys.contains(key.as_str()));
+        let old_index: HashMap<&str, usize> = runtime
+          .order
+          .iter()
+          .enumerate()
+          .map(|(index, key)| (key.as_str(), index))
+          .collect();
+        let replaced: Vec<String> = keys
+          .iter()
+          .zip(items.iter())
+          .filter(|(key, item)| {
+            old_index
+              .get(key.as_str())
+              .is_some_and(|&old| runtime.items_snapshot.get(old) != Some(*item))
+          })
+          .map(|(key, _)| key.clone())
+          .collect();
+        drop(old_index);
+        for key in replaced {
+          runtime.heights.remove(&key);
+        }
       }
       drop(current_keys);
       runtime.order = keys;
@@ -963,7 +1045,7 @@ where
     runtime.rebuild_prefix_if_dirty();
 
     let count = runtime.order.len();
-    let has_estimate = runtime.estimate.is_some();
+    let has_estimate = runtime.has_estimate();
     // The layout that follows this render may move the offset without a
     // scroll event: a pending scroll resolves, and an offset at the bottom
     // follows the new end as estimates refine. The window is built where the
@@ -1002,6 +1084,17 @@ where
       rendered_indices.sort_unstable();
       rendered_indices.dedup();
     }
+    runtime.shown_first = (has_estimate && !scroll_requested && count > 0 && scroll_state.viewport_height() > 0.0)
+      .then(|| {
+        let index = runtime.prefix[1..]
+          .partition_point(|&bottom| bottom <= window_y)
+          .min(count - 1);
+        ShownFirst {
+          key: runtime.order[index].clone(),
+          top: runtime.prefix[index],
+          scroll_y_requests: scroll_state.scroll_y_requests(),
+        }
+      });
     let total_height = has_estimate.then(|| runtime.prefix[count]);
     // Only the handful of rendered rows need owned keys/offsets.
     let rendered: Vec<(usize, String, f32, f32)> = rendered_indices
@@ -1073,6 +1166,49 @@ where
 }
 
 impl<T> VirtualizedRuntime<T> {
+  /// Whether rows not measured have a height to be placed with: the average of
+  /// measured rows, or the app's estimate.
+  fn has_estimate(&self) -> bool {
+    self.estimate.is_some() || self.row_estimate.is_some()
+  }
+
+  /// After measured heights changed, keeps the first row in view where it
+  /// was on screen: the offset moves as far as that row's top moves in the
+  /// content (rows above it measured, or placed from an estimate a grown row
+  /// skewed), instead of everything in view moving. The row and its top come
+  /// from the render that placed the window (`shown_first`), so a row that
+  /// grew above it in this layout is made up for too. A scroll request that
+  /// took effect since that render put the list where it asked, which
+  /// stands: an offset is kept as asked, not moved to keep rows that an
+  /// estimate placed there. Leaves a list at its end there too, and a scroll
+  /// that something else is placing (an anchor across new items, a reveal,
+  /// the bootstrap's restore) to it. Returns whether the offset moves.
+  fn keep_shown_first(&mut self, shown_first: Option<ShownFirst>, scroll_state: &ScrollState) -> bool {
+    if self.pending_anchor.is_some() || self.pending_reveal.is_some() || self.bootstrap_restore.is_some() {
+      return false;
+    }
+    let Some(ShownFirst { key, top, .. }) =
+      shown_first.filter(|shown| shown.scroll_y_requests == scroll_state.scroll_y_requests())
+    else {
+      return false;
+    };
+    let scroll_y = scroll_state.scroll_y();
+    let max_scroll = (scroll_state.content_height() - scroll_state.viewport_height()).max(0.0);
+    if max_scroll > 0.0 && max_scroll - scroll_y <= REVEAL_EPSILON {
+      return false;
+    }
+    let Some(index) = self.order.iter().position(|k| *k == key) else {
+      return false;
+    };
+    self.rebuild_prefix_if_dirty();
+    let moved = self.prefix[index] - top;
+    if moved.abs() <= HEIGHT_EPSILON {
+      return false;
+    }
+    scroll_state.keep_scroll_y_pending((scroll_y + moved).max(0.0));
+    true
+  }
+
   /// Cumulative heights (`prefix[i]` = top of row `i`), rebuilt only when
   /// items or measured heights changed. Rows that were never measured count
   /// as the average measured height — off-screen rows are never mounted just
@@ -1107,8 +1243,11 @@ impl<T> VirtualizedRuntime<T> {
     let mut prefix = Vec::with_capacity(row_heights.len() + 1);
     let mut sum = 0.0f32;
     prefix.push(0.0);
-    for height in row_heights {
-      sum += height.unwrap_or(estimate);
+    for (index, height) in row_heights.into_iter().enumerate() {
+      sum += height.unwrap_or_else(|| match (&self.row_estimate, self.items_snapshot.get(index)) {
+        (Some(row_estimate), Some(item)) => row_estimate(item),
+        _ => estimate,
+      });
       prefix.push(sum);
     }
     self.prefix = prefix;

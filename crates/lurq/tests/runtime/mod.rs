@@ -35,6 +35,7 @@ mod futures {
 mod headless_pass;
 mod hidden_overlay;
 mod hover_after_scroll;
+mod input_after_rebuild;
 mod input_source;
 // `Tree::set_canvas_waker` stands in for the shell's event-loop waker.
 #[cfg(feature = "canvas")]

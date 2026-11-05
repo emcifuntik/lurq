@@ -1966,6 +1966,11 @@ impl Ctx {
     self.app.as_ref().expect("app ref not set")
   }
 
+  /// The retained app services, if a pass or mount set them.
+  pub(crate) fn app_handle(&self) -> Option<App> {
+    self.app.clone()
+  }
+
   /// Cloneable handle for opening secondary OS windows; safe to capture in
   /// event handlers (see [`crate::app::WindowOpener`]).
   pub fn window_opener(&self) -> crate::app::WindowOpener {
