@@ -66,6 +66,7 @@ mod text_shadow;
 mod timers {
   mod all_due_timers_fire;
   mod interval_repeats_until_stopped;
+  mod only_changes_request_a_pass;
   mod signal_update_rerenders;
   mod timeout_fires_once;
   mod timeout_restart_replaces_pending_fire;
