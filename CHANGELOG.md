@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.58.0 — 2026-11-05
+
+Performance:
+
+- Refreshing a component no longer copies its subtree into the slot caches. A slot keeps only what its own component rendered, with placeholders where its child components go, and the live tree takes the fresh output by move. Measured in Orchester (release build): opening the Orchestrator screen refreshes components in 34–36 ms instead of 76 ms, a long task conversation in 21–25 ms instead of 54–58 ms, the task list in 9–13 ms instead of 17–23 ms. What the layout after a refresh lays out again is unchanged, and pinned by tests.
+
+Behaviour changes:
+
+- Pointer input lands on what the next frame shows (#81). A press, a release or a wheel that comes before any frame laid out what an earlier event rebuilt (a hover that opened a box or pushed a row away) lays it out first. Before, it hit-tested the layout of the frame before: a wheel over a scroll box a hover had just opened was dropped, and a press where a hover had pushed a button away pressed that button.
+- `VirtualizedList` keeps the first row in view where it is on screen when measured heights change (#82): a row that grows (the person opens it) or rows scrolled to that measure other than their estimate move the offset with the content above them, instead of moving everything in view. One tall row measured among few no longer moves the list by its skew of the average estimate. A list at its end stays at its end, and a scroll request (`set_scroll`, a pending scroll, a reveal) lands where it asked.
+- `VirtualizedList` drops the measured height of a row whose key stays but whose item changed (another document under the same keys), which counts as the estimate until it is measured again. Before, such a row kept the height of the row it replaced, and the content could stay sized for the old document.
+
+Added:
+
+- `VirtualizedList::estimate_height(|item| ...)`: the height of a row the list has not measured yet, instead of the average of the rows it has; a list estimated this way is sized from its first pass without bootstrap rows.
+- `LURQ_LAYOUT_TRACE` (with `perf_profile`): set to a file path, every layout pass appends one line per node it lays out without its cache, with the reason, and a summary line. See the profiling docs.
+- `benches/component_refresh.rs` times component refreshes, and the layout after them.
+
 ## 0.57.0 — 2026-11-04
 
 The layout performance rework that was `0.55.0-beta.1`, released with 0.56.0's changes; it takes 0.57.0 as 0.56.0 came out first. Layout results are meant to be exactly those of 0.56.0, and the public API is unchanged.
