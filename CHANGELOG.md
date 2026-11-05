@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.58.1 — 2026-11-05
+
+Behaviour changes:
+
+- A timer asks for a frame only when its callback changed what is shown (#85): a signal or store a component reads, an element ref, a scroll state, a text input or select state, a node-bound style, the theme, a canvas paint, or a focus or scroll-into-view request. Before, every timer that fired presented a frame, even with an empty callback, and on a FIFO swapchain a click or timer that came while that present waited for its vblank waited with it. A 12-step spinner beside an empty 25 ms interval now presents 19 frames in 0.6 s instead of 34, and handles 34 of 36 clicks and ticks at once instead of 14 of 33.
+
+Tests:
+
+- The frame-pacing test of input and timer latency runs on a virtual clock (#84), so it no longer flakes on a busy runner.
+
 ## 0.58.0 — 2026-11-05
 
 Performance:

@@ -262,7 +262,7 @@ An offstage component (`ctx.mount_offstage`, `Router::mount_offstage`) is still 
 Enable `tokio` and configure a live runtime handle to spawn futures and streams on Tokio. Add a direct Tokio dependency when application code uses its APIs:
 
 ```toml
-lurq = { version = "0.58.0", features = ["tokio"] }
+lurq = { version = "0.58.1", features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
 ```
 
@@ -336,4 +336,4 @@ interval.start();
 
 ### Lifecycle
 
-Create timers in `Component::create` and store them in the component struct. The runtime ticks timers each frame via `tree.tick_timers()`. When a timer fires it invokes its callback, which typically updates a signal, causing a re-render.
+Create timers in `Component::create` and store them in the component struct. The runtime ticks timers each frame via `tree.tick_timers()`. When a timer fires it invokes its callback, which typically updates a signal, causing a re-render. A timer draws a frame only when its callback changed what is shown: a signal or store a component reads, an `ElementRef`, a `ScrollState`, the theme, a canvas paint or a focus request. An interval whose callback changes nothing on screen presents no frames (since lurq 0.58.1).
