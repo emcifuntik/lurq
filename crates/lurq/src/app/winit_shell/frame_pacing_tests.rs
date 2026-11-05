@@ -451,21 +451,22 @@ impl Component for ClickableSpinner {
 struct VirtualVsyncEngine {
   clock: Clock,
   epoch: Instant,
-  last_present: Arc<Mutex<Option<Instant>>>,
+  /// When each frame was presented.
+  presents: Arc<Mutex<Vec<Instant>>>,
 }
 
 impl RenderEngine for VirtualVsyncEngine {
   fn resize(&mut self, _width: u32, _height: u32) {}
 
   fn render(&mut self, _list: &RenderList, _window: WindowHandle<'_>, _display: DisplayHandle<'_>) -> bool {
-    let mut last_present = self.last_present.lock().expect("one thread");
-    if let Some(previous) = *last_present {
-      let vblanks = vblank_index(self.epoch, REFRESH, previous);
+    let mut presents = self.presents.lock().expect("one thread");
+    if let Some(previous) = presents.last() {
+      let vblanks = vblank_index(self.epoch, REFRESH, *previous);
       self
         .clock
         .advance_to(self.epoch + REFRESH * u32::try_from(vblanks).expect("a test runs for less than two years"));
     }
-    *last_present = Some(self.clock.now());
+    presents.push(self.clock.now());
     true
   }
 }
@@ -477,21 +478,23 @@ struct VirtualShell {
   tree: Tree,
   pacing: FramePacing,
   clock: Clock,
-  last_present: Arc<Mutex<Option<Instant>>>,
+  presents: Arc<Mutex<Vec<Instant>>>,
   clicks: VecDeque<Instant>,
   timer_lateness: Vec<Duration>,
+  /// When each due timer fired.
+  timer_fired: Vec<Instant>,
 }
 
 impl VirtualShell {
   fn new(mut tree: Tree, clock: Clock) -> Self {
-    let last_present = Arc::new(Mutex::new(None));
-    let engine = (clock.clone(), clock.now(), last_present.clone());
+    let presents = Arc::new(Mutex::new(Vec::new()));
+    let engine = (clock.clone(), clock.now(), presents.clone());
     tree.resize(200, 100);
     tree.set_render_engine_factory(move || {
       Box::new(VirtualVsyncEngine {
         clock: engine.0.clone(),
         epoch: engine.1,
-        last_present: engine.2.clone(),
+        presents: engine.2.clone(),
       })
     });
     tree.request_redraw();
@@ -500,9 +503,10 @@ impl VirtualShell {
       tree,
       pacing: FramePacing::default(),
       clock,
-      last_present,
+      presents,
       clicks: VecDeque::new(),
       timer_lateness: Vec::new(),
+      timer_fired: Vec::new(),
     }
   }
 
@@ -530,13 +534,14 @@ impl VirtualShell {
     self.tree.tick_timers_at(now);
     if let Some(due) = timer_due {
       self.timer_lateness.push(now - due);
+      self.timer_fired.push(now);
     }
     self.tree.tick_futures();
     self.pacing.request_frame(&mut self.tree, || REFRESH, now);
     self.tree.tick_scheduled_redraw(now);
     if self.tree.needs_redraw() {
       if self.tree.pass(&mut self.app, &TestSurface).rendered {
-        let presented = self.last_present.lock().expect("one thread").unwrap_or(now);
+        let presented = self.presents.lock().expect("one thread").last().copied().unwrap_or(now);
         self.pacing.presented(PresentedFrame {
           started: now,
           presented,
@@ -560,8 +565,15 @@ impl VirtualShell {
   }
 }
 
-#[test]
-fn input_and_timers_are_handled_at_once_while_a_spinner_turns() {
+/// How long each event waited while [`ClickableSpinner`] turned for 600 ms: a click every 37 ms, and its interval.
+struct SpinnerRun {
+  click_latency: Vec<Duration>,
+  timer_lateness: Vec<Duration>,
+  /// Frames presented while the clicks came.
+  presents: usize,
+}
+
+fn click_a_turning_spinner() -> SpinnerRun {
   let clock = Clock::new();
   let mut app = App::new();
   let mut tree = Tree::new();
@@ -578,11 +590,12 @@ fn input_and_timers_are_handled_at_once_while_a_spinner_turns() {
   let clicks: Vec<Instant> = (0..12).map(|i| first_click + Duration::from_millis(37) * i).collect();
   shell.clicks = clicks.iter().copied().collect();
   shell.timer_lateness.clear();
+  let presents_before = shell.presents.lock().expect("one thread").len();
   shell.run_for(Duration::from_millis(600));
 
   let clicked_at = log.at.lock().expect("one thread").clone();
   assert_eq!(clicked_at.len(), clicks.len(), "every click is handled");
-  let click_latency: Vec<Duration> = clicks
+  let click_latency = clicks
     .iter()
     .zip(&clicked_at)
     .map(|(sent, handled)| *handled - *sent)
@@ -592,16 +605,148 @@ fn input_and_timers_are_handled_at_once_while_a_spinner_turns() {
     timer_lateness.len() >= 20,
     "the 25 ms interval keeps firing: {timer_lateness:?}"
   );
+  SpinnerRun {
+    click_latency,
+    timer_lateness,
+    presents: shell.presents.lock().expect("one thread").len() - presents_before,
+  }
+}
+
+#[test]
+fn input_and_timers_are_handled_at_once_while_a_spinner_turns() {
+  let SpinnerRun {
+    click_latency,
+    timer_lateness,
+    ..
+  } = click_a_turning_spinner();
   // The loop sleeps between frames and wakes for an event when it is due. An event that comes while a present waits
   // for its vblank waits with it, and the pacing rule bounds that wait: a paced frame is asked for half a refresh
-  // after the last present, so its present waits half a refresh at most, and a frame the interval or a click asks
-  // for waits no longer. A loop that waited in the swapchain between frames, asking for each frame right after the
-  // last present, would hold events back for up to a whole refresh.
+  // after the last present, so its present waits half a refresh at most, and a frame a click asks for waits no
+  // longer. A loop that waited in the swapchain between frames, asking for each frame right after the last present,
+  // would hold events back for up to a whole refresh.
   let longest = |latencies: &[Duration]| latencies.iter().copied().max().unwrap_or_default();
   let bound = REFRESH / 2 + Duration::from_micros(1);
   assert!(
     longest(&click_latency) <= bound && longest(&timer_lateness) <= bound,
-    "clicks are handled and timers fire within half a refresh of when they are due:\n  click latency {click_latency:?}\n  timer lateness {timer_lateness:?}"
+    "clicks are handled and timers fire within half a refresh of when they are due:
+  click latency {click_latency:?}
+  timer lateness {timer_lateness:?}"
+  );
+}
+
+#[test]
+fn an_interval_that_changes_nothing_presents_no_frames_so_most_events_wait_for_none() {
+  let SpinnerRun {
+    click_latency,
+    timer_lateness,
+    presents,
+  } = click_a_turning_spinner();
+  // In 600 ms the spinner draws about 7 steps and each click one frame; the interval's 24 ticks draw nothing.
+  assert!(
+    presents <= 7 + 1 + click_latency.len(),
+    "only the spinner's steps and the clicks present frames: {presents} in 0.6 s"
+  );
+  // An event waits only when it comes while one of those presents waits for its vblank, which is at most half a
+  // refresh after each of the spinner's 12 frames a second: about a tenth of the time.
+  let events = click_latency.len() + timer_lateness.len();
+  let at_once = click_latency
+    .iter()
+    .chain(&timer_lateness)
+    .filter(|latency| latency.is_zero())
+    .count();
+  assert!(
+    at_once * 4 >= events * 3,
+    "most events are handled at once: {at_once} of {events}
+  click latency {click_latency:?}
+  timer lateness {timer_lateness:?}"
+  );
+}
+
+/// A static rect beside a 25 ms interval whose callback bumps a counter that it shows when `shows` is true, and
+/// bumps one nothing reads otherwise.
+struct CountingInterval {
+  count: crate::core::Signal<u32>,
+  shows: bool,
+  _interval: Interval,
+}
+
+impl Component for CountingInterval {
+  type Props = bool;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let shows = *ctx.props::<bool>();
+    let count = ctx.signal(0_u32);
+    let unread = crate::core::Ref::new(0_u32);
+    let interval = ctx.create_interval(Duration::from_millis(25), {
+      let count = count.clone();
+      move || {
+        if shows {
+          count.update(|count| *count += 1);
+        } else {
+          unread.update(|count| *count += 1);
+        }
+      }
+    });
+    interval.start();
+    Self {
+      count,
+      shows,
+      _interval: interval,
+    }
+  }
+
+  fn render(&self, _ctx: &mut Ctx) -> impl Into<Element> {
+    let width = if self.shows {
+      10.0 + (self.count.get() % 10) as f32
+    } else {
+      10.0
+    };
+    Row::new().child(Rect::new(width, 40.0).background("#2563eb"))
+  }
+}
+
+/// When frames were presented and when the interval fired, in a 500 ms run of [`CountingInterval`] after its first
+/// frame.
+fn run_counting_interval(shows: bool) -> (Vec<Instant>, Vec<Instant>) {
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.mount_root::<CountingInterval>(&mut app, shows);
+  // The interval starts on the wall clock: the loop's clock starts after it, so the first tick is not overdue.
+  let clock = Clock::new();
+  let mut shell = VirtualShell::new(tree, clock.clone());
+  shell.run_for(Duration::from_millis(5));
+  let started = clock.now();
+  shell.run_for(Duration::from_millis(500));
+  let presents = shell.presents.lock().expect("one thread").clone();
+  let presents = presents.into_iter().filter(|at| *at > started).collect();
+  assert!(
+    shell.timer_fired.len() >= 19,
+    "the interval keeps firing: {} ticks",
+    shell.timer_fired.len()
+  );
+  assert!(
+    shell.timer_lateness.iter().all(Duration::is_zero),
+    "each tick fires when it is due: {:?}",
+    shell.timer_lateness
+  );
+  (presents, shell.timer_fired)
+}
+
+#[test]
+fn an_interval_that_changes_nothing_shown_presents_no_frames() {
+  let (presents, _) = run_counting_interval(false);
+  assert!(
+    presents.is_empty(),
+    "an interval that changes nothing on screen draws nothing: {presents:?}"
+  );
+}
+
+#[test]
+fn an_interval_that_changes_what_is_shown_presents_each_change_when_it_fires() {
+  let (presents, fired) = run_counting_interval(true);
+  assert_eq!(
+    presents, fired,
+    "each tick's frame is presented in the turn the tick fires"
   );
 }
 

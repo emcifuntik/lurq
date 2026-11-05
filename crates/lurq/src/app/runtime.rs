@@ -492,6 +492,23 @@ struct CachedRenderList {
   video_sources: Vec<Option<crate::images::ImageData>>,
 }
 
+/// The marks of [`Tree::timer_marks`], taken before the timers fire and compared after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TimerMarks {
+  component_dirty: bool,
+  element_request: bool,
+  theme_version: Option<u64>,
+  tree_generation: Option<u64>,
+  dirty_canvas: bool,
+  scroll_into_view: bool,
+}
+
+impl TimerMarks {
+  fn changed_since(self, before: Self) -> bool {
+    self != before
+  }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PassReasons {
   pub redraw_requested: bool,
@@ -1385,11 +1402,32 @@ impl Tree {
   pub fn tick_timers_at(&mut self, now: Instant) {
     #[cfg(feature = "image")]
     self.notice_decoded_images();
+    let before = self.timer_marks();
     let fired = self.root_ctx.as_mut().is_some_and(|ctx| ctx.tick_timers(now));
-    if fired {
+    // A pass presents a frame, and on a FIFO swapchain that present can wait for its vblank, holding back the
+    // input and timers that come meanwhile: a timer asks for one only when its callback left something to draw.
+    if fired && self.timer_marks().changed_since(before) {
       self.needs_redraw = true;
       self.pending_pass_reasons.timer_run = true;
       self.apply_reactive_updates_after_event();
+    }
+  }
+
+  /// What a timer callback can change on screen. A callback gets no [`Ctx`] or [`Tree`], so it reaches the UI
+  /// only through handles it captured, and each kind leaves a mark here: signals, stores, the theme and i18n
+  /// dirty the components that read them; element refs, scroll states, text input states and node-bound styles
+  /// mark their node's layout watch, which notifies the root's; canvases count their paints; focus and
+  /// scroll-into-view requests wait in the ctx. Futures it starts or wakes are ticked by [`Tree::tick_futures`],
+  /// and window commands are applied by the shell.
+  fn timer_marks(&self) -> TimerMarks {
+    let ctx = self.root_ctx.as_ref();
+    TimerMarks {
+      component_dirty: ctx.is_some_and(Ctx::any_dirty),
+      element_request: ctx.is_some_and(Ctx::has_element_request),
+      theme_version: ctx.map(|ctx| ctx.theme().version()),
+      tree_generation: self.root.as_ref().map(|root| root.layout_cache.watch().generation()),
+      dirty_canvas: self.has_dirty_canvas(),
+      scroll_into_view: !self.pending_scroll_into_view.is_empty(),
     }
   }
 
