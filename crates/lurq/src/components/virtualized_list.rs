@@ -941,6 +941,9 @@ where
       // Same contents, new allocation — adopt it so the next compare is O(1).
       runtime.items_snapshot = items.clone();
     }
+    // The first visible row when rows changed below it only, with its top
+    // before the change.
+    let mut kept_row = None;
     if items_changed {
       let keys: Vec<String> = items.iter().map(|item| format!("{}", key_fn(item))).collect();
       tracing::warn!(
@@ -988,11 +991,29 @@ where
           let index = runtime.prefix[1..runtime.order.len() + 1]
             .partition_point(|&bottom| bottom <= scroll_y)
             .min(runtime.order.len() - 1);
-          runtime.pending_anchor = Some(ScrollAnchor {
-            key: runtime.order[index].clone(),
-            offset: scroll_y - runtime.prefix[index],
-            scroll_y_requests: scroll_state.scroll_y_requests(),
-          });
+          // Only a change up to that row moves it among the rows. Rows added
+          // or removed below it (a row appended at the end, a trailing row
+          // dropped) anchor nothing: an anchor measures every row not
+          // measured yet before it restores, and holds the offset in pixels
+          // meanwhile while the rows above measure away from their estimate.
+          // The rows above it keep their heights, so only the estimate of
+          // those not measured can move it (a removed row no longer counts in
+          // the average), which the offset follows once the prefix is
+          // rebuilt. A row that left the items has no place to keep.
+          let key = runtime.order[index].clone();
+          if keys.get(..=index) == Some(&runtime.order[..=index]) {
+            kept_row = Some(ShownFirst {
+              key,
+              top: runtime.prefix[index],
+              scroll_y_requests: scroll_state.scroll_y_requests(),
+            });
+          } else if current_keys.contains(key.as_str()) {
+            runtime.pending_anchor = Some(ScrollAnchor {
+              key,
+              offset: scroll_y - runtime.prefix[index],
+              scroll_y_requests: scroll_state.scroll_y_requests(),
+            });
+          }
         }
 
         // Evict heights only for keys that disappeared. Keys that survive an
@@ -1043,6 +1064,7 @@ where
     }
 
     runtime.rebuild_prefix_if_dirty();
+    runtime.keep_shown_first(kept_row, scroll_state);
 
     let count = runtime.order.len();
     let has_estimate = runtime.has_estimate();
@@ -1172,12 +1194,13 @@ impl<T> VirtualizedRuntime<T> {
     self.estimate.is_some() || self.row_estimate.is_some()
   }
 
-  /// After measured heights changed, keeps the first row in view where it
-  /// was on screen: the offset moves as far as that row's top moves in the
-  /// content (rows above it measured, or placed from an estimate a grown row
-  /// skewed), instead of everything in view moving. The row and its top come
-  /// from the render that placed the window (`shown_first`), so a row that
-  /// grew above it in this layout is made up for too. A scroll request that
+  /// After measured heights changed, or rows changed below it, keeps the
+  /// first row in view where it was on screen: the offset moves as far as
+  /// that row's top moves in the content (rows above it measured, or placed
+  /// from an estimate a grown or removed row skewed), instead of everything
+  /// in view moving. The row and its top come from the render that placed
+  /// the window (`shown_first`), or from before the rows changed, so a row
+  /// that grew above it in this layout is made up for too. A scroll request that
   /// took effect since that render put the list where it asked, which
   /// stands: an offset is kept as asked, not moved to keep rows that an
   /// estimate placed there. Leaves a list at its end there too, and a scroll
