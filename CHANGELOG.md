@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.58.2 — 2026-11-06
+
+Fixes:
+
+- `VirtualizedList`: rows added or removed below the first row in view no longer anchor the list. Before, appending one row to a long list whose rows were not all measured yet (a chat opened at its end, then scrolled up one wheel tick) captured an anchor, measured every unmeasured row in chunks of 256 and held the offset in pixels until it finished, so the list froze for seconds and showed rows near its top meanwhile; a list at its end also laid out about 260 rows after every new row instead of its window. The row in view now stays where it was, and a removal that changes the height estimate shifts the offset by the estimate's change.
+
 ## 0.58.1 — 2026-11-05
 
 Behaviour changes:

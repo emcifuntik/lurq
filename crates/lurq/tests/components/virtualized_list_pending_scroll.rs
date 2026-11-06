@@ -1,11 +1,12 @@
 //! A scroll the app queues on a `VirtualizedList`'s `ScrollState`
 //! (`scroll_to_bottom_pending`, `set_scroll_pending`) or asks for with
 //! `reveal_key` wins over the list's own scroll anchor. Changing the key order
-//! anchors the first visible row; that anchor stands for the position before
-//! the requested scroll and must not move the view back there, neither in the
-//! pass that resolves the scroll nor frames later, when the measure march
-//! across unmeasured rows completes. A content change with no scroll request
-//! stays anchored.
+//! up to the first visible row anchors that row; that anchor stands for the
+//! position before the requested scroll and must not move the view back there,
+//! neither in the pass that resolves the scroll nor frames later, when the
+//! measure march across unmeasured rows completes. A content change with no
+//! scroll request stays anchored. Rows added or removed below the first
+//! visible row do not move it, so they anchor nothing and measure nothing.
 
 use std::sync::{Arc, Mutex};
 
@@ -39,6 +40,15 @@ const LONG_LIST: usize = 1000;
 /// Key of the trailing room row an app shows only while the list is away from
 /// its end.
 const ROOM: usize = usize::MAX;
+/// The short rows at the end of a chat of tall rows: the rows the list renders,
+/// and so measures, when it opens at its end.
+const CHAT_TAIL: usize = 16;
+const SHORT_H: f32 = 20.0;
+const TALL_H: f32 = 300.0;
+/// The rows a window over the viewport holds at most, without overscan: the
+/// viewport's worth of short rows, and one partly shown at each edge.
+const WINDOW_ROWS: usize = (VIEW_H / SHORT_H) as usize + 2;
+const WHEEL_TICK: f32 = 100.0;
 
 #[derive(Clone)]
 struct SharedScroll(Arc<ScrollState>);
@@ -78,19 +88,19 @@ impl Component for Row {
 struct Root;
 
 impl Component for Root {
-  /// Rows, the app's scroll state and the key to reveal.
-  type Props = (Vec<RowData>, SharedScroll, Option<String>);
+  /// Rows, the app's scroll state, the key to reveal and the bootstrap rows.
+  type Props = (Vec<RowData>, SharedScroll, Option<String>, usize);
 
   fn create(_ctx: &mut Ctx) -> Self {
     Self
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let (items, scroll, reveal) = ctx.props::<Self::Props>().clone();
+    let (items, scroll, reveal, bootstrap) = ctx.props::<Self::Props>().clone();
     VirtualizedList::new(ctx, items)
       .size(100.0, VIEW_H)
       .overscan_px(0.0)
-      .bootstrap_rows(BOOTSTRAP)
+      .bootstrap_rows(bootstrap)
       .with_scroll_state((*scroll.0).clone())
       .reveal_key(reveal)
       .mount_keyed::<Row, _, _, _>(|row| row.id, |row| (*row).clone())
@@ -111,6 +121,16 @@ fn rows(range: std::ops::Range<usize>) -> Vec<RowData> {
     .collect()
 }
 
+/// A chat of tall rows ending in `CHAT_TAIL` short ones.
+fn chat_rows() -> Vec<RowData> {
+  (0..LONG_LIST)
+    .map(|id| RowData {
+      id,
+      height: if id + CHAT_TAIL >= LONG_LIST { SHORT_H } else { TALL_H },
+    })
+    .collect()
+}
+
 fn room() -> RowData {
   RowData { id: ROOM, height: 60.0 }
 }
@@ -126,22 +146,48 @@ fn top_of(items: &[RowData], id: usize) -> f32 {
 struct List {
   tree: Tree,
   scroll: Arc<ScrollState>,
+  bootstrap: usize,
 }
 
 impl List {
   fn mount(items: Vec<RowData>) -> Self {
+    Self::open(items, BOOTSTRAP, ScrollState::new())
+  }
+
+  /// Opens the list at its end, as a chat does, with the last `CHAT_TAIL`
+  /// rows rendered first: the only rows measured until others are shown.
+  fn open_at_end(items: Vec<RowData>) -> Self {
+    let scroll = ScrollState::new();
+    scroll.scroll_to_bottom_pending();
+    Self::open(items, CHAT_TAIL, scroll)
+  }
+
+  fn open(items: Vec<RowData>, bootstrap: usize, scroll: ScrollState) -> Self {
     let mut tree = Tree::new();
-    let scroll = Arc::new(ScrollState::new());
-    tree.mount_root::<Root>(&mut App::new(), (items, SharedScroll(scroll.clone()), None));
-    let mut list = Self { tree, scroll };
+    let scroll = Arc::new(scroll);
+    tree.mount_root::<Root>(&mut App::new(), (items, SharedScroll(scroll.clone()), None, bootstrap));
+    let mut list = Self {
+      tree,
+      scroll,
+      bootstrap,
+    };
     list.settle();
     list
   }
 
   fn update(&mut self, items: Vec<RowData>, reveal: Option<&str>) {
-    self
-      .tree
-      .update_root_props::<Root>((items, SharedScroll(self.scroll.clone()), reveal.map(str::to_owned)));
+    self.tree.update_root_props::<Root>((
+      items,
+      SharedScroll(self.scroll.clone()),
+      reveal.map(str::to_owned),
+      self.bootstrap,
+    ));
+  }
+
+  /// Scroll up by `delta` with the wheel.
+  fn wheel_up(&mut self, delta: f32) {
+    self.tree.scroll(10.0, 10.0, 0.0, delta, ScrollPhase::Scroll);
+    run_pass(&mut self.tree);
   }
 
   /// Scroll down by `delta` with the wheel, as a person would.
@@ -173,6 +219,29 @@ impl List {
       .get_element_by_id_mut(&format!("row-{id}"))
       .and_then(|element| element.bounds());
     bounds.is_some_and(|row| row.y >= -0.5 && row.y + row.height <= VIEW_H + 0.5)
+  }
+
+  /// The row laid out at the viewport's top, and its top on screen.
+  fn first_shown(&mut self) -> (usize, f32) {
+    (0..LONG_LIST + 1)
+      .chain([ROOM])
+      .find_map(|id| {
+        let row = self.tree.get_element_by_id_mut(&format!("row-{id}"))?.bounds()?;
+        (row.y <= 0.5 && row.y + row.height > 0.5).then_some((id, row.y))
+      })
+      .expect("a row at the viewport's top")
+  }
+
+  /// How many rows the last layout laid out: the content's children that are
+  /// row wrappers, not the spacers standing for the rows between them.
+  fn rows_laid_out(&self) -> usize {
+    let layout = self.tree.last_layout().expect("the list was laid out");
+    layout.children[0]
+      .result
+      .children
+      .iter()
+      .filter(|child| !child.result.children.is_empty())
+      .count()
   }
 
   /// The scroll offset of the last layout, as drawn.
@@ -232,12 +301,13 @@ fn scroll_to_bottom_pending_is_not_undone_when_the_measure_march_completes() {
   list.wheel_down(3000.0);
   let before = list.scroll_y();
 
-  // A row arrives at the end: the key order changes while most rows were never
-  // measured, so the anchor waits for the measure march.
-  let items = rows(0..LONG_LIST + 1);
-  list.update(items.clone(), None);
+  // A row arrives above the view: the key order changes there while most rows
+  // were never measured, so the anchor waits for the measure march.
+  let mut items = rows(LONG_LIST..LONG_LIST + 1);
+  items.extend(rows(0..LONG_LIST));
+  list.update(items, None);
   run_pass(&mut list.tree);
-  assert_near(list.scroll_y(), before, "the arrival keeps the view");
+  assert_near(list.scroll_y(), before, "the anchor has not restored yet");
 
   // The person jumps to the end while the march is still running.
   list.scroll.scroll_to_bottom_pending();
@@ -248,7 +318,7 @@ fn scroll_to_bottom_pending_is_not_undone_when_the_measure_march_completes() {
   assert!(end > 40_000.0, "the end of the long list, {end}");
   assert_near(list.scroll_y(), end, "frames after the jump to the end");
   assert_near(list.laid_out_scroll_y(), end, "the layout frames after the jump");
-  assert!(list.row_in_view(LONG_LIST), "the arrived last row is in view");
+  assert!(list.row_in_view(LONG_LIST - 1), "the last row is in view");
 }
 
 #[test]
@@ -276,7 +346,9 @@ fn reveal_key_is_not_undone_when_the_measure_march_completes() {
   let mut list = List::mount(rows(0..count));
   list.wheel_down(3000.0);
 
-  let items = rows(0..count + 1);
+  // A row arrives above the view, so an anchor marches.
+  let mut items = rows(count..count + 1);
+  items.extend(rows(0..count));
   list.update(items.clone(), None);
   run_pass(&mut list.tree);
 
@@ -320,6 +392,72 @@ fn rows_inserted_above_without_a_scroll_request_stay_anchored_after_the_march() 
     top_of(&items, first) + into_row,
     "row {first} kept its place after the insert above",
   );
+}
+
+/// Opens `opened`, a chat of tall rows, at its end, scrolls up one wheel tick
+/// and changes its items to `items` below the view: after every pass, the row
+/// at the viewport's top stays where it is on screen, and the list lays out
+/// no more rows than the window over the viewport holds. The rows above it,
+/// never measured, are not measured to keep it there.
+fn assert_tail_change_keeps_the_first_row(opened: Vec<RowData>, items: Vec<RowData>) {
+  let mut list = List::open_at_end(opened);
+  list.wheel_up(WHEEL_TICK);
+  assert_near(list.scroll_y(), list.end() - WHEEL_TICK, "one tick up from the end");
+  let shown = list.first_shown();
+  assert!(shown.0 + CHAT_TAIL >= LONG_LIST, "a short row at the top, {shown:?}");
+
+  list.update(items, None);
+  for pass in 0..12 {
+    run_pass(&mut list.tree);
+    let now = list.first_shown();
+    assert!(
+      now.0 == shown.0 && (now.1 - shown.1).abs() < 0.5,
+      "pass {pass}: row {} at {} is at the top, was row {} at {}",
+      now.0,
+      now.1,
+      shown.0,
+      shown.1
+    );
+    let laid_out = list.rows_laid_out();
+    assert!(
+      laid_out <= WINDOW_ROWS,
+      "pass {pass}: {laid_out} rows laid out, the window holds {WINDOW_ROWS}"
+    );
+  }
+}
+
+#[test]
+fn a_row_appended_below_the_view_keeps_the_first_row_without_measuring_the_rows_above() {
+  let mut items = chat_rows();
+  items.push(room());
+  assert_tail_change_keeps_the_first_row(chat_rows(), items);
+}
+
+#[test]
+fn a_trailing_row_removed_below_the_view_keeps_the_first_row_without_measuring_the_rows_above() {
+  let mut opened = chat_rows();
+  opened.push(room());
+  assert_tail_change_keeps_the_first_row(opened, chat_rows());
+}
+
+#[test]
+fn a_row_appended_to_a_list_at_its_end_follows_the_end_without_measuring_the_rows_above() {
+  let mut list = List::open_at_end(chat_rows());
+  assert_near(list.scroll_y(), list.end(), "opened at the end");
+
+  let mut items = chat_rows();
+  items.push(room());
+  list.update(items, None);
+  for pass in 0..12 {
+    run_pass(&mut list.tree);
+    let laid_out = list.rows_laid_out();
+    assert!(
+      laid_out <= WINDOW_ROWS,
+      "pass {pass}: {laid_out} rows laid out, the window holds {WINDOW_ROWS}"
+    );
+  }
+  assert_near(list.scroll_y(), list.end(), "at the end after the arrival");
+  assert!(list.row_in_view(ROOM), "the arrived row is in view");
 }
 
 /// Collects `lurq::vlist` warnings about a stale window on this thread.

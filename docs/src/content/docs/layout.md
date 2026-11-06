@@ -407,9 +407,12 @@ key that is not among the items is dropped, except while the list has no items y
 loads still opens on the row.
 
 When the items change so that the row keys differ (a row added, removed or moved), the list keeps the first visible row
-where it was. A scroll asked for in the same update wins over that: a pending scroll queued on the list's `ScrollState`
-(`scroll_to_bottom_pending`, `scroll_to_top_pending`, `set_scroll_pending`), `set_scroll`, a `reveal_key` or a scroll
-into view, also when it lands while the list is still measuring its rows to keep that row in place.
+where it was, and a list at its end stays at its end. Rows added or removed below that row (a message appended to a
+chat, a trailing row dropped) cost no more than the rows in view. A change above it measures the rows not measured yet
+over the next frames to restore the exact offset. A scroll asked for in the same update wins over that: a pending
+scroll queued on the list's `ScrollState` (`scroll_to_bottom_pending`, `scroll_to_top_pending`, `set_scroll_pending`),
+`set_scroll`, a `reveal_key` or a scroll into view, also when it lands while the list is still measuring its rows to
+keep that row in place.
 
 Use `reveal_key` for rows of a `VirtualizedList`: only the rows in and near the viewport are mounted, so an element of
 any other row does not exist to be scrolled to. `ctx.scroll_into_view` does reach an element inside a mounted row, for
