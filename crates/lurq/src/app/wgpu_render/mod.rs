@@ -719,6 +719,8 @@ impl WgpuRenderEngine {
     if self.instance.is_none() {
       let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
       descriptor.backends = self.backends;
+      // lurq waits for the frame latency object itself; see `wait_for_frame_latency`.
+      descriptor.backend_options.dx12.latency_waitable_object = wgpu::Dx12UseFrameLatencyWaitableObject::DontWait;
       self.instance = Some(wgpu::Instance::new(descriptor));
     }
     let surface = self.create_surface(window, display);
@@ -1251,6 +1253,33 @@ fn supported_present_mode(requested: wgpu::PresentMode, supported: &[wgpu::Prese
   }
 }
 
+/// Waits until a DX12 swap chain is ready for the next frame, before `get_current_texture`.
+///
+/// With wgpu's default `Dx12UseFrameLatencyWaitableObject::Wait`, `get_current_texture` waits on the
+/// swap chain's frame latency object while it holds the device's fence lock. That wait lasts until
+/// vblank, and `Queue::submit` needs the same lock, so no other thread can submit work meanwhile.
+/// The instance is created with `DontWait`, and this waits on the same object with no wgpu lock held.
+/// It does nothing on other backends, or when the surface has no swap chain yet.
+fn wait_for_frame_latency(surface: &wgpu::Surface<'_>) {
+  #[cfg(windows)]
+  {
+    use windows::Win32::System::Threading::WaitForSingleObject;
+
+    // wgpu-core's own frame timeout for `get_current_texture`.
+    const FRAME_LATENCY_WAIT_TIMEOUT_MS: u32 = 1000;
+
+    // SAFETY: the HAL surface is only read. The handle belongs to the swap chain, which lurq
+    // reconfigures only on this thread, so it stays open through the wait below.
+    let handle = unsafe { surface.as_hal::<wgpu::hal::api::Dx12>() }.and_then(|hal| unsafe { hal.waitable_handle() });
+    if let Some(handle) = handle {
+      // SAFETY: `handle` is the swap chain's frame latency waitable object, a valid handle.
+      unsafe { WaitForSingleObject(handle, FRAME_LATENCY_WAIT_TIMEOUT_MS) };
+    }
+  }
+  #[cfg(not(windows))]
+  let _ = surface;
+}
+
 struct WindowDisplayPair<'a> {
   window: WindowHandle<'a>,
   display: DisplayHandle<'a>,
@@ -1382,6 +1411,7 @@ impl RenderEngine for WgpuRenderEngine {
       .profile_context
       .as_ref()
       .map(|context| context.phase(crate::app::profiler::Phase::RenderAcquire));
+    wait_for_frame_latency(surface);
     let output = match surface.get_current_texture() {
       wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
         FrameTarget::Surface(texture)
@@ -1392,6 +1422,7 @@ impl RenderEngine for WgpuRenderEngine {
       // (and stays stalled) while resizing.
       wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
         surface.configure(device, config);
+        wait_for_frame_latency(surface);
         match surface.get_current_texture() {
           wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
             FrameTarget::Surface(texture)
