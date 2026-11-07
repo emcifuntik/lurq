@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.58.3 — 2026-11-07
+
+Fixes:
+
+- Frame pacing on DX12 with the wgpu engine (#88). wgpu waited for the swap chain's frame latency object inside `get_current_texture` while it held the device's fence lock, which `Queue::submit` needs, so on a FIFO swap chain no other thread could submit work on lurq's device until vblank. An app submitting GPU work from its own thread (a canvas painted on another thread) could submit only right after vblank, ahead of lurq's frame, which then missed the next vblank. The wgpu instance is now created with `Dx12UseFrameLatencyWaitableObject::DontWait`, and lurq waits on the same object itself right before `get_current_texture`, with no wgpu lock held and wgpu's 1000 ms timeout. Pacing and latency are unchanged for an app that submits only from the frame thread; the wait still counts in the render acquire phase of `perf_profile`. Other backends, other platforms and lurq's own DX12 renderer are not affected.
+
 ## 0.58.2 — 2026-11-06
 
 Fixes:
