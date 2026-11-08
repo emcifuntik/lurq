@@ -101,7 +101,7 @@ Keyframe offsets are normalized from `0.0` to `1.0`. The engine finds the surrou
 | `delay(...)` / `delay_ms(...)` | Delay before playback starts |
 | `easing(...)` / `linear()` | Default easing for frame spans |
 | `direction(...)` / `alternate()` | Normal, reverse, alternate, or alternate-reverse playback |
-| `fill_mode(...)` | None, forwards, backwards, or both |
+| `fill_mode(...)` | None, forwards, backwards, or both; forwards holds the pose the run stops on, part way into an iteration for a fractional count |
 | `iteration_count(...)` / `infinite()` | Finite or infinite playback |
 
 ## Frame Pacing

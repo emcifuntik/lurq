@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.58.4 — 2026-11-08
+
+Fixes:
+
+- Opacity, `OffsetX` and `OffsetY` transitions run to their target (#90). They wrote the animated value into the node's own `opacity` and `offset`, the fields a transition reads its target from, so on the frame after a run started the transition took the value it had just drawn for a new target: with no render between frames the value stayed where it started, and with a render every frame it only crept toward the target (toasts and hover fades froze part way). Every animated property now goes through the animation overrides, and the node's own fields keep what the render set; layout, painting, hit testing and the devtools read the animated opacity and offset.
+- A keyframe animation that fills forwards holds its pose on every later frame and after its component renders again, for every property (#90). Before, the pose held only for opacity and offsets; a colour, border, radius, size or transform went back to the node's own value the frame after the run ended.
+- A forwards fill holds the pose the run stops on (#90): part way into an iteration for a fractional iteration count (`Count(1.5)` holds the half-way pose, in the direction that iteration plays), and the final pose for a zero duration, as in CSS. Before, a fractional count held the end of an iteration, and a zero-duration run held nothing.
+
+Performance:
+
+- A node that fades, or holds an opacity with fill forwards, keeps its layout cache and text layout across rebuilds (#90); only overrides of properties that shape layout make it lay out again. A logical wrapper holding full opacity that way is still flattened.
+
 ## 0.58.3 — 2026-11-07
 
 Fixes:
