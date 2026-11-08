@@ -4086,8 +4086,13 @@ fn node_is_plain_logical_wrapper(node: &Node) -> bool {
     && node.state_styles.focused.is_none()
     && node.state_styles.focus_visible.is_none()
     && node.state_styles.drag_over.is_none()
-    && node.opacity == DEFAULT_QUAD_OPACITY
-    && node.animation_overrides.is_empty()
+    && node.effective_opacity() == DEFAULT_QUAD_OPACITY
+    // A fade that ended at full opacity and holds it fills forwards with an opacity override; nothing else may
+    // be overridden.
+    && node
+      .animation_overrides
+      .iter()
+      .all(|(prop, _)| *prop == crate::animation::AnimatableProperty::Opacity)
     && node.effective_transform().is_identity()
     && node.intrinsic_size.is_none()
     && {

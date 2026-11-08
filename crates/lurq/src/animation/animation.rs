@@ -164,12 +164,22 @@ impl AnimationRun {
     }
   }
 
-  /// The keyframe progress a done run holds: its last pose when it fills forwards, `None` when it holds nothing.
+  /// The keyframe progress a done run holds: the pose it stopped on when it fills forwards, `None` when it holds
+  /// nothing. A whole iteration count stops at the end of the last iteration, a fractional one part way into the
+  /// iteration after the last whole one, and a zero count at the start of the first. A zero duration plays every
+  /// iteration in no time and holds the same pose; an infinite count ends only then, and holds the end of the
+  /// first iteration.
   fn final_progress(&self) -> Option<f64> {
     let fills = matches!(self.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both);
-    (fills && !self.duration.is_zero()).then(|| {
-      let final_iter = (self.iteration_count - 1.0).max(0.0);
-      directed_progress(1.0, self.direction, final_iter)
+    fills.then(|| {
+      let count = self.iteration_count.max(0.0);
+      let (iteration, progress) = match count.fract() {
+        _ if count == 0.0 => (0.0, 0.0),
+        _ if count.is_infinite() => (0.0, 1.0),
+        0.0 => (count - 1.0, 1.0),
+        fraction => (count.floor(), fraction),
+      };
+      directed_progress(progress, self.direction, iteration)
     })
   }
 
@@ -377,8 +387,10 @@ impl AnimationEngine {
     };
 
     if run.finished {
-      // Each tick clears the overrides, so a run that fills forwards writes its last pose again. It is the pose
-      // the last layout was made with, so layout stays as it is.
+      // Each tick clears the overrides, so a run that fills forwards writes its last pose again. It asks for no
+      // layout: a node that kept its cache was laid out with this pose, and a rebuilt node never keeps the cache
+      // of one holding a layout override (`Node::own_layout_signature_matches`), so it is laid out afresh.
+      // Asking here would invalidate the layout on every tick for as long as the pose is held.
       if let Some(progress) = run.final_progress() {
         apply_keyframe_at(node, frames, progress as f32, &run.easing);
       }
