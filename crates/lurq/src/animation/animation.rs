@@ -164,6 +164,25 @@ impl AnimationRun {
     }
   }
 
+  /// The keyframe progress a done run holds: the pose it stopped on when it fills forwards, `None` when it holds
+  /// nothing. A whole iteration count stops at the end of the last iteration, a fractional one part way into the
+  /// iteration after the last whole one, and a zero count at the start of the first. A zero duration plays every
+  /// iteration in no time and holds the same pose; an infinite count ends only then, and holds the end of the
+  /// first iteration.
+  fn final_progress(&self) -> Option<f64> {
+    let fills = matches!(self.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both);
+    fills.then(|| {
+      let count = self.iteration_count.max(0.0);
+      let (iteration, progress) = match count.fract() {
+        _ if count == 0.0 => (0.0, 0.0),
+        _ if count.is_infinite() => (0.0, 1.0),
+        0.0 => (count - 1.0, 1.0),
+        fraction => (count.floor(), fraction),
+      };
+      directed_progress(progress, self.direction, iteration)
+    })
+  }
+
   /// When the run next draws something other than what it draws at `now`: the end of its delay, the next step of a
   /// step-eased span, or the end of the iteration or of the run. A span that changes continuously changes at once,
   /// so it returns `now`. `None` once the run is done.
@@ -362,14 +381,21 @@ impl AnimationEngine {
       finished: false,
     });
 
-    if run.finished {
-      return false;
-    }
-
     let frames = match self.keyframe_store.get(&run.keyframes) {
       Some(f) => f,
       None => return false,
     };
+
+    if run.finished {
+      // Each tick clears the overrides, so a run that fills forwards writes its last pose again. It asks for no
+      // layout: a node that kept its cache was laid out with this pose, and a rebuilt node never keeps the cache
+      // of one holding a layout override (`Node::own_layout_signature_matches`), so it is laid out afresh.
+      // Asking here would invalidate the layout on every tick for as long as the pose is held.
+      if let Some(progress) = run.final_progress() {
+        apply_keyframe_at(node, frames, progress as f32, &run.easing);
+      }
+      return false;
+    }
 
     let layout_affected = match run.phase(now) {
       Phase::Delay => {
@@ -383,14 +409,9 @@ impl AnimationEngine {
       }
       Phase::Done => {
         run.finished = true;
-        let fills = matches!(run.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both);
-        if fills && !run.duration.is_zero() {
-          let final_iter = (run.iteration_count - 1.0).max(0.0);
-          let progress = directed_progress(1.0, run.direction, final_iter);
-          apply_keyframe_at(node, frames, progress as f32, &run.easing)
-        } else {
-          false
-        }
+        run
+          .final_progress()
+          .is_some_and(|progress| apply_keyframe_at(node, frames, progress as f32, &run.easing))
       }
       Phase::Active { iteration, progress } => {
         let progress = directed_progress(progress, run.direction, iteration);

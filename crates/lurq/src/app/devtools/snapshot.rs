@@ -482,8 +482,9 @@ fn shape_rows(element: ElementRef<'_>) -> Vec<DevToolsShapeRow> {
   if let Some(border) = element.node.get_border() {
     push_shape_group(&mut rows, "border", border_rows(&border));
   }
-  if (element.node.opacity - 1.0).abs() > f32::EPSILON {
-    push_shape_row(&mut rows, "opacity", format_number(element.node.opacity));
+  let opacity = element.node.effective_opacity();
+  if (opacity - 1.0).abs() > f32::EPSILON {
+    push_shape_row(&mut rows, "opacity", format_number(opacity));
   }
   push_state_style_rows(&mut rows, "hover style", element.node.state_styles.hovered.as_ref());
   push_state_style_rows(&mut rows, "active style", element.node.state_styles.active.as_ref());

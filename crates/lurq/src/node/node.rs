@@ -3968,6 +3968,21 @@ impl Node {
       .and_then(|borders| borders.resolve_with_sizes(palette, border_sizes))
   }
 
+  /// The node's opacity as drawn: the opacity it was built with, or a running transition or animation's.
+  pub(crate) fn effective_opacity(&self) -> f32 {
+    self
+      .animation_override_float(crate::animation::AnimatableProperty::Opacity)
+      .unwrap_or(self.opacity)
+  }
+
+  /// The value a running transition or animation sets for a float property this tick, if any.
+  fn animation_override_float(&self, prop: crate::animation::AnimatableProperty) -> Option<f32> {
+    self.animation_overrides.iter().find_map(|(p, val)| match val {
+      crate::animation::AnimatableValue::Float(v) if *p == prop => Some(*v),
+      _ => None,
+    })
+  }
+
   pub(crate) fn effective_transform(&self) -> Transform2D {
     self
       .animation_overrides
@@ -4203,8 +4218,17 @@ impl Node {
     self.position
   }
 
+  /// The node's relative offset as drawn: the offset it was built with, with a running transition or animation of
+  /// either axis applied.
   pub(crate) fn offset_position(&self) -> Option<Offset> {
-    self.offset
+    let mut offset = self.offset;
+    if let Some(x) = self.animation_override_float(crate::animation::AnimatableProperty::OffsetX) {
+      offset.get_or_insert_default().x = x;
+    }
+    if let Some(y) = self.animation_override_float(crate::animation::AnimatableProperty::OffsetY) {
+      offset.get_or_insert_default().y = y;
+    }
+    offset
   }
 
   pub(crate) fn min_main_size(&self, vertical: bool) -> f32 {
@@ -4454,8 +4478,18 @@ impl Node {
       && self.text_overflow == old.text_overflow
       && self.overflow == old.overflow
       && self.intrinsic_size == old.intrinsic_size
-      && self.animation_overrides.is_empty()
-      && old.animation_overrides.is_empty()
+      && !self.holds_overrides_beyond_opacity()
+      && !old.holds_overrides_beyond_opacity()
+  }
+
+  /// Whether a running or forwards-filled transition or animation sets anything but opacity. Opacity is drawn
+  /// over the laid-out geometry and never shapes it, so a node fading in, or holding a faded pose, keeps its
+  /// layout cache across rebuilds; any other override still makes it lay out again.
+  fn holds_overrides_beyond_opacity(&self) -> bool {
+    self
+      .animation_overrides
+      .iter()
+      .any(|(prop, _)| *prop != crate::animation::AnimatableProperty::Opacity)
   }
 
   fn layout_kind_matches_for_cache(&self, old: &Node) -> bool {
@@ -5201,6 +5235,32 @@ mod tests {
     let mut new = Node::text("Hi");
     new.set_component_slot_id(2);
     new.set_component_key(Some("message-2"));
+
+    assert!(!new.layout_signature_matches(&old));
+  }
+
+  #[test]
+  fn opacity_override_keeps_layout_cache_signature() {
+    use crate::animation::{AnimatableProperty, AnimatableValue};
+
+    let mut old = Node::text("Hi");
+    old
+      .animation_overrides
+      .push((AnimatableProperty::Opacity, AnimatableValue::Float(0.4)));
+    let new = Node::text("Hi");
+
+    assert!(new.layout_signature_matches(&old));
+  }
+
+  #[test]
+  fn offset_override_does_not_match_layout_cache_signature() {
+    use crate::animation::{AnimatableProperty, AnimatableValue};
+
+    let mut old = Node::text("Hi");
+    old
+      .animation_overrides
+      .push((AnimatableProperty::OffsetX, AnimatableValue::Float(40.0)));
+    let new = Node::text("Hi");
 
     assert!(!new.layout_signature_matches(&old));
   }
