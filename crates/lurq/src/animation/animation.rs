@@ -164,6 +164,15 @@ impl AnimationRun {
     }
   }
 
+  /// The keyframe progress a done run holds: its last pose when it fills forwards, `None` when it holds nothing.
+  fn final_progress(&self) -> Option<f64> {
+    let fills = matches!(self.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both);
+    (fills && !self.duration.is_zero()).then(|| {
+      let final_iter = (self.iteration_count - 1.0).max(0.0);
+      directed_progress(1.0, self.direction, final_iter)
+    })
+  }
+
   /// When the run next draws something other than what it draws at `now`: the end of its delay, the next step of a
   /// step-eased span, or the end of the iteration or of the run. A span that changes continuously changes at once,
   /// so it returns `now`. `None` once the run is done.
@@ -362,14 +371,19 @@ impl AnimationEngine {
       finished: false,
     });
 
-    if run.finished {
-      return false;
-    }
-
     let frames = match self.keyframe_store.get(&run.keyframes) {
       Some(f) => f,
       None => return false,
     };
+
+    if run.finished {
+      // Each tick clears the overrides, so a run that fills forwards writes its last pose again. It is the pose
+      // the last layout was made with, so layout stays as it is.
+      if let Some(progress) = run.final_progress() {
+        apply_keyframe_at(node, frames, progress as f32, &run.easing);
+      }
+      return false;
+    }
 
     let layout_affected = match run.phase(now) {
       Phase::Delay => {
@@ -383,14 +397,9 @@ impl AnimationEngine {
       }
       Phase::Done => {
         run.finished = true;
-        let fills = matches!(run.fill_mode, AnimationFillMode::Forwards | AnimationFillMode::Both);
-        if fills && !run.duration.is_zero() {
-          let final_iter = (run.iteration_count - 1.0).max(0.0);
-          let progress = directed_progress(1.0, run.direction, final_iter);
-          apply_keyframe_at(node, frames, progress as f32, &run.easing)
-        } else {
-          false
-        }
+        run
+          .final_progress()
+          .is_some_and(|progress| apply_keyframe_at(node, frames, progress as f32, &run.easing))
       }
       Phase::Active { iteration, progress } => {
         let progress = directed_progress(progress, run.direction, iteration);

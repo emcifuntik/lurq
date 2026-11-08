@@ -1032,8 +1032,9 @@ impl LayoutEngine {
     self.leave_select_scope(select_scope);
 
     self.push_node_overlay_quads(node, result, abs_x, abs_y, &frame, clip, quads);
-    if node.opacity < DEFAULT_QUAD_OPACITY {
-      self.close_opacity_group(node.opacity, group_start, quads);
+    let opacity = node.effective_opacity();
+    if opacity < DEFAULT_QUAD_OPACITY {
+      self.close_opacity_group(opacity, group_start, quads);
     }
   }
 

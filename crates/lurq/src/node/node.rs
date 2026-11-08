@@ -3968,6 +3968,18 @@ impl Node {
       .and_then(|borders| borders.resolve_with_sizes(palette, border_sizes))
   }
 
+  /// The node's opacity as drawn: the opacity it was built with, or a running transition or animation's.
+  pub(crate) fn effective_opacity(&self) -> f32 {
+    self
+      .animation_overrides
+      .iter()
+      .find_map(|(prop, val)| match (prop, val) {
+        (crate::animation::AnimatableProperty::Opacity, crate::animation::AnimatableValue::Float(v)) => Some(*v),
+        _ => None,
+      })
+      .unwrap_or(self.opacity)
+  }
+
   pub(crate) fn effective_transform(&self) -> Transform2D {
     self
       .animation_overrides
@@ -4203,8 +4215,20 @@ impl Node {
     self.position
   }
 
+  /// The node's relative offset as drawn: the offset it was built with, with a running transition or animation of
+  /// either axis applied.
   pub(crate) fn offset_position(&self) -> Option<Offset> {
-    self.offset
+    let mut offset = self.offset;
+    for (prop, val) in self.animation_overrides.iter() {
+      if let crate::animation::AnimatableValue::Float(v) = val {
+        match prop {
+          crate::animation::AnimatableProperty::OffsetX => offset.get_or_insert_default().x = *v,
+          crate::animation::AnimatableProperty::OffsetY => offset.get_or_insert_default().y = *v,
+          _ => {}
+        }
+      }
+    }
+    offset
   }
 
   pub(crate) fn min_main_size(&self, vertical: bool) -> f32 {

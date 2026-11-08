@@ -181,28 +181,12 @@ pub(crate) fn write_property(node: &mut crate::node::Node, prop: AnimatablePrope
     prop,
     AnimatableProperty::OffsetX | AnimatableProperty::OffsetY | AnimatableProperty::Width | AnimatableProperty::Height
   );
-  match prop {
-    AnimatableProperty::OffsetX | AnimatableProperty::OffsetY => {
-      if let AnimatableValue::Float(v) = value {
-        match prop {
-          AnimatableProperty::OffsetX => write_offset_x(node, *v),
-          AnimatableProperty::OffsetY => write_offset_y(node, *v),
-          _ => unreachable!(),
-        }
-      }
-    }
-    AnimatableProperty::Opacity => {
-      if let AnimatableValue::Float(v) = value {
-        node.opacity = *v;
-      }
-    }
-    _ => {
-      if let Some(pos) = node.animation_overrides.iter().position(|(p, _)| *p == prop) {
-        node.animation_overrides[pos].1 = *value;
-      } else {
-        node.animation_overrides.push((prop, *value));
-      }
-    }
+  // Every property goes to the overrides, which each tick clears, and never into the node's own fields: those
+  // hold what the render set, which `read_target` must keep seeing.
+  if let Some(pos) = node.animation_overrides.iter().position(|(p, _)| *p == prop) {
+    node.animation_overrides[pos].1 = *value;
+  } else {
+    node.animation_overrides.push((prop, *value));
   }
   affects_layout
 }
@@ -223,11 +207,11 @@ pub(crate) fn clear_overrides(node: &mut crate::node::Node) {
 }
 
 fn read_offset_x(node: &crate::node::Node) -> Option<f32> {
-  node.offset_position().map(|offset| offset.x)
+  node.offset.map(|offset| offset.x)
 }
 
 fn read_offset_y(node: &crate::node::Node) -> Option<f32> {
-  node.offset_position().map(|offset| offset.y)
+  node.offset.map(|offset| offset.y)
 }
 
 fn read_target_frame_dim(node: &crate::node::Node, style: &crate::node::style::Style, is_width: bool) -> Option<f32> {
@@ -244,18 +228,6 @@ fn read_target_frame_dim(node: &crate::node::Node, style: &crate::node::style::S
   } else {
     effective.height.map(|d| d.to_px())
   }
-}
-
-fn write_offset_x(node: &mut crate::node::Node, v: f32) {
-  let mut offset = node.offset.unwrap_or_default();
-  offset.x = v;
-  node.offset = Some(offset);
-}
-
-fn write_offset_y(node: &mut crate::node::Node, v: f32) {
-  let mut offset = node.offset.unwrap_or_default();
-  offset.y = v;
-  node.offset = Some(offset);
 }
 
 #[cfg(test)]
