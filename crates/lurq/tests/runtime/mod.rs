@@ -57,6 +57,7 @@ mod perf_overlay;
 #[cfg(feature = "image")]
 mod render_order;
 mod scroll_axis_dominance;
+mod scroll_handler_redraw;
 mod scroll_state;
 mod scrollbar_hits;
 mod scrollbar_on_hover;

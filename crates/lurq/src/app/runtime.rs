@@ -4009,6 +4009,9 @@ impl Tree {
         .as_ref()
         .is_some_and(|ctx| ctx.any_dirty() || ctx.has_element_request())
       || self.root.as_ref().is_some_and(has_dirty_element_ref_recursive)
+      // A `ScrollState` can be written with no input of the tree's own behind it: by an event handler that
+      // prevented the built-in scroll, or by code outside any event.
+      || self.root.as_ref().is_some_and(has_pending_scroll_recursive)
   }
 
   fn collect_pass_reasons(&self, theme_version: u64, caret_mode: CaretMode) -> PassReasons {
@@ -10275,6 +10278,25 @@ fn has_timeline_target_recursive(node: &Node) -> bool {
   #[cfg(test)]
   crate::core::layout_dirty::visit();
   !node.transitions.is_empty() || node.animation.is_some() || node.children().iter().any(has_timeline_target_recursive)
+}
+
+/// Whether a scroll container in the subtree was scrolled, or asked to scroll, since it was last laid out. Like
+/// [`has_dirty_element_ref_recursive`], it visits only the subtrees a layout watch was marked in: writing a
+/// `ScrollState` marks the watch of the node it is bound to.
+fn has_pending_scroll_recursive(node: &Node) -> bool {
+  if !node.layout_cache.needs_dirty_scan() {
+    return false;
+  }
+  #[cfg(test)]
+  crate::core::layout_dirty::visit();
+  // An overlay declaration is never laid out (see `has_pending_layout_dirty_recursive`).
+  if node.is_overlay_declaration() {
+    return false;
+  }
+  node
+    .scroll_container()
+    .is_some_and(|(state, _)| state.has_scroll_dirty())
+    || node.children().iter().any(has_pending_scroll_recursive)
 }
 
 fn has_pending_layout_dirty_recursive(node: &Node) -> bool {

@@ -190,20 +190,35 @@ impl ScrollState {
     self.inner.lock().unwrap().scroll_y
   }
 
+  /// Scrolls to `(x, y)`, clamped to the content as last laid out. The new offset is drawn in the next frame,
+  /// wherever the call comes from: an event handler, a timer or code outside any event. An offset the content is
+  /// already at asks for no frame.
   pub fn set_scroll(&self, x: f32, y: f32) {
     let mut inner = self.inner.lock().unwrap();
-    inner.scroll_x = x.clamp(0.0, inner.max_scroll_x);
-    inner.scroll_y = y.clamp(0.0, inner.max_scroll_y);
+    let offset = (x.clamp(0.0, inner.max_scroll_x), y.clamp(0.0, inner.max_scroll_y));
+    inner.scroll_y_requests = inner.scroll_y_requests.wrapping_add(1);
+    if offset == (inner.scroll_x, inner.scroll_y) {
+      return;
+    }
+    (inner.scroll_x, inner.scroll_y) = offset;
     inner.scroll_dirty = true;
     inner.layout_subscribers.mark();
-    inner.scroll_y_requests = inner.scroll_y_requests.wrapping_add(1);
   }
 
-  /// Queue an absolute scroll offset to resolve after the next layout measurement.
+  /// Queue an absolute scroll offset to resolve after the next layout measurement, which the queued offset asks
+  /// for, wherever the call comes from. Queuing the offset the content is already at, with no other scroll
+  /// queued, asks for no layout or frame: it resolves in the next layout that comes.
   pub fn set_scroll_pending(&self, x: f32, y: f32) {
     let mut inner = self.inner.lock().unwrap();
-    inner.pending_scroll_x = Some(PendingScroll::Offset(x.max(0.0)));
-    inner.pending_scroll_y = Some(PendingScroll::Offset(y.max(0.0)));
+    let offset = (x.max(0.0), y.max(0.0));
+    let already_there = inner.pending_scroll_x.is_none()
+      && inner.pending_scroll_y.is_none()
+      && offset == (inner.scroll_x, inner.scroll_y);
+    inner.pending_scroll_x = Some(PendingScroll::Offset(offset.0));
+    inner.pending_scroll_y = Some(PendingScroll::Offset(offset.1));
+    if already_there {
+      return;
+    }
     inner.scroll_dirty = true;
     inner.layout_subscribers.mark();
   }
