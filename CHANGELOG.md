@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Added:
+
+- `ScrollBarVisibility::OnHover` (`ScrollBarStyle::on_hover()`): the bar of overflowing content is hidden until the pointer is over its scroll container (anywhere in it, not only on the thumb), the content scrolls (the wheel, a scroll request, a text input bringing its caret into view) or its thumb is dragged. Once nothing holds it, it stays for `ScrollBarStyle::fade_delay` (600 ms) and fades out over `fade_duration` (200 ms) along `fade_easing` (`Easing::EASE_OUT`); `ScrollBarStyle::fade(delay, duration)` sets both times, and a zero duration hides it at once. A hidden bar is not painted and takes no pointer, like `Never`; a shown one behaves as an `Auto` bar. It works for scroll containers, `VirtualizedList` and a multiline `TextInput`. The select menu's `menu_scrollbar` was not tried with it.
+- `ScrollBarStyle` has three new public fields, `fade_delay`, `fade_duration` and `fade_easing`, and `ScrollBarVisibility` a new variant: code that builds a `ScrollBarStyle` with every field named, or matches `ScrollBarVisibility` without a wildcard arm, must add them.
+- `examples/text_input_scrollbar.rs` shows padded multiline inputs with each scrollbar placement and visibility, and can save its own frame (`--capture`).
+
 Behaviour changes:
 
 - A multiline `TextInput` places its scrollbar from its own box, as every scroll container does. Before, the bar was placed from the box inside the input's padding, so a vertical bar sat `padding.right + edge_inset` from the input's right edge and its track ended `padding + end_inset` from the top and bottom edges. Now it sits `edge_inset` from the right edge and its track ends `end_inset` from the top and bottom edges, whatever the padding, and the thumb's drag and the track's press take the pointer there. A `ScrollBarPlacement::Reserved` lane is at the input's right edge, with the right padding between it and the text; the text wraps at the same width as before. An app that moved the bar outward with a negative `edge_inset`, or chose insets to make up for the padding, must set the insets it wants from the input's edge.

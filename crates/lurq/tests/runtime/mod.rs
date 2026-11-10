@@ -59,6 +59,7 @@ mod render_order;
 mod scroll_axis_dominance;
 mod scroll_state;
 mod scrollbar_hits;
+mod scrollbar_on_hover;
 mod stack_depth;
 mod text_reflow;
 mod text_scale_wrap;

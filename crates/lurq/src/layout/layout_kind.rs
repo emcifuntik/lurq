@@ -1,9 +1,14 @@
-use std::sync::{Arc, Mutex};
+use std::{
+  sync::{Arc, Mutex},
+  time::Instant,
+};
 
 use crate::{
   layout::{
     Alignment, StackAlignment,
-    scrollbar::{ScrollBarGeometry, ScrollBarPart, ScrollBarStyle, ScrollBarVisibility},
+    scrollbar::{
+      ScrollBarGeometry, ScrollBarPart, ScrollBarReveal, ScrollBarRevealFrame, ScrollBarStyle, ScrollBarVisibility,
+    },
   },
   node::{dimension::Dimension, spacing_value::SpacingValue},
 };
@@ -112,6 +117,13 @@ struct ScrollStateInner {
   /// restart from it, so the final measurement decides the offset.
   pass_start: Option<ScrollPassStart>,
   thumb_hovered: bool,
+  /// Whether the pointer is over the scroll container, anywhere in it.
+  pointer_over: bool,
+  /// Whether a [`ScrollBarVisibility::OnHover`] bar is shown.
+  reveal: ScrollBarReveal,
+  /// The offset the last painted frame showed, which tells a frame that the
+  /// content scrolled; `None` before the first frame.
+  painted_scroll: Option<(f32, f32)>,
   dragging: bool,
   drag_start_x: f32,
   drag_start_y: f32,
@@ -153,6 +165,9 @@ impl ScrollState {
         layout_viewport_y: 0.0,
         pass_start: None,
         thumb_hovered: false,
+        pointer_over: false,
+        reveal: ScrollBarReveal::default(),
+        painted_scroll: None,
         dragging: false,
         drag_start_x: 0.0,
         drag_start_y: 0.0,
@@ -432,6 +447,34 @@ impl ScrollState {
     self.inner.lock().unwrap().thumb_hovered = hovered;
   }
 
+  /// Records whether the pointer is over the scroll container, which holds
+  /// a [`ScrollBarVisibility::OnHover`] bar shown.
+  pub(crate) fn set_pointer_over(&self, over: bool) {
+    self.inner.lock().unwrap().pointer_over = over;
+  }
+
+  /// What the bars styled `style` show in the frame painted at `now`. A bar
+  /// of any visibility but [`ScrollBarVisibility::OnHover`] is fully shown
+  /// and never changes by itself.
+  pub(crate) fn reveal_scrollbar(&self, style: &ScrollBarStyle, now: Instant) -> ScrollBarRevealFrame {
+    let mut inner = self.inner.lock().unwrap();
+    let offset = (inner.scroll_x, inner.scroll_y);
+    let scrolled = inner
+      .painted_scroll
+      .replace(offset)
+      .is_some_and(|painted| painted != offset);
+    if style.visible != ScrollBarVisibility::OnHover {
+      inner.reveal = ScrollBarReveal::default();
+      return ScrollBarRevealFrame {
+        opacity: 1.0,
+        next_change: None,
+      };
+    }
+    let held = inner.pointer_over || inner.dragging;
+    let overflows = inner.content_width > inner.viewport_width || inner.content_height > inner.viewport_height;
+    inner.reveal.advance(style, now, held, scrolled, overflows)
+  }
+
   pub fn begin_drag(&self, mouse_y: f32) {
     self.begin_drag_axis(ScrollAxis::Vertical, 0.0, mouse_y);
   }
@@ -542,10 +585,14 @@ impl ScrollState {
     let inner = self.inner.lock().unwrap();
     match (style.visible, axis) {
       (ScrollBarVisibility::Never, _) => return None,
-      (ScrollBarVisibility::Auto, ScrollAxis::Horizontal) if inner.content_width <= inner.viewport_width => {
+      (ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover, ScrollAxis::Horizontal)
+        if inner.content_width <= inner.viewport_width =>
+      {
         return None;
       }
-      (ScrollBarVisibility::Auto, ScrollAxis::Vertical) if inner.content_height <= inner.viewport_height => {
+      (ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover, ScrollAxis::Vertical)
+        if inner.content_height <= inner.viewport_height =>
+      {
         return None;
       }
       _ => {}
@@ -619,7 +666,8 @@ impl ScrollState {
   /// window coordinates (see [`ScrollBarGeometry::hit_part_at`]), or `None`
   /// where the pointer belongs to the content. A bar shown while the content
   /// fits along its axis (`ScrollBarVisibility::Always`) cannot scroll
-  /// anything, so it takes no pointer.
+  /// anything, so it takes no pointer, and neither does a
+  /// `ScrollBarVisibility::OnHover` bar that the last frame did not paint.
   pub(crate) fn scrollbar_part_at(
     &self,
     axis: ScrollAxis,
@@ -632,6 +680,9 @@ impl ScrollState {
       ScrollAxis::Vertical => self.content_height() > self.viewport_height(),
     };
     if !overflows {
+      return None;
+    }
+    if style.visible == ScrollBarVisibility::OnHover && !self.inner.lock().unwrap().reveal.is_shown() {
       return None;
     }
     self
