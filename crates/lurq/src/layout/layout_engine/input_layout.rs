@@ -10,14 +10,14 @@ impl LayoutEngine {
     style: &TextStyle,
     placeholder_style: Option<&TextStyle>,
     constraints: Constraints,
-    scrollbar_lane: f32,
+    padding: ResolvedPadding,
   ) -> LayoutResult {
     #[cfg(feature = "markdown")]
     if let Some(styled) = self.styled_input_styles(state, style) {
-      return self.layout_decorated_input(glyph_engine, state, style, constraints, styled, scrollbar_lane);
+      return self.layout_decorated_input(glyph_engine, state, style, constraints, styled, padding);
     }
     if let Some(tokens) = state.tokens().filter(|tokens| !tokens.tokens.is_empty()) {
-      return self.layout_input_tokens(glyph_engine, state, style, constraints, tokens, scrollbar_lane);
+      return self.layout_input_tokens(glyph_engine, state, style, constraints, tokens, padding);
     }
     let display_style = text_input_display_style(state, style, placeholder_style);
     let overflow = state.overflow();
@@ -81,7 +81,7 @@ impl LayoutEngine {
       text_height,
       line_height,
       text_band: glyph_engine.line_content_band(style),
-      scrollbar_lane,
+      padding,
     };
     Self::text_input_result(state, output)
   }
@@ -90,10 +90,10 @@ impl LayoutEngine {
   /// vertical scrollbar placed [`ScrollBarPlacement::Reserved`], or 0 when
   /// the bar overlays the text. Layout and paint count it in the input's
   /// right padding, so the text wraps short of the bar, which runs in the
-  /// lane. Like a reserved scroll container's gutter, the lane stays while
-  /// the text fits, so the text never re-wraps as it starts or stops
-  /// overflowing; it fits the wider of the bar at rest and hovered, so
-  /// hovering the bar never moves the text.
+  /// lane at the input's right edge, outside the padding. Like a reserved
+  /// scroll container's gutter, the lane stays while the text fits, so the
+  /// text never re-wraps as it starts or stops overflowing; it fits the wider
+  /// of the bar at rest and hovered, so hovering the bar never moves the text.
   pub(crate) fn text_input_scrollbar_lane(&self, node: &Node) -> f32 {
     let NodeKind::TextInput { state, .. } = node.node_kind() else {
       return 0.0;

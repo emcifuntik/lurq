@@ -1,6 +1,6 @@
 //! A multiline input whose scrollbar is placed `Reserved` keeps a lane for
-//! the bar at the right of its text: the text wraps short of it, so no glyph
-//! sits under the bar, and the lane stays while the text fits. A bar placed
+//! the bar at its right edge, outside its padding: the text wraps short of
+//! it, so no glyph sits under the bar, and the lane stays while the text fits. A bar placed
 //! `Overlay` still runs over the text. The pointer over the bar shows the
 //! default cursor, whatever cursor the input sets.
 
@@ -105,10 +105,10 @@ impl Editor {
       .find(|rect| rect.color == THUMB || rect.color == THUMB_HOVERED)
   }
 
-  /// The right edge of the input's content box.
-  fn content_right(&mut self) -> f32 {
+  /// The right edge of the input's box.
+  fn right(&mut self) -> f32 {
     let bounds = self.tree.get_element_by_id_mut(ID).unwrap().bounds().unwrap();
-    bounds.x + bounds.width - PADDING
+    bounds.x + bounds.width
   }
 }
 
@@ -128,10 +128,15 @@ fn text_input_reserved_scrollbar_keeps_the_text_out_of_its_lane() {
     "the text ends at {text_right}, left of the bar at {}",
     thumb.x
   );
-  let content_right = editor.content_right();
   assert!(
-    thumb.x + thumb.width <= content_right,
-    "the bar runs inside the content box, which ends at {content_right}: {thumb:?}"
+    text_right + PADDING <= thumb.x,
+    "the padding stays between the text and the bar at {}",
+    thumb.x
+  );
+  let bar_right = editor.right() - ScrollBarStyle::default().resolved_edge_inset();
+  assert!(
+    (thumb.x + thumb.width - bar_right).abs() < 0.01,
+    "the bar runs its edge inset from the input's right edge, at {bar_right}: {thumb:?}"
   );
 }
 

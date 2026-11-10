@@ -19,6 +19,7 @@ use crate::support::{RectSnapshot, RenderSnapshot, render_pass_with_app};
 const ID: &str = "scroll-input";
 const THUMB: Color = Color::new(200, 30, 90, 255);
 const THUMB_HOVERED: Color = Color::new(30, 200, 90, 255);
+const PADDING: f32 = 6.0;
 /// Line `n` (from 0) has `n + 1` letters, so the glyphs of the top row tell
 /// which line it is.
 const LINES: [&str; 6] = ["a", "bb", "ccc", "dddd", "eeeee", "ffffff"];
@@ -55,7 +56,7 @@ impl Editor {
           .id(ID)
           .rows(1, rows)
           .width(200.0)
-          .padding(6.0)
+          .padding(PADDING)
           .scrollbar(ScrollBarStyle {
             thumb_color: THUMB,
             ..ScrollBarStyle::default()
@@ -98,19 +99,22 @@ impl Editor {
     self.render();
   }
 
-  /// The line at the top of the input and how far below the text box's top
-  /// its glyphs are, from the glyphs painted inside the input's clip.
+  /// The line at the top of the input's rows and how far below the top of
+  /// the box inside the padding its glyphs are, from the glyphs painted
+  /// there. The padding scrolls with the text, so a line above the rows can
+  /// show in the top padding; it is not counted.
   fn top_line(&mut self) -> (usize, f32) {
+    let rows_top = self.tree.get_element_by_id_mut(ID).unwrap().bounds().unwrap().y + PADDING;
     let snapshot = self.render();
     let mut glyphs: Vec<_> = snapshot
       .glyphs
       .iter()
-      .filter(|glyph| glyph.clip.active && glyph.y + glyph.height > glyph.clip.y)
+      .filter(|glyph| glyph.clip.active && glyph.y + glyph.height > rows_top)
       .collect();
     glyphs.sort_by(|a, b| a.y.total_cmp(&b.y));
     let top = glyphs.first().expect("the input shows text");
     let letters = glyphs.iter().filter(|glyph| (glyph.y - top.y).abs() < 2.0).count();
-    (letters - 1, top.y - top.clip.y)
+    (letters - 1, top.y - rows_top)
   }
 
   fn thumb(&mut self) -> Option<RectSnapshot> {

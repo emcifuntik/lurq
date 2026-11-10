@@ -36,7 +36,6 @@ impl LayoutEngine {
     quads: &mut Vec<Quad>,
   ) {
     let padding = self.resolved_padding_for_size(node, result.size);
-    let content_width = (result.size.width - padding.left - padding.right).max(0.0);
     let content_height = (result.size.height - padding.top - padding.bottom).max(0.0);
     let vertical_offset = padding.top + text_input_vertical_offset(state, content_height);
     let (band_top, band_height) = state.text_band();
@@ -53,15 +52,9 @@ impl LayoutEngine {
     }
     let underline_clip = intersect_clip(
       clip,
-      ClipRect {
-        x: abs_x + padding.left,
-        y: abs_y + padding.top,
-        width: content_width,
-        height: content_height,
-        active: true,
-        border_radius: None,
-      }
-      .transformed(transform),
+      self
+        .text_input_viewport(node, state, result, (abs_x, abs_y), padding)
+        .transformed(transform),
     );
     let underline_top = band_top + band_height.min(content_height) - COMPOSITION_UNDERLINE_WIDTH;
     for range in ranges {

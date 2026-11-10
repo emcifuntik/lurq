@@ -40,6 +40,7 @@ mod text_input {
   mod scroll_presentation;
   mod scroll_tokens;
   mod scroll_wheel;
+  mod scrollbar_edge;
   mod scrollbar_lane;
   mod soft_wrap_selection;
   mod style;

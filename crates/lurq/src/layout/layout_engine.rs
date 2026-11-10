@@ -1357,7 +1357,6 @@ impl LayoutEngine {
             .and_then(|color| color.resolve(&palette))
             .unwrap_or(DEFAULT_TEXT_SELECTION_COLOR);
           let padding = self.resolved_padding_for_size(node, result.size);
-          let content_width = (result.size.width - padding.left - padding.right).max(0.0);
           let content_height = (result.size.height - padding.top - padding.bottom).max(0.0);
           // Selections cover the glyphs' band in each line box (the font's
           // ascent and descent), not the leading around it.
@@ -1365,15 +1364,9 @@ impl LayoutEngine {
           let vertical_offset = padding.top + text_input_vertical_offset(state, content_height) + band_top;
           let selection_clip = intersect_clip(
             clip,
-            ClipRect {
-              x: abs_x + padding.left,
-              y: abs_y + padding.top,
-              width: content_width,
-              height: content_height,
-              active: true,
-              border_radius: None,
-            }
-            .transformed(transform),
+            self
+              .text_input_viewport(node, state, result, (abs_x, abs_y), padding)
+              .transformed(transform),
           );
           for selection in state.selection_ranges() {
             let (row_top, row_height) = state.selection_band_for_row(selection.y, (band_top, band_height));
@@ -1426,28 +1419,21 @@ impl LayoutEngine {
               state.overflow(),
               TextInputOverflow::Scroll | TextInputOverflow::Multiline
             ) {
+              // The text is drawn down to the bottom of the box that shows
+              // it: a multiline input's bottom padding scrolls with its text.
+              let viewport = self.text_input_viewport(node, state, result, (abs_x, abs_y), padding);
+              let text_top = abs_y + padding.top - scroll_y;
               (
                 abs_x + padding.left - scroll_x,
-                abs_y + padding.top - scroll_y
+                text_top
                   + if state.painted_layout().is_some() {
                     text_input_vertical_offset(state, content_height)
                   } else {
                     0.0
                   },
                 content_width + scroll_x,
-                content_height + scroll_y,
-                intersect_clip(
-                  clip,
-                  ClipRect {
-                    x: abs_x + padding.left,
-                    y: abs_y + padding.top,
-                    width: content_width,
-                    height: content_height,
-                    active: true,
-                    border_radius: None,
-                  }
-                  .transformed(transform),
-                ),
+                (viewport.y + viewport.height - text_top).max(0.0),
+                intersect_clip(clip, viewport.transformed(transform)),
               )
             } else {
               (
@@ -1577,8 +1563,8 @@ impl LayoutEngine {
     match node.node_kind() {
       NodeKind::TextInput { state, style, .. } if state.is_focused() && self.should_render_text_input_caret(node) => {
         let padding = self.resolved_padding_for_size(node, result.size);
-        let content_width = (result.size.width - padding.left - padding.right).max(0.0);
         let content_height = (result.size.height - padding.top - padding.bottom).max(0.0);
+        let viewport = self.text_input_viewport(node, state, result, (abs_x, abs_y), padding);
         let caret_line_height = state.caret_height();
         // Line height controls row pitch, but the insertion caret should track
         // the glyph/em height. Otherwise readable multiline leading produces
@@ -1631,12 +1617,9 @@ impl LayoutEngine {
             clip,
             ClipRect {
               // Room for a caret at the start of a line.
-              x: abs_x + padding.left - TEXT_INPUT_CARET_WIDTH,
-              y: abs_y + padding.top,
-              width: content_width + TEXT_INPUT_CARET_WIDTH,
-              height: content_height,
-              active: true,
-              border_radius: None,
+              x: viewport.x - TEXT_INPUT_CARET_WIDTH,
+              width: viewport.width + TEXT_INPUT_CARET_WIDTH,
+              ..viewport
             }
             .transformed(transform),
           ),
@@ -1877,15 +1860,7 @@ impl LayoutEngine {
     }
 
     if let Some((state, direction)) = node.scroll_container() {
-      let (viewport_x, viewport_y) = match node.node_kind() {
-        // A multiline text input scrolls the text inside its padding.
-        NodeKind::TextInput { .. } => {
-          let padding = self.resolved_padding_for_size(node, result.size);
-          (abs_x + padding.left, abs_y + padding.top)
-        }
-        _ => (abs_x, abs_y),
-      };
-      state.set_viewport_position(viewport_x, viewport_y);
+      state.set_viewport_position(abs_x, abs_y);
       let sb_style = node.scrollbar_style(self.scrollbar.borrow().clone());
       state.set_style(sb_style.clone());
       let thumb_color = sb_style.thumb_color;
@@ -2412,7 +2387,13 @@ impl LayoutEngine {
     let mut result = if frame_is_flat || padding_is_flat {
       self.layout_flat_box(glyph_engine, node, constraints, &frame, &padding, child_overrides)
     } else {
-      self.layout_node_content(glyph_engine, node, constraints, child_overrides)
+      self.layout_node_content(
+        glyph_engine,
+        node,
+        constraints,
+        ResolvedPadding::default(),
+        child_overrides,
+      )
     };
     self.lay_out_text_selection(glyph_engine, node, &mut result);
     #[cfg(feature = "markdown")]
@@ -2420,15 +2401,18 @@ impl LayoutEngine {
     result
   }
 
+  /// Lays out what `node` holds inside `padding`, which `constraints` already
+  /// leave out.
   fn layout_node_content(
     &self,
     glyph_engine: &mut GlyphEngine,
     node: &Node,
     constraints: Constraints,
+    padding: ResolvedPadding,
     child_overrides: Option<&[Option<ChildLayoutOverride>]>,
   ) -> LayoutResult {
     match node.layout_kind() {
-      LayoutKind::Leaf => self.layout_leaf(glyph_engine, node, constraints),
+      LayoutKind::Leaf => self.layout_leaf(glyph_engine, node, constraints, padding),
       LayoutKind::Row {
         spacing,
         align,
@@ -2492,7 +2476,13 @@ impl LayoutEngine {
   // Leaf controls and scroll layout have large temporaries. Keep them out of
   // the dispatch frame that stays on the stack while containers recurse.
   #[inline(never)]
-  fn layout_leaf(&self, glyph_engine: &mut GlyphEngine, node: &Node, constraints: Constraints) -> LayoutResult {
+  fn layout_leaf(
+    &self,
+    glyph_engine: &mut GlyphEngine,
+    node: &Node,
+    constraints: Constraints,
+    padding: ResolvedPadding,
+  ) -> LayoutResult {
     match node.node_kind() {
       NodeKind::Text { state, style, .. } => {
         let source = node.text_content().unwrap_or_default();
@@ -2533,7 +2523,7 @@ impl LayoutEngine {
           style,
           placeholder_style.as_deref(),
           constraints,
-          self.text_input_scrollbar_lane(node),
+          padding,
         );
       }
       NodeKind::Checkbox { .. } => {
@@ -3501,7 +3491,13 @@ impl LayoutEngine {
       max_height: (outer_constraints.max_height - v_pad).max(0.0),
     };
 
-    let mut result = self.layout_node_content(glyph_engine, node, inner_constraints, child_overrides);
+    let resolved = ResolvedPadding {
+      left,
+      top,
+      right,
+      bottom,
+    };
+    let mut result = self.layout_node_content(glyph_engine, node, inner_constraints, resolved, child_overrides);
     result.size = outer_constraints.constrain(Size::new(result.size.width + h_pad, result.size.height + v_pad));
 
     if left != 0.0 || top != 0.0 {
