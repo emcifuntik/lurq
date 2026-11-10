@@ -186,6 +186,10 @@ name = "styled_editor"
 required-features = ["markdown", "winit", "wgpu", "clipboard"]
 
 [[example]]
+name = "text_input_scrollbar"
+required-features = ["winit", "wgpu", "screenshot"]
+
+[[example]]
 name = "text_interaction_probe"
 required-features = ["winit", "dx12", "perf_profile"]
 
