@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+Behaviour changes:
+
+- A multiline `TextInput` places its scrollbar from its own box, as every scroll container does. Before, the bar was placed from the box inside the input's padding, so a vertical bar sat `padding.right + edge_inset` from the input's right edge and its track ended `padding + end_inset` from the top and bottom edges. Now it sits `edge_inset` from the right edge and its track ends `end_inset` from the top and bottom edges, whatever the padding, and the thumb's drag and the track's press take the pointer there. A `ScrollBarPlacement::Reserved` lane is at the input's right edge, with the right padding between it and the text; the text wraps at the same width as before. An app that moved the bar outward with a negative `edge_inset`, or chose insets to make up for the padding, must set the insets it wants from the input's edge.
+- A multiline `TextInput`'s padding scrolls with its text, as a browser's `textarea` does. The text is clipped at the input's top and bottom edges (inside its border) instead of at the padding: scrolled down, lines run through the top padding, and at the start lines run through the bottom padding; the top padding shows over the first line at the start and the bottom padding under the last line at the end. The offsets the text scrolls between are unchanged, and the caret's line is still kept in view inside the padding. A single-line input and scroll containers are unchanged.
+
 ## 0.58.4 — 2026-11-08
 
 Fixes:

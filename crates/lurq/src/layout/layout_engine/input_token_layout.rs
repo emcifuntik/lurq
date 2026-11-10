@@ -1,7 +1,7 @@
 //! Styled paragraph geometry and paint share the exact input layout.
 use std::sync::Arc;
 
-use super::{DEFAULT_TEXT_INPUT_WIDTH, LayoutEngine, TextInputOutput, multiline_preferred_height};
+use super::{DEFAULT_TEXT_INPUT_WIDTH, LayoutEngine, ResolvedPadding, TextInputOutput, multiline_preferred_height};
 pub(crate) use crate::app::glyph_engine::input_tokens::DecoratedInputLayout as TokenLayout;
 use crate::{
   app::glyph_engine::{
@@ -21,7 +21,7 @@ impl LayoutEngine {
     base: &TextStyle,
     constraints: Constraints,
     tokens: InputTokens,
-    scrollbar_lane: f32,
+    padding: ResolvedPadding,
   ) -> crate::layout::layout_result::LayoutResult {
     let width = Self::decorated_input_width(state, constraints);
     let styles = tokens
@@ -55,14 +55,7 @@ impl LayoutEngine {
         }
       })
       .collect();
-    self.layout_decorated_input(
-      glyphs,
-      state,
-      base,
-      constraints,
-      (tokens.source, styles),
-      scrollbar_lane,
-    )
+    self.layout_decorated_input(glyphs, state, base, constraints, (tokens.source, styles), padding)
   }
 
   /// Lays out `source` with a text style per range, sharing the geometry
@@ -74,7 +67,7 @@ impl LayoutEngine {
     base: &TextStyle,
     constraints: Constraints,
     (source, styles): (Arc<str>, Vec<TokenStyle>),
-    scrollbar_lane: f32,
+    padding: ResolvedPadding,
   ) -> crate::layout::layout_result::LayoutResult {
     let wrap = state.overflow() == TextInputOverflow::Multiline;
     let width = Self::decorated_input_width(state, constraints);
@@ -106,7 +99,7 @@ impl LayoutEngine {
       line_height: layout.line_height,
       text_band: Some(layout.selection_band(0.0)),
       token_layout: Some(layout),
-      scrollbar_lane,
+      padding,
     };
     Self::text_input_result(state, output)
   }
