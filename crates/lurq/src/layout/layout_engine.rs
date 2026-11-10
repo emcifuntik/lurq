@@ -50,6 +50,7 @@ mod input_token_quads;
 #[cfg(feature = "perf_profile")]
 mod layout_trace;
 mod opacity_groups;
+mod scrollbar_quads;
 mod select_quads;
 mod selection_layout;
 #[cfg(feature = "screenshot")]
@@ -223,6 +224,10 @@ impl Clone for OverlayLayoutRecord {
 pub(crate) struct LayoutEngine {
   last_recalculated: Cell<bool>,
   text_input_caret_visible: Cell<bool>,
+  /// The time of the frame being painted (`begin_scrollbar_frame`).
+  scrollbar_frame_at: Cell<std::time::Instant>,
+  /// When a bar painted in this frame next changes (`take_scrollbar_change`).
+  scrollbar_change_at: Cell<Option<std::time::Instant>>,
   /// The theme the values below were copied from, and its version then
   /// (`set_theme`). `None` until a theme is set: the values are the defaults.
   theme_seen: RefCell<Option<(Theme, u64)>>,
@@ -517,6 +522,8 @@ impl LayoutEngine {
     Self {
       last_recalculated: Cell::new(false),
       text_input_caret_visible: Cell::new(true),
+      scrollbar_frame_at: Cell::new(std::time::Instant::now()),
+      scrollbar_change_at: Cell::new(None),
       theme_seen: RefCell::new(None),
       palette: RefCell::new(ThemePalette::default()),
       border_sizes: RefCell::new(ThemeBorderSizes::default()),
@@ -1863,90 +1870,7 @@ impl LayoutEngine {
       state.set_viewport_position(abs_x, abs_y);
       let sb_style = node.scrollbar_style(self.scrollbar.borrow().clone());
       state.set_style(sb_style.clone());
-      let thumb_color = sb_style.thumb_color;
-
-      match direction {
-        ScrollDirection::Vertical | ScrollDirection::Both => {
-          if let Some(geo) = state.scrollbar_geometry_for_axis(ScrollAxis::Vertical, &sb_style) {
-            if sb_style.track_color.a() > 0 {
-              quads.push(Quad {
-                x: geo.track_x,
-                y: geo.track_y,
-                width: geo.track_width,
-                height: geo.track_height,
-                opacity: DEFAULT_QUAD_OPACITY,
-                transform: Transform2D::IDENTITY,
-                transform_origin: None,
-                content: QuadContent::Rect {
-                  color: sb_style.track_color,
-                  gradient: None,
-                },
-                border_radius: Some(crate::node::border::BorderRadius::all(sb_style.track_radius)),
-                border: None,
-                clip,
-              });
-            }
-            quads.push(Quad {
-              x: geo.thumb_x,
-              y: geo.thumb_y,
-              width: geo.thumb_width,
-              height: geo.thumb_height,
-              opacity: DEFAULT_QUAD_OPACITY,
-              transform: Transform2D::IDENTITY,
-              transform_origin: None,
-              content: QuadContent::Rect {
-                color: thumb_color,
-                gradient: None,
-              },
-              border_radius: Some(crate::node::border::BorderRadius::all(sb_style.thumb_radius)),
-              border: None,
-              clip,
-            });
-          }
-        }
-        _ => {}
-      }
-      match direction {
-        ScrollDirection::Horizontal | ScrollDirection::Both => {
-          if let Some(geo) = state.scrollbar_geometry_for_axis(ScrollAxis::Horizontal, &sb_style) {
-            if sb_style.track_color.a() > 0 {
-              quads.push(Quad {
-                x: geo.track_x,
-                y: geo.track_y,
-                width: geo.track_width,
-                height: geo.track_height,
-                opacity: DEFAULT_QUAD_OPACITY,
-                transform: Transform2D::IDENTITY,
-                transform_origin: None,
-                content: QuadContent::Rect {
-                  color: sb_style.track_color,
-                  gradient: None,
-                },
-                border_radius: Some(crate::node::border::BorderRadius::all(sb_style.track_radius)),
-                border: None,
-                clip,
-              });
-            }
-            quads.push(Quad {
-              x: geo.thumb_x,
-              y: geo.thumb_y,
-              width: geo.thumb_width,
-              height: geo.thumb_height,
-              opacity: DEFAULT_QUAD_OPACITY,
-              transform: Transform2D::IDENTITY,
-              transform_origin: None,
-              content: QuadContent::Rect {
-                color: thumb_color,
-                gradient: None,
-              },
-              border_radius: Some(crate::node::border::BorderRadius::all(sb_style.thumb_radius)),
-              border: None,
-              clip,
-            });
-          }
-        }
-        _ => {}
-      }
+      self.push_scrollbar_quads(&state, direction, &sb_style, clip, quads);
     }
   }
 

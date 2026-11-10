@@ -1,4 +1,6 @@
-use crate::node::color::Color;
+use std::time::{Duration, Instant};
+
+use crate::{animation::Easing, node::color::Color};
 
 const DEFAULT_SCROLLBAR_WIDTH: f32 = 8.0;
 const DEFAULT_SCROLLBAR_MIN_THUMB_LENGTH: f32 = 24.0;
@@ -7,6 +9,10 @@ const DEFAULT_SCROLLBAR_THUMB_COLOR: Color = Color::new(0, 0, 0, 80);
 const DEFAULT_SCROLLBAR_THUMB_RADIUS: f32 = 4.0;
 const DEFAULT_SCROLLBAR_TRACK_RADIUS: f32 = 4.0;
 const DEFAULT_SCROLLBAR_PADDING: f32 = 2.0;
+const DEFAULT_SCROLLBAR_FADE_DELAY: Duration = Duration::from_millis(600);
+const DEFAULT_SCROLLBAR_FADE_DURATION: Duration = Duration::from_millis(200);
+/// How long a fading bar keeps one opacity: a frame of a 60 Hz display.
+const FADE_FRAME: Duration = Duration::from_millis(16);
 
 const THIN_SCROLLBAR_WIDTH: f32 = 4.0;
 const THIN_SCROLLBAR_MIN_THUMB_LENGTH: f32 = 16.0;
@@ -43,14 +49,34 @@ pub struct ScrollBarStyle {
   pub end_inset: Option<f32>,
   pub visible: ScrollBarVisibility,
   pub placement: ScrollBarPlacement,
+  /// How long a [`ScrollBarVisibility::OnHover`] bar stays after the pointer
+  /// left its container, the content stopped scrolling and its thumb was
+  /// let go, before it starts to fade.
+  pub fade_delay: Duration,
+  /// How long a [`ScrollBarVisibility::OnHover`] bar takes to fade out. Zero
+  /// hides it at once when [`Self::fade_delay`] ends.
+  pub fade_duration: Duration,
+  /// The curve a [`ScrollBarVisibility::OnHover`] bar fades out along.
+  pub fade_easing: Easing,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScrollBarVisibility {
+  /// The bar shows while the content overflows.
   #[default]
   Auto,
+  /// The bar shows whether or not the content overflows.
   Always,
+  /// No bar is painted and none takes the pointer; the wheel, the keyboard
+  /// and scroll requests still scroll the content.
   Never,
+  /// The bar of overflowing content shows while the pointer is over its
+  /// scroll container, while the content scrolls and while its thumb is
+  /// dragged. Then it stays for [`ScrollBarStyle::fade_delay`] and fades out
+  /// over [`ScrollBarStyle::fade_duration`]. Hidden, it is not painted and
+  /// takes no pointer, like [`Self::Never`]; shown, it is an [`Self::Auto`]
+  /// bar.
+  OnHover,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,6 +100,9 @@ impl Default for ScrollBarStyle {
       end_inset: None,
       visible: ScrollBarVisibility::Auto,
       placement: ScrollBarPlacement::Overlay,
+      fade_delay: DEFAULT_SCROLLBAR_FADE_DELAY,
+      fade_duration: DEFAULT_SCROLLBAR_FADE_DURATION,
+      fade_easing: Easing::EASE_OUT,
     }
   }
 }
@@ -122,6 +151,109 @@ impl ScrollBarStyle {
     Self {
       visible: ScrollBarVisibility::Never,
       ..Self::default()
+    }
+  }
+
+  /// The default bar, shown only while the pointer is over its container,
+  /// the content scrolls or its thumb is dragged
+  /// ([`ScrollBarVisibility::OnHover`]).
+  pub fn on_hover() -> Self {
+    Self {
+      visible: ScrollBarVisibility::OnHover,
+      ..Self::default()
+    }
+  }
+
+  /// Sets [`Self::fade_delay`] and [`Self::fade_duration`].
+  pub fn fade(mut self, delay: Duration, duration: Duration) -> Self {
+    self.fade_delay = delay;
+    self.fade_duration = duration;
+    self
+  }
+}
+
+/// What a [`ScrollBarVisibility::OnHover`] bar shows in one frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ScrollBarRevealFrame {
+  /// 0 for a hidden bar, 1 for a shown one, between them while it fades.
+  pub(crate) opacity: f32,
+  /// When the bar next looks different with nothing else happening: the end
+  /// of its delay or the next frame of its fade.
+  pub(crate) next_change: Option<Instant>,
+}
+
+impl ScrollBarRevealFrame {
+  const HIDDEN: Self = Self {
+    opacity: 0.0,
+    next_change: None,
+  };
+  const SHOWN: Self = Self {
+    opacity: 1.0,
+    next_change: None,
+  };
+}
+
+/// Whether a [`ScrollBarVisibility::OnHover`] bar is shown, and since when
+/// nothing holds it there.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ScrollBarReveal {
+  shown: bool,
+  idle_since: Option<Instant>,
+}
+
+impl ScrollBarReveal {
+  /// Whether the bar is painted, at any opacity, and so takes the pointer.
+  pub(crate) fn is_shown(&self) -> bool {
+    self.shown
+  }
+
+  /// Advances to the frame at `now`. `held` says the pointer is over the
+  /// container or drags the thumb, `scrolled` that the content moved since
+  /// the frame before; either shows the bar. A bar nothing holds stays for
+  /// the style's delay from the first frame that found it so, then fades.
+  /// Content that fits has no bar to show.
+  pub(crate) fn advance(
+    &mut self,
+    style: &ScrollBarStyle,
+    now: Instant,
+    held: bool,
+    scrolled: bool,
+    overflows: bool,
+  ) -> ScrollBarRevealFrame {
+    if !overflows {
+      *self = Self::default();
+      return ScrollBarRevealFrame::HIDDEN;
+    }
+    if held {
+      self.shown = true;
+      self.idle_since = None;
+      return ScrollBarRevealFrame::SHOWN;
+    }
+    if scrolled {
+      self.shown = true;
+      self.idle_since = Some(now);
+    }
+    if !self.shown {
+      return ScrollBarRevealFrame::HIDDEN;
+    }
+    let idle_since = *self.idle_since.get_or_insert(now);
+    let idle = now.saturating_duration_since(idle_since);
+    if idle < style.fade_delay {
+      return ScrollBarRevealFrame {
+        opacity: 1.0,
+        next_change: Some(idle_since + style.fade_delay),
+      };
+    }
+    let fading = idle - style.fade_delay;
+    if fading >= style.fade_duration {
+      *self = Self::default();
+      return ScrollBarRevealFrame::HIDDEN;
+    }
+    let progress = fading.as_secs_f64() / style.fade_duration.as_secs_f64();
+    let faded = style.fade_easing.evaluate(progress).clamp(0.0, 1.0);
+    ScrollBarRevealFrame {
+      opacity: (1.0 - faded) as f32,
+      next_change: Some(now + FADE_FRAME),
     }
   }
 }
@@ -214,7 +346,7 @@ pub fn compute_vertical_scrollbar(
 ) -> Option<ScrollBarGeometry> {
   match style.visible {
     ScrollBarVisibility::Never => return None,
-    ScrollBarVisibility::Auto if content_height <= viewport_height => return None,
+    ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover if content_height <= viewport_height => return None,
     _ => {}
   }
 
@@ -252,7 +384,7 @@ pub fn compute_horizontal_scrollbar(
 ) -> Option<ScrollBarGeometry> {
   match style.visible {
     ScrollBarVisibility::Never => return None,
-    ScrollBarVisibility::Auto if content_width <= viewport_width => return None,
+    ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover if content_width <= viewport_width => return None,
     _ => {}
   }
 

@@ -42,6 +42,7 @@ mod text_input {
   mod scroll_wheel;
   mod scrollbar_edge;
   mod scrollbar_lane;
+  mod scrollbar_visibility;
   mod soft_wrap_selection;
   mod style;
   #[cfg(feature = "markdown")]

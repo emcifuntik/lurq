@@ -736,6 +736,9 @@ pub struct Tree {
   pending_pass_reasons: PassReasons,
   scheduled_redraw_at: Option<Instant>,
   scheduled_redraw_due: bool,
+  /// When a scrollbar shown only on hover next changes, as of the last painted frame: the frame then must paint
+  /// it again, not show the cached render list.
+  scrollbar_change_at: Option<Instant>,
   recent_vertical_wheel: Option<RecentVerticalWheel>,
   perf_overlay_enabled: bool,
   perf_overlay_stats: PerfMeterStats,
@@ -1110,6 +1113,7 @@ impl Tree {
       pending_pass_reasons: PassReasons::default(),
       scheduled_redraw_at: None,
       scheduled_redraw_due: false,
+      scrollbar_change_at: None,
       recent_vertical_wheel: None,
       perf_overlay_enabled: false,
       perf_overlay_stats: PerfMeterStats::default(),
@@ -1357,6 +1361,25 @@ impl Tree {
         .fail("superseded by a newer capture request before a frame was rendered");
     }
     self.request_redraw();
+  }
+
+  /// Asks for a frame that paints the scrollbars again once one shown only on hover is due to change (the end of
+  /// its delay, the next step of its fade): the bar's opacity comes from the time of the frame, which no cached
+  /// render list has.
+  fn tick_scrollbar_change(&mut self) {
+    if self.scrollbar_change_at.is_some_and(|at| self.now() >= at) {
+      self.scrollbar_change_at = None;
+      self.cached_render_list = None;
+      self.needs_redraw = true;
+    }
+  }
+
+  /// Remembers when the bars the frame painted next change, and wakes the shell then.
+  fn schedule_scrollbar_change(&mut self, at: Option<Instant>) {
+    self.scrollbar_change_at = at;
+    if let Some(at) = at {
+      self.request_redraw_at(at);
+    }
   }
 
   pub(crate) fn request_redraw_at(&mut self, at: Instant) {
@@ -2317,6 +2340,7 @@ impl Tree {
     self.set_app_ref(app);
     let pass_started_at = Instant::now();
     self.tick_scheduled_redraw(Instant::now());
+    self.tick_scrollbar_change();
     let theme_version = self
       .root_ctx
       .as_ref()
@@ -2532,9 +2556,11 @@ impl Tree {
     };
     let mut quads = std::mem::take(&mut self.quad_scratch);
     quads.clear();
+    self.layout_engine.begin_scrollbar_frame(self.now());
     self
       .layout_engine
       .resolve_quads_with_viewport_into(root, &result, viewport_clip, &mut quads);
+    let scrollbar_change_at = self.layout_engine.take_scrollbar_change();
     let mut opacity_groups = std::mem::take(&mut self.opacity_groups);
     self.layout_engine.take_opacity_groups(&mut opacity_groups);
     #[cfg(feature = "screenshot")]
@@ -3118,6 +3144,7 @@ impl Tree {
       &mut layers,
     );
     self.opacity_groups = opacity_groups;
+    self.schedule_scrollbar_change(scrollbar_change_at);
     #[cfg(feature = "screenshot")]
     {
       sensitive_quads.clear();
@@ -9839,8 +9866,11 @@ fn set_node_hovered(node: &Node, hovered: bool) {
   node.set_style_hovered(hovered);
   // Mouse dispatch hovers a scrollbar under the pointer; leaving the
   // container (or the window) leaves its scrollbar too.
-  if !hovered && let Some((state, _)) = node.scroll_container() {
-    state.set_thumb_hovered(false);
+  if let Some((state, _)) = node.scroll_container() {
+    state.set_pointer_over(hovered);
+    if !hovered {
+      state.set_thumb_hovered(false);
+    }
   }
   if let Some(state) = node.slider_state() {
     state.set_hovered(hovered);
