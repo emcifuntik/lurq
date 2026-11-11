@@ -32,6 +32,11 @@ pub(crate) const SCREENS: &[Screen] = &[
     title: "Scroll",
     checks: "Momentum, nested and horizontal scrolling, taps while it moves",
   },
+  Screen {
+    path: "/virtual-list",
+    title: "Virtual list",
+    checks: "Ten thousand uneven rows mounted as they come into view: momentum, the ends, the way to the top",
+  },
 ];
 
 pub(crate) fn title_of(path: &str) -> &'static str {

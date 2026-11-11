@@ -13,6 +13,7 @@ mod home;
 mod scroll;
 mod touch;
 mod ui;
+mod virtual_list;
 
 use lurq::{
   app::{
@@ -57,6 +58,7 @@ fn routes() -> Routes {
       .route("/touch", |ctx| ctx.mount::<touch::TouchScreen>(()))
       .route("/gestures", |ctx| ctx.mount::<gestures::GesturesScreen>(()))
       .route("/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
+      .route("/virtual-list", |ctx| ctx.mount::<virtual_list::VirtualListScreen>(()))
       .fallback(home::home)
   })
 }
