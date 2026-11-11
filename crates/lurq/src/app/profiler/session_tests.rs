@@ -428,6 +428,34 @@ mod enabled {
   }
 
   #[test]
+  fn an_idle_pass_publishes_phases_without_the_collector_lock() {
+    use crate::{
+      app::{App, Tree},
+      components::{Column, Text},
+    };
+    let (handle_tx, handle_rx) = mpsc::channel();
+    let (begin_tx, begin_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+      let mut tree = Tree::new();
+      let mut app = App::new();
+      tree.set_root(Column::new().child(Text::new("Idle fixture")));
+      handle_tx.send(tree.profiling_handle()).unwrap();
+      begin_rx.recv().unwrap();
+      tree.pass_headless(&mut app);
+      done_tx.send(()).unwrap();
+    });
+    let handle = handle_rx.recv().unwrap();
+    // Held for the whole pass: a phase entry or exit that locks it never returns.
+    let locked = handle.inner.state.lock().unwrap();
+    begin_tx.send(()).unwrap();
+    let finished = done_rx.recv_timeout(Duration::from_secs(10));
+    drop(locked);
+    worker.join().unwrap();
+    assert!(finished.is_ok(), "an idle pass waited for the collector lock");
+  }
+
+  #[test]
   fn real_headless_pass_records_layout_without_manufacturing_render_or_gpu_timings() {
     use crate::{
       app::{App, Tree},

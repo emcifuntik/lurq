@@ -9,7 +9,7 @@ DevTools is feature-gated. Without the `devtools` Cargo feature, the app does no
 
 ## Enable It
 
-Build with `lurq/devtools` and mount DevTools from the main tree. For the WGPU desktop example, also enable `winit` and `wgpu`. Add `perf_profile` for frame timings and memory counters; `devtools` does not enable that feature automatically.
+Build with `lurq/devtools` and mount DevTools from the main tree. For the WGPU desktop example, also enable `winit` and `wgpu`. `devtools` enables `perf_profile`, so a DevTools build has frame timings, memory counters and [profiling sessions](../profiling/), and pays the profiler's idle cost on every pass (see [Profiler](#profiler)).
 
 ```rust
 use lurq::app::{App, Tree};
@@ -154,10 +154,10 @@ The main tree exposes this through internal tree methods such as debug overlay s
 
 ## Profiler
 
-Enable frame profiling at compile time:
+`devtools` turns on frame profiling (`perf_profile`) at compile time:
 
 ```toml
-lurq = { version = "0.58.5", features = ["winit", "wgpu", "devtools", "perf_profile"] }
+lurq = { version = "0.58.5", features = ["winit", "wgpu", "devtools"] }
 ```
 
 The profiler tab uses frame snapshots from the tree. A commit records:
@@ -171,7 +171,9 @@ The profiler tab uses frame snapshots from the tree. A commit records:
 - render triggers such as signal changes and memo recomputes,
 - perf overlay timings when available.
 
-With `perf_profile`, `Tree::last_profile()` returns the latest low-level frame profile for custom tooling. Without it, the DevTools frame profile contains default values.
+`Tree::last_profile()` returns the latest low-level frame profile for custom tooling. In a build with neither `devtools` nor `perf_profile` it holds default values.
+
+Profiling costs a DevTools build something on every pass, even with no session open: the pass timers run and each coarse phase is published so a session started during a slow pass can see it. Measured with `cargo bench -p lurq --bench profiler_idle` (Windows, release, headless pass): a pass over 40 unchanged rows takes about 0.31–0.34 µs without `perf_profile` and 0.52–0.61 µs with it and no session, so about 0.2 µs more per pass; an open session adds about 0.15–0.2 µs more. A pass that rebuilds a component and lays out the rows again takes 20–28 µs in every configuration, where the profiler's share is within the run-to-run noise. See [profiling](../profiling/#overhead) for details.
 
 The shared [profiling session service](../profiling/) also exposes independent bounded captures through `Tree::profiling_handle()` and MCP's `lurq_profile_start`/`lurq_profile_read`/`lurq_profile_end`. It records completed operations and unfinished current-phase observations without UI roundtrips. This is the common model/collector for a future DevTools profiling view; the current commit/signal inspector UI does not yet consume that service. GPU timestamp metrics remain unavailable.
 

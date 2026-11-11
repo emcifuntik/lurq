@@ -18,6 +18,7 @@ mod collector;
 #[cfg(any(feature = "serde", feature = "mcp"))]
 mod export;
 mod model;
+mod phase_slot;
 #[cfg(all(test, feature = "perf_profile"))]
 mod phase_tests;
 pub(crate) mod producer;

@@ -7,7 +7,7 @@ description: Shared bounded CPU profiling sessions, overlapping captures and sta
 
 Profiling is a toolkit service, shared by the embedded MCP server and in-process consumers. It does not require DevTools and does not collect component properties, text, input values, document paths, window titles or tokens. The existing DevTools inspector UI remains separate; a future profiling UI can consume this same session API and model.
 
-Enable `perf_profile` to instrument timings. MCP profiling tools are available with `mcp`; without `perf_profile`, availability reports `feature_disabled` and starting a session errors. Starting, reading and ending sessions never request redraw, layout, synthetic input or an event-loop roundtrip.
+Enable `perf_profile` to instrument timings; `devtools` enables it too (see [Overhead](#overhead) for what it costs a pass). MCP profiling tools are available with `mcp`; without `perf_profile`, availability reports `feature_disabled` and starting a session errors. Starting, reading and ending sessions never request redraw, layout, synthetic input or an event-loop roundtrip.
 
 ```rust
 use lurq::app::profiler::SessionOptions;
@@ -117,7 +117,18 @@ With the feature disabled, scope entry/child/drop performs no clock, collector l
 
 ## Cost and interpretation
 
-Collection has fixed bounds and one short mutex per coarse phase publication/completion; locks are never held around UI/backend work or JSON serialization. Immutable phase context/window IDs use `Arc<str>`, so marker/context copies do not allocate per frame. A completed payload is allocated once, then referenced by up to eight sessions. With no active session, no completed sample payload is retained or allocated and detailed per-Canvas-group phase markers skip their locks. Compiled `perf_profile` still runs the existing timers and coarse input/pass/layout/Canvas-backend/render phase markers so a session started mid-stall can observe current work. A session begun during an already-running Canvas group may initially observe the coarser Canvas-backend phase. Enabled-but-idle overhead remains unmeasured until a controlled runtime comparison. Without that feature, runtime timing hooks are compiled out.
+Collection has fixed bounds; locks are never held around UI/backend work or JSON serialization. Each window publishes its current coarse phase (phase, frame id, pass start, phase start) in its own fixed slot of atomics, written by phase entry and exit without the collector mutex and read by `read`/`end` under it, so a report never sees a half-written phase and a pass never waits for a reader. The collector mutex is taken only to record a completed operation while a session is active. Immutable phase context/window IDs use `Arc<str>`, so marker/context copies do not allocate per frame. A completed payload is allocated once, then referenced by up to eight sessions. With no active session, no completed sample payload is retained or allocated and detailed per-Canvas-group phase markers are skipped. Compiled `perf_profile` still runs the existing timers and coarse input/pass/layout/Canvas-backend/render phase markers so a session started mid-stall can observe current work. A session begun during an already-running Canvas group may initially observe the coarser Canvas-backend phase. Without that feature, runtime timing hooks are compiled out.
+
+### Overhead
+
+`cargo bench -p lurq --bench profiler_idle` measures a headless `Tree::pass` of a fixed scene in the three builds: run it without features for `off` and with `--features perf_profile` for `idle` (compiled in, no session) and `session` (one active session recording every pass). `devtools` enables `perf_profile`, so every DevTools build runs as `idle` until a session starts. Measured on a Windows development machine, release build, whose timings vary between runs by up to 3x (ranges are several runs of the same session):
+
+| Scene | `off` | `idle` | `session` |
+| --- | --- | --- | --- |
+| `static`: 40 unchanged rows, layout served from cache | 0.31–0.34 µs | 0.52–0.61 µs | 0.66–0.84 µs |
+| `signal_change`: one of 40 row components refreshed, then laid out | 20–28 µs | 20–23 µs | 21–26 µs |
+
+So compiled-in profiling costs a pass about 0.2 µs with no session (the pass timers, a few clock reads and one slot write per phase entry and exit) and about 0.15–0.2 µs more with an active session (recording the sample). On a pass with real work the difference is below the run-to-run noise. Before phases were published without the mutex, the same `static` pass measured 0.68 µs `idle` and 0.90 µs `session` in runs interleaved with 0.59–0.61 µs and 0.82–0.84 µs for the slot.
 
 Canvas text uses one active-session check at the pass boundary and a fixed numeric thread-local accumulator: no per-glyph clocks, collector locks, text/key payloads or allocations for profiling. Shape stages add coarse clocks only for captured passes. An unfinished text call remains visible through its enclosing coarse phase (such as `component_after_layout`); incomplete text-stage totals are never published as completed pass metrics.
 

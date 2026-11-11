@@ -9,7 +9,7 @@ use std::{
 
 #[cfg(feature = "perf_profile")]
 use super::application_state::{ApplicationSession, ApplicationState};
-use super::model::*;
+use super::{model::*, phase_slot::PhaseSlot};
 
 /// Shared capture API. No UI references, callbacks, redraws or per-node data.
 #[derive(Clone)]
@@ -50,15 +50,8 @@ pub(super) struct WindowState {
   pub(super) status: WindowStatus,
   #[cfg(feature = "perf_profile")]
   pub(super) scope_identity: Arc<str>,
-  progress: Option<Progress>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct Progress {
-  pub(crate) started: Instant,
-  pub(crate) phase_started: Instant,
-  pub(crate) frame_id: Option<u64>,
-  pub(crate) phase: Phase,
+  /// Shared with the window's producer, which publishes phases without this lock.
+  phase: Arc<PhaseSlot>,
 }
 
 impl Default for ProfilingHandle {
@@ -160,15 +153,15 @@ impl ProfilingHandle {
     let mut in_flight: Vec<_> = state
       .windows
       .values()
-      .filter(|window| visible(window))
+      .filter(|window| visible(window) && window.status.open)
       .filter_map(|window| {
-        window.progress.map(|progress| InFlightObservation {
+        window.phase.read().map(|progress| InFlightObservation {
           window: window.status.id.clone(),
           frame_id: progress.frame_id,
           phase: progress.phase,
           started_ms: self.millis(progress.started),
-          elapsed_ms: now.duration_since(progress.started).as_secs_f64() * 1000.,
-          phase_elapsed_ms: now.duration_since(progress.phase_started).as_secs_f64() * 1000.,
+          elapsed_ms: now.saturating_duration_since(progress.started).as_secs_f64() * 1000.,
+          phase_elapsed_ms: now.saturating_duration_since(progress.phase_started).as_secs_f64() * 1000.,
           started_before_session: progress.started < session.started,
         })
       })
@@ -206,11 +199,13 @@ impl ProfilingHandle {
     instant.saturating_duration_since(self.inner.epoch).as_secs_f64() * 1000.
   }
 
-  pub(crate) fn register(&self, id: &str, devtools: bool) {
+  /// Tracks a window and returns the slot its phases are published in; None
+  /// when the window is not tracked, whose phases are then not observable.
+  pub(crate) fn register(&self, id: &str, devtools: bool) -> Option<Arc<PhaseSlot>> {
     let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
     if id.len() > MAX_WINDOW_ID_BYTES {
       state.untracked_windows = state.untracked_windows.saturating_add(1);
-      return;
+      return None;
     }
     // Retain only bounded closed-window metadata; sample identities remain owned.
     if !state.windows.contains_key(id) && state.windows.len() >= MAX_TRACKED_WINDOWS {
@@ -223,12 +218,14 @@ impl ProfilingHandle {
         state.windows.remove(&id);
       } else {
         state.untracked_windows = state.untracked_windows.saturating_add(1);
-        return;
+        return None;
       }
     }
     #[cfg(feature = "perf_profile")]
     state.abandon_application(Some(id));
-    state.windows.insert(
+    // A closed producer publishes nothing, as before any window registered.
+    let phase = Arc::new(PhaseSlot::new(self.inner.epoch, !state.closed));
+    let replaced = state.windows.insert(
       id.into(),
       WindowState {
         status: WindowStatus {
@@ -236,11 +233,16 @@ impl ProfilingHandle {
           open: true,
           devtools,
         },
-        progress: None,
+        phase: phase.clone(),
         #[cfg(feature = "perf_profile")]
         scope_identity: id.into(),
       },
     );
+    // A producer still holding the replaced slot can no longer be observed.
+    if let Some(replaced) = replaced {
+      replaced.phase.set_open(false);
+    }
+    Some(phase)
   }
 
   pub(crate) fn set_open(&self, id: &str, open: bool) {
@@ -249,11 +251,10 @@ impl ProfilingHandle {
     if !open {
       state.abandon_application(Some(id));
     }
+    let closed = state.closed;
     if let Some(window) = state.windows.get_mut(id) {
       window.status.open = open;
-      if !open {
-        window.progress = None;
-      }
+      window.phase.set_open(open && !closed);
     }
   }
 
@@ -265,38 +266,6 @@ impl ProfilingHandle {
     if let Some(window) = state.windows.get_mut(id) {
       window.status.devtools = true;
     }
-  }
-
-  pub(crate) fn progress(&self, id: &str, next: Option<Progress>) -> Option<Progress> {
-    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
-    if state.closed {
-      return None;
-    }
-    let window = state.windows.get_mut(id)?;
-    if !window.status.open {
-      return None;
-    }
-    std::mem::replace(&mut window.progress, next)
-  }
-
-  pub(crate) fn enter_phase(&self, id: &str, frame_id: Option<u64>, phase: Phase) -> Option<Progress> {
-    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
-    if state.closed {
-      return None;
-    }
-    let window = state.windows.get_mut(id)?;
-    if !window.status.open {
-      return None;
-    }
-    let previous = window.progress;
-    let now = Instant::now();
-    window.progress = Some(Progress {
-      started: previous.map(|progress| progress.started).unwrap_or(now),
-      phase_started: now,
-      frame_id,
-      phase,
-    });
-    previous
   }
 
   pub(crate) fn record(&self, window: &str, started: Instant, data: SampleData) {
@@ -345,7 +314,7 @@ impl ProfilingHandle {
     state.closed = true;
     for window in state.windows.values_mut() {
       window.status.open = false;
-      window.progress = None;
+      window.phase.set_open(false);
     }
     // Sessions can still be ended/read through surviving handles.
   }

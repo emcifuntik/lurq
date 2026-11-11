@@ -13,7 +13,11 @@ use std::{
   time::{Duration, Instant},
 };
 
-use super::{FrameProfile, ProfilingHandle, collector::Progress, model::*};
+use super::{
+  FrameProfile, ProfilingHandle,
+  model::*,
+  phase_slot::{PhaseSlot, Published},
+};
 use crate::app::PassReport;
 
 /// Lightweight context passed to render backends for current-phase publication.
@@ -21,6 +25,8 @@ use crate::app::PassReport;
 pub struct ProfileContext {
   handle: ProfilingHandle,
   window: Arc<str>,
+  /// None when the collector does not track this window.
+  phase: Option<Arc<PhaseSlot>>,
   frame_id: Option<u64>,
 }
 
@@ -34,15 +40,20 @@ impl ProfileContext {
   pub(crate) fn canvas_text_scope(&self) -> super::canvas_text::PassScope {
     super::canvas_text::PassScope::new(self.capture_active())
   }
+  /// Publishes `phase` in the window's slot; takes no collector lock.
   pub fn phase(&self, phase: Phase) -> PhaseGuard {
-    let previous = self.handle.enter_phase(&self.window, self.frame_id, phase);
+    let previous = self
+      .phase
+      .as_ref()
+      .map(|slot| slot.enter(self.frame_id, phase))
+      .unwrap_or_default();
     PhaseGuard {
-      context: self.clone(),
+      slot: self.phase.clone(),
       previous,
     }
   }
 
-  /// Detailed Canvas phases avoid per-command-group locks with no capture.
+  /// Detailed Canvas phases skip their per-command-group slot writes with no capture.
   #[cfg(all(
     feature = "canvas",
     any(feature = "wgpu", all(feature = "dx12", target_os = "windows"))
@@ -132,13 +143,15 @@ impl Drop for UpdateGuard {
 }
 
 pub struct PhaseGuard {
-  context: ProfileContext,
-  previous: Option<Progress>,
+  slot: Option<Arc<PhaseSlot>>,
+  previous: Published,
 }
 
 impl Drop for PhaseGuard {
   fn drop(&mut self) {
-    self.context.handle.progress(&self.context.window, self.previous);
+    if let Some(slot) = &self.slot {
+      slot.restore(self.previous);
+    }
   }
 }
 
@@ -155,11 +168,12 @@ pub(crate) struct WindowProfiler {
 impl WindowProfiler {
   pub(crate) fn new() -> Self {
     let handle = ProfilingHandle::new();
-    handle.register("main", false);
+    let phase = handle.register("main", false);
     Self {
       context: ProfileContext {
         handle,
         window: "main".into(),
+        phase,
         frame_id: None,
       },
       root: true,
@@ -177,13 +191,15 @@ impl WindowProfiler {
     } else {
       self.context.handle.set_open(&self.context.window, false);
     }
+    let handle = parent.context.handle.clone();
+    let phase = handle.register(&id, devtools);
     self.context = ProfileContext {
-      handle: parent.context.handle.clone(),
+      handle,
       window: id.into(),
+      phase,
       frame_id: None,
     };
     self.root = false;
-    self.context.handle.register(&self.context.window, devtools);
   }
 
   pub(crate) fn handle(&self) -> ProfilingHandle {
