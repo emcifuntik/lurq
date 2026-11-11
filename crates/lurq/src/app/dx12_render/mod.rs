@@ -146,6 +146,10 @@ const DX12_ALWAYS_FULL_ATLAS_UPLOAD: bool = true;
 const IMAGE_SRV_FIRST_INDEX: usize = GLYPH_ATLAS_SRV_INDEX + 1;
 const FRAME_UPLOAD_ARENA_BYTES: usize = 32 * 1024 * 1024;
 const DX12_FRAME_WAIT_TIMEOUT_MS: u32 = 32;
+/// How long a readback worker waits for a frame capture's copy. Off the
+/// frame's thread, so far above a frame: only a stuck GPU reaches it.
+#[cfg(feature = "screenshot")]
+const DX12_CAPTURE_WAIT_TIMEOUT_MS: u32 = 5_000;
 const DX12_SLOW_FRAME_THRESHOLD: Duration = Duration::from_millis(12);
 const DX12_SLOW_PHASE_THRESHOLD: Duration = Duration::from_millis(6);
 const DX12_FRAME_NOT_READY: HRESULT = HRESULT(0x800705B4u32 as i32);
@@ -2569,10 +2573,33 @@ unsafe fn read_frame_capture(
   capture: RenderFrameCapture,
   readback: FrameCaptureReadback,
 ) {
-  // Without an event the call returns once the fence reaches the value.
-  if let Err(err) = fence.SetEventOnCompletion(fence_value, HANDLE::default()) {
-    capture.target.fail(format!("capture fence wait failed: {err:?}"));
-    return;
+  // Bounded, so a GPU that never finishes the copy fails the capture instead
+  // of keeping this worker and the capture's requester waiting forever.
+  if fence.GetCompletedValue() < fence_value {
+    let event = match CreateEventW(None, false, false, None) {
+      Ok(event) => event,
+      Err(err) => {
+        capture.target.fail(format!("capture fence event failed: {err:?}"));
+        return;
+      }
+    };
+    let waited = fence
+      .SetEventOnCompletion(fence_value, event)
+      .map(|()| WaitForSingleObject(event, DX12_CAPTURE_WAIT_TIMEOUT_MS));
+    let _ = CloseHandle(event);
+    match waited {
+      Err(err) => {
+        capture.target.fail(format!("capture fence wait failed: {err:?}"));
+        return;
+      }
+      Ok(wait) if wait == WAIT_TIMEOUT => {
+        capture.target.fail(format!(
+          "GPU work was still busy after {DX12_CAPTURE_WAIT_TIMEOUT_MS}ms; fence={fence_value}"
+        ));
+        return;
+      }
+      Ok(_) => {}
+    }
   }
   let buffer_size = readback.padded_bytes_per_row as usize * capture.height as usize;
   let read_range = D3D12_RANGE {

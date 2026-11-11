@@ -351,3 +351,28 @@ fn a_custom_backend_name_saves_in_a_form_that_loads() {
     assert_eq!(pass_of(&loaded, 0).backend, saved, "{backend:?}");
   }
 }
+
+#[test]
+fn a_type_name_the_loader_refuses_saves_in_a_form_that_loads() {
+  let long = "Wrapper<".repeat(40).leak();
+  for (name, saved) in [
+    ("Counter", "Counter".to_owned()),
+    ("Compteur\u{e9}<T>", "Compteur_<T>".to_owned()),
+    ("a/b\\c\"d", "a_b_c_d".to_owned()),
+    (&*long, long[..256].to_owned()),
+  ] {
+    let mut report = full_report();
+    let SampleData::Pass(pass) = &mut Arc::make_mut(&mut report.samples[0]).data else {
+      unreachable!("the first sample is a pass")
+    };
+    let span = pass.spans.last_mut().expect("the pass has spans");
+    span.component = Some(name);
+    let loaded = ProfileReport::from_recording_file(&report.to_recording_file())
+      .unwrap_or_else(|error| panic!("{name:?}: {error}"));
+    assert_eq!(
+      pass_of(&loaded, 0).spans.last().unwrap().component,
+      Some(saved.as_str()),
+      "{name:?}"
+    );
+  }
+}

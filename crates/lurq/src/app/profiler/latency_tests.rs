@@ -304,6 +304,13 @@ fn the_export_adds_latency_and_present_timing_without_content() {
   close(&input["data"]["latency_ms"]["input_to_present"], 43.0);
   assert!(input["data"]["latency_ms"]["queue_delay"].as_f64().unwrap() >= 0.0);
   assert!(input["data"]["latency_ms"]["dispatch"].as_f64().unwrap() >= 0.0);
+  // Version 1 times the sample as its dispatch: it ends `dispatch` after it
+  // starts, long before the frame that presented it.
+  close(
+    &input["completed_ms"],
+    input["started_ms"].as_f64().unwrap() + input["data"]["latency_ms"]["dispatch"].as_f64().unwrap(),
+  );
+  assert!(input["completed_ms"].as_f64().unwrap() < present["presented_ms"].as_f64().unwrap());
   assert_eq!(json["schema_version"], 1);
 }
 

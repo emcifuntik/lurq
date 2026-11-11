@@ -421,9 +421,22 @@ fn frames_input_and_ui_updates_are_markers_on_the_ui_thread() {
   assert_eq!(thread(&profile, "Worker")["markers"]["length"], 0);
 }
 
+fn recording_status(detailed: bool) -> RecordingStatus {
+  RecordingStatus {
+    max_bytes: DEFAULT_RECORDING_MAX_BYTES,
+    size_bytes: 0,
+    stopped_at_limit: false,
+    stopped_ms: None,
+    detailed,
+    screenshots: 0,
+    screenshot_bytes: 0,
+  }
+}
+
 #[test]
 fn a_detailed_recording_names_components_in_the_call_tree_and_causes_on_its_updates() {
   let mut report = full_report();
+  report.recording = Some(recording_status(true));
   let SampleData::Pass(pass) = &mut Arc::make_mut(&mut report.samples[0]).data else {
     unreachable!("the first sample is a pass")
   };
@@ -602,5 +615,39 @@ fn the_profile_holds_only_names_of_the_toolkit_and_the_recording() {
       ]
       .contains(&string.as_str());
     assert!(known, "unexpected string {string:?}");
+  }
+}
+
+#[test]
+fn a_report_that_is_not_a_detailed_recording_shows_no_components_or_causes() {
+  // A bounded session shares its samples with a detailed recording beside it.
+  let mut report = full_report();
+  let SampleData::Pass(pass) = &mut Arc::make_mut(&mut report.samples[0]).data else {
+    unreachable!("the first sample is a pass")
+  };
+  let at_ms = pass.spans[0].start_ns / MS;
+  pass.spans.insert(
+    3,
+    PhaseSpan {
+      component: Some("Counter"),
+      ..span(Phase::Rebuild, 3, at_ms + 1, at_ms + 2)
+    },
+  );
+  let SampleData::UiUpdate(update) = &mut Arc::make_mut(&mut report.samples[2]).data else {
+    unreachable!("the third sample is a UI update")
+  };
+  update.causes = vec![RenderCause {
+    component: "Counter",
+    source: RenderSource {
+      trigger: RenderTrigger::Signal,
+      value_type: Some("u32"),
+    },
+    via: None,
+  }];
+  for recording in [None, Some(recording_status(false))] {
+    report.recording = recording;
+    let file = report.to_firefox_profile();
+    assert!(!file.contains("Counter"), "{recording:?}");
+    assert!(!file.contains("u32"), "{recording:?}");
   }
 }

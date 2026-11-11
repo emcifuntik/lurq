@@ -2371,6 +2371,8 @@ impl Tree {
     }
     #[cfg(feature = "perf_profile")]
     if self.profiling.captured() {
+      // The counters are the profiler's own work: not part of the pass total.
+      self.profiling.end_pass_work();
       self.record_pass_counters(app);
     }
     // Publish completion only after observers and MCP reconciliation/replies.

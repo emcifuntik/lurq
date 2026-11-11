@@ -262,16 +262,6 @@ impl Component for DevTools {
     let active_tab = self.active_tab.get();
     let component_search = self.component_search.get();
     let profiler_state = self.profiler.get();
-    let profiler_actions = if active_tab == DevToolsTab::Profiler {
-      profiler::profiler_actions(
-        &profiler_state,
-        self.profiler.clone(),
-        props.profiling.clone(),
-        self.profiler_status_ticker.clone(),
-      )
-    } else {
-      Element::new()
-    };
 
     let mut signals_recording = self.signals_recording.get();
     if signals_recording.recording() {
@@ -317,7 +307,6 @@ impl Component for DevTools {
         props.on_save_node_screenshot.clone(),
         active_tab,
         self.active_tab.clone(),
-        profiler_actions,
         signals_recording.recording(),
         self.signals_recording.clone(),
       ))
@@ -341,7 +330,24 @@ impl Component for DevTools {
           let analysis = profiler::analysis_props(&profiler_state, self.profiler.clone())
             .map(|props| ctx.mount::<profiler_analysis::ProfilerAnalysis>(props))
             .unwrap_or_default();
-          profiler::profiler_view(&profiler_state, self.profiler.clone(), analysis)
+          // The tab's own toolbar: the top bar has no room for its buttons
+          // next to the tabs in a window of the default width.
+          Column::new()
+            .child(profiler::profiler_actions(
+              &profiler_state,
+              self.profiler.clone(),
+              props.profiling.clone(),
+              self.profiler_status_ticker.clone(),
+            ))
+            .child(profiler::profiler_view(
+              &profiler_state,
+              self.profiler.clone(),
+              analysis,
+            ))
+            .height(style::FILL)
+            .width(style::FILL)
+            .flex(1.0)
+            .into()
         }
         DevToolsTab::Signals => signals::signals_view(
           &snapshot,

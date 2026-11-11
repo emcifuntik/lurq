@@ -274,8 +274,10 @@ impl ProfilerState {
   }
 }
 
-/// Start/Stop, the live status of a running recording, the DevTools-window
-/// toggle, the file actions and Clear, for the top bar.
+/// The tab's toolbar: Start/Stop, the DevTools-window, Components and
+/// Screenshots toggles, the file actions and Clear on a row that wraps in a
+/// narrow window, and under it the live status of a running recording and the
+/// last error. They are lines of their own, so a long message moves no button.
 pub(crate) fn profiler_actions(
   state: &ProfilerState,
   state_signal: Signal<ProfilerState>,
@@ -285,14 +287,11 @@ pub(crate) fn profiler_actions(
   let recording = state.recording();
   let color = if recording { RED } else { PRIMARY };
   let label = if recording { "Stop recording" } else { "Start recording" };
-  let mut row = Row::new().align_items(Alignment::Center).spacing(8.0);
-  if let Some(status) = state.recording.as_ref().map(recording_status_line) {
-    row = row.child(mono_text(&status, 11.0, FontWeight::Medium, RED));
-  }
-  // Without a capture and not recording, the tab's body shows the error instead.
-  if let Some(error) = state.error.as_ref().filter(|_| recording || state.capture.is_some()) {
-    row = row.child(mono_text(error, 11.0, FontWeight::Medium, RED).nowrap());
-  }
+  let mut row = Row::new()
+    .align_items(Alignment::Center)
+    .spacing(8.0)
+    .wrap()
+    .width(FILL);
   row = row.child(
     toolbar_button(
       "circle",
@@ -361,15 +360,31 @@ pub(crate) fn profiler_actions(
     );
     row = file_actions(row, state, &state_signal);
   }
-  row
-    .child(
-      toolbar_button("trash-2", "Clear", MUTED, SURFACE_2, BORDER).on_click(move |_| {
-        status_ticker.stop();
-        state_signal.update(ProfilerState::clear);
-      }),
-    )
+  let row = row.child(
+    toolbar_button("trash-2", "Clear", MUTED, SURFACE_2, BORDER).on_click(move |_| {
+      status_ticker.stop();
+      state_signal.update(ProfilerState::clear);
+    }),
+  );
+  let mut toolbar = Column::new().spacing(6.0).child(row);
+  if let Some(status) = state.recording.as_ref().map(recording_status_line) {
+    toolbar = toolbar.child(mono_text(&status, 11.0, FontWeight::Medium, RED).width(FILL));
+  }
+  // Without a capture and not recording, the tab's body shows the error instead.
+  if let Some(error) = state.error.as_ref().filter(|_| recording || state.capture.is_some()) {
+    toolbar = toolbar.child(mono_text(error, 11.0, FontWeight::Medium, RED).width(FILL));
+  }
+  toolbar
+    .padding_custom(padding(8.0, 16.0, 8.0, 16.0))
+    .width(FILL)
+    .background(SURFACE)
+    .border_bottom(divider())
     .into()
 }
+
+/// Set while a Load, Save or Export dialog of this process is open.
+#[cfg(not(target_os = "ios"))]
+static FILE_DIALOG_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Load, and with a capture Save (a lurq recording file) and Export for the
 /// Firefox Profiler. Each asks for its file on a thread of its own, so the
@@ -379,8 +394,16 @@ fn file_actions(mut row: Row, state: &ProfilerState, state_signal: &Signal<Profi
   let on_thread = |state_signal: &Signal<ProfilerState>, run: fn(Signal<ProfilerState>)| {
     let state_signal = state_signal.clone();
     move |_| {
+      // One file dialog at a time: a second press while one is open would
+      // stack another over it.
+      if FILE_DIALOG_OPEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+      }
       let state_signal = state_signal.clone();
-      std::thread::spawn(move || run(state_signal));
+      std::thread::spawn(move || {
+        run(state_signal);
+        FILE_DIALOG_OPEN.store(false, std::sync::atomic::Ordering::Release);
+      });
     }
   };
   row = row.child(

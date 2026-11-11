@@ -126,7 +126,7 @@ impl ProfileReport {
         "submit_present": "CPU API wall time, not GPU execution",
         "fps": "on-demand rendering; sample count/interval is not throughput or FPS",
         "present": "presented_ms is when the backend's present call returned on the CPU, not when the display showed the frame; missed_vsync only inside a continuous run of frames (each wanted within a refresh of the previous present), never across an idle gap",
-        "input_latency": "an input sample starts when the shell's handler received the event (no OS timestamp); queue_delay to its dispatch, input_to_present to the CPU present of the first frame presented after it; no positions, keys or text",
+        "input_latency": "started_ms and completed_ms of an input sample are its dispatch, as before; the shell's handler received the event queue_delay earlier (no OS timestamp); input_to_present runs from that receipt to the CPU present of the first frame presented after it; the sample is published after that frame, so its sequence follows the pass; no positions, keys or text",
         "gpu_timing": "WGPU timestamp queries, only while a session is active: ui is the UI encoder from the start of its first render pass to the end of the window pass; canvas sums the Canvas command buffers of the frame, each start to end (null when the frame had none or not all were measured); arrives frames later, matched by window and frame_id; null when it never arrived or the adapter has no timestamp queries (see build.gpu_timestamps)",
         "screenshot": "a pass marked screenshot copied its frame for a recording's screenshot: its render, encode and submit include that copy; the readback and downscale run off the pass's thread"
       }
@@ -228,8 +228,18 @@ fn sample_json(sample: &ProfileSample, detailed: bool) -> Value {
       }
     }),
   };
-  json!({ "sequence": sample.sequence, "window": sample.window, "started_ms": sample.started_ms,
-    "completed_ms": sample.completed_ms, "data": data })
+  // Version 1 times an input sample as its dispatch: from the dispatch's start
+  // to its end. The sample itself starts when the shell received the event and
+  // is published once its frame is presented; `latency_ms` carries both.
+  let (started_ms, completed_ms) = match &sample.data {
+    SampleData::InputDispatch(input) => {
+      let started = sample.started_ms + ms(input.queue_delay);
+      (started, started + ms(input.total))
+    }
+    _ => (sample.started_ms, sample.completed_ms),
+  };
+  json!({ "sequence": sample.sequence, "window": sample.window, "started_ms": started_ms,
+    "completed_ms": completed_ms, "data": data })
 }
 
 fn source_json(source: &RenderSource) -> Value {

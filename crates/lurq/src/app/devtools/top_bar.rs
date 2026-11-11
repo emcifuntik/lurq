@@ -28,7 +28,6 @@ pub(crate) fn top_bar(
   on_save_node_screenshot: Option<DevToolsPathCallback>,
   active_tab: DevToolsTab,
   active_tab_signal: Signal<DevToolsTab>,
-  profiler_actions: Element,
   signals_recording: bool,
   signals_recording_store: Store<signals::SignalsRecordingState>,
 ) -> Element {
@@ -67,7 +66,8 @@ pub(crate) fn top_bar(
     ))
     .child(Spacer::new().flex(1.0))
     .child(match active_tab {
-      DevToolsTab::Profiler => profiler_actions,
+      // The Profiler tab draws its actions in a toolbar of its own.
+      DevToolsTab::Profiler => Row::new().align_items(Alignment::Center).into(),
       DevToolsTab::Signals => signals_actions(signals_recording, signals_recording_store),
       #[cfg(feature = "persistent_storage")]
       DevToolsTab::PersistentStorage => Row::new().align_items(Alignment::Center).into(),

@@ -263,6 +263,39 @@ mod type_name {
     T::decode_name(value)
   }
 
+  fn loadable_byte(byte: u8) -> bool {
+    (byte.is_ascii_graphic() || byte == b' ') && !matches!(byte, b'/' | b'\\' | b'"')
+  }
+
+  /// Whether `decode_name` takes `name`.
+  fn is_loadable(name: &str) -> bool {
+    !name.is_empty() && name.len() <= MAX_TYPE_NAME_BYTES && name.bytes().all(loadable_byte)
+  }
+
+  /// `name` as a file keeps it, so that every saved file loads: a type name
+  /// with other characters (a non-ASCII identifier) has each replaced by `_`,
+  /// and one longer than the limit (deeply nested generics) is cut to it.
+  fn loadable(name: &str) -> std::borrow::Cow<'_, str> {
+    if is_loadable(name) {
+      return name.into();
+    }
+    let mut kept: String = name
+      .chars()
+      .map(|ch| {
+        if ch.is_ascii() && loadable_byte(ch as u8) {
+          ch
+        } else {
+          '_'
+        }
+      })
+      .take(MAX_TYPE_NAME_BYTES)
+      .collect();
+    if kept.is_empty() {
+      kept.push('_');
+    }
+    kept.into()
+  }
+
   pub(super) trait TypeName: Sized {
     fn encode_name(&self) -> Value;
     fn decode_name(value: &Value) -> Result<Self, String>;
@@ -270,17 +303,12 @@ mod type_name {
 
   impl TypeName for &'static str {
     fn encode_name(&self) -> Value {
-      Value::from(*self)
+      Value::from(loadable(self).as_ref())
     }
 
     fn decode_name(value: &Value) -> Result<Self, String> {
       let name = value.as_str().ok_or("expected a string")?;
-      let valid = !name.is_empty()
-        && name.len() <= MAX_TYPE_NAME_BYTES
-        && name
-          .bytes()
-          .all(|byte| (byte.is_ascii_graphic() || byte == b' ') && !matches!(byte, b'/' | b'\\' | b'"'));
-      if !valid {
+      if !is_loadable(name) {
         return Err(format!(
           "expected a type name of at most {MAX_TYPE_NAME_BYTES} ASCII characters, without / \\ or \""
         ));

@@ -210,6 +210,9 @@ pub(crate) struct WindowProfiler {
   wants_next_frame: bool,
   /// When this pass's present returned (`presented`).
   presented_at: Option<Instant>,
+  /// When the pass's own work ended, before the runtime gathered its counters
+  /// (`end_pass_work`); the pass total stops here.
+  work_ended: Option<Instant>,
   refresh: Option<Duration>,
   presents: PresentTracker,
   /// A session took samples when the pass began.
@@ -249,6 +252,7 @@ impl WindowProfiler {
       continuing_from: None,
       wants_next_frame: false,
       presented_at: None,
+      work_ended: None,
       refresh: None,
       presents: PresentTracker::default(),
       captured: false,
@@ -379,6 +383,13 @@ impl WindowProfiler {
     (Instant::now(), guard)
   }
 
+  /// Ends the pass's own work: what the profiler does for the pass after
+  /// this (gathering its counters) stays out of its total, which keeps the
+  /// meaning it has in the version-1 export.
+  pub(crate) fn end_pass_work(&mut self) {
+    self.work_ended = Some(Instant::now());
+  }
+
   /// A session took samples when the pass began: the runtime then gathers
   /// the pass's counters (`set_counters`).
   pub(crate) fn captured(&self) -> bool {
@@ -484,6 +495,7 @@ impl WindowProfiler {
     self.detailed = false;
     let component_layouts = std::mem::take(&mut self.component_layouts);
     let presented_at = self.presented_at.take();
+    let work_ended = self.work_ended.take();
     let frame_id = self.context.frame_id.take();
     let presented = report
       .rendered
@@ -512,7 +524,7 @@ impl WindowProfiler {
           frame_id: presented.map(|(frame_id, _)| frame_id),
           rendered: report.rendered,
           cached_render_list: report.used_cached_render_list,
-          total: start.elapsed(),
+          total: work_ended.map_or_else(|| start.elapsed(), |ended| ended.saturating_duration_since(start)),
           layout_update: self.layout,
           layout_compute: self.layout_compute,
           component_after_layout: self.component_after_layout,

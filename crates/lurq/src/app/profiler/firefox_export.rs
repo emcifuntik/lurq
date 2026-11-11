@@ -11,7 +11,7 @@
 //! markers and the memory counters; "UI scopes" and "Worker" hold the
 //! application scopes of those lanes. Spans that overlap on one track (passes
 //! of two windows, scopes of two workers) go to a further thread of it.
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use serde_json::{Value, json};
 
@@ -41,12 +41,49 @@ impl ProfileReport {
   }
 }
 
+/// `sample` without what only a detailed recording may show: the spans of
+/// components and the causes of updates. Shared as it is when it has none.
+fn without_detail(sample: &Arc<super::ProfileSample>) -> Arc<super::ProfileSample> {
+  let has_detail = match &sample.data {
+    SampleData::Pass(pass) => {
+      pass.spans.iter().any(|span| span.component.is_some()) || !pass.component_layouts.is_empty()
+    }
+    SampleData::UiUpdate(update) => !update.causes.is_empty(),
+    SampleData::InputDispatch(_) => false,
+  };
+  if !has_detail {
+    return sample.clone();
+  }
+  let mut sample = super::ProfileSample::clone(sample);
+  match &mut sample.data {
+    SampleData::Pass(pass) => {
+      pass.spans.retain(|span| span.component.is_none());
+      pass.component_layouts.clear();
+    }
+    SampleData::UiUpdate(update) => update.causes.clear(),
+    SampleData::InputDispatch(_) => {}
+  }
+  Arc::new(sample)
+}
+
 pub(super) fn firefox_profile(report: &ProfileReport) -> Value {
   let scopes = report
     .application_scopes
     .as_ref()
     .map_or(&[][..], |scopes| scopes.samples.as_slice());
-  let forest = forest_of(&report.samples, scopes);
+  // Component spans and render causes belong to a detailed recording only. A
+  // bounded session shares its samples with a detailed recording running
+  // beside it, so they are taken out of its samples here, as the JSON export
+  // leaves them out.
+  let detailed = report.recording.is_some_and(|recording| recording.detailed);
+  let stripped: Vec<Arc<super::ProfileSample>>;
+  let samples: &[Arc<super::ProfileSample>] = if detailed {
+    &report.samples
+  } else {
+    stripped = report.samples.iter().map(without_detail).collect();
+    &stripped
+  };
+  let forest = forest_of(samples, scopes);
   let mut children = vec![Vec::new(); forest.len()];
   for (index, span) in forest.spans().iter().enumerate() {
     if let Some(parent) = span.parent {
@@ -80,7 +117,7 @@ pub(super) fn firefox_profile(report: &ProfileReport) -> Value {
         thread.sample(forest.spans()[root as usize].end_ns, None);
       }
       if threads.is_empty() {
-        thread.add_markers(report);
+        thread.add_markers(samples);
       }
       let name = match lane {
         0 => name.to_owned(),
@@ -216,8 +253,8 @@ impl Thread {
   }
 
   /// A marker per pass, input dispatch and UI update of the report.
-  fn add_markers(&mut self, report: &ProfileReport) {
-    for sample in &report.samples {
+  fn add_markers(&mut self, samples: &[Arc<super::ProfileSample>]) {
+    for sample in samples {
       let window = self.string(&sample.window);
       let (name, category, data) = match &sample.data {
         SampleData::Pass(pass) => (
