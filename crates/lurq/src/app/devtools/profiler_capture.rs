@@ -1,9 +1,10 @@
-//! A finished Profiler-tab recording, prepared for display: its passes and
-//! markers in time order, time ranges over them, the frame rate of a range and
-//! the detail of one pass. Holds only the content-free samples of the session.
+//! A finished Profiler-tab recording, prepared for display: its passes,
+//! markers and application scopes in time order, time ranges over them, the
+//! frame rate of a range and the detail of one pass. Holds only the
+//! content-free samples of the session.
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use crate::app::profiler::{PassSample, ProfileReport, ProfileSample, SampleData};
+use crate::app::profiler::{ApplicationScopeSample, PassSample, ProfileReport, ProfileSample, SampleData};
 
 /// One 60 Hz refresh: the timeline draws its budget line here and colours the
 /// passes that take longer.
@@ -45,6 +46,11 @@ pub(crate) struct ProfilerCapture {
   pub passes: Vec<Arc<ProfileSample>>,
   /// Input dispatch and UI update samples, ordered by start.
   pub markers: Vec<Arc<ProfileSample>>,
+  /// The application scopes the session kept (its last
+  /// `MAX_APPLICATION_SCOPES_PER_SESSION`), ordered by start.
+  pub scopes: Vec<Arc<ApplicationScopeSample>>,
+  /// Application scopes completed but no longer kept.
+  pub dropped_scopes: u64,
   pub size_bytes: u64,
   pub stopped_at_limit: bool,
   /// Operations that began before Start, left out of the recording.
@@ -63,15 +69,40 @@ impl ProfilerCapture {
     };
     passes.sort_by(by_start);
     markers.sort_by(by_start);
+    let mut scopes = report
+      .application_scopes
+      .as_ref()
+      .map_or_else(Vec::new, |scopes| scopes.samples.clone());
+    scopes.sort_by(|a, b| {
+      a.scope
+        .started_ms
+        .total_cmp(&b.scope.started_ms)
+        .then(a.scope.id.0.cmp(&b.scope.id.0))
+    });
     Self {
       started_ms: report.started_ms,
       ended_ms: report.ended_ms.unwrap_or(report.observed_ms).max(report.started_ms),
       passes,
       markers,
+      scopes,
+      dropped_scopes: report
+        .application_scopes
+        .as_ref()
+        .map_or(0, |scopes| scopes.dropped_scopes),
       size_bytes: report.recording.map_or(0, |recording| recording.size_bytes),
       stopped_at_limit: report.recording.is_some_and(|recording| recording.stopped_at_limit),
       boundary_excluded: report.boundary_excluded_samples,
     }
+  }
+
+  /// The application scopes that overlap `range`.
+  pub(crate) fn scopes_in(&self, range: TimeRange) -> impl Iterator<Item = &Arc<ApplicationScopeSample>> + '_ {
+    let end = self
+      .scopes
+      .partition_point(|scope| scope.scope.started_ms <= range.end_ms);
+    self.scopes[..end]
+      .iter()
+      .filter(move |scope| scope.completed_ms >= range.start_ms)
   }
 
   pub(crate) fn whole(&self) -> TimeRange {

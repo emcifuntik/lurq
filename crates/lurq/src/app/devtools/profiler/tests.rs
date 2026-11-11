@@ -176,6 +176,8 @@ fn capture(passes: Vec<Arc<ProfileSample>>, ended_ms: f64) -> ProfilerCapture {
     ended_ms,
     passes,
     markers: Vec::new(),
+    scopes: Vec::new(),
+    dropped_scopes: 0,
     size_bytes: 0,
     stopped_at_limit: false,
     boundary_excluded: 0,
@@ -490,26 +492,71 @@ fn counter_tracks_take_values_per_pass_and_mark_missing_allocations_unavailable(
   assert!(counters.rows.contains(&("allocations", "unavailable".to_owned())));
 }
 
+/// The Profiler tab as DevTools draws it, the analysis mounted under the
+/// timeline, on the state in its props.
+struct TabHost {
+  status_ticker: crate::app::ctx::Interval,
+}
+
+#[derive(Clone)]
+struct TabHostProps {
+  state: Signal<ProfilerState>,
+}
+
+impl PartialEq for TabHostProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.state.id() == other.state.id()
+  }
+}
+
+impl crate::app::component::DevtoolsInspectable for TabHostProps {
+  fn write_info(&self, _buffer: &mut Vec<crate::app::component::ComponentInfo>) {}
+}
+
+impl crate::app::component::Component for TabHost {
+  type Props = TabHostProps;
+
+  fn create(ctx: &mut crate::app::ctx::Ctx) -> Self {
+    Self {
+      status_ticker: ctx.create_interval(STATUS_INTERVAL, || {}),
+    }
+  }
+
+  fn render(&self, ctx: &mut crate::app::ctx::Ctx) -> impl Into<Element> {
+    let signal = ctx.props::<TabHostProps>().state.clone();
+    let state = signal.get();
+    let analysis = analysis_props(&state, signal.clone())
+      .map(|props| ctx.mount::<super::super::profiler_analysis::ProfilerAnalysis>(props))
+      .unwrap_or_default();
+    Column::new()
+      .child(profiler_actions(
+        &state,
+        signal.clone(),
+        None,
+        self.status_ticker.clone(),
+      ))
+      .child(profiler_view(&state, signal, analysis))
+      .width(FILL)
+      .height(FILL)
+  }
+}
+
+/// A headless tree of the tab at `width` by `height` on `state`, laid out.
+fn tab_tree(state: Signal<ProfilerState>, width: u32, height: u32) -> (crate::app::App, crate::app::Tree) {
+  let mut app = crate::app::App::new();
+  let mut tree = crate::app::Tree::new();
+  tree.resize(width, height);
+  tree.mount_root::<TabHost>(&mut app, TabHostProps { state });
+  // The second pass draws the chart at the width the first one measured.
+  tree.pass_headless(&mut app);
+  tree.pass_headless(&mut app);
+  (app, tree)
+}
+
 #[test]
 fn the_tab_lays_out_in_every_state() {
-  use crate::app::{App, Tree};
   let lay_out = |state: ProfilerState| {
-    let signal = Signal::new(state.clone());
-    let mut app = App::new();
-    let mut tree = Tree::new();
-    tree.resize(1440, 860);
-    tree.set_root(
-      Column::new()
-        .child(profiler_actions(
-          &state,
-          signal.clone(),
-          None,
-          crate::app::ctx::Ctx::new_root().create_interval(STATUS_INTERVAL, || {}),
-        ))
-        .child(profiler_view(&state, signal))
-        .size(1440.0, 860.0),
-    );
-    tree.pass_headless(&mut app);
+    tab_tree(Signal::new(state), 1440, 860);
   };
   lay_out(ProfilerState::default());
   lay_out(ProfilerState {
@@ -557,6 +604,115 @@ fn the_tab_lays_out_in_every_state() {
     selected: Some(2),
     ..ProfilerState::default()
   });
+}
+
+/// Elements in the tree.
+fn element_count(tree: &crate::app::Tree) -> usize {
+  fn count(element: crate::node::ElementRef<'_>) -> usize {
+    1 + element.children().iter().map(count).sum::<usize>()
+  }
+  tree.root().map_or(0, count)
+}
+
+/// Milliseconds `run` took, each time.
+fn timed(times: usize, mut run: impl FnMut(usize)) -> Vec<f64> {
+  (0..times)
+    .map(|index| {
+      let started = std::time::Instant::now();
+      run(index);
+      started.elapsed().as_secs_f64() * 1000.0
+    })
+    .collect()
+}
+
+fn median_and_max(mut times: Vec<f64>) -> (f64, f64) {
+  times.sort_by(f64::total_cmp);
+  (times[times.len() / 2], times[times.len() - 1])
+}
+
+/// The tab on a 2000-frame recording with 64k spans, the analysis over all
+/// of it: each hover, wheel zoom, pan step and table switch is one input and
+/// one headless pass of the whole tab (layout and component work; no GPU).
+/// Prints the times; `cargo test --release` for representative numbers.
+#[test]
+fn a_recording_of_2000_frames_stays_interactive() {
+  use super::super::profiler_analysis::{
+    CHART_ID, ROW_HEIGHT, TOOLTIP_ID, TRACK_HEADER_HEIGHT, tab_id, tests::synthetic_capture,
+  };
+  use crate::app::events::{MouseButton, ScrollPhase};
+  let capture = Arc::new(synthetic_capture(2000, 20));
+  let whole = capture.whole();
+  let signal = Signal::new(ProfilerState {
+    selected: capture.slowest_in(whole),
+    range: Some(whole),
+    capture: Some(capture.clone()),
+    ..ProfilerState::default()
+  });
+  let started = std::time::Instant::now();
+  let (mut app, mut tree) = tab_tree(signal.clone(), 1440, 860);
+  let first_ms = started.elapsed().as_secs_f64() * 1000.0;
+  let bounds = |tree: &mut crate::app::Tree, id: &str| {
+    tree
+      .find_element(|element: crate::node::ElementRef<'_>| element.id() == Some(id))
+      .map(|element| element.bounds())
+  };
+  let chart = bounds(&mut tree, CHART_ID).expect("the flame chart");
+  assert!(chart.width > 600.0, "{chart:?}");
+  let elements = element_count(&tree);
+  let chart_blocks = tree
+    .get_element_by_id(CHART_ID)
+    .map(|chart| chart.children().len())
+    .unwrap();
+  assert!(chart_blocks < 2000, "{chart_blocks} chart elements");
+
+  let y = chart.y + TRACK_HEADER_HEIGHT + ROW_HEIGHT * 1.5;
+  let hover = timed(120, |step| {
+    tree.mouse_move(chart.x + chart.width * (step as f32 + 0.5) / 120.0, y);
+    tree.pass_headless(&mut app);
+  });
+  assert!(bounds(&mut tree, TOOLTIP_ID).is_some(), "hovering shows the tooltip");
+  let x = chart.x + chart.width * 0.5;
+  let zoom = timed(15, |_| {
+    tree.scroll(x, y, 0.0, 120.0, ScrollPhase::Scroll);
+    tree.pass_headless(&mut app);
+  });
+  tree.mouse_down(x, y, MouseButton::Left);
+  let pan = timed(20, |step| {
+    tree.mouse_move(x - 10.0 * (step as f32 + 1.0), y);
+    tree.pass_headless(&mut app);
+  });
+  tree.mouse_up(x - 200.0, y, MouseButton::Left);
+  let mut switch = |label: &str| {
+    let chip = bounds(&mut tree, &tab_id(label)).unwrap();
+    let started = std::time::Instant::now();
+    tree.mouse_down(chip.x + 4.0, chip.y + 4.0, MouseButton::Left);
+    tree.mouse_up(chip.x + 4.0, chip.y + 4.0, MouseButton::Left);
+    tree.pass_headless(&mut app);
+    started.elapsed().as_secs_f64() * 1000.0
+  };
+  let call_tree_ms = switch("Call tree");
+  let bottom_up_ms = switch("Bottom-up");
+  let back_ms = switch("Call tree");
+  assert!(
+    tree
+      .find_element(|element: crate::node::ElementRef<'_>| element.text_content() == Some("pass"))
+      .is_some()
+  );
+
+  let (hover_median, hover_max) = median_and_max(hover);
+  let (zoom_median, zoom_max) = median_and_max(zoom);
+  let (pan_median, pan_max) = median_and_max(pan);
+  eprintln!(
+    "2000 frames, {} spans, {elements} elements ({chart_blocks} in the chart): first passes {first_ms:.1} ms; \
+     hover median {hover_median:.2} ms max {hover_max:.2}; zoom median {zoom_median:.2} max {zoom_max:.2}; pan \
+     median {pan_median:.2} max {pan_max:.2}; call tree {call_tree_ms:.1} ms, bottom-up {bottom_up_ms:.1} ms, call \
+     tree again {back_ms:.1} ms",
+    capture
+      .passes
+      .iter()
+      .map(|sample| pass_of(sample).unwrap().spans.len())
+      .sum::<usize>(),
+  );
 }
 
 #[test]

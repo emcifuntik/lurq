@@ -2,6 +2,7 @@ mod inspector;
 #[cfg(feature = "persistent_storage")]
 mod persistent_storage_panel;
 mod profiler;
+mod profiler_analysis;
 mod profiler_capture;
 mod signals;
 mod snapshot;
@@ -336,7 +337,12 @@ impl Component for DevTools {
           props.on_debug_overlay_path.clone(),
           props.on_selected_path.clone(),
         ),
-        DevToolsTab::Profiler => profiler::profiler_view(&profiler_state, self.profiler.clone()),
+        DevToolsTab::Profiler => {
+          let analysis = profiler::analysis_props(&profiler_state, self.profiler.clone())
+            .map(|props| ctx.mount::<profiler_analysis::ProfilerAnalysis>(props))
+            .unwrap_or_default();
+          profiler::profiler_view(&profiler_state, self.profiler.clone(), analysis)
+        }
         DevToolsTab::Signals => signals::signals_view(
           &snapshot,
           selected_signal,

@@ -6,7 +6,7 @@ pub const MAX_APPLICATION_SCOPES_PER_SESSION: usize = 128;
 pub const MAX_APPLICATION_LABEL_BYTES: usize = 64;
 
 /// Application-declared execution lane; this is not a measured OS thread ID.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ApplicationLane {
   Ui,
   Worker,
