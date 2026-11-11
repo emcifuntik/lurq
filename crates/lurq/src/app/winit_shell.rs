@@ -177,6 +177,17 @@ impl WinitWindow {
   /// Show the initial window without activating the application or taking keyboard focus.
   /// Intended for app instances driven through automation rather than local input.
   /// Winit supports this startup behavior on Windows and macOS.
+  /// The ways a phone's app lets its content be turned: `Orientation`s joined with `|`. Without it the app
+  /// turns every way its `Info.plist` names. It does nothing on a desktop.
+  pub fn with_orientations(self, orientations: impl Into<crate::app::window::Orientations>) -> Self {
+    let orientations = orientations.into();
+    #[cfg(target_os = "ios")]
+    ios::allow_orientations(orientations);
+    #[cfg(not(target_os = "ios"))]
+    let _ = orientations;
+    self
+  }
+
   pub fn with_start_without_focus(mut self, start_without_focus: bool) -> Self {
     self.start_without_focus = start_without_focus;
     self.attrs = self.attrs.with_active(!start_without_focus);
@@ -496,6 +507,8 @@ impl ManagedWindow {
       self.frames.attach();
       if let Ok(RawWindowHandle::UiKit(handle)) = window.window_handle().map(|handle| handle.as_raw()) {
         ios::join_scene(handle.ui_view);
+        ios::hear_hardware_keys(handle.ui_view);
+        ios::apply_orientations(handle.ui_view);
         self.status_bar_tap = Some(ios::StatusBarTap::new(handle.ui_view));
         self.text_input = Some(ios_text::TextInput::new(handle.ui_view));
         // The platform draws the focused input's caret and selection; see `ios_text`.
@@ -858,6 +871,30 @@ impl ManagedWindow {
       if let Some(window) = &self.window {
         let size = surface_size(window);
         if self.presented_size != Some(size) {
+          self.tree.request_redraw();
+        }
+      }
+      // The keys of a keyboard attached to the device.
+      for key in ios::take_hardware_keys() {
+        if key.down {
+          self
+            .tree
+            .key_down_with_meta(key.key, key.code, key.shift, key.ctrl, key.alt, key.meta);
+        } else {
+          self
+            .tree
+            .key_up_with_meta(key.key, key.code, key.shift, key.ctrl, key.alt, key.meta);
+        }
+      }
+      ios::watch_orientation();
+      // What the scene said of the app goes to the window's handler; what the app was started with waits
+      // until there is one.
+      if self.tree.window().has_app_event_handler() {
+        let events = ios::take_app_events();
+        if !events.is_empty() {
+          for event in &events {
+            self.tree.window().dispatch_app_event(event);
+          }
           self.tree.request_redraw();
         }
       }

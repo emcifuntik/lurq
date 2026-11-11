@@ -415,7 +415,7 @@ pub(super) fn register_scene_delegate() {
     _cmd: Sel,
     scene: *mut AnyObject,
     _session: *mut AnyObject,
-    _options: *mut AnyObject,
+    options: *mut AnyObject,
   ) {
     let Some(scene) = (unsafe { Retained::retain(scene) }) else {
       return;
@@ -423,6 +423,13 @@ pub(super) fn register_scene_delegate() {
     let is_window_scene: bool = unsafe { msg_send![&*scene, isKindOfClass: class!(UIWindowScene)] };
     if !is_window_scene {
       return;
+    }
+    // What the app was started with: a link, a shortcut.
+    if let Some(options) = unsafe { options.as_ref() } {
+      let contexts: *mut AnyObject = unsafe { msg_send![options, URLContexts] };
+      push_opened_urls(contexts);
+      let shortcut: *mut AnyObject = unsafe { msg_send![options, shortcutItem] };
+      push_shortcut(shortcut);
     }
     let previous = SCENE.swap(Retained::into_raw(scene), Ordering::AcqRel);
     if !previous.is_null() {
@@ -436,6 +443,41 @@ pub(super) fn register_scene_delegate() {
       .is_ok()
     {
       drop(unsafe { Retained::from_raw(scene) });
+    }
+  }
+  extern "C-unwind" fn did_become_active(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject) {
+    push_app_event(AppEvent::Active);
+  }
+  extern "C-unwind" fn will_resign_active(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject) {
+    push_app_event(AppEvent::Inactive);
+  }
+  extern "C-unwind" fn did_enter_background(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject) {
+    push_app_event(AppEvent::Background);
+  }
+  extern "C-unwind" fn will_enter_foreground(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject) {
+    push_app_event(AppEvent::Foreground);
+  }
+  extern "C-unwind" fn open_urls(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject, contexts: *mut AnyObject) {
+    push_opened_urls(contexts);
+  }
+  extern "C-unwind" fn perform_shortcut(
+    _this: &AnyObject,
+    _cmd: Sel,
+    _scene: *mut AnyObject,
+    shortcut: *mut AnyObject,
+    completion: *mut c_void,
+  ) {
+    push_shortcut(shortcut);
+    // The block `void (^)(BOOL)` UIKit waits on: its function is the third word after its `isa`.
+    #[repr(C)]
+    struct Block {
+      isa: *const c_void,
+      flags: i32,
+      reserved: i32,
+      invoke: unsafe extern "C" fn(*mut c_void, Bool),
+    }
+    if let Some(block) = unsafe { completion.cast::<Block>().as_ref() } {
+      unsafe { (block.invoke)(completion, Bool::YES) };
     }
   }
   extern "C-unwind" fn window(_this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
@@ -456,6 +498,30 @@ pub(super) fn register_scene_delegate() {
     builder.add_method(
       sel!(sceneDidDisconnect:),
       did_disconnect as extern "C-unwind" fn(_, _, _),
+    );
+    builder.add_method(
+      sel!(sceneDidBecomeActive:),
+      did_become_active as extern "C-unwind" fn(_, _, _),
+    );
+    builder.add_method(
+      sel!(sceneWillResignActive:),
+      will_resign_active as extern "C-unwind" fn(_, _, _),
+    );
+    builder.add_method(
+      sel!(sceneDidEnterBackground:),
+      did_enter_background as extern "C-unwind" fn(_, _, _),
+    );
+    builder.add_method(
+      sel!(sceneWillEnterForeground:),
+      will_enter_foreground as extern "C-unwind" fn(_, _, _),
+    );
+    builder.add_method(
+      sel!(scene:openURLContexts:),
+      open_urls as extern "C-unwind" fn(_, _, _, _),
+    );
+    builder.add_method(
+      sel!(windowScene:performActionForShortcutItem:completionHandler:),
+      perform_shortcut as extern "C-unwind" fn(_, _, _, _, _),
     );
     builder.add_method(sel!(window), window as extern "C-unwind" fn(_, _) -> _);
     builder.add_method(sel!(setWindow:), set_window as extern "C-unwind" fn(_, _, _));
@@ -554,4 +620,280 @@ pub(super) fn safe_area(view: NonNull<c_void>) -> (f32, f32, f32, f32) {
     insets.bottom as f32,
     insets.left as f32,
   )
+}
+
+use crate::app::window::AppEvent;
+
+/// What the scene said of the app since the shell last asked.
+static APP_EVENTS: Mutex<Vec<AppEvent>> = Mutex::new(Vec::new());
+
+fn push_app_event(event: AppEvent) {
+  APP_EVENTS.lock().unwrap().push(event);
+}
+
+/// The links of a set of `UIOpenURLContext`.
+fn push_opened_urls(contexts: *mut AnyObject) {
+  let Some(contexts) = (unsafe { contexts.as_ref() }) else {
+    return;
+  };
+  unsafe {
+    let contexts: Retained<AnyObject> = msg_send![contexts, allObjects];
+    let count: usize = msg_send![&*contexts, count];
+    for index in 0..count {
+      let context: Retained<AnyObject> = msg_send![&*contexts, objectAtIndex: index];
+      let url: Retained<AnyObject> = msg_send![&*context, URL];
+      let text: Option<Retained<AnyObject>> = msg_send![&*url, absoluteString];
+      if let Some(text) = text.and_then(|text| string_of(&text)) {
+        push_app_event(AppEvent::OpenUrl(text));
+      }
+    }
+  }
+}
+
+/// The type of a `UIApplicationShortcutItem`.
+fn push_shortcut(shortcut: *mut AnyObject) {
+  let Some(shortcut) = (unsafe { shortcut.as_ref() }) else {
+    return;
+  };
+  let kind: Option<Retained<AnyObject>> = unsafe { msg_send![shortcut, type] };
+  if let Some(kind) = kind.and_then(|kind| string_of(&kind)) {
+    push_app_event(AppEvent::Shortcut(kind));
+  }
+}
+
+fn string_of(string: &AnyObject) -> Option<String> {
+  let utf8: *const std::ffi::c_char = unsafe { msg_send![string, UTF8String] };
+  if utf8.is_null() {
+    return None;
+  }
+  Some(unsafe { std::ffi::CStr::from_ptr(utf8) }.to_string_lossy().into_owned())
+}
+
+/// What the scene said of the app since the last call, in the order it said it.
+pub(super) fn take_app_events() -> Vec<AppEvent> {
+  std::mem::take(&mut *APP_EVENTS.lock().unwrap())
+}
+
+/// A key of a keyboard attached to the device, pressed or let go.
+pub(super) struct HardwareKey {
+  pub(super) key: String,
+  pub(super) code: String,
+  pub(super) shift: bool,
+  pub(super) ctrl: bool,
+  pub(super) alt: bool,
+  pub(super) meta: bool,
+  pub(super) down: bool,
+}
+
+/// The keys of an attached keyboard since the shell last asked. winit passes none of them on.
+static HARDWARE_KEYS: Mutex<Vec<HardwareKey>> = Mutex::new(Vec::new());
+
+pub(super) fn take_hardware_keys() -> Vec<HardwareKey> {
+  std::mem::take(&mut *HARDWARE_KEYS.lock().unwrap())
+}
+
+/// The name and the code the tree knows a key by, from its HID usage and what it types.
+fn key_names(usage: isize, typed: &str) -> Option<(String, String)> {
+  let named = |name: &str| Some((name.to_owned(), name.to_owned()));
+  match usage {
+    0x04..=0x1D => {
+      let letter = (b'A' + (usage - 0x04) as u8) as char;
+      let key = if typed.chars().count() == 1 {
+        typed.to_owned()
+      } else {
+        letter.to_ascii_lowercase().to_string()
+      };
+      Some((key, format!("Key{letter}")))
+    }
+    0x1E..=0x27 => {
+      let digit = (usage - 0x1E + 1) % 10;
+      let key = if typed.chars().count() == 1 {
+        typed.to_owned()
+      } else {
+        digit.to_string()
+      };
+      Some((key, format!("Digit{digit}")))
+    }
+    0x28 => named("Enter"),
+    0x29 => named("Escape"),
+    0x2A => named("Backspace"),
+    0x2B => named("Tab"),
+    0x2C => Some((" ".to_owned(), "Space".to_owned())),
+    0x4A => named("Home"),
+    0x4B => named("PageUp"),
+    0x4C => named("Delete"),
+    0x4D => named("End"),
+    0x4E => named("PageDown"),
+    0x4F => named("ArrowRight"),
+    0x50 => named("ArrowLeft"),
+    0x51 => named("ArrowDown"),
+    0x52 => named("ArrowUp"),
+    _ if typed.chars().count() == 1 => Some((typed.to_owned(), String::new())),
+    _ => None,
+  }
+}
+
+/// Takes the keys of a set of `UIPress` for the tree: all of them, or those named in `only`, which is what a
+/// view that types leaves to the tree, the rest being the text system's. Tells whether every press was taken.
+pub(super) fn take_presses(presses: *mut AnyObject, down: bool, only: Option<&[&str]>) -> bool {
+  let Some(presses) = (unsafe { presses.as_ref() }) else {
+    return true;
+  };
+  let mut all = true;
+  unsafe {
+    let presses: Retained<AnyObject> = msg_send![presses, allObjects];
+    let count: usize = msg_send![&*presses, count];
+    for index in 0..count {
+      let press: Retained<AnyObject> = msg_send![&*presses, objectAtIndex: index];
+      let key: Option<Retained<AnyObject>> = msg_send![&*press, key];
+      let Some(key) = key else {
+        all = false;
+        continue;
+      };
+      let usage: isize = msg_send![&*key, keyCode];
+      let typed: Option<Retained<AnyObject>> = msg_send![&*key, charactersIgnoringModifiers];
+      let typed = typed.and_then(|typed| string_of(&typed)).unwrap_or_default();
+      let flags: isize = msg_send![&*key, modifierFlags];
+      let Some((name, code)) = key_names(usage, &typed) else {
+        all = false;
+        continue;
+      };
+      if only.is_some_and(|only| !only.contains(&name.as_str())) {
+        all = false;
+        continue;
+      }
+      HARDWARE_KEYS.lock().unwrap().push(HardwareKey {
+        key: name,
+        code,
+        shift: flags & (1 << 17) != 0,
+        ctrl: flags & (1 << 18) != 0,
+        alt: flags & (1 << 19) != 0,
+        meta: flags & (1 << 20) != 0,
+        down,
+      });
+    }
+  }
+  all
+}
+
+/// Has a view of winit's hear the keys of an attached keyboard, which its class leaves to the responders
+/// after it: the two methods are added to the class, once.
+pub(super) fn hear_hardware_keys(view: NonNull<c_void>) {
+  extern "C-unwind" fn began(_this: &AnyObject, _cmd: Sel, presses: *mut AnyObject, _event: *mut AnyObject) {
+    take_presses(presses, true, None);
+  }
+  extern "C-unwind" fn ended(_this: &AnyObject, _cmd: Sel, presses: *mut AnyObject, _event: *mut AnyObject) {
+    take_presses(presses, false, None);
+  }
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  let class = view.class();
+  if class
+    .instance_method(sel!(pressesBegan:withEvent:))
+    .is_some_and(|method| {
+      // Its own, not the one every responder has.
+      class!(UIResponder)
+        .instance_method(sel!(pressesBegan:withEvent:))
+        .is_none_or(|inherited| !std::ptr::eq(method, inherited))
+    })
+  {
+    return;
+  }
+  let types = c"v@:@@";
+  unsafe {
+    let class = std::ptr::from_ref(class).cast_mut();
+    objc2::ffi::class_addMethod(
+      class.cast(),
+      sel!(pressesBegan:withEvent:),
+      std::mem::transmute::<
+        extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+        unsafe extern "C-unwind" fn(),
+      >(began),
+      types.as_ptr(),
+    );
+    objc2::ffi::class_addMethod(
+      class.cast(),
+      sel!(pressesEnded:withEvent:),
+      std::mem::transmute::<
+        extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+        unsafe extern "C-unwind" fn(),
+      >(ended),
+      types.as_ptr(),
+    );
+  }
+}
+
+use crate::app::window::{Orientation, Orientations};
+
+/// The four ways, with the number UIKit has for each as an interface orientation. UIKit names a side by where
+/// the home button was, the other end from the device's top.
+const ORIENTATIONS: [(Orientation, usize); 4] = [
+  (Orientation::Portrait, 1),
+  (Orientation::PortraitUpsideDown, 2),
+  (Orientation::LandscapeLeft, 3),
+  (Orientation::LandscapeRight, 4),
+];
+
+/// The ways the app allows, as a `UIInterfaceOrientationMask`; 0 leaves it to winit, which allows every way
+/// the app's `Info.plist` names.
+static ALLOWED_ORIENTATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The interface orientation last told to the app, or 0.
+static TOLD_ORIENTATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Says which ways the app's content may be turned. To be called before the window is made.
+pub(super) fn allow_orientations(allowed: Orientations) {
+  let mask = ORIENTATIONS
+    .iter()
+    .filter(|(orientation, _)| allowed.contains(*orientation))
+    .fold(0, |mask, (_, number)| mask | (1 << number));
+  ALLOWED_ORIENTATIONS.store(mask, Ordering::Release);
+}
+
+/// Has the view controller of a view of winit's answer UIKit with the ways the app allows, in place of
+/// winit's answer, which can tell upright from on its side and not one side from the other.
+pub(super) fn apply_orientations(view: NonNull<c_void>) {
+  extern "C-unwind" fn supported(_this: &AnyObject, _cmd: Sel) -> usize {
+    ALLOWED_ORIENTATIONS.load(Ordering::Acquire)
+  }
+  if ALLOWED_ORIENTATIONS.load(Ordering::Acquire) == 0 {
+    return;
+  }
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  unsafe {
+    let window: Option<Retained<AnyObject>> = msg_send![view, window];
+    let controller: Option<Retained<AnyObject>> = match &window {
+      Some(window) => msg_send![&**window, rootViewController],
+      None => None,
+    };
+    let Some(controller) = controller else {
+      return;
+    };
+    let class = std::ptr::from_ref(controller.class()).cast_mut();
+    objc2::ffi::class_replaceMethod(
+      class.cast(),
+      sel!(supportedInterfaceOrientations),
+      std::mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel) -> usize, unsafe extern "C-unwind" fn()>(supported),
+      c"Q@:".as_ptr(),
+    );
+    let _: () = msg_send![&*controller, setNeedsUpdateOfSupportedInterfaceOrientations];
+  }
+}
+
+/// Tells the app the way its content is turned, the first time and whenever it changes: an
+/// [`AppEvent::Rotated`] among what [`take_app_events`] gives. To be called each turn of the loop.
+pub(super) fn watch_orientation() {
+  let scene = SCENE.load(Ordering::Acquire);
+  let Some(scene) = (unsafe { scene.as_ref() }) else {
+    return;
+  };
+  let number: isize = unsafe { msg_send![scene, interfaceOrientation] };
+  let Some((orientation, number)) = ORIENTATIONS
+    .iter()
+    .find(|(_, known)| *known as isize == number)
+    .copied()
+  else {
+    return;
+  };
+  if TOLD_ORIENTATION.swap(number, Ordering::AcqRel) != number {
+    push_app_event(AppEvent::Rotated(orientation));
+  }
 }

@@ -5360,12 +5360,22 @@ impl Tree {
     write_clipboard_text(&selected)
   }
 
+  /// The key held for a shortcut, and the one for moving by words: Command and Option on Apple's platforms,
+  /// a phone with a keyboard attached among them.
   fn platform_shortcut_modifier(ctrl: bool, meta: bool) -> bool {
-    if cfg!(target_os = "macos") { meta } else { ctrl }
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
+      meta
+    } else {
+      ctrl
+    }
   }
 
   fn platform_word_navigation_modifier(ctrl: bool, alt: bool) -> bool {
-    if cfg!(target_os = "macos") { alt } else { ctrl }
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
+      alt
+    } else {
+      ctrl
+    }
   }
 
   fn drop_target_at(&self, x: f32, y: f32) -> Option<(NodeId, Vec<DropCallback>)> {

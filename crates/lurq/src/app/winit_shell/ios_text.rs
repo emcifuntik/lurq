@@ -900,6 +900,24 @@ extern "C-unwind" fn can_perform_action(_this: &AnyObject, _cmd: Sel, action: Se
   Bool::new(allowed)
 }
 
+// A keyboard attached to the device. What it types, and its arrows and shortcuts, are the text system's, which
+// has them from the view as it has the screen's keyboard. The keys that leave the input are the tree's.
+
+/// The keys of an attached keyboard the tree takes while an input is typed into.
+const TREE_KEYS: &[&str] = &["Tab", "Escape"];
+
+extern "C-unwind" fn presses_began(this: &AnyObject, _cmd: Sel, presses: *mut AnyObject, event: *mut AnyObject) {
+  if !super::ios::take_presses(presses, true, Some(TREE_KEYS)) {
+    let _: () = unsafe { msg_send![super(this, class!(UIView)), pressesBegan: presses, withEvent: event] };
+  }
+}
+
+extern "C-unwind" fn presses_ended(this: &AnyObject, _cmd: Sel, presses: *mut AnyObject, event: *mut AnyObject) {
+  if !super::ios::take_presses(presses, false, Some(TREE_KEYS)) {
+    let _: () = unsafe { msg_send![super(this, class!(UIView)), pressesEnded: presses, withEvent: event] };
+  }
+}
+
 // The keyboard's traits: `UITextInputTraits`.
 
 fn traits() -> Option<KeyboardTraits> {
@@ -1043,6 +1061,8 @@ fn text_input_class() -> &'static AnyClass {
     sel!(paste:) => paste as extern "C-unwind" fn(_, _, _),
     sel!(selectAll:) => select_all as extern "C-unwind" fn(_, _, _),
     sel!(canPerformAction:withSender:) => can_perform_action as extern "C-unwind" fn(_, _, _, _) -> _,
+    sel!(pressesBegan:withEvent:) => presses_began as extern "C-unwind" fn(_, _, _, _),
+    sel!(pressesEnded:withEvent:) => presses_ended as extern "C-unwind" fn(_, _, _, _),
     sel!(isSecureTextEntry) => is_secure_text_entry as extern "C-unwind" fn(_, _) -> _,
     sel!(keyboardType) => keyboard_type as extern "C-unwind" fn(_, _) -> _,
     sel!(returnKeyType) => return_key_type as extern "C-unwind" fn(_, _) -> _,
