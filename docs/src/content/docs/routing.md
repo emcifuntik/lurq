@@ -152,6 +152,9 @@ A screen says what the bar shows for it by calling `ctx.navigation_item` in its 
 | `title_view(element)` | What stands in the middle of the bar in place of the title |
 | `bar_hidden(true)` | No bar over this screen: it reaches the top of the outlet, under the status bar |
 | `large_title(true)` | The title large at the top of the content, scrolling away with it |
+| `prompt(text)` | A line of small text over the title, for which the bar grows |
+| `toolbar(element)` | A row of the screen's controls across the bottom of the outlet, in the bar's color |
+| `search(NavigationSearch)` | A search field at the top of the content, under the title |
 
 
 A screen with a large title puts its content in `StackOutlet::large_title_scroll(ctx, content)`, which draws
@@ -166,6 +169,24 @@ back again when the screen is taken off.
 ctx.navigation_item(NavigationItem::new("Inbox").large_title(true));
 StackOutlet::large_title_scroll(ctx, messages)
 ```
+
+A search field is drawn by `large_title_scroll` too, under the title, and scrolls away with the content.
+`NavigationSearch::new(signal)` takes the signal the typed text is kept in, which the screen reads to choose
+what it shows. While the field is typed into, and after while it holds text, it takes the bar's place: the bar
+and a large title go, and beside the field comes a way to cancel, which clears the text and puts the keyboard
+away.
+
+```rust
+ctx.navigation_item(
+  NavigationItem::new("Inbox")
+    .large_title(true)
+    .search(NavigationSearch::new(self.sought.clone()).placeholder("Search mail")),
+);
+StackOutlet::large_title_scroll(ctx, messages_matching(&self.sought.get()))
+```
+
+A screen with a toolbar ends above it: the toolbar stands over the home indicator's room, so the screen has no
+bottom of the safe area to keep clear of.
 
 For a bar that is the app's own altogether, give the outlet a builder with `StackOutletProps::bar_with`. It
 is called with the state of the stack and returns the bar, which the outlet puts across its top:

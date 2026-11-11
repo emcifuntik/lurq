@@ -54,7 +54,8 @@ inside its input.
   a way back) was set by eye and not measured against the platform; `StackMotion` changes the numbers.
 - **The list a long press on the way back opens** is plain: no blur behind it, no animation as it comes, and
   it is not dimmed like the platform's menu.
-- **No search field, no toolbar at the bottom, no prompt over the title.**
+- **A search field** is the field alone: no scopes under it, no suggestions, and it does not come and go
+  with a move of its own when it takes the bar's place.
 - **Sheets:** a screen that comes up from the bottom over the stack, with its detents and the drag that
   puts it away. Not there.
 - **Tabs:** a tab bar with a stack of screens for each tab. Not there.

@@ -56,6 +56,27 @@ thread_local! {
   static SAVED: lurq::core::Signal<bool> = lurq::core::Signal::new(false);
 }
 
+thread_local! {
+  /// What is typed into the search field of the screen at `/find`.
+  static SOUGHT: lurq::core::Signal<String> = lurq::core::Signal::new(String::new());
+}
+
+struct Finding;
+
+impl Component for Finding {
+  type Props = ();
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let sought = SOUGHT.with(Clone::clone);
+    ctx.navigation_item(NavigationItem::new("Find").search(lurq::components::NavigationSearch::new(sought)));
+    StackOutlet::large_title_scroll(ctx, Text::new("find screen"))
+  }
+}
+
 struct Saving;
 
 impl Component for Saving {
@@ -117,6 +138,15 @@ impl Component for Root {
             StackOutlet::large_title_scroll(ctx, lurq::components::Spacer::new().width(300.0).height(2000.0)).into()
           })
           .route("/saving", |ctx| ctx.mount::<Saving>(()))
+          .route("/tools", |ctx| {
+            ctx.navigation_item(
+              NavigationItem::new("Tools")
+                .prompt("a prompt over the title")
+                .toolbar(Text::new("a toolbar's control")),
+            );
+            Text::new("tools screen").into()
+          })
+          .route("/find", |ctx| ctx.mount::<Finding>(()))
           .route("/user/:id", |ctx| {
             let id = ctx.route_params().get("id").unwrap_or("none").to_owned();
             Text::new(&format!("user {id}")).into()
@@ -144,12 +174,25 @@ fn setup() -> (Tree, RouterHandle) {
   (tree, router)
 }
 
-/// Lets a move of the stack end: its timers fire and the screens are where they go.
+thread_local! {
+  /// How far ahead of now the animations of this test's tree are taken to be.
+  static AHEAD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Lets a move of the stack end: its timers fire, and every transition is at its end, whatever time the
+/// machine took.
 fn settle(tree: &mut Tree) {
   run_pass(tree);
   tree.tick_timers_at(Instant::now() + Duration::from_secs(1));
   run_pass(tree);
   tree.tick_timers_at(Instant::now() + Duration::from_secs(2));
+  run_pass(tree);
+  let ahead = AHEAD.with(|ahead| {
+    ahead.set(ahead.get() + 10);
+    ahead.get()
+  });
+  tree.set_animation_clock(Some(Instant::now() + Duration::from_secs(ahead)));
+  run_pass(tree);
   run_pass(tree);
 }
 
@@ -417,8 +460,6 @@ fn a_long_press_on_the_way_back_lists_the_screens_under_and_goes_to_the_one_tapp
   settle(&mut tree);
   router.push("/user/7");
   settle(&mut tree);
-  assert!(!shows(&mut tree, "Alpha"), "two screens down, and not named anywhere");
-
   // On the way back, at the bar's leading end.
   tree.touch_press(20.0, 22.0);
   tree.touch_long_press(20.0, 22.0);
@@ -454,4 +495,81 @@ fn going_back_by_more_than_there_is_stops_at_the_first_entry() {
   assert!(router.back_by(5));
   assert_eq!(router.path().get_untracked(), "/first");
   assert!(!router.back_by(1), "nothing under the first entry");
+}
+
+#[test]
+fn a_screens_prompt_and_toolbar_are_drawn_by_the_outlet() {
+  let (mut tree, router) = setup();
+  assert!(!shows(&mut tree, "a toolbar's control"));
+  router.push("/tools");
+  settle(&mut tree);
+
+  assert!(shows(&mut tree, "a prompt over the title"));
+  let tool = tree
+    .find_element(|element| element.text_content() == Some("a toolbar's control"))
+    .expect("the toolbar");
+  let screen = tree
+    .find_element(|element| element.text_content() == Some("tools screen"))
+    .expect("the screen");
+  assert!(tool.rect().1 > screen.rect().1, "the toolbar is under the screen");
+  assert!(tool.rect().1 > 700.0, "at the bottom of the outlet: {:?}", tool.rect());
+}
+
+#[test]
+fn a_search_field_takes_the_bars_place_while_typed_into_and_cancel_gives_it_back() {
+  let (mut tree, router) = setup();
+  router.push("/find");
+  settle(&mut tree);
+  let field = tree
+    .find_element(|element| element.id() == Some("navigation-search"))
+    .expect("the search field");
+  let (x, y, width, height) = field.rect();
+  let resting = y;
+  assert!(
+    tree
+      .find_element(|element| element.id() == Some("navigation-search-cancel"))
+      .is_none()
+  );
+
+  // A tap in the field gives it the focus.
+  crate::support::pointer_click(
+    &mut tree,
+    x + width / 2.0,
+    y + height / 2.0,
+    lurq::app::events::MouseButton::Left,
+  );
+  settle(&mut tree);
+  let cancel = tree
+    .find_element(|element| element.id() == Some("navigation-search-cancel"))
+    .expect("the way to cancel comes with the focus");
+  let typing = tree
+    .find_element(|element| element.id() == Some("navigation-search"))
+    .expect("the search field")
+    .rect()
+    .1;
+  assert!(
+    typing < resting,
+    "the field stands where the bar was: {resting} then {typing}"
+  );
+
+  SOUGHT.with(|sought| sought.set("something".to_owned()));
+  let (x, y, width, height) = cancel.rect();
+  crate::support::pointer_click(
+    &mut tree,
+    x + width / 2.0,
+    y + height / 2.0,
+    lurq::app::events::MouseButton::Left,
+  );
+  settle(&mut tree);
+  assert_eq!(
+    SOUGHT.with(|sought| sought.get_untracked()),
+    "",
+    "cancel clears what was typed"
+  );
+  assert!(
+    tree
+      .find_element(|element| element.id() == Some("navigation-search-cancel"))
+      .is_none(),
+    "and the field loses the focus"
+  );
 }

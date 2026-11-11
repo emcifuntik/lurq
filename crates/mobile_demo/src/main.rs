@@ -26,8 +26,9 @@ use lurq::{
     window::Orientation,
     winit_shell::WinitWindow,
   },
-  components::{Column, NavigationBar, NavigationItem, Router, StackOutlet, StackOutletProps},
+  components::{Column, NavigationBar, NavigationItem, NavigationSearch, Router, Row, StackOutlet, StackOutletProps},
   core::Signal,
+  layout::{layout_kind::Justify, text_style::FontWeight},
   node::{Element, color::Color},
   router::{RouterHandle, Routes},
 };
@@ -126,7 +127,19 @@ fn shell(ctx: &mut Ctx) -> Element {
 fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) -> Element {
   // The home screen and the inputs have their title large, over content that scrolls it away.
   let large = matches!(path, "/" | "/inputs");
-  ctx.navigation_item(NavigationItem::new(home::title_of(path)).large_title(large));
+  let item = NavigationItem::new(home::title_of(path)).large_title(large);
+  ctx.navigation_item(match path {
+    // The home screen is searched; the scroll screen has a prompt over its title and a toolbar under it.
+    "/" => item.search(NavigationSearch::new(home::sought()).placeholder("Search the screens")),
+    "/scroll" => item.prompt("A prompt over the title").toolbar(
+      Row::new()
+        .width(FILL)
+        .justify(Justify::SpaceBetween)
+        .child(ui::text("A toolbar", 17.0, FontWeight::Normal, PRIMARY))
+        .child(ui::text("of the screen's", 17.0, FontWeight::Normal, PRIMARY)),
+    ),
+    _ => item,
+  });
   let safe_area = ctx.window().safe_area;
   Column::new()
     .child(content(ctx))

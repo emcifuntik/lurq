@@ -699,6 +699,7 @@ impl Timer {
 struct ElementRequests {
   focus: Option<ElementRef>,
   scroll_into_view: Option<ElementRef>,
+  blur: bool,
 }
 
 pub struct Ctx {
@@ -2167,7 +2168,18 @@ impl Ctx {
   /// Whether a focus or scroll-into-view request is waiting for the runtime.
   pub(crate) fn has_element_request(&self) -> bool {
     let requests = self.element_requests.lock();
-    requests.focus.is_some() || requests.scroll_into_view.is_some()
+    requests.focus.is_some() || requests.scroll_into_view.is_some() || requests.blur
+  }
+
+  /// Takes the focus from whatever has it, after the current render: a text input being typed into is left,
+  /// and a phone's keyboard goes away. A request to focus made in the same render wins.
+  pub fn blur(&self) {
+    self.element_requests.lock().blur = true;
+    self.wake_window();
+  }
+
+  pub(crate) fn take_blur_request(&self) -> bool {
+    std::mem::take(&mut self.element_requests.lock().blur)
   }
 
   pub(crate) fn focus_request(&self) -> Option<ElementRef> {

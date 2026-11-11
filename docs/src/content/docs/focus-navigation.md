@@ -157,3 +157,8 @@ assert_eq!(tree.focused_element().and_then(|element| element.id()), Some("cancel
 ```
 
 Call `tree.resize(width, height)` before the pass to choose the viewport (800×600 by default). Run another `pass_headless` after state changes that re-render (opening a signal-backed modal) and after keyboard scrolling, before reading bounds. See [Testing](../testing/).
+
+## Giving The Focus Up
+
+`ctx.blur()` takes the focus from whatever has it after the current render: a text input being typed into is
+left, and a phone's keyboard goes away. A request to focus made in the same render wins.

@@ -3,6 +3,7 @@
 use lurq::{
   app::ctx::Ctx,
   components::{Column, Link, Row, Spacer, StackOutlet},
+  core::Signal,
   layout::{Alignment, text_style::FontWeight},
   node::{Element, color::Color},
 };
@@ -51,10 +52,21 @@ pub(crate) fn title_of(path: &str) -> &'static str {
     .map_or("lurq on iOS", |screen| screen.title)
 }
 
+/// What is typed into the home screen's search field.
+pub(crate) fn sought() -> Signal<String> {
+  static SOUGHT: std::sync::OnceLock<Signal<String>> = std::sync::OnceLock::new();
+  SOUGHT.get_or_init(|| Signal::new(String::new())).clone()
+}
+
 pub(crate) fn home(ctx: &mut Ctx) -> Element {
   let mut list = Column::new().spacing(10.0).padding(16.0).width(FILL);
   list = list.child(caption("Each screen checks one thing iOS does differently."));
-  for screen in SCREENS {
+  // What is typed into the search field over the list leaves the screens that say it.
+  let sought = sought().get().to_lowercase();
+  for screen in SCREENS
+    .iter()
+    .filter(|screen| screen.title.to_lowercase().contains(&sought) || screen.checks.to_lowercase().contains(&sought))
+  {
     list = list.child(screen_row(ctx, screen));
   }
   // What the system said of the app: leave it and come back, or open `lurqdemo://anything` in a browser.
