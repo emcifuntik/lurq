@@ -4,7 +4,8 @@
 //! as one text. Each link is a child node of the paragraph placed on its words
 //! ([`crate::node::inline_link`]): a Tab stop that Enter and a click follow
 //! (a middle click too, for an app that takes link activations), with a
-//! pointer cursor, hover and focus looks and an optional tooltip.
+//! pointer cursor, hover and focus looks and an optional tooltip. A link
+//! presented as the pointer's only takes no focus: a click alone follows it.
 //!
 //! A link's words and trailing runs are laid out between invisible marks for
 //! the direction of the bidi paragraph it is in ([`super::link_block`],
@@ -367,9 +368,12 @@ impl<'a> Paragraph<'a> {
       target: block.target,
       look: presentation.look(self.theme),
     };
-    let node = Node::inline_link(inline_link, link.text())
-      .tab_index(0)
-      .cursor(CursorIcon::Pointer);
+    let node = Node::inline_link(inline_link, link.text()).cursor(CursorIcon::Pointer);
+    let node = if presentation.pointer_only {
+      node.focusable(false)
+    } else {
+      node.tab_index(0)
+    };
     let node = self.session.follows(node, link);
     self
       .links

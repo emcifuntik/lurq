@@ -92,6 +92,7 @@ pub(super) fn empty_list() -> RenderList {
     clear_color: Color::new(24, 24, 27, 255),
     rects: Vec::new(),
     glyphs: Vec::new(),
+    #[cfg(feature = "raster")]
     images: Vec::new(),
     #[cfg(feature = "svg")]
     svgs: Vec::new(),

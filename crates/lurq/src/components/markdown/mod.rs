@@ -230,7 +230,9 @@ impl MarkdownProps {
   /// one. A link is a Tab stop (in document order), Enter and a click follow
   /// it, and the pointer over it shows a pointer cursor. Its hovered and
   /// focused looks recolor its words, underline and trailing runs and can
-  /// fill behind its words; keyboard focus also draws a ring around them.
+  /// fill behind its words; keyboard focus also draws a ring around them. A
+  /// link presented with [`MarkdownLinkPresentation::pointer_only`] is no
+  /// Tab stop and takes no focus.
   ///
   /// Keep the props (or the closure's `Arc`) across renders where you can:
   /// props with a new closure compare unequal and render the document again.

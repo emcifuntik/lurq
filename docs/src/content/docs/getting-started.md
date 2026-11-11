@@ -5,11 +5,11 @@ description: Feature flags, demo commands, and the smallest useful lurq app.
 
 # Getting Started
 
-This guide targets **lurq 0.58.5**. Add the crate with the shell and renderer used by the example below:
+This guide targets **lurq 0.59.1**. Add the crate with the shell and renderer used by the example below:
 
 ```toml
 [dependencies]
-lurq = { version = "0.58.5", features = ["winit", "wgpu"] }
+lurq = { version = "0.59.1", features = ["winit", "wgpu"] }
 ```
 
 Use a current stable Rust toolchain; the workspace uses edition 2024. In a source checkout, the library lives in `crates/lurq`, the demo in `crates/demo`, and macros in `crates/lurq_macros`.

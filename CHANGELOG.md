@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.59.1 — 2026-11-11
+
+Dependencies:
+
+- wgpu and wgpu-hal are pinned to 29.0.4 (from 29.0.3).
+- The `mcp` feature needs rmcp 3.9 or newer (from 3.1). rmcp is re-exported as `lurq::mcp::rmcp`: 3.9 deprecates `rmcp::model::ServerInfo` in favour of `ServerConfig`, the same type under a new name, so an app that names `ServerInfo` through the re-export gets a deprecation warning.
+
+Internal:
+
+- lurq's own lib tests build for feature sets without `raster` (for example `mcp,winit,wgpu`).
+
+## 0.59.0 — 2026-11-11
+
+Added:
+
+- `MarkdownLinkPresentation::pointer_only()`: a Markdown link only the pointer follows. It is no Tab stop and a press on it leaves the focus where it was, so Enter never reaches it and it never shows its focused look, its focus ring or its tooltip from the keyboard; a click (and a middle click, for an app that takes link activations) follows it, and the pointer over it shows the hovered look and the tooltip as on any link. For an app whose reading text is not part of its Tab order. Links are Tab stops as before unless their presentation asks for it.
+
+Fixes:
+
+- The `devtools` feature builds for iOS: `rfd`, which has no iOS backend, is a dependency only on other targets, and the node screenshot's save dialog, its only user, returns no path on iOS.
+
 ## 0.58.5 — 2026-11-10
 
 Added:
