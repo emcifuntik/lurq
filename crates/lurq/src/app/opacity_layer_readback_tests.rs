@@ -67,6 +67,7 @@ fn layer(start_order: usize, end_order: usize, opacity: f32, [x, y, width, heigh
     end_order,
     opacity,
     bounds: LayerBounds { x, y, width, height },
+    blur: None,
   }
 }
 

@@ -3,38 +3,71 @@
 //! overlay quads are emitted at full opacity and recorded as a group. A group
 //! that paints one primitive folds its opacity into that quad instead, which
 //! paints the same pixels without a layer.
+//!
+//! A node with a blur is a group as well, and always a layer: the blur is
+//! applied to the layer as it is composited.
 
 use super::LayoutEngine;
 use crate::layout::{
   opacity_layer::OpacityGroup,
-  quad::{Quad, QuadContent},
+  quad::{ClipRect, Quad, QuadContent},
 };
 
+/// `clip` for the content of a node blurred by `radius`: grown by as far as
+/// the blur moves colour. Content just outside the clip the node is under is
+/// not shown, but it bleeds into what is, so it has to be painted into the
+/// node's layer; the layer itself is cut to the clip when it is composited.
+/// A rounded clip loses its corners here, and the layer is cut to its box.
+pub(super) fn blur_content_clip(clip: ClipRect, radius: f32) -> ClipRect {
+  if !clip.active {
+    return clip;
+  }
+  let reach = crate::layout::opacity_layer::blur_reach(radius);
+  ClipRect {
+    x: clip.x - reach,
+    y: clip.y - reach,
+    width: clip.width + 2.0 * reach,
+    height: clip.height + 2.0 * reach,
+    active: true,
+    border_radius: None,
+  }
+}
+
 impl LayoutEngine {
-  /// Closes the group a node with `opacity < 1` opened when its first quad
-  /// would have been pushed at `start`.
+  /// Closes the group a node with `opacity < 1` or a blur opened when its
+  /// first quad would have been pushed at `start`. `blur` is the node's blur
+  /// radius (0 for none) and `clip` the clip the node itself is under.
   #[inline(never)]
-  pub(super) fn close_opacity_group(&self, opacity: f32, start: usize, quads: &mut [Quad]) {
+  pub(super) fn close_opacity_group(&self, opacity: f32, blur: f32, clip: ClipRect, start: usize, quads: &mut [Quad]) {
     let opacity = opacity.max(0.0);
     let end = quads.len();
     if start >= end {
       return;
     }
-    if end - start == 1 && paints_one_primitive(&quads[start]) {
+    if blur <= 0.0 && end - start == 1 && paints_one_primitive(&quads[start]) {
       quads[start].opacity *= opacity;
       return;
     }
     let mut groups = self.opacity_groups.borrow_mut();
     // A layer composited into an otherwise empty layer is that layer at the
-    // product of both opacities.
+    // product of both opacities. A blurred layer is kept apart: it is
+    // painted for other pixels than the layer around it.
     if let Some(inner) = groups.last_mut()
       && inner.start == start
       && inner.end == end
+      && inner.blur <= 0.0
+      && blur <= 0.0
     {
       inner.opacity *= opacity;
       return;
     }
-    groups.push(OpacityGroup { start, end, opacity });
+    groups.push(OpacityGroup {
+      start,
+      end,
+      opacity,
+      blur: blur.max(0.0),
+      clip: (blur > 0.0 && clip.active).then_some([clip.x, clip.y, clip.width, clip.height]),
+    });
   }
 
   /// Moves the groups recorded by the last quad resolution into `groups`.

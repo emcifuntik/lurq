@@ -478,6 +478,7 @@ pub(crate) trait NodeUpdate {
   fn on_history_swipe(&mut self, f: impl IntoHistorySwipeEventHandler);
   fn off_history_swipe(&mut self, f: impl IntoHistorySwipeEventHandler);
   fn opacity(&mut self, value: f32);
+  fn blur(&mut self, radius: f32);
   fn transform(&mut self, t: Transform2D);
   fn transition(&mut self, spec: Transition);
   fn animation(&mut self, spec: Animation);
@@ -767,6 +768,8 @@ pub(crate) struct Node {
   pub(crate) style_state: InteractionState,
   pub(crate) state_styles: LazyBox<StateStyles>,
   pub(crate) opacity: f32,
+  /// Blur radius of the node and its subtree, in logical pixels; 0 is none.
+  pub(crate) blur: f32,
   pub(crate) transform: Transform2D,
   /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
   pub(crate) animation_overrides: LazyBox<AnimationOverrides>,
@@ -1555,6 +1558,10 @@ impl NodeUpdate for Node {
     self.set_opacity(value);
   }
 
+  fn blur(&mut self, radius: f32) {
+    self.blur = radius;
+  }
+
   fn transform(&mut self, t: Transform2D) {
     self.transform = t;
   }
@@ -1923,6 +1930,7 @@ impl Node {
       style_state: InteractionState::new(),
       state_styles: LazyBox::new(),
       opacity: DEFAULT_OPACITY,
+      blur: 0.0,
       transform: Transform2D::IDENTITY,
       animation_overrides: LazyBox::new(),
       transitions: LazyBox::new(),
@@ -3012,6 +3020,21 @@ impl Node {
     self.opacity = value;
   }
 
+  /// Blurs the node and its subtree as one layer, like CSS `filter: blur()`.
+  ///
+  /// `radius` is in logical pixels and means what a shadow's blur radius
+  /// means: the Gaussian's standard deviation is half of it. It is clamped to
+  /// `0.0..=MAX_BLUR_RADIUS`
+  /// ([`MAX_BLUR_RADIUS`](crate::layout::opacity_layer::MAX_BLUR_RADIUS)); 0
+  /// is no blur. The blur spreads past the node's box and is cut by the clips
+  /// of its ancestors, as its content is. It takes no part in layout or hit
+  /// testing, does not scale with a transform, and animates as
+  /// [`AnimatableProperty::Blur`](crate::animation::AnimatableProperty::Blur).
+  pub fn blur(mut self, radius: f32) -> Self {
+    self.blur = radius;
+    self
+  }
+
   pub fn transform(mut self, t: Transform2D) -> Self {
     self.transform = t;
     self
@@ -3975,6 +3998,19 @@ impl Node {
       .unwrap_or(self.opacity)
   }
 
+  /// The node's blur radius as drawn, in logical pixels: the radius it was built with, or a running transition or
+  /// animation's. 0 without a blur.
+  pub(crate) fn effective_blur(&self) -> f32 {
+    let blur = self
+      .animation_override_float(crate::animation::AnimatableProperty::Blur)
+      .unwrap_or(self.blur);
+    if blur > 0.0 {
+      blur.min(crate::layout::opacity_layer::MAX_BLUR_RADIUS)
+    } else {
+      0.0
+    }
+  }
+
   /// The value a running transition or animation sets for a float property this tick, if any.
   fn animation_override_float(&self, prop: crate::animation::AnimatableProperty) -> Option<f32> {
     self.animation_overrides.iter().find_map(|(p, val)| match val {
@@ -4482,14 +4518,15 @@ impl Node {
       && !old.holds_overrides_beyond_opacity()
   }
 
-  /// Whether a running or forwards-filled transition or animation sets anything but opacity. Opacity is drawn
-  /// over the laid-out geometry and never shapes it, so a node fading in, or holding a faded pose, keeps its
-  /// layout cache across rebuilds; any other override still makes it lay out again.
+  /// Whether a running or forwards-filled transition or animation sets anything but opacity or blur. Those are
+  /// drawn over the laid-out geometry and never shape it, so a node fading in, or holding a faded or blurred pose,
+  /// keeps its layout cache across rebuilds; any other override still makes it lay out again.
   fn holds_overrides_beyond_opacity(&self) -> bool {
+    use crate::animation::AnimatableProperty;
     self
       .animation_overrides
       .iter()
-      .any(|(prop, _)| *prop != crate::animation::AnimatableProperty::Opacity)
+      .any(|(prop, _)| !matches!(prop, AnimatableProperty::Opacity | AnimatableProperty::Blur))
   }
 
   fn layout_kind_matches_for_cache(&self, old: &Node) -> bool {
@@ -4826,6 +4863,7 @@ impl Node {
       style_state: self.bound_style_state().clone(),
       state_styles: self.state_styles.clone(),
       opacity: self.opacity,
+      blur: self.blur,
       transform: self.transform,
       animation_overrides: LazyBox::new(),
       transitions: self.transitions.clone(),
@@ -5261,6 +5299,23 @@ mod tests {
       .animation_overrides
       .push((AnimatableProperty::Opacity, AnimatableValue::Float(0.4)));
     let new = Node::text("Hi");
+
+    assert!(new.layout_signature_matches(&old));
+  }
+
+  #[test]
+  fn blur_override_keeps_layout_cache_signature_and_clamps() {
+    use crate::animation::{AnimatableProperty, AnimatableValue};
+
+    let mut old = Node::text("Hi").blur(4.0);
+    assert_eq!(old.effective_blur(), 4.0);
+    old
+      .animation_overrides
+      .push((AnimatableProperty::Blur, AnimatableValue::Float(1.0e6)));
+    assert_eq!(old.effective_blur(), crate::layout::opacity_layer::MAX_BLUR_RADIUS);
+    let new = Node::text("Hi").blur(f32::NAN);
+    assert_eq!(new.effective_blur(), 0.0);
+    assert_eq!(Node::text("Hi").blur(-3.0).effective_blur(), 0.0);
 
     assert!(new.layout_signature_matches(&old));
   }

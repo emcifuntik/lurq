@@ -170,6 +170,10 @@ name = "box_shadow_capture_check"
 required-features = ["screenshot", "wgpu", "dx12"]
 
 [[example]]
+name = "layer_blur_capture_check"
+required-features = ["screenshot", "wgpu", "dx12"]
+
+[[example]]
 name = "canvas"
 required-features = ["canvas", "winit", "wgpu"]
 

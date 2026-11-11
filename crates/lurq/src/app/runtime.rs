@@ -92,6 +92,8 @@ mod profiler_screenshot_tests;
 pub use paste::ClipboardReader;
 #[cfg(test)]
 mod refresh_layout_tests;
+#[cfg(all(test, feature = "devtools"))]
+mod screenshot_blur_tests;
 mod scroll_into_view;
 mod select_menu;
 mod selected_text_lines;
@@ -3246,6 +3248,7 @@ impl Tree {
       &opacity_groups,
       quad_count,
       [self.viewport_physical.width, self.viewport_physical.height],
+      scale,
       &rects,
       &glyphs,
       #[cfg(feature = "raster")]
@@ -9437,9 +9440,12 @@ fn save_devtools_screenshot(
         }
         crate::layout::opacity_layer::LayerStep::Composite(child) => {
           let child_target = &plan.targets()[*child];
-          let (Some(layer), Some(layer_pixels)) = (child_target.layer, finished[*child].take()) else {
+          let (Some(layer), Some(mut layer_pixels)) = (child_target.layer, finished[*child].take()) else {
             continue;
           };
+          if let Some(blur) = layers[layer].blur {
+            blur_screenshot_layer(&mut layer_pixels, bounds.width, blur.sigma);
+          }
           composite_screenshot_layer(&mut target_pixels, &layer_pixels, bounds.width, layers[layer].opacity);
         }
       }
@@ -10007,6 +10013,75 @@ fn screenshot_point_in_corner(x: f32, y: f32, center_x: f32, center_y: f32, radi
   let dx = x - center_x;
   let dy = y - center_y;
   dx * dx + dy * dy <= radius * radius
+}
+
+/// Blurs a capture layer of straight-alpha RGBA rows `width` wide by a
+/// Gaussian of `sigma` pixels, as the render engines blur a layer with a
+/// [`LayerBlur`](crate::layout::opacity_layer::LayerBlur). Three box passes
+/// per axis stand in for the Gaussian. A capture layer is the capture's own
+/// size, so what lies outside the capture does not bleed into it.
+#[cfg(feature = "devtools")]
+fn blur_screenshot_layer(layer: &mut [u8], width: u32, sigma: f32) {
+  let width = width as usize;
+  if width == 0 || layer.len() < width * 4 {
+    return;
+  }
+  let height = layer.len() / (width * 4);
+  // The box whose three passes have the Gaussian's variance.
+  let radius = (((1.0 + 4.0 * sigma * sigma).sqrt() - 1.0) * 0.5).round() as usize;
+  if radius == 0 {
+    return;
+  }
+  // Colour is averaged premultiplied, or transparent pixels would darken it.
+  let mut front: Vec<[f32; 4]> = layer
+    .chunks_exact(4)
+    .map(|pixel| {
+      let alpha = f32::from(pixel[3]) / 255.0;
+      [
+        f32::from(pixel[0]) * alpha,
+        f32::from(pixel[1]) * alpha,
+        f32::from(pixel[2]) * alpha,
+        f32::from(pixel[3]),
+      ]
+    })
+    .collect();
+  let mut back = vec![[0.0_f32; 4]; front.len()];
+  let window = (radius * 2 + 1) as f32;
+  for _ in 0..3 {
+    for (length, lines, step, stride) in [(width, height, 1, width), (height, width, width, 1)] {
+      for line in 0..lines {
+        let at = |index: usize| line * stride + index * step;
+        let mut sum = [0.0_f32; 4];
+        for index in 0..=radius.min(length - 1) {
+          for channel in 0..4 {
+            sum[channel] += front[at(index)][channel];
+          }
+        }
+        for index in 0..length {
+          back[at(index)] = sum.map(|value| value / window);
+          if index >= radius {
+            for channel in 0..4 {
+              sum[channel] -= front[at(index - radius)][channel];
+            }
+          }
+          if index + radius + 1 < length {
+            for channel in 0..4 {
+              sum[channel] += front[at(index + radius + 1)][channel];
+            }
+          }
+        }
+      }
+      std::mem::swap(&mut front, &mut back);
+    }
+  }
+  for (pixel, blurred) in layer.chunks_exact_mut(4).zip(&front) {
+    let alpha = blurred[3].clamp(0.0, 255.0);
+    let straight = if alpha > 0.0 { 255.0 / alpha } else { 0.0 };
+    for channel in 0..3 {
+      pixel[channel] = (blurred[channel] * straight).round().clamp(0.0, 255.0) as u8;
+    }
+    pixel[3] = alpha.round() as u8;
+  }
 }
 
 #[cfg(feature = "devtools")]

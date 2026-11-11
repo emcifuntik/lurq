@@ -1,4 +1,4 @@
-//! Flattened group opacity.
+//! Flattened group opacity and layer blur.
 //!
 //! A node with `opacity < 1` fades its subtree as one flattened layer, like
 //! CSS `opacity` and design tools: the subtree is painted into an offscreen
@@ -7,10 +7,15 @@
 //! faded fill keeps its contrast against that fill, and a border drawn over
 //! the fill's anti-aliased edge does not leave a lighter ring.
 //!
-//! Layout records each group as a range of quads (`OpacityGroup`). A group
-//! whose content paints a single primitive gives the same pixels either way,
-//! so layout folds its opacity into that quad instead and no layer is made.
-//! The runtime turns the remaining groups into [`LayerCmd`]s with pixel
+//! A node with a blur is a layer too, like CSS `filter: blur()`: its subtree
+//! is painted into the layer, and the layer is blurred as it is composited
+//! ([`LayerBlur`]). A blurred layer is painted for more pixels than it shows,
+//! because what lies just outside the visible part still bleeds into it.
+//!
+//! Layout records each group as a range of quads (`OpacityGroup`). A faded
+//! group whose content paints a single primitive gives the same pixels either
+//! way, so layout folds its opacity into that quad instead and no layer is
+//! made. The runtime turns the remaining groups into [`LayerCmd`]s with pixel
 //! bounds, and render engines walk a `LayerPlan` to paint each layer into
 //! its own target before compositing it into its parent.
 
@@ -25,13 +30,45 @@ use crate::layout::{
 /// physical pixels (their vertex stages grow each quad by 2 px).
 const AA_REACH: f32 = 2.0;
 
-/// A subtree with `opacity < 1` that paints more than one primitive: the
-/// quads in `start..end` (quad indices, which are also the render orders).
+/// Largest blur radius of a node, in logical pixels. A layer is painted for
+/// its blur's reach past the window, so an unbounded radius is an unbounded
+/// texture.
+pub const MAX_BLUR_RADIUS: f32 = 256.0;
+
+/// A blur below this many physical pixels of deviation changes no pixel.
+const MIN_BLUR_SIGMA: f32 = 0.05;
+/// The widest Gaussian one pass samples directly, in texels of its source.
+/// Wider blurs run on a reduced copy of the layer.
+const MAX_PASS_SIGMA: f32 = 8.0;
+/// Most the layer is reduced by for a wide blur, per axis.
+const MAX_BLUR_REDUCTION: u32 = 64;
+
+/// The Gaussian's standard deviation for a blur radius: half of it, as for
+/// box and text shadows and the canvas's `Filter::Blur`.
+pub(crate) fn blur_sigma(radius: f32) -> f32 {
+  radius * 0.5
+}
+
+/// How far a blur of `radius` moves colour, in the radius's units: three
+/// standard deviations, past which a Gaussian has under 0.3 % of its weight.
+pub(crate) fn blur_reach(radius: f32) -> f32 {
+  (blur_sigma(radius) * 3.0).ceil()
+}
+
+/// A subtree painted as one layer: a node with `opacity < 1` that paints more
+/// than one primitive, or a node with a blur. Its quads are `start..end`
+/// (quad indices, which are also the render orders).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct OpacityGroup {
   pub start: usize,
   pub end: usize,
   pub opacity: f32,
+  /// The node's blur radius in logical pixels; 0 without a blur.
+  pub blur: f32,
+  /// With a blur: the clip the node itself is under, in logical pixels
+  /// (x, y, width, height). The blurred layer shows only inside it; its
+  /// content is clipped further out (see `LayoutEngine::collect_quads`).
+  pub clip: Option<[f32; 4]>,
 }
 
 /// An offscreen layer: the draws whose `order` lies in `start_order..end_order`
@@ -47,18 +84,100 @@ pub struct LayerCmd {
   pub end_order: usize,
   /// The group's opacity, in `0.0..1.0`.
   pub opacity: f32,
-  /// Where the layer's content can paint, in whole physical pixels of the
-  /// window. The layer's pixels map one to one onto the window's, so
-  /// compositing never resamples.
+  /// Where the layer shows, in whole physical pixels of the window. Without
+  /// a blur this is also where its content can paint, and the layer's pixels
+  /// map one to one onto the window's, so compositing never resamples.
   pub bounds: LayerBounds,
+  /// Blurs the layer as it is composited. `None` composites it as painted.
+  pub blur: Option<LayerBlur>,
 }
 
 impl LayerCmd {
   /// Whether compositing the layer changes any pixel. An invisible layer is
   /// skipped with everything inside it.
   pub fn is_visible(&self) -> bool {
-    self.opacity > 0.0 && !self.bounds.is_empty()
+    self.opacity > 0.0 && !self.bounds.is_empty() && self.blur.is_none_or(|blur| blur.width > 0 && blur.height > 0)
   }
+
+  /// The window pixels the layer's content is painted for, as an origin and
+  /// a size: `bounds`, or a blurred layer's larger rectangle.
+  pub fn painted(&self) -> ([i32; 2], [u32; 2]) {
+    match self.blur {
+      Some(blur) => ([blur.x, blur.y], [blur.width, blur.height]),
+      None => (
+        [self.bounds.x as i32, self.bounds.y as i32],
+        [self.bounds.width, self.bounds.height],
+      ),
+    }
+  }
+}
+
+/// A Gaussian blur of a layer, like CSS `filter: blur()`.
+///
+/// The layer's content is painted for the rectangle here, which reaches past
+/// [`LayerCmd::bounds`] by as far as the blur moves colour and may lie partly
+/// outside the window: content there is not shown, but it bleeds into what
+/// is. Its pixels are whole physical pixels of the window, as `bounds` are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerBlur {
+  /// Standard deviation of the Gaussian, in physical pixels.
+  pub sigma: f32,
+  pub x: i32,
+  pub y: i32,
+  pub width: u32,
+  pub height: u32,
+}
+
+/// How a render engine blurs a layer: wide blurs first reduce the layer by
+/// `reduction` per axis (a box filter), then both run a horizontal Gaussian
+/// pass into an intermediate target and a vertical one as the layer is
+/// composited. The box filter and the resampling on the way back up widen
+/// the result, so the Gaussian's `sigma` is narrowed to keep the total at the
+/// blur asked for.
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BlurPlan {
+  /// 1, or a power of two the layer is reduced by before the Gaussian.
+  pub reduction: u32,
+  /// The Gaussian's deviation in texels of the (reduced) layer.
+  pub sigma: f32,
+  /// Size of the reduced layer; the layer's own size when `reduction` is 1.
+  pub size: [u32; 2],
+}
+
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
+impl BlurPlan {
+  pub(crate) fn new(blur: &LayerBlur) -> Self {
+    let reduction = blur_reduction(blur.sigma);
+    if reduction == 1 {
+      return Self {
+        reduction,
+        sigma: blur.sigma,
+        size: [blur.width, blur.height],
+      };
+    }
+    let r = reduction as f32;
+    // Variances add: a box of `r` texels has (r^2 - 1) / 12, and the
+    // bilinear resampling back up is a tent of half-width `r`, r^2 / 6.
+    let widened = (r * r - 1.0) / 12.0 + r * r / 6.0;
+    let sigma = (blur.sigma * blur.sigma - widened).max(0.25).sqrt() / r;
+    Self {
+      reduction,
+      sigma: sigma.min(MAX_PASS_SIGMA * 1.25),
+      size: [
+        blur.width.div_ceil(reduction).max(1),
+        blur.height.div_ceil(reduction).max(1),
+      ],
+    }
+  }
+}
+
+fn blur_reduction(sigma: f32) -> u32 {
+  let mut reduction = 1;
+  while sigma / reduction as f32 > MAX_PASS_SIGMA && reduction < MAX_BLUR_REDUCTION {
+    reduction *= 2;
+  }
+  reduction
 }
 
 /// A rectangle of whole physical pixels.
@@ -205,14 +324,27 @@ impl TargetSpace {
     }
   }
 
-  /// A layer covering `bounds`, painted into the top-left corner of a
+  /// The pixels `layer` is painted for, in the top-left corner of a
   /// `texture_width` x `texture_height` texture.
-  pub(crate) fn layer(bounds: LayerBounds, texture_width: u32, texture_height: u32) -> Self {
+  pub(crate) fn layer(layer: &LayerCmd, texture_width: u32, texture_height: u32) -> Self {
+    let (origin, size) = layer.painted();
     Self {
       width: texture_width as f32,
       height: texture_height as f32,
-      origin: [bounds.x as f32, bounds.y as f32],
-      layer_size: Some([bounds.width as f32, bounds.height as f32]),
+      origin: [origin[0] as f32, origin[1] as f32],
+      layer_size: Some([size[0] as f32, size[1] as f32]),
+    }
+  }
+
+  /// An intermediate target of a blur: `size` texels in the top-left corner
+  /// of a `texture_width` x `texture_height` texture.
+  #[cfg_attr(not(feature = "dx12"), allow(dead_code))]
+  pub(crate) fn blur_target(size: [u32; 2], texture_width: u32, texture_height: u32) -> Self {
+    Self {
+      width: texture_width as f32,
+      height: texture_height as f32,
+      origin: [0.0; 2],
+      layer_size: Some([size[0] as f32, size[1] as f32]),
     }
   }
 
@@ -293,6 +425,77 @@ impl LayerComposite {
   }
 }
 
+/// Uniforms of one pass of the layer-blur shaders (`layer_blur.wgsl`,
+/// `layer_blur.hlsl`). A pass draws `rect` of its target; each pixel reads
+/// the source texture around `(pixel + offset) * scale`, in source texels.
+#[cfg(feature = "render")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct LayerBlurPass {
+  /// The rect drawn, in the target's pixels: x, y, width, height.
+  pub rect: [f32; 4],
+  /// The target's size, then the offset added to a target pixel.
+  pub target: [f32; 4],
+  /// The scale from offset target pixels to source texels, then one over the
+  /// source texture's size.
+  pub source: [f32; 4],
+  /// The Gaussian's axis in source texels, its deviation in source texels,
+  /// and the opacity the result is multiplied by.
+  pub kernel: [f32; 4],
+  /// `x`: 0 for a Gaussian pass; otherwise the pass is a box reduction that
+  /// averages this many bilinear taps per axis (half the reduction).
+  pub mode: [f32; 4],
+}
+
+#[cfg(feature = "render")]
+impl LayerBlurPass {
+  /// Reduces the painted layer (in a `source` sized texture) into the
+  /// top-left corner of a `target` sized one.
+  pub(crate) fn reduce(plan: &BlurPlan, source: [u32; 2], target: [u32; 2]) -> Self {
+    let r = plan.reduction as f32;
+    Self {
+      rect: [0.0, 0.0, plan.size[0] as f32, plan.size[1] as f32],
+      target: [target[0] as f32, target[1] as f32, 0.0, 0.0],
+      source: [r, r, 1.0 / source[0] as f32, 1.0 / source[1] as f32],
+      kernel: [0.0, 0.0, 0.0, 1.0],
+      mode: [(plan.reduction / 2) as f32, 0.0, 0.0, 0.0],
+    }
+  }
+
+  /// The horizontal Gaussian, between two textures holding the (reduced)
+  /// layer in their top-left corners.
+  pub(crate) fn horizontal(plan: &BlurPlan, source: [u32; 2], target: [u32; 2]) -> Self {
+    Self {
+      rect: [0.0, 0.0, plan.size[0] as f32, plan.size[1] as f32],
+      target: [target[0] as f32, target[1] as f32, 0.0, 0.0],
+      source: [1.0, 1.0, 1.0 / source[0] as f32, 1.0 / source[1] as f32],
+      kernel: [1.0, 0.0, plan.sigma, 1.0],
+      mode: [0.0; 4],
+    }
+  }
+
+  /// The vertical Gaussian, composited into `parent` over `layer`'s bounds
+  /// at its opacity. `source` is the size of the texture the horizontal pass
+  /// painted.
+  pub(crate) fn composite(layer: &LayerCmd, plan: &BlurPlan, parent: &TargetSpace, source: [u32; 2]) -> Self {
+    let rect = parent.layer_rect(layer.bounds);
+    let (origin, _) = layer.painted();
+    let scale = 1.0 / plan.reduction as f32;
+    Self {
+      rect: [rect.x, rect.y, rect.width, rect.height],
+      target: [
+        parent.width,
+        parent.height,
+        parent.origin[0] - origin[0] as f32,
+        parent.origin[1] - origin[1] as f32,
+      ],
+      source: [scale, scale, 1.0 / source[0] as f32, 1.0 / source[1] as f32],
+      kernel: [0.0, 1.0, plan.sigma, layer.opacity],
+      mode: [0.0; 4],
+    }
+  }
+}
+
 /// The first index in `range` whose order is at least `order` (`range.end`
 /// when there is none); draws are sorted by order.
 fn first_at_or_after(range: Range<usize>, order: usize, order_of: &impl Fn(usize) -> usize) -> usize {
@@ -309,12 +512,14 @@ fn first_at_or_after(range: Range<usize>, order: usize, order_of: &impl Fn(usize
 }
 
 /// Resolves `groups` into `layers` (cleared first) from the draws a frame
-/// built for its `orders` quads, over a `viewport` of physical pixels.
+/// built for its `orders` quads, over a `viewport` of physical pixels, each
+/// logical pixel `scale` of them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_layers(
   groups: &[OpacityGroup],
   orders: usize,
   viewport: [f32; 2],
+  scale: f32,
   rects: &[RectCmd],
   glyphs: &[GlyphCmd],
   #[cfg(feature = "raster")] images: &[crate::images::ImageCmd],
@@ -332,7 +537,7 @@ pub(crate) fn resolve_layers(
   images.iter().for_each(|image| bounds.add_image(image));
   #[cfg(feature = "svg")]
   svgs.iter().for_each(|svg| bounds.add_svg(svg));
-  bounds.build(groups, viewport, layers);
+  bounds.build(groups, viewport, scale, layers);
 }
 
 /// Axis-aligned bounds `[x0, y0, x1, y1]` in physical pixels.
@@ -429,18 +634,33 @@ impl LayerBoundsBuilder {
   }
 
   /// Layers for `groups`, outer layers first.
-  fn build(&self, groups: &[OpacityGroup], viewport: [f32; 2], layers: &mut Vec<LayerCmd>) {
-    layers.extend(groups.iter().map(|group| {
+  fn build(&mut self, groups: &[OpacityGroup], viewport: [f32; 2], scale: f32, layers: &mut Vec<LayerCmd>) {
+    // Groups close children first, so a group is resolved before the groups
+    // around it.
+    for group in groups {
       let end = group.end.min(self.extents.len());
       let start = group.start.min(end);
       let extent = self.extents[start..end].iter().copied().fold(EMPTY_EXTENT, union);
-      LayerCmd {
+      let (bounds, blur) = blurred_bounds(group, extent, viewport, scale);
+      // A blurred layer paints past its content, and a layer around it has
+      // to cover that too.
+      if blur.is_some() && start < end {
+        let shown = [
+          bounds.x as f32,
+          bounds.y as f32,
+          (bounds.x + bounds.width) as f32,
+          (bounds.y + bounds.height) as f32,
+        ];
+        self.extents[start] = union(self.extents[start], shown);
+      }
+      layers.push(LayerCmd {
         start_order: group.start,
         end_order: group.end,
         opacity: group.opacity.clamp(0.0, 1.0),
-        bounds: pixel_bounds(extent, viewport),
-      }
-    }));
+        bounds,
+        blur,
+      });
+    }
     // Groups close children first; paint order puts the outer layer first.
     layers.sort_by(|a, b| a.start_order.cmp(&b.start_order).then(b.end_order.cmp(&a.end_order)));
   }
@@ -484,6 +704,83 @@ fn clipped(extent: Extent, clip: ClipRect) -> Extent {
   ]
 }
 
+fn grown(extent: Extent, by: f32) -> Extent {
+  [extent[0] - by, extent[1] - by, extent[2] + by, extent[3] + by]
+}
+
+fn intersection(a: Extent, b: Extent) -> Extent {
+  [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])]
+}
+
+/// Where a group painting `extent` shows, and its blur if it has one.
+///
+/// A blurred layer shows as far as its blur reaches past its content, inside
+/// the node's clip and the window. It is painted for the visible part grown
+/// by the blur's reach (and by what the passes' sampling adds): that holds
+/// the content that can reach a visible pixel, and it is also where the
+/// horizontal pass leaves its result, which spreads that far sideways. Past
+/// the content the rectangle ends where no pass has anything left to read.
+fn blurred_bounds(
+  group: &OpacityGroup,
+  extent: Extent,
+  viewport: [f32; 2],
+  scale: f32,
+) -> (LayerBounds, Option<LayerBlur>) {
+  let radius = if group.blur.is_finite() {
+    group.blur.clamp(0.0, MAX_BLUR_RADIUS)
+  } else {
+    0.0
+  };
+  let sigma = blur_sigma(radius) * scale;
+  if sigma < MIN_BLUR_SIGMA {
+    return (pixel_bounds(extent, viewport), None);
+  }
+  let reach = (sigma * 3.0).ceil();
+  let mut shown = grown(extent, reach);
+  if let Some([x, y, width, height]) = group.clip {
+    shown = intersection(
+      shown,
+      [
+        (x * scale).floor(),
+        (y * scale).floor(),
+        ((x + width) * scale).ceil(),
+        ((y + height) * scale).ceil(),
+      ],
+    );
+  }
+  let bounds = pixel_bounds(shown, viewport);
+  if bounds.is_empty() {
+    return (bounds, None);
+  }
+  let pad = reach + 2.0 * blur_reduction(sigma) as f32 + 1.0;
+  let visible = [
+    bounds.x as f32,
+    bounds.y as f32,
+    (bounds.x + bounds.width) as f32,
+    (bounds.y + bounds.height) as f32,
+  ];
+  let painted = intersection(grown(extent, pad), grown(visible, pad));
+  let (x0, y0, x1, y1) = (
+    painted[0].floor(),
+    painted[1].floor(),
+    painted[2].ceil(),
+    painted[3].ceil(),
+  );
+  if !(x1 > x0 && y1 > y0) {
+    return (LayerBounds::default(), None);
+  }
+  (
+    bounds,
+    Some(LayerBlur {
+      sigma,
+      x: x0 as i32,
+      y: y0 as i32,
+      width: (x1 - x0) as u32,
+      height: (y1 - y0) as u32,
+    }),
+  )
+}
+
 fn pixel_bounds(extent: Extent, viewport: [f32; 2]) -> LayerBounds {
   let x0 = extent[0].floor().max(0.0);
   let y0 = extent[1].floor().max(0.0);
@@ -515,6 +812,7 @@ mod tests {
         width: 4,
         height: 4,
       },
+      blur: None,
     }
   }
 
@@ -526,6 +824,74 @@ mod tests {
       .iter()
       .map(|target| (target.layer, plan.steps(target).to_vec()))
       .collect()
+  }
+
+  #[test]
+  fn a_narrow_blur_runs_on_the_layer_and_a_wide_one_on_a_reduced_copy() {
+    let blur = |sigma: f32| LayerBlur {
+      sigma,
+      x: -10,
+      y: 0,
+      width: 201,
+      height: 100,
+    };
+    let narrow = BlurPlan::new(&blur(4.0));
+    assert_eq!((narrow.reduction, narrow.sigma, narrow.size), (1, 4.0, [201, 100]));
+    assert_eq!(BlurPlan::new(&blur(MAX_PASS_SIGMA)).reduction, 1);
+
+    for sigma in [9.0, 20.0, 100.0, 384.0] {
+      let plan = BlurPlan::new(&blur(sigma));
+      let r = plan.reduction as f32;
+      assert!(
+        plan.reduction.is_power_of_two() && plan.reduction > 1,
+        "sigma {sigma}: {plan:?}"
+      );
+      assert!(plan.sigma <= MAX_PASS_SIGMA, "sigma {sigma}: {plan:?}");
+      assert_eq!(
+        plan.size,
+        [201_u32.div_ceil(plan.reduction), 100_u32.div_ceil(plan.reduction)]
+      );
+      // The box, the Gaussian and the resampling together are the blur asked for.
+      let total = ((r * r - 1.0) / 12.0 + r * r / 6.0 + (plan.sigma * r).powi(2)).sqrt();
+      assert!((total - sigma).abs() < sigma * 0.01, "sigma {sigma}: {total}");
+    }
+  }
+
+  #[test]
+  fn a_blurred_group_shows_inside_its_clip_and_is_painted_past_it() {
+    let group = OpacityGroup {
+      start: 0,
+      end: 1,
+      opacity: 1.0,
+      blur: 8.0,
+      clip: Some([10.0, 0.0, 50.0, 100.0]),
+    };
+    // Content from x 20 to 200, in a 100 x 100 window at scale 2.
+    let (bounds, blur) = blurred_bounds(&group, [20.0, 30.0, 200.0, 60.0], [100.0, 100.0], 2.0);
+    let blur = blur.expect("a blur");
+    assert_eq!(blur.sigma, 8.0);
+    // 24 pixels of reach: left to the clip at 20, right to the window's edge, up and down by the reach.
+    assert_eq!(
+      bounds,
+      LayerBounds {
+        x: 20,
+        y: 6,
+        width: 80,
+        height: 78
+      }
+    );
+    // Painted for the reach past what shows, and 3 pixels more for the passes' sampling: left of the clip and
+    // right of the window. Above and below, what shows already ends where the content's spread does.
+    assert_eq!((blur.x, blur.y), (20 - 27, 30 - 27));
+    assert_eq!(
+      (blur.x + blur.width as i32, blur.y + blur.height as i32),
+      (100 + 27, 60 + 27)
+    );
+
+    let unblurred = OpacityGroup { blur: 0.0, ..group };
+    let (bounds, blur) = blurred_bounds(&unblurred, [20.0, 30.0, 200.0, 60.0], [100.0, 100.0], 2.0);
+    assert!(blur.is_none());
+    assert_eq!((bounds.x, bounds.width), (20, 80));
   }
 
   #[test]

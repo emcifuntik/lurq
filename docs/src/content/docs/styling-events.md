@@ -33,6 +33,7 @@ Common visual modifiers:
 | `.border_outside(width, color)` | Border outside the element bounds from a concrete width or `BorderSize`. |
 | `.box_shadow(shadow)` | Drop or inset shadows from a `ShadowStyle` role, a `BoxShadow`, or a list. See [Box Shadows](#box-shadows). |
 | `.opacity(value)` | Fade the element and its subtree as one group. See [Opacity](#opacity). |
+| `.blur(radius)` | Blur the element and its subtree as one layer. See [Blur](#blur). |
 | `.clip()` | Clip descendants to this element. |
 | `.overflow_visible()` | Allow descendants to paint outside this element. |
 
@@ -76,6 +77,42 @@ Stack::new()
 - `RenderList::layers` lists the layers of a frame (`LayerCmd`: the render orders a layer groups, its opacity and pixel
   bounds). A custom `RenderEngine` composites each layer's draws into its own target, or draws them without a layer
   and loses the flattening.
+
+## Blur
+
+`.blur(radius)` blurs an element together with everything inside it, as CSS `filter: blur()` and a design tool's layer
+blur do: the subtree is painted into an offscreen layer, and the layer is drawn through a Gaussian blur. What is
+behind the element is not blurred.
+
+```rust
+use lurq::{animation::Transition, components::{Column, Text}};
+
+// A panel that goes out of focus when `inactive`, over 200 ms.
+Column::new()
+  .padding(16.0)
+  .background("#ffffff")
+  .child(Text::new("Drafts"))
+  .blur(if inactive { 6.0 } else { 0.0 })
+  .transition(Transition::blur().duration_ms(200))
+```
+
+- `radius` is in logical pixels and means what a shadow's blur radius means: the Gaussian's standard deviation is half
+  of it, so `blur(8.0)` softens an edge like `BoxShadow::new(0.0, 0.0, 8.0, ..)`. CSS's `blur(4px)` names the
+  deviation itself and is `blur(8.0)` here. `0` (the default) is no blur and no layer; the radius is clamped to
+  `layout::opacity_layer::MAX_BLUR_RADIUS` (256).
+- The blur spreads past the element's box, by three deviations (`1.5 * radius`). It is cut by the clips the element is
+  under and by the window, as the element's own pixels are; inside them, content of the element that lies just outside
+  the clip still bleeds in, so a blurred element cut by a scroll container or the window's edge does not fade out
+  there. Containers clip by default: give a blur room with padding, or call `.overflow_visible()` on the containers it
+  should escape. A rounded clip cuts a blurred element to its box, without the corners.
+- `.blur(...)` and `.opacity(...)` on one element share a layer: the blurred result is faded.
+- Blur changes painting only. Layout, scrolling and hit testing are the same at any radius, and the radius does not
+  scale with a `.transform(...)`.
+- The cost is the layer's pixels, not the radius: a wide blur runs on a reduced copy of the layer. A blurred layer
+  takes two or three pooled textures for its frame.
+- A blurred `LayerCmd` carries a `LayerBlur`: the deviation in physical pixels and the rectangle the layer is painted
+  for, which is larger than the `bounds` it shows in and may reach outside the window. A custom `RenderEngine` that
+  ignores it draws the layer unblurred.
 
 ## Gradients
 

@@ -3280,7 +3280,7 @@ impl Dx12State {
             let child_layer = plan.targets()[*child].layer;
             if let (Some(layer), Some(slot)) = (child_layer, slots.get(*child).copied().flatten()) {
               dx12_context(
-                self.composite_layer(slot, &list.layers[layer]),
+                self.composite_layer(*child, slot, &list.layers[layer]),
                 "composite dx12 opacity layer",
               )?;
             }
@@ -3289,6 +3289,7 @@ impl Dx12State {
       }
       if let (Some(_), Some(slot)) = (target.layer, layer_slot) {
         self.end_layer_target(slot);
+        dx12_context(self.prepare_layer_blur(target_index, slot), "blur dx12 layer")?;
       }
     }
     if plan.has_layers() {

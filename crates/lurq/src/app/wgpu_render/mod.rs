@@ -390,6 +390,7 @@ pub struct WgpuRenderEngine {
   /// has one.
   layer_compositor: Option<layers::LayerCompositor>,
   scratch_layer_slots: Vec<Option<usize>>,
+  scratch_blur_slots: Vec<Option<layers::BlurSlots>>,
   width: u32,
   height: u32,
   frame_extensions: Vec<WgpuFrameExtensionEntry>,
@@ -493,6 +494,7 @@ impl WgpuRenderEngine {
       layer_plan: LayerPlan::default(),
       layer_compositor: None,
       scratch_layer_slots: Vec::new(),
+      scratch_blur_slots: Vec::new(),
       width: 800,
       height: 600,
       frame_extensions: Vec::new(),
@@ -1856,6 +1858,7 @@ impl RenderEngine for WgpuRenderEngine {
     let mut layer_plan = std::mem::take(&mut self.layer_plan);
     layer_plan.build(ordered_draws.len(), |index| ordered_draws[index].0, &list.layers);
     self.scratch_layer_slots.clear();
+    self.scratch_blur_slots.clear();
     if layer_plan.has_layers() {
       let format = render_target_format(config.format);
       if self
@@ -1870,9 +1873,15 @@ impl RenderEngine for WgpuRenderEngine {
       compositor.begin_frame();
       for target in layer_plan.targets() {
         self.scratch_layer_slots.push(target.layer.map(|layer| {
-          let bounds = list.layers[layer].bounds;
-          compositor.acquire(device, bounds.width, bounds.height)
+          let (_, [width, height]) = list.layers[layer].painted();
+          compositor.acquire(device, width, height)
         }));
+        self.scratch_blur_slots.push(
+          target
+            .layer
+            .and_then(|layer| list.layers[layer].blur)
+            .map(|blur| compositor.acquire_blur(device, &blur)),
+        );
       }
     }
 
@@ -1944,7 +1953,10 @@ impl RenderEngine for WgpuRenderEngine {
               pass.set_index_buffer(idx_buf.slice(..), wgpu::IndexFormat::Uint16);
               active_index_buffer = Some(ActiveIndexBuffer::CommonU16);
             }
-            compositor.composite(queue, &mut pass, slot, layer, &space);
+            match self.scratch_blur_slots.get(*child).copied().flatten() {
+              Some(blur_slots) => compositor.composite_blurred(queue, &mut pass, &blur_slots, layer, &space),
+              None => compositor.composite(queue, &mut pass, slot, layer, &space),
+            }
             profile_if! { _draw_calls += 1; }
             active_pipeline = Some(ActivePipeline::Layer);
             continue;
@@ -2433,6 +2445,16 @@ impl RenderEngine for WgpuRenderEngine {
             }
           }
         }
+      }
+      drop(pass);
+      // A blurred layer is reduced and blurred along x once it is painted;
+      // the pass compositing it blurs along y.
+      if let (Some(slot), Some(blur_slots), Some(compositor)) = (
+        layer_slot,
+        self.scratch_blur_slots.get(target_index).copied().flatten(),
+        self.layer_compositor.as_ref(),
+      ) {
+        compositor.prepare_blur(queue, &mut encoder, vtx_buf, idx_buf, slot, &blur_slots);
       }
     }
     if let Some(compositor) = self.layer_compositor.as_mut() {

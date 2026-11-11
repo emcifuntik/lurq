@@ -45,6 +45,8 @@ pub(crate) mod hit_test;
 #[cfg(feature = "i18n")]
 pub mod i18n;
 #[cfg(all(test, windows, feature = "screenshot", any(feature = "wgpu", feature = "dx12")))]
+mod layer_blur_readback_tests;
+#[cfg(all(test, windows, feature = "screenshot", any(feature = "wgpu", feature = "dx12")))]
 mod opacity_layer_readback_tests;
 pub(crate) mod profile_support;
 pub(crate) mod profile_types;
