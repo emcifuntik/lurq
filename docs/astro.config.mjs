@@ -30,6 +30,7 @@ export default defineConfig({
                         'modals',
                         'app-runtime',
                         'window-lifecycle-menus',
+                        'ios',
                         'devtools',
                         'mcp',
                         'resources-media',
