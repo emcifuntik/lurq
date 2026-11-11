@@ -75,7 +75,7 @@ unicode-segmentation = "1.12"
 raw-window-handle = "0.6"
 redb = { version = "4.1.0", optional = true }
 swash = "0.2.10"
-wgpu = { version = "=29.0.3", optional = true }
+wgpu = { version = "=29.0.4", optional = true }
 winit = { version = "0.30", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"], optional = true }
 usvg = { version = "0.45", optional = true }
@@ -88,7 +88,7 @@ tracing.workspace = true
 lurq_macros = { version = "0.1.2", path = "../lurq_macros" }
 
 # MCP server (feature `mcp`); all optional so the default build stays lean.
-rmcp = { version = "3.1", features = ["server", "transport-streamable-http-server"], optional = true }
+rmcp = { version = "3.9", features = ["server", "transport-streamable-http-server"], optional = true }
 tokio-util = { version = "0.7", optional = true }
 hyper = { version = "1", features = ["server", "http1"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio"], optional = true }
@@ -137,7 +137,7 @@ objc2 = "0.6"
 # `objc2-core-foundation` gives `NSPoint` for `NSEvent::mouseLocation` (the pointer during a file drag).
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSEvent", "NSResponder", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSObject", "objc2-core-foundation"] }
-wgpu-hal = { version = "=29.0.3", features = ["metal"], optional = true }
+wgpu-hal = { version = "=29.0.4", features = ["metal"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
