@@ -17,7 +17,9 @@ to the work on `feat/ios-touch`; an entry goes when its gap is closed.
 Text inputs type through a view of the shell's own that speaks `UITextInput`
 (`crates/lurq/src/app/winit_shell/ios_text.rs`). Typing, suggestions, autocorrection, dictation, a delete key
 that speeds up, the caret under the space bar, a secure keyboard for a masked input and the person's email
-addresses over an email input work on a device.
+addresses over an email input work on a device. So do the platform's caret, the selection's handles, the loupe
+and the menu to copy and paste (`UITextInteraction`); the highlight is painted by the input, under its text,
+where UIKit says the selection is.
 
 - **Password AutoFill.** Nothing is offered over a masked input. The system looks for a login and a password
   as two inputs and is shown one view, which every text input shares; and it offers saved passwords only to
@@ -26,15 +28,11 @@ addresses over an email input work on a device.
   inputs go together.
 - **Saving a password** after a login: not done, for the same reasons.
 - **A code from a message** (`ContentKind::OneTimeCode`): set, not checked. It needs a real message.
-- **Geometry.** Asked where a character is on the screen, the view answers with the caret's rectangle whatever
-  the position. Enough for suggestions; not for what follows.
-- **Selection handles, the loupe, the Copy / Paste menu.** None. A double tap selects a word and there is no
-  way to change the selection, and no way to paste. A long press clears the selection.
 - **A triple tap** for a paragraph: not checked.
-- **The clipboard** on iOS: not checked.
 - **A hardware keyboard:** Cmd shortcuts expect Ctrl; arrows and Tab between inputs are not checked.
-- **The keyboard is dismissed by a tap outside an input**, because the tap takes the focus. A list of the
-  platform keeps it up and dismisses it on a scroll; neither is done.
+- **Putting the keyboard away.** A tap outside an input leaves it up, and a list set to
+  (`ScrollState::set_dismisses_keyboard`) puts it away when a finger starts to scroll it. The platform can also
+  have the keyboard follow the finger down as the list is dragged; that is not done.
 - **Several lines:** scrolling inside the input with a finger, and the caret in a long text, are not checked.
 - **The screen turning** with the keyboard up: not checked.
 - **Emoji in transformed text** (rotated, scaled) draw nothing: only the plain path draws them through Core
@@ -43,7 +41,6 @@ addresses over an email input work on a device.
 ## Touch
 
 - **A long press of several fingers** has no event.
-- **Text by finger** is the handles, loupe and menu above.
 - Values taken from memory or by eye, not from Apple's documentation: the press delay of 150 ms, the tap's
   highlight of 80 ms, a control's reach of 70 pt, the slops of a pinch (8 pt) and a rotation (about 6°), the
   double tap's 350 ms and 40 pt.

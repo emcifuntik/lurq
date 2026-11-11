@@ -115,6 +115,8 @@ struct ScrollStateInner {
   overscroll_y: f32,
   /// See [`ScrollState::set_scrolls_to_top`].
   scrolls_to_top: bool,
+  /// See [`ScrollState::set_dismisses_keyboard`].
+  dismisses_keyboard: bool,
   pending_scroll_x: Option<PendingScroll>,
   pending_scroll_y: Option<PendingScroll>,
   max_scroll_x: f32,
@@ -172,6 +174,7 @@ impl ScrollState {
         overscroll_x: 0.0,
         overscroll_y: 0.0,
         scrolls_to_top: true,
+        dismisses_keyboard: false,
         pending_scroll_x: None,
         pending_scroll_y: None,
         max_scroll_x: 0.0,
@@ -218,6 +221,17 @@ impl ScrollState {
 
   pub fn scrolls_to_top(&self) -> bool {
     self.inner.lock().unwrap().scrolls_to_top
+  }
+
+  /// Whether a finger that starts to scroll this container puts a phone's on-screen keyboard away, by taking
+  /// the focus from the text input being typed into; it does not unless set. A tap outside a text input leaves
+  /// the keyboard up, so a screen of inputs that scrolls wants this, or a control that puts it away.
+  pub fn set_dismisses_keyboard(&self, dismisses_keyboard: bool) {
+    self.inner.lock().unwrap().dismisses_keyboard = dismisses_keyboard;
+  }
+
+  pub fn dismisses_keyboard(&self) -> bool {
+    self.inner.lock().unwrap().dismisses_keyboard
   }
 
   /// How far the content is drawn past its ends, along each axis: negative before the start, positive beyond

@@ -269,6 +269,10 @@ impl Tree {
       })
     });
     drop(hits);
+    // A container that puts the keyboard away when scrolled does, by the focus leaving the text input.
+    if taker.as_ref().is_some_and(|taker| taker.state.dismisses_keyboard()) && self.focused_text_input() {
+      self.blur_focus();
+    }
 
     // A finger that catches content on its way back holds it where it is. Content of another container is
     // put back at once: one gesture, one container.

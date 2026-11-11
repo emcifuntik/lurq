@@ -224,6 +224,12 @@ impl Clone for OverlayLayoutRecord {
 pub(crate) struct LayoutEngine {
   last_recalculated: Cell<bool>,
   text_input_caret_visible: Cell<bool>,
+  /// The platform draws the focused input's caret (`set_native_text_selection`).
+  native_text_selection: Cell<bool>,
+  /// Where the platform shows the focused input's selection (`set_native_selection_rects`).
+  native_selection_rects: RefCell<Vec<(f32, f32, f32, f32)>>,
+  /// Where the focused text input was last painted (`text_input_quads`).
+  text_input_frame: Cell<Option<text_input_quads::TextInputFrame>>,
   /// The time of the frame being painted (`begin_scrollbar_frame`).
   scrollbar_frame_at: Cell<std::time::Instant>,
   /// When a bar painted in this frame next changes (`take_scrollbar_change`).
@@ -522,6 +528,9 @@ impl LayoutEngine {
     Self {
       last_recalculated: Cell::new(false),
       text_input_caret_visible: Cell::new(true),
+      native_text_selection: Cell::new(false),
+      native_selection_rects: RefCell::new(Vec::new()),
+      text_input_frame: Cell::new(None),
       scrollbar_frame_at: Cell::new(std::time::Instant::now()),
       scrollbar_change_at: Cell::new(None),
       theme_seen: RefCell::new(None),
@@ -746,7 +755,24 @@ impl LayoutEngine {
     self.text_input_caret_visible.set(visible);
   }
 
+  /// Leaves the focused text input's caret to the platform, which draws its own over the window: a phone's,
+  /// with handles to drag at a selection's ends. The input paints no caret while this is on; the selection's
+  /// highlight stays the input's, under its text.
+  pub(crate) fn set_native_text_selection(&self, native: bool) {
+    self.native_text_selection.set(native);
+  }
+
+  /// The rectangles the platform shows the focused input's selection as, in the window. While the
+  /// platform draws the caret the input paints its highlight over these and not over its own selection: a
+  /// handle being dragged moves the platform's selection, and the input's only when it is let go.
+  pub(crate) fn set_native_selection_rects(&self, rects: Vec<(f32, f32, f32, f32)>) {
+    *self.native_selection_rects.borrow_mut() = rects;
+  }
+
   fn should_render_text_input_caret(&self, node: &Node) -> bool {
+    if self.native_text_selection.get() {
+      return false;
+    }
     match node.caret_mode_value().unwrap_or_else(|| self.caret.borrow().mode()) {
       CaretMode::Persistent => true,
       CaretMode::Blinking => self.text_input_caret_visible.get(),
@@ -878,6 +904,7 @@ impl LayoutEngine {
     #[cfg(feature = "screenshot")]
     self.sensitive_quads.borrow_mut().clear();
     self.ime_cursor_area.set(None);
+    self.text_input_frame.set(None);
     self.collect_quads(
       node,
       result,
@@ -1375,7 +1402,30 @@ impl LayoutEngine {
               .text_input_viewport(node, state, result, (abs_x, abs_y), padding)
               .transformed(transform),
           );
-          for selection in state.selection_ranges() {
+          let selections = state.selection_ranges();
+          let native = self.native_text_selection.get();
+          if native && !selections.is_empty() {
+            for (x, y, width, height) in self.native_selection_rects.borrow().iter().copied() {
+              let (x, y, transform, transform_origin) = transformed_quad_frame(x, y, transform);
+              quads.push(Quad {
+                x,
+                y,
+                width,
+                height,
+                opacity,
+                transform,
+                transform_origin,
+                content: QuadContent::Rect {
+                  color: selection_color,
+                  gradient: None,
+                },
+                border_radius: None,
+                border: None,
+                clip: selection_clip,
+              });
+            }
+          }
+          for selection in selections.into_iter().filter(|_| !native) {
             let (row_top, row_height) = state.selection_band_for_row(selection.y, (band_top, band_height));
             let selection_height = row_height.min(content_height).max(1.0);
             let selection_x = abs_x + padding.left + selection.x;

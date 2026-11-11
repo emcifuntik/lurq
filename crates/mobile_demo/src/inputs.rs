@@ -6,7 +6,10 @@ use lurq::{
   app::{component::Component, ctx::Ctx, events::KeyboardEvent},
   components::{Column, ContentKind, KeyboardKind, ReturnKey, ScrollVertical, Spacer, TextInput},
   core::Signal,
-  layout::text_style::{FontWeight, TextStyle},
+  layout::{
+    layout_kind::ScrollState,
+    text_style::{FontWeight, TextStyle},
+  },
   node::{Element, color::Color},
 };
 
@@ -22,6 +25,7 @@ pub(crate) struct InputsScreen {
   notes: Signal<String>,
   bottom: Signal<String>,
   log: Signal<Vec<String>>,
+  scroll: ScrollState,
 }
 
 impl Component for InputsScreen {
@@ -36,6 +40,7 @@ impl Component for InputsScreen {
       notes: ctx.signal("Two lines to start with.\nSelect a word, move the caret, paste.".to_owned()),
       bottom: ctx.signal(String::new()),
       log: ctx.signal(Vec::new()),
+      scroll: ScrollState::new(),
     }
   }
 
@@ -110,7 +115,12 @@ impl Component for InputsScreen {
         push_log(&keys, format!("key “{}” ({})", event.key, event.code));
       });
 
-    ScrollVertical::new(content).size(FILL, FILL).background(BG)
+    // A tap outside an input leaves the keyboard up; scrolling the screen puts it away.
+    self.scroll.set_dismisses_keyboard(true);
+    ScrollVertical::new(content)
+      .with_scroll_state(self.scroll.clone())
+      .size(FILL, FILL)
+      .background(BG)
   }
 }
 

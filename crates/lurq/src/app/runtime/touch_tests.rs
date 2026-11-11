@@ -537,3 +537,56 @@ fn a_finger_scrolls_from_a_scroll_indicator_and_drags_a_bar_that_is_always_there
     "an indicator is content to a moving finger"
   );
 }
+
+/// A text input over a list of 1000 of content, in a 200 by 400 window; the list's state.
+fn input_over_a_list() -> (Tree, App, crate::layout::layout_kind::ScrollState) {
+  use crate::components::TextInput;
+
+  let state = crate::layout::layout_kind::ScrollState::new();
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(200, 400);
+  tree.set_root(
+    Column::new()
+      .child(TextInput::new(Signal::new(String::new())).width(200.0).height(40.0))
+      .child(
+        ScrollVertical::new(Spacer::new().width(200.0).height(1000.0))
+          .with_scroll_state(state.clone())
+          .width(200.0)
+          .height(300.0),
+      ),
+  );
+  tree.pass(&mut app, &HeadlessSurface);
+  (tree, app, state)
+}
+
+#[test]
+fn a_finger_outside_the_text_input_being_typed_into_leaves_it_the_focus() {
+  let (mut tree, mut app, _state) = input_over_a_list();
+  tree.touch_press(100.0, 20.0);
+  tree.touch_release(100.0, 20.0);
+  tree.pass(&mut app, &HeadlessSurface);
+  assert!(tree.focused_text_input(), "a tap on the input gives it the focus");
+
+  tree.touch_press(100.0, 200.0);
+  tree.touch_release(100.0, 200.0);
+  assert!(tree.focused_text_input(), "a tap outside leaves the keyboard up");
+
+  tree.mouse_down(100.0, 200.0, crate::app::events::MouseButton::Left);
+  assert!(!tree.focused_text_input(), "a mouse's press outside takes the focus");
+}
+
+#[test]
+fn scrolling_a_list_that_dismisses_the_keyboard_takes_the_focus_from_the_text_input() {
+  let (mut tree, mut app, state) = input_over_a_list();
+  tree.touch_press(100.0, 20.0);
+  tree.touch_release(100.0, 20.0);
+  tree.pass(&mut app, &HeadlessSurface);
+
+  tree.touch_scroll_begin(100.0, 200.0, 0.0, -10.0);
+  assert!(tree.focused_text_input(), "a list not set to keeps the keyboard up");
+
+  state.set_dismisses_keyboard(true);
+  tree.touch_scroll_begin(100.0, 200.0, 0.0, -10.0);
+  assert!(!tree.focused_text_input());
+}

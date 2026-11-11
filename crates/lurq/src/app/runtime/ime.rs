@@ -67,7 +67,23 @@ pub struct TextInputSnapshot {
   pub composition: Option<std::ops::Range<usize>>,
   /// The caret as last painted, in logical pixels from the window's top-left corner.
   pub caret: Option<ImeCursorArea>,
+  /// Where the input and its text were last painted; `None` before its first frame.
+  pub geometry: Option<TextInputGeometry>,
 }
+
+/// Where a text input's characters are on the screen, in logical pixels from the window's top-left corner.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextInputGeometry {
+  /// The input's box: x, y, width, height.
+  pub bounds: (f32, f32, f32, f32),
+  /// Every place a caret can be: its byte in the text and the top-left corner of a caret there. A long text
+  /// gives its first few thousand.
+  pub carets: Vec<(usize, f32, f32)>,
+  pub line_height: f32,
+}
+
+/// How many caret places a snapshot carries.
+const SNAPSHOT_CARETS: usize = 4096;
 
 impl Tree {
   /// The focused text input's text, selection and caret; `None` when no text input has focus.
@@ -88,6 +104,15 @@ impl Tree {
       selection,
       composition,
       caret: self.layout_engine.ime_cursor_area(),
+      geometry: self.layout_engine.text_input_frame().map(|frame| TextInputGeometry {
+        bounds: frame.bounds,
+        carets: state
+          .caret_table(SNAPSHOT_CARETS)
+          .into_iter()
+          .map(|(index, x, y)| (index, frame.text_origin.0 + x, frame.text_origin.1 + y))
+          .collect(),
+        line_height: frame.line_height,
+      }),
     })
   }
 
@@ -128,6 +153,26 @@ impl Tree {
       self.reset_text_input_caret_blink();
       self.apply_reactive_updates_after_event();
     }
+  }
+
+  /// Leaves the focused text input's caret to the platform: a phone draws its own over the window, and handles
+  /// to drag at a selection's ends. The input then paints no caret; the selection's highlight stays its own.
+  pub fn set_native_text_selection(&mut self, native: bool) {
+    self.layout_engine.set_native_text_selection(native);
+    self.needs_redraw = true;
+  }
+
+  /// Where the platform shows the focused text input's selection: rectangles in the window. The
+  /// input paints its highlight there while the platform draws its caret
+  /// ([`set_native_text_selection`](Self::set_native_text_selection)), so that it follows a handle as it is
+  /// dragged.
+  pub fn set_native_selection_rects(&mut self, rects: Vec<(f32, f32, f32, f32)>) {
+    self.layout_engine.set_native_selection_rects(rects);
+    if let Some(state) = self.focused_text_input_state() {
+      state.repaint();
+    }
+    self.cached_render_list = None;
+    self.needs_redraw = true;
   }
 
   /// What the keyboard should be for the focused text input; `None` when no text input has focus, and there is
@@ -288,6 +333,20 @@ impl Tree {
     };
     let commit_release = std::mem::take(&mut self.ime_keys.commit_release);
     withheld || commit_release || key == PROCESS_KEY || self.is_composing()
+  }
+
+  /// Whether a text input has the focus.
+  pub(crate) fn focused_text_input(&self) -> bool {
+    self.focused_text_input_state().is_some()
+  }
+
+  /// Whether the node is a text input.
+  pub(crate) fn is_text_input(&self, id: NodeId) -> bool {
+    self
+      .root
+      .as_ref()
+      .and_then(|root| find_node_by_id(root, id))
+      .is_some_and(|node| matches!(node.node_kind(), NodeKind::TextInput { .. }))
   }
 
   fn focused_text_input_state(&self) -> Option<TextInputState> {

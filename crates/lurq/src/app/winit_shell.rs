@@ -488,6 +488,8 @@ impl ManagedWindow {
       if let Ok(RawWindowHandle::UiKit(handle)) = window.window_handle().map(|handle| handle.as_raw()) {
         self.status_bar_tap = Some(ios::StatusBarTap::new(handle.ui_view));
         self.text_input = Some(ios_text::TextInput::new(handle.ui_view));
+        // The platform draws the focused input's caret and selection; see `ios_text`.
+        self.tree.set_native_text_selection(true);
         self.keyboard_probe = Some(ios::KeyboardProbe::new(handle.ui_view));
       }
     }
@@ -750,6 +752,12 @@ impl ManagedWindow {
       set_window_cursor(w, &mut self.cursor, self.tree.cursor());
       // The pass painted the focused input's caret where it now is.
       self.ime.apply(w, &self.tree);
+      // The pass laid the focused input's text out: the platform's caret goes where it now ends, with this
+      // frame and not the one after.
+      #[cfg(target_os = "ios")]
+      if let Some(text_input) = &mut self.text_input {
+        text_input.sync(&mut self.tree);
+      }
       let presented = report.rendered;
       let mut paint_duration = Duration::ZERO;
       if presented {

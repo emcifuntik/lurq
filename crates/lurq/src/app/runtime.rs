@@ -75,7 +75,7 @@ mod focus_visible;
 mod history_swipe;
 mod hover;
 mod ime;
-pub use ime::{KeyboardTraits, TextInputSnapshot};
+pub use ime::{KeyboardTraits, TextInputGeometry, TextInputSnapshot};
 #[cfg(all(test, feature = "markdown"))]
 mod inline_link_copy_tests;
 #[cfg(feature = "markdown")]
@@ -5008,7 +5008,10 @@ impl Tree {
     if reset_text_input_caret_blink {
       self.reset_text_input_caret_blink();
     }
-    if blur_on_press {
+    // A finger that lands outside the text input being typed into leaves it the focus, and so the keyboard
+    // up, as a phone's apps do: only another text input takes the focus from it.
+    let keeps_keyboard = self.touch_pointer.down && self.focused_text_input();
+    if blur_on_press && !keeps_keyboard {
       self.blur_focus();
     }
     if clear_active_after_dispatch {
@@ -5027,7 +5030,9 @@ impl Tree {
       self.active_drag = Some(drag);
       self.needs_redraw = true;
     }
-    if let Some(target) = pending_focus {
+    if let Some(target) = pending_focus
+      && (!keeps_keyboard || self.is_text_input(target.input_id))
+    {
       self.focus_node(target);
     }
   }
