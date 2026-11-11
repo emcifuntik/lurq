@@ -18,9 +18,10 @@ use crate::{
     CheckboxStyle, EventHandler, IntoTextInputEventHandler, SliderPartStyle, TextColor, TextTransformMode,
     text_selection::{
       CaretPosition, CaretPositions, TextSelectionRange, caret_x_for_index, caret_y_for_index, clamp_to_char_boundary,
-      closest_caret_on_adjacent_row, closest_caret_to_point, line_bounds, next_char_boundary, next_word_boundary,
-      previous_char_boundary, previous_word_boundary, selection_range_indices, selection_ranges_for_positions,
-      trailing_break_len, trailing_break_row_y, word_selection_bounds,
+      closest_caret_on_adjacent_row, closest_caret_to_point, line_bounds, next_char_boundary, next_delete_boundary,
+      next_word_boundary, previous_char_boundary, previous_delete_boundary, previous_word_boundary,
+      selection_range_indices, selection_ranges_for_positions, trailing_break_len, trailing_break_row_y,
+      word_selection_bounds,
     },
   },
 };
@@ -38,6 +39,37 @@ pub enum TextInputOverflow {
   Multiline,
   #[default]
   Scroll,
+}
+
+/// The on-screen keyboard a text input asks for, on a platform that has kinds of them: a phone shows digits
+/// for a number and an `@` key for an email address. Elsewhere it changes nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyboardKind {
+  /// Letters, with the rest a switch away.
+  #[default]
+  Text,
+  Email,
+  Url,
+  /// Digits only: a PIN, a code.
+  Number,
+  /// Digits and a decimal point.
+  Decimal,
+  Phone,
+  /// Letters with a key that says Search.
+  Search,
+}
+
+/// What the on-screen keyboard's Return key says, on a platform that labels it. The key sends Enter whatever
+/// it says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReturnKey {
+  #[default]
+  Default,
+  Done,
+  Go,
+  Next,
+  Search,
+  Send,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-pub use crate::node::node_kind::{TextInputOverflow, TextInputOverflowAnchor};
+pub use crate::node::node_kind::{KeyboardKind, ReturnKey, TextInputOverflow, TextInputOverflowAnchor};
 use crate::{
   app::theme::CaretMode,
   core::Signal,
@@ -178,6 +178,19 @@ impl TextInput {
   /// Uses a custom mask, such as `'\u{25cf}'` for a WinUI-style heavy dot.
   pub fn mask_char(mut self, mask: char) -> Self {
     self.update_node(|node| crate::node::NodeUpdate::text_input_mask_char(node, mask));
+    self
+  }
+
+  /// The on-screen keyboard the input asks for: digits for a number, an `@` key for an email address. It
+  /// changes nothing where there is no such keyboard.
+  pub fn keyboard(mut self, keyboard: crate::node::node_kind::KeyboardKind) -> Self {
+    self.update_node(|node| crate::node::NodeUpdate::text_input_keyboard(node, keyboard));
+    self
+  }
+
+  /// What the on-screen keyboard's Return key says. The key sends Enter whatever it says.
+  pub fn return_key(mut self, return_key: crate::node::node_kind::ReturnKey) -> Self {
+    self.update_node(|node| crate::node::NodeUpdate::text_input_return_key(node, return_key));
     self
   }
 

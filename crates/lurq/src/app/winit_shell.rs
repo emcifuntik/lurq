@@ -313,6 +313,17 @@ struct ManagedWindow {
   frame_link: Option<ios::FrameLink>,
   #[cfg(target_os = "ios")]
   status_bar_tap: Option<ios::StatusBarTap>,
+  /// How much of the window the keyboard covered at the last frame, in logical pixels.
+  #[cfg(target_os = "ios")]
+  keyboard_overlap: f32,
+  /// The view the keyboard types into; see [`ios`].
+  #[cfg(target_os = "ios")]
+  text_input: Option<ios::TextInput>,
+  #[cfg(target_os = "ios")]
+  keyboard_probe: Option<ios::KeyboardProbe>,
+  /// The move of the keyboard during which a finger last landed; see `ios::keyboard_move`.
+  #[cfg(target_os = "ios")]
+  touched_during_keyboard_move: Option<u64>,
 }
 
 impl ManagedWindow {
@@ -356,6 +367,14 @@ impl ManagedWindow {
       frame_link: None,
       #[cfg(target_os = "ios")]
       status_bar_tap: None,
+      #[cfg(target_os = "ios")]
+      keyboard_overlap: 0.0,
+      #[cfg(target_os = "ios")]
+      text_input: None,
+      #[cfg(target_os = "ios")]
+      keyboard_probe: None,
+      #[cfg(target_os = "ios")]
+      touched_during_keyboard_move: None,
     }
   }
 
@@ -381,7 +400,7 @@ impl ManagedWindow {
       .touch
       .next_deadline()
       .into_iter()
-      .chain(self.tree.touch_animating().then(|| Instant::now() + touch::SPRING_STEP))
+      .chain((self.tree.touch_animating() || ios::keyboard_moving()).then(|| Instant::now() + touch::SPRING_STEP))
       .min();
     #[cfg(not(target_os = "ios"))]
     None
@@ -462,9 +481,12 @@ impl ManagedWindow {
         .tree
         .set_double_click_distance(touch::DOUBLE_TAP_DISTANCE * window.scale_factor() as f32);
       self.tree.set_double_click_interval(touch::DOUBLE_TAP_INTERVAL);
+      ios::watch_keyboard();
       self.frame_link = Some(ios::FrameLink::new());
       if let Ok(RawWindowHandle::UiKit(handle)) = window.window_handle().map(|handle| handle.as_raw()) {
         self.status_bar_tap = Some(ios::StatusBarTap::new(handle.ui_view));
+        self.text_input = Some(ios::TextInput::new(handle.ui_view));
+        self.keyboard_probe = Some(ios::KeyboardProbe::new(handle.ui_view));
       }
     }
     if let Ok(position) = window.outer_position() {
@@ -693,7 +715,24 @@ impl ManagedWindow {
       self.tree.resize(size.width, size.height);
       #[cfg(target_os = "ios")]
       {
-        let safe_area = safe_area_insets(w);
+        let mut safe_area = safe_area_insets(w);
+        // What the keyboard covers is not safe either; content padded by the safe area rises above it.
+        let logical_height = f64::from(size.height) / w.scale_factor();
+        let keyboard = self
+          .keyboard_probe
+          .as_ref()
+          .map_or(0.0, |probe| probe.overlap(logical_height)) as f32;
+        safe_area.bottom = safe_area.bottom.max(keyboard);
+        if keyboard != self.keyboard_overlap {
+          self.keyboard_overlap = keyboard;
+          // It is coming up, or changed its height: the input being typed into stays in view, frame by frame as
+          // the window shrinks. Unless a finger landed since the keyboard set off: the person scrolls where
+          // they mean to, and bringing the input back each frame would hold their scroll until the keyboard
+          // came to rest.
+          if self.touched_during_keyboard_move != Some(ios::keyboard_move()) {
+            self.tree.reveal_focused_input();
+          }
+        }
         self.tree.window().set_safe_area(safe_area);
         if let Some(status_bar_tap) = &mut self.status_bar_tap {
           status_bar_tap.set_height(f64::from(safe_area.top));
@@ -792,6 +831,20 @@ impl ManagedWindow {
         self.tree.touch_scroll_bounce(velocity.0 as f32, velocity.1 as f32, now);
       }
       self.tree.touch_tick(now);
+      // What the keyboard typed goes to the focused input, and the keyboard follows the focus.
+      if let Some(text_input) = &mut self.text_input {
+        for typed in text_input.take_typed() {
+          match typed {
+            ios::Typed::Text(text) => self.tree.keyboard_insert(&text),
+            ios::Typed::DeleteBackward => self.tree.keyboard_delete_backward(),
+          }
+        }
+        text_input.set_traits(self.tree.keyboard_traits());
+      }
+      // The keyboard is on its way up or down: every frame lays the window out around where it is.
+      if ios::keyboard_moving() {
+        self.tree.request_redraw();
+      }
       if self.status_bar_tap.as_mut().is_some_and(ios::StatusBarTap::take_tapped) {
         self.tree.touch_scroll_to_top(now);
       }
@@ -1010,6 +1063,9 @@ impl ManagedWindow {
       #[cfg(target_os = "ios")]
       WindowEvent::Touch(touch) => {
         let scale = f64::from(self.tree.scale_factor());
+        if touch.phase == TouchPhase::Started && ios::keyboard_moving() {
+          self.touched_during_keyboard_move = Some(ios::keyboard_move());
+        }
         // The finger's own events come first. One a handler took is the app's, and not the pointer.
         let phase = match touch.phase {
           TouchPhase::Started => crate::app::events::TouchPhase::Start,

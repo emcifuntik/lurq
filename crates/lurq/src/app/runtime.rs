@@ -75,6 +75,7 @@ mod focus_visible;
 mod history_swipe;
 mod hover;
 mod ime;
+pub use ime::KeyboardTraits;
 #[cfg(all(test, feature = "markdown"))]
 mod inline_link_copy_tests;
 #[cfg(feature = "markdown")]

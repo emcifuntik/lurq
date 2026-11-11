@@ -43,7 +43,68 @@ pub(super) struct ImeKeys {
   commit_release: bool,
 }
 
+/// What a phone's keyboard is told about the text input it types into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyboardTraits {
+  /// The input is masked: the keyboard keeps what is typed out of its suggestions and out of recordings of
+  /// the screen.
+  pub secure: bool,
+  pub kind: crate::node::node_kind::KeyboardKind,
+  pub return_key: crate::node::node_kind::ReturnKey,
+}
+
 impl Tree {
+  /// What the keyboard should be for the focused text input; `None` when no text input has focus, and there is
+  /// nothing to type into.
+  pub fn keyboard_traits(&self) -> Option<KeyboardTraits> {
+    let state = self.focused_text_input_state()?;
+    let (kind, return_key) = state.keyboard();
+    Some(KeyboardTraits {
+      secure: state.is_masked(),
+      kind,
+      return_key,
+    })
+  }
+
+  /// Text from an on-screen keyboard, which gives it whole: a word of an autocorrection, an emoji with all its
+  /// parts. It goes into the focused text input as committed text does; a line break in it is the Return key,
+  /// which is Enter.
+  pub fn keyboard_insert(&mut self, text: &str) {
+    let mut lines = text.split('\n');
+    if let Some(first) = lines.next()
+      && !first.is_empty()
+    {
+      self.ime(ImeEvent::Commit(first.to_owned()));
+    }
+    for line in lines {
+      self.key_down_with_meta("Enter".to_owned(), "Enter".to_owned(), false, false, false, false);
+      self.key_up_with_meta("Enter".to_owned(), "Enter".to_owned(), false, false, false, false);
+      if !line.is_empty() {
+        self.ime(ImeEvent::Commit(line.to_owned()));
+      }
+    }
+  }
+
+  /// The on-screen keyboard's delete key: Backspace.
+  pub fn keyboard_delete_backward(&mut self) {
+    self.key_down_with_meta(
+      "Backspace".to_owned(),
+      "Backspace".to_owned(),
+      false,
+      false,
+      false,
+      false,
+    );
+    self.key_up_with_meta(
+      "Backspace".to_owned(),
+      "Backspace".to_owned(),
+      false,
+      false,
+      false,
+      false,
+    );
+  }
+
   /// Applies an input method event to the focused text input: shows or
   /// clears the composition, or inserts the committed text (firing the
   /// input's `on_input` handlers with a `KeyboardEvent` whose `key` is the
@@ -96,6 +157,17 @@ impl Tree {
   /// unlike its node, survives re-renders). A shell resets the platform's
   /// input method when it changes, so a composition does not carry over to
   /// another input.
+  /// Brings the focused text input into view in the next pass: a keyboard came up over it.
+  pub fn reveal_focused_input(&mut self) {
+    if self.focused_text_input_state().is_none() {
+      return;
+    }
+    if let Some(focused) = self.focused_node {
+      self.request_scroll_into_view(focused);
+      self.needs_redraw = true;
+    }
+  }
+
   pub(crate) fn ime_target(&self) -> Option<usize> {
     let state = self.focused_text_input_state()?;
     (!state.is_masked()).then(|| state.value_signal_id())

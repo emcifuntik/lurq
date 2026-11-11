@@ -685,6 +685,8 @@ pub(crate) trait NodeUpdate {
   fn text_input_mask(&mut self);
   fn text_input_mask_char(&mut self, mask: char);
   fn text_input_unmask(&mut self);
+  fn text_input_keyboard(&mut self, keyboard: crate::node::node_kind::KeyboardKind);
+  fn text_input_return_key(&mut self, return_key: crate::node::node_kind::ReturnKey);
   fn text_input_style(&mut self, text_style: TextStyle);
   fn text_input_placeholder_style(&mut self, text_style: TextStyle);
   fn text_input_align(&mut self, align: impl Into<TextAlign>);
@@ -2008,6 +2010,18 @@ impl NodeUpdate for Node {
 
   fn text_input_mask(&mut self) {
     NodeUpdate::text_input_mask_char(self, '\u{2022}');
+  }
+
+  fn text_input_keyboard(&mut self, keyboard: crate::node::node_kind::KeyboardKind) {
+    if let NodeKind::TextInput { state, .. } = &self.node_kind {
+      state.set_keyboard(keyboard);
+    }
+  }
+
+  fn text_input_return_key(&mut self, return_key: crate::node::node_kind::ReturnKey) {
+    if let NodeKind::TextInput { state, .. } = &self.node_kind {
+      state.set_return_key(return_key);
+    }
   }
 
   fn text_input_mask_char(&mut self, mask: char) {

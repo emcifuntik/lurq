@@ -89,7 +89,7 @@ pub use styled_text::{
 #[cfg(feature = "svg")]
 pub use svg::Svg;
 pub use text::{Text, TextOverflow};
-pub use text_input::{TextInput, TextInputOverflow, TextInputOverflowAnchor};
+pub use text_input::{KeyboardKind, ReturnKey, TextInput, TextInputOverflow, TextInputOverflowAnchor};
 pub use text_input_controller::{InputEditError, InputSelection, TextInputController};
 pub use text_input_tokens::{InputToken, InputTokenError, InputTokenStyle, InputTokens};
 #[cfg(feature = "raster")]
