@@ -143,6 +143,106 @@ fn clear_ends_a_running_recording() {
   assert!(handle.status(id).is_err());
 }
 
+/// A presented pass of `producer`, which takes a screenshot when a recording
+/// is due one, delivered as a capture engine would. True when it took one.
+fn presented_pass_with_screenshot(producer: &mut WindowProfiler, frame_id: u64) -> bool {
+  use crate::app::render_engine::{CapturedFrame, RenderCaptureTarget};
+  let (started, guard) = producer.begin_pass(frame_id);
+  let target = producer.screenshot_target();
+  let taken = target.is_some();
+  if let Some(RenderCaptureTarget::Bytes(deliver)) = target {
+    deliver(Ok(CapturedFrame {
+      width: 8,
+      height: 4,
+      rgba: vec![frame_id as u8; 8 * 4 * 4],
+    }));
+  }
+  producer.finish_pass(
+    started,
+    &crate::app::PassReport {
+      required: true,
+      rendered: true,
+      ..Default::default()
+    },
+    "none",
+    Some(&FrameProfile::default()),
+  );
+  drop(guard);
+  taken
+}
+
+#[test]
+fn the_screenshots_toggle_records_a_filmstrip_of_its_frames() {
+  let mut main = WindowProfiler::new();
+  let handle = main.handle();
+  let mut state = ProfilerState::default();
+  // Off by default: a recording reads no frame back.
+  assert!(!state.screenshots);
+  assert!(state.start(&handle));
+  assert!(!presented_pass_with_screenshot(&mut main, 1));
+  state.stop();
+  assert!(capture_of(&state).screenshots.is_empty());
+
+  state.screenshots = true;
+  assert!(state.start(&handle));
+  // The first frame takes one; the next, within a quarter of a second, none.
+  assert!(presented_pass_with_screenshot(&mut main, 2));
+  assert!(!presented_pass_with_screenshot(&mut main, 3));
+  state.stop();
+  assert!(state.screenshots, "the toggle holds for the next recording");
+
+  let capture = capture_of(&state);
+  let pass = |frame| {
+    capture
+      .passes
+      .iter()
+      .find(|sample| pass_of(sample).unwrap().frame_id == Some(frame))
+      .unwrap()
+      .clone()
+  };
+  let (second, third) = (pass(2), pass(3));
+  // The frame that paid for it is marked; the next is not.
+  assert!(pass_of(&second).unwrap().screenshot);
+  assert!(!pass_of(&third).unwrap().screenshot);
+  let [shot] = &capture.screenshots[..] else {
+    panic!("{} screenshots", capture.screenshots.len());
+  };
+  // Placed at its frame's pass, where that pass's bar is.
+  assert_eq!(shot.sequence, Some(second.sequence));
+  assert_eq!(shot.at_ms, second.started_ms);
+  assert_eq!((shot.screenshot.width, shot.screenshot.height), (8, 4));
+  // Frame 3 shows what frame 2 left on screen.
+  assert_eq!(
+    capture.screenshot_for(third.sequence).and_then(|shot| shot.sequence),
+    Some(second.sequence)
+  );
+
+  // The tab draws the filmstrip and previews the selected pass's screenshot;
+  // hovering a thumbnail previews it, a click selects its pass.
+  let signal = Signal::new(ProfilerState {
+    selected: Some(third.sequence),
+    ..state
+  });
+  let (mut app, mut tree) = tab_tree(signal.clone(), 1440, 860);
+  assert!(tree.get_element_by_id(PREVIEW_ID).is_some());
+  let thumbnail = filmstrip_id(0);
+  let thumbnail = tree
+    .find_element(|element: crate::node::ElementRef<'_>| element.id() == Some(thumbnail.as_str()))
+    .map(|element| element.bounds())
+    .expect("the filmstrip's thumbnail");
+  let (x, y) = (
+    thumbnail.x + thumbnail.width / 2.0,
+    thumbnail.y + thumbnail.height / 2.0,
+  );
+  tree.mouse_move(x, y);
+  tree.pass_headless(&mut app);
+  assert_eq!(signal.get_untracked().hovered_screenshot, Some(0));
+  tree.mouse_down(x, y, crate::app::events::MouseButton::Left);
+  tree.mouse_up(x, y, crate::app::events::MouseButton::Left);
+  tree.pass_headless(&mut app);
+  assert_eq!(signal.get_untracked().selected, Some(second.sequence));
+}
+
 fn sample(sequence: u64, window: &str, started_ms: f64, total_ms: f64, rendered: bool) -> Arc<ProfileSample> {
   Arc::new(ProfileSample {
     sequence,
@@ -168,6 +268,7 @@ fn sample(sequence: u64, window: &str, started_ms: f64, total_ms: f64, rendered:
       reasons: crate::app::PassReasons::default(),
       present: None,
       counters: None,
+      screenshot: false,
     }),
   })
 }
@@ -180,6 +281,7 @@ fn capture(passes: Vec<Arc<ProfileSample>>, ended_ms: f64) -> ProfilerCapture {
     markers: Vec::new(),
     scopes: Vec::new(),
     dropped_scopes: 0,
+    screenshots: Vec::new(),
     size_bytes: 0,
     stopped_at_limit: false,
     boundary_excluded: 0,
@@ -404,6 +506,7 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
         &capture,
         &passes,
         range,
+        None,
         None,
         Signal::new(ProfilerState::default()),
       ))

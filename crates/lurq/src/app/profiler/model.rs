@@ -43,6 +43,9 @@ impl Default for SessionOptions {
 pub struct RecordingOptions {
   pub max_bytes: u64,
   pub include_devtools: bool,
+  /// Some takes screenshots of presented frames; None (the default) reads
+  /// no frame back.
+  pub screenshots: Option<ScreenshotOptions>,
 }
 
 impl Default for RecordingOptions {
@@ -50,20 +53,71 @@ impl Default for RecordingOptions {
     Self {
       max_bytes: DEFAULT_RECORDING_MAX_BYTES,
       include_devtools: false,
+      screenshots: None,
     }
   }
+}
+
+/// Screenshots a recording takes of presented frames. Each one is read back
+/// from the GPU after its frame's present, never waited for by the frame,
+/// downscaled to fit `max_width` by `max_height`, with sensitive text painted
+/// over as in an inspector's screenshot. Its bytes count toward `max_bytes`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenshotOptions {
+  /// The most screenshots taken in a second, across the handle's windows; 0
+  /// counts as 1.
+  pub max_per_second: u32,
+  pub max_width: u32,
+  pub max_height: u32,
+}
+
+impl Default for ScreenshotOptions {
+  fn default() -> Self {
+    Self {
+      max_per_second: 4,
+      max_width: 320,
+      max_height: 200,
+    }
+  }
+}
+
+impl ScreenshotOptions {
+  /// The shortest time between two screenshots.
+  pub fn min_interval(&self) -> Duration {
+    Duration::from_secs(1) / self.max_per_second.max(1)
+  }
+}
+
+/// A downscaled image of one presented frame, taken for a recording with
+/// `RecordingOptions::screenshots`. Holds pixels only: sensitive text in it is
+/// a grey bar.
+#[derive(Clone)]
+pub struct FrameScreenshot {
+  pub window: String,
+  /// The presented frame it shows: its pass sample's `PassSample::frame_id`.
+  pub frame_id: u64,
+  /// When the frame's render began, which asked for it.
+  pub captured_ms: f64,
+  pub width: u32,
+  pub height: u32,
+  /// Tight RGBA8 rows, `width` by `height`.
+  pub rgba: Vec<u8>,
 }
 
 /// The state of a recording session; None in a bounded session's report.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RecordingStatus {
   pub max_bytes: u64,
-  /// Estimated memory the session's samples hold, counted per session.
+  /// Estimated memory the session's samples and screenshots hold, counted
+  /// per session.
   pub size_bytes: u64,
-  /// True once a sample would have passed `max_bytes`: the session keeps what
-  /// it had and records nothing more.
+  /// True once a sample or screenshot would have passed `max_bytes`: the
+  /// session keeps what it had and records nothing more.
   pub stopped_at_limit: bool,
   pub stopped_ms: Option<f64>,
+  /// Screenshots kept, and the part of `size_bytes` they hold.
+  pub screenshots: u64,
+  pub screenshot_bytes: u64,
 }
 
 /// A live session's progress without its samples (`ProfilingHandle::status`),
@@ -360,6 +414,10 @@ pub struct PassSample {
   /// Sizes taken at the end of the pass; None when the pass started with no
   /// session active.
   pub counters: Option<PassCounters>,
+  /// The frame was copied for a recording's screenshot (`FrameScreenshot`):
+  /// its render, encode and submit include that copy, so it is slower than
+  /// the same frame without one.
+  pub screenshot: bool,
 }
 
 /// One phase guard's lifetime, in nanoseconds since the collector epoch (the
@@ -480,6 +538,9 @@ pub struct ProfileReport {
   pub application_scopes: Option<ApplicationScopeReport>,
   /// Some for a recording session (`ProfilingHandle::start_recording`).
   pub recording: Option<RecordingStatus>,
+  /// A recording's screenshots, in the order they arrived; empty without
+  /// `RecordingOptions::screenshots`.
+  pub screenshots: Vec<Arc<FrameScreenshot>>,
 }
 
 #[derive(Clone, Debug)]

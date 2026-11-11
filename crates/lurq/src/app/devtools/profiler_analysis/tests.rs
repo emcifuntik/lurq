@@ -70,6 +70,7 @@ pub(crate) fn layered_pass(sequence: u64, start_ms: f64, duration_ms: f64, comma
       reasons: Default::default(),
       present: None,
       counters: None,
+      screenshot: false,
     }),
   })
 }
@@ -109,6 +110,7 @@ pub(crate) fn capture_of(
     markers: Vec::new(),
     scopes,
     dropped_scopes: 0,
+    screenshots: Vec::new(),
     size_bytes: 0,
     stopped_at_limit: false,
     boundary_excluded: 0,

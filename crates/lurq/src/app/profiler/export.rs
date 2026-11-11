@@ -111,7 +111,8 @@ impl ProfileReport {
         "submit_present": "CPU API wall time, not GPU execution",
         "fps": "on-demand rendering; sample count/interval is not throughput or FPS",
         "present": "presented_ms is when the backend's present call returned on the CPU, not when the display showed the frame; missed_vsync only inside a continuous run of frames (each wanted within a refresh of the previous present), never across an idle gap",
-        "input_latency": "an input sample starts when the shell's handler received the event (no OS timestamp); queue_delay to its dispatch, input_to_present to the CPU present of the first frame presented after it; no positions, keys or text"
+        "input_latency": "an input sample starts when the shell's handler received the event (no OS timestamp); queue_delay to its dispatch, input_to_present to the CPU present of the first frame presented after it; no positions, keys or text",
+        "screenshot": "a pass marked screenshot copied its frame for a recording's screenshot: its render, encode and submit include that copy; the readback and downscale run off the pass's thread"
       }
     });
     // Additive: a bounded session's export has no such key.
@@ -119,7 +120,13 @@ impl ProfileReport {
       value["max_samples"] = Value::Null;
       value["recording"] = json!({
         "max_bytes": recording.max_bytes, "size_bytes": recording.size_bytes,
-        "stopped_at_limit": recording.stopped_at_limit, "stopped_ms": recording.stopped_ms
+        "stopped_at_limit": recording.stopped_at_limit, "stopped_ms": recording.stopped_ms,
+        "screenshot_bytes": recording.screenshot_bytes,
+        // Which frames have a screenshot; the pixels are not exported.
+        "screenshots": self.screenshots.iter().map(|screenshot| json!({
+          "window": screenshot.window, "frame_id": screenshot.frame_id,
+          "captured_ms": screenshot.captured_ms, "width": screenshot.width, "height": screenshot.height
+        })).collect::<Vec<_>>()
       });
     }
     value
@@ -156,7 +163,10 @@ fn sample_json(sample: &ProfileSample) -> Value {
         "missed_vsyncs": present.missed_vsyncs
       })),
       // Additive within schema_version 1; null for a pass without counters.
-      "counters": pass.counters.map(counters_json)
+      "counters": pass.counters.map(counters_json),
+      // Additive: true when the frame was also copied for a recording's
+      // screenshot, so its render timings include that copy.
+      "screenshot": pass.screenshot
     }),
     SampleData::UiUpdate(update) => json!({
       "kind": "ui_update", "frame_id": update.frame_id,

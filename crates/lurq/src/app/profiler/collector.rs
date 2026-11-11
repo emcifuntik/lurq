@@ -20,6 +20,9 @@ pub struct ProfilingHandle {
 pub(crate) struct Inner {
   pub(crate) epoch: Instant,
   pub(crate) active: AtomicBool,
+  /// A session that takes samples takes screenshots too: only then does a
+  /// frame ask for one (`screenshot_due`).
+  pub(crate) screenshots: AtomicBool,
   pub(super) state: Mutex<State>,
 }
 
@@ -35,6 +38,9 @@ pub(super) struct State {
   /// The id of the next dispatched input (`InputDispatchSample::interaction_id`).
   #[cfg(feature = "perf_profile")]
   next_interaction: u64,
+  /// When the last screenshot was asked for, on any window.
+  #[cfg(all(feature = "perf_profile", feature = "screenshot"))]
+  last_screenshot: Option<Instant>,
   untracked_windows: u64,
 }
 
@@ -67,12 +73,43 @@ struct Recording {
   max_bytes: u64,
   /// When a sample would have passed `max_bytes`; nothing is recorded after.
   stopped_at_limit: Option<Instant>,
+  screenshot_options: Option<ScreenshotOptions>,
+  screenshots: Vec<Arc<FrameScreenshot>>,
+  /// The part of `size_bytes` the screenshots hold.
+  screenshot_bytes: u64,
+}
+
+impl Recording {
+  /// Charges `bytes` to the recording; false, and stopped at its limit at
+  /// `now`, when they would pass it.
+  fn charge(&mut self, bytes: u64, now: Instant) -> bool {
+    if self.size_bytes.saturating_add(bytes) > self.max_bytes {
+      self.stopped_at_limit = Some(now);
+      return false;
+    }
+    self.size_bytes += bytes;
+    true
+  }
 }
 
 impl Session {
   /// False for a recording stopped at its limit, which takes no more samples.
   pub(super) fn receiving(&self) -> bool {
     !matches!(&self.samples, Samples::Recording(recording) if recording.stopped_at_limit.is_some())
+  }
+
+  /// Samples of a window marked as DevTools' own are kept only on request.
+  #[cfg(all(feature = "perf_profile", feature = "screenshot"))]
+  fn takes_window(&self, devtools: bool) -> bool {
+    self.receiving() && (!devtools || self.options.include_devtools)
+  }
+
+  /// The screenshots a receiving recording takes; None for any other session.
+  fn screenshot_options(&self) -> Option<ScreenshotOptions> {
+    match &self.samples {
+      Samples::Recording(recording) if recording.stopped_at_limit.is_none() => recording.screenshot_options,
+      _ => None,
+    }
   }
 
   /// Keeps `sample`, of `bytes`, unless it began before the session. True
@@ -91,8 +128,7 @@ impl Session {
         samples.push_back(sample.clone());
       }
       Samples::Recording(recording) => {
-        if recording.size_bytes.saturating_add(bytes) > recording.max_bytes {
-          recording.stopped_at_limit = Some(completed);
+        if !recording.charge(bytes, completed) {
           return true;
         }
         if recording
@@ -103,10 +139,37 @@ impl Session {
           recording.chunks.push(Vec::with_capacity(RECORDING_CHUNK));
         }
         recording.chunks.last_mut().unwrap().push(sample.clone());
-        recording.size_bytes += bytes;
       }
     }
     self.completed += 1;
+    false
+  }
+
+  /// Keeps `screenshot`, of `bytes`, in a recording that takes screenshots,
+  /// unless its frame began before the session. True when the recording
+  /// stopped at its limit instead.
+  #[cfg(all(feature = "perf_profile", feature = "screenshot"))]
+  fn take_screenshot(
+    &mut self,
+    screenshot: &Arc<FrameScreenshot>,
+    bytes: u64,
+    requested: Instant,
+    now: Instant,
+  ) -> bool {
+    if requested < self.started {
+      return false;
+    }
+    let Samples::Recording(recording) = &mut self.samples else {
+      return false;
+    };
+    if recording.screenshot_options.is_none() {
+      return false;
+    }
+    if !recording.charge(bytes, now) {
+      return true;
+    }
+    recording.screenshot_bytes += bytes;
+    recording.screenshots.push(screenshot.clone());
     false
   }
 }
@@ -173,6 +236,7 @@ impl ProfilingHandle {
       inner: Arc::new(Inner {
         epoch: Instant::now(),
         active: AtomicBool::new(false),
+        screenshots: AtomicBool::new(false),
         state: Mutex::new(State {
           next_session: 1,
           next_sequence: 1,
@@ -180,6 +244,8 @@ impl ProfilingHandle {
           sessions: HashMap::new(),
           ended: VecDeque::new(),
           windows: HashMap::new(),
+          #[cfg(all(feature = "perf_profile", feature = "screenshot"))]
+          last_screenshot: None,
           untracked_windows: 0,
           #[cfg(feature = "perf_profile")]
           application: ApplicationState::default(),
@@ -207,8 +273,10 @@ impl ProfilingHandle {
 
   /// Starts a recording session (DevTools): it keeps every sample from now
   /// until `end`, and stops by itself, with `RecordingStatus::stopped_at_limit`,
-  /// before its size would pass `options.max_bytes`. Counts against
-  /// `MAX_ACTIVE_SESSIONS` like any session. This does not request a frame.
+  /// before its size would pass `options.max_bytes`. With
+  /// `options.screenshots` it takes screenshots of presented frames as well.
+  /// Counts against `MAX_ACTIVE_SESSIONS` like any session. This does not
+  /// request a frame.
   pub fn start_recording(&self, options: RecordingOptions) -> Result<SessionStarted, ProfileError> {
     if !cfg!(feature = "perf_profile") {
       return Err(ProfileError::FeatureDisabled);
@@ -226,6 +294,9 @@ impl ProfilingHandle {
         size_bytes: 0,
         max_bytes: options.max_bytes,
         stopped_at_limit: None,
+        screenshot_options: options.screenshots,
+        screenshots: Vec::new(),
+        screenshot_bytes: 0,
       }),
     )?;
     Ok(SessionStarted {
@@ -258,7 +329,7 @@ impl ProfilingHandle {
         application: ApplicationSession::default(),
       },
     );
-    self.inner.active.store(true, Ordering::Release);
+    self.update_active(&state);
     Ok(SessionStarted {
       id,
       started_ms: self.millis(started),
@@ -296,6 +367,8 @@ impl ProfilingHandle {
         size_bytes: recording.size_bytes,
         stopped_at_limit: recording.stopped_at_limit.is_some(),
         stopped_ms: recording.stopped_at_limit.map(|stopped| self.millis(stopped)),
+        screenshots: recording.screenshots.len() as u64,
+        screenshot_bytes: recording.screenshot_bytes,
       }),
     }
   }
@@ -318,10 +391,16 @@ impl ProfilingHandle {
   }
 
   /// Passes are captured (spans kept, samples made) only while a session
-  /// takes samples; a recording stopped at its limit takes none.
+  /// takes samples; a recording stopped at its limit takes none. Frames are
+  /// read back only while one of them takes screenshots.
   fn update_active(&self, state: &State) {
     let active = state.sessions.values().any(Session::receiving);
+    let screenshots = state
+      .sessions
+      .values()
+      .any(|session| session.screenshot_options().is_some());
     self.inner.active.store(active, Ordering::Release);
+    self.inner.screenshots.store(screenshots, Ordering::Release);
   }
 
   fn report(&self, state: &State, id: SessionId, session: &Session, now: Instant, finalized: bool) -> ProfileReport {
@@ -350,9 +429,17 @@ impl ProfilingHandle {
       })
       .collect();
     in_flight.sort_by(|a, b| a.window.cmp(&b.window));
-    let (max_samples, samples) = match &session.samples {
-      Samples::Bounded(samples) => (session.options.max_samples, samples.iter().cloned().collect()),
-      Samples::Recording(recording) => (0, recording.chunks.iter().flatten().cloned().collect()),
+    let (max_samples, samples, screenshots) = match &session.samples {
+      Samples::Bounded(samples) => (
+        session.options.max_samples,
+        samples.iter().cloned().collect(),
+        Vec::new(),
+      ),
+      Samples::Recording(recording) => (
+        0,
+        recording.chunks.iter().flatten().cloned().collect(),
+        recording.screenshots.clone(),
+      ),
     };
     let recording = self.recording_status(session);
     ProfileReport {
@@ -381,6 +468,7 @@ impl ProfilingHandle {
         }
       },
       recording,
+      screenshots,
     }
   }
 
@@ -522,6 +610,81 @@ impl ProfilingHandle {
     })
   }
 
+  /// Asks for a screenshot of the frame `window` renders at `now`: the size
+  /// to take it at when a recording that takes this window's samples and
+  /// screenshots is due one, None otherwise (always None, without the lock,
+  /// while no recording takes screenshots). One is due at most
+  /// `max_per_second` times a second, the most any of those recordings asks,
+  /// across every window of the handle. The frame asked delivers it with
+  /// `screenshot_taken`, or never.
+  #[cfg(all(feature = "perf_profile", feature = "screenshot"))]
+  pub(crate) fn screenshot_due(&self, window: &str, now: Instant) -> Option<ScreenshotOptions> {
+    if !self.inner.screenshots.load(Ordering::Acquire) {
+      return None;
+    }
+    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    let metadata = state.windows.get(window)?;
+    if !metadata.status.open {
+      return None;
+    }
+    let devtools = metadata.status.devtools;
+    let wanted = state
+      .sessions
+      .values()
+      .filter(|session| session.takes_window(devtools))
+      .filter_map(Session::screenshot_options)
+      .reduce(|a, b| ScreenshotOptions {
+        max_per_second: a.max_per_second.max(b.max_per_second),
+        max_width: a.max_width.max(b.max_width),
+        max_height: a.max_height.max(b.max_height),
+      })?;
+    if state
+      .last_screenshot
+      .is_some_and(|last| now.saturating_duration_since(last) < wanted.min_interval())
+    {
+      return None;
+    }
+    state.last_screenshot = Some(now);
+    Some(wanted)
+  }
+
+  /// Keeps a screenshot of `window`'s frame `frame_id`, asked for at
+  /// `requested` (`screenshot_due`), in each recording that takes it; one
+  /// that would pass its ceiling stops at it instead.
+  #[cfg(all(feature = "perf_profile", feature = "screenshot"))]
+  pub(crate) fn screenshot_taken(
+    &self,
+    window: &str,
+    frame_id: u64,
+    requested: Instant,
+    (width, height, rgba): (u32, u32, Vec<u8>),
+  ) {
+    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    let Some(metadata) = state.windows.get(window) else {
+      return;
+    };
+    let devtools = metadata.status.devtools;
+    let screenshot = Arc::new(FrameScreenshot {
+      window: window.into(),
+      frame_id,
+      captured_ms: self.millis(requested),
+      width,
+      height,
+      rgba,
+    });
+    let bytes = screenshot_bytes(&screenshot);
+    let now = Instant::now();
+    let mut stopped = false;
+    for session in state.sessions.values_mut() {
+      if session.takes_window(devtools) {
+        stopped |= session.take_screenshot(&screenshot, bytes, requested, now);
+      }
+    }
+    if stopped {
+      self.update_active(&state);
+    }
+  }
+
   /// Takes an input `window` dispatched. One that asked for no frame is
   /// recorded at once, presented by none; the others wait in the window for
   /// its next presented frame (`inputs_presented`).
@@ -643,5 +806,17 @@ pub(super) fn retained_bytes(sample: &ProfileSample) -> u64 {
     + sample.window.capacity()
     + spans
     + std::mem::size_of::<Arc<ProfileSample>>();
+  u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
+/// What keeping `screenshot` costs a recording, as `retained_bytes`: its
+/// pixels count in full.
+#[cfg(all(feature = "perf_profile", feature = "screenshot"))]
+pub(super) fn screenshot_bytes(screenshot: &FrameScreenshot) -> u64 {
+  let bytes = 2 * std::mem::size_of::<usize>()
+    + std::mem::size_of::<FrameScreenshot>()
+    + screenshot.window.capacity()
+    + screenshot.rgba.capacity()
+    + std::mem::size_of::<Arc<FrameScreenshot>>();
   u64::try_from(bytes).unwrap_or(u64::MAX)
 }

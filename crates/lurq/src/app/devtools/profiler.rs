@@ -3,19 +3,21 @@ use std::{sync::Arc, time::Duration};
 use super::{
   profiler_analysis::AnalysisProps,
   profiler_capture::{
-    self as capture, Counter, DetailSection, FRAME_BUDGET_MS, MAX_TIMELINE_PASSES, PhaseRow, ProfilerCapture,
-    TimeRange, bucket_of, format_bytes, format_ms, format_span, ms, pass_of,
+    self as capture, CaptureScreenshot, Counter, DetailSection, FRAME_BUDGET_MS, MAX_TIMELINE_PASSES, PhaseRow,
+    ProfilerCapture, TimeRange, bucket_of, format_bytes, format_ms, format_span, ms, pass_of,
   },
   style::{
-    BLUE, BORDER, FILL, MUTED, PINK, PRIMARY, SELECTED, SIGNAL_GREEN, SURFACE, SURFACE_2, TEXT, YELLOW, empty_state,
-    text, toolbar_button,
+    BLUE, BORDER, FILL, MUTED, ORANGE, PINK, PRIMARY, SELECTED, SIGNAL_GREEN, SURFACE, SURFACE_2, TEXT, YELLOW,
+    empty_state, text, toolbar_button,
   },
 };
 use crate::{
   app::{
     ctx::Interval,
     events::MouseEvent,
-    profiler::{ProfileSample, ProfilingHandle, RecordingOptions, SampleData, SessionId, SessionStatus},
+    profiler::{
+      ProfileSample, ProfilingHandle, RecordingOptions, SampleData, ScreenshotOptions, SessionId, SessionStatus,
+    },
   },
   components::{Column, Row, ScrollVertical, Spacer, Stack, Text},
   core::Signal,
@@ -27,12 +29,19 @@ use crate::{
 };
 
 const RED: &str = "#ef4444";
+const BLACK: &str = "#000000";
 /// How often the status line of a running recording is reread.
 pub(crate) const STATUS_INTERVAL: Duration = Duration::from_millis(250);
 /// Equal parts of the whole recording in the overview strip.
 const OVERVIEW_BUCKETS: usize = 120;
 /// Equal parts of the selected range in the marker lanes.
 const MARKER_BUCKETS: usize = 240;
+/// Equal parts of the selected range in the filmstrip, each showing the
+/// first screenshot placed in it.
+const FILMSTRIP_CELLS: usize = 16;
+const FILMSTRIP_HEIGHT: f32 = 48.0;
+/// The most the sidebar's screenshot preview is high.
+const PREVIEW_MAX_HEIGHT: f32 = 240.0;
 const OVERVIEW_HEIGHT: f32 = 36.0;
 const CHART_HEIGHT: f32 = 120.0;
 /// Height of each counter track under the pass chart.
@@ -41,6 +50,7 @@ const BAR_WIDTH: f32 = 3.0;
 /// Right of each timeline track, between it and its label.
 const LANE_GAP: f32 = 8.0;
 const LANE_LABEL_WIDTH: f32 = 90.0;
+const SIDEBAR_WIDTH: f32 = 340.0;
 /// Spans the sidebar lists for one pass; the rest are counted.
 const MAX_PHASE_ROWS: usize = 256;
 
@@ -51,6 +61,10 @@ pub(crate) struct ProfilerState {
   recording: Option<Recording>,
   /// Records DevTools' own windows too; read when a recording starts.
   include_devtools: bool,
+  /// Takes screenshots of presented frames (`RecordingOptions::screenshots`);
+  /// read when a recording starts. Off by default: each one reads a frame
+  /// back from the GPU.
+  screenshots: bool,
   capture: Option<Arc<ProfilerCapture>>,
   range: Option<TimeRange>,
   /// The overview bucket the range was pressed on; a shift-press extends from it.
@@ -59,6 +73,9 @@ pub(crate) struct ProfilerState {
   range_dragging: bool,
   /// The selected pass's sample sequence.
   selected: Option<u64>,
+  /// The filmstrip screenshot under the pointer, by its index in the
+  /// capture's: the preview shows it instead of the selected pass's.
+  hovered_screenshot: Option<usize>,
   error: Option<String>,
 }
 
@@ -101,6 +118,7 @@ impl ProfilerState {
     }
     let options = RecordingOptions {
       include_devtools: self.include_devtools,
+      screenshots: self.screenshots.then(ScreenshotOptions::default),
       ..RecordingOptions::default()
     };
     match handle.start_recording(options) {
@@ -112,6 +130,7 @@ impl ProfilerState {
             status: handle.status(started.id).ok(),
           }),
           include_devtools: self.include_devtools,
+          screenshots: self.screenshots,
           ..Self::default()
         };
         true
@@ -154,6 +173,7 @@ impl ProfilerState {
     }
     *self = Self {
       include_devtools: self.include_devtools,
+      screenshots: self.screenshots,
       ..Self::default()
     };
   }
@@ -264,6 +284,18 @@ pub(crate) fn profiler_actions(
       )
       .on_click(move |_| toggle_signal.update(|state| state.include_devtools = !state.include_devtools)),
     );
+    let screenshots = state.screenshots;
+    let toggle_signal = state_signal.clone();
+    row = row.child(
+      toolbar_button(
+        "image",
+        "Screenshots",
+        if screenshots { PRIMARY } else { MUTED },
+        if screenshots { SELECTED } else { SURFACE_2 },
+        BORDER,
+      )
+      .on_click(move |_| toggle_signal.update(|state| state.screenshots = !state.screenshots)),
+    );
   }
   row
     .child(
@@ -285,6 +317,13 @@ fn recording_status_line(recording: &Recording) -> String {
     format_bytes(status.recording.map_or(0, |recording| recording.size_bytes)),
     status.completed_samples
   );
+  if let Some(screenshots) = status
+    .recording
+    .map(|recording| recording.screenshots)
+    .filter(|count| *count > 0)
+  {
+    line.push_str(&format!(" · {screenshots} screenshots"));
+  }
   if status.recording.is_some_and(|recording| recording.stopped_at_limit) {
     line.push_str(" · size limit reached");
   }
@@ -332,18 +371,29 @@ pub(crate) fn profiler_view(state: &ProfilerState, state_signal: Signal<Profiler
   };
   let range = state.range.unwrap_or_else(|| capture.default_range());
   let selected = state.selected.and_then(|sequence| capture.pass(sequence));
+  // The screenshot under the pointer, else what the selected pass showed.
+  let preview = state
+    .hovered_screenshot
+    .and_then(|index| capture.screenshots.get(index))
+    .or_else(|| state.selected.and_then(|sequence| capture.screenshot_for(sequence)));
 
   Row::new()
     .child(
       Column::new()
         .child(overview(&capture, range, state_signal.clone()))
-        .child(timeline(&capture, range, state.selected, state_signal))
+        .child(timeline(
+          &capture,
+          range,
+          state.selected,
+          state.hovered_screenshot,
+          state_signal,
+        ))
         .child(analysis)
         .height(FILL)
         .width(FILL)
         .flex(1.0),
     )
-    .child(frame_sidebar(&capture, selected))
+    .child(frame_sidebar(&capture, selected, preview))
     .height(FILL)
     .width(FILL)
     .flex(1.0)
@@ -491,6 +541,7 @@ fn timeline(
   capture: &ProfilerCapture,
   range: TimeRange,
   selected: Option<u64>,
+  hovered_screenshot: Option<usize>,
   state_signal: Signal<ProfilerState>,
 ) -> Element {
   let passes = capture.passes_in(range);
@@ -547,7 +598,7 @@ fn timeline(
       passes.len()
     ))
   } else {
-    timeline_tracks(capture, passes, range, selected, state_signal)
+    timeline_tracks(capture, passes, range, selected, hovered_screenshot, state_signal)
   };
 
   Column::new()
@@ -564,22 +615,40 @@ fn timeline(
     .into()
 }
 
-/// The pass chart, the counter tracks, the marker lanes and the axis, one row
-/// each. Each row's track takes the width the label column leaves, and its time
-/// scale is that width less `BAR_WIDTH` (so a bar at the range's end stays
-/// inside): a time is at the same x in every row.
+/// The filmstrip of a recording with screenshots, the pass chart, the counter
+/// tracks, the marker lanes and the axis, one row each. Each row's track takes
+/// the width the label column leaves, and its time scale is that width less
+/// `BAR_WIDTH` (so a bar at the range's end stays inside): a time is at the
+/// same x in every row.
 fn timeline_tracks(
   capture: &ProfilerCapture,
   passes: &[Arc<ProfileSample>],
   range: TimeRange,
   selected: Option<u64>,
+  hovered_screenshot: Option<usize>,
   state_signal: Signal<ProfilerState>,
 ) -> Element {
-  // Missed vsyncs sit right under the bars they mark; the counters follow.
-  let mut tracks = Column::new()
-    .spacing(4.0)
+  let mut tracks = Column::new().spacing(4.0);
+  if !capture.screenshots.is_empty() {
+    tracks = tracks.child(filmstrip(
+      capture,
+      range,
+      selected,
+      hovered_screenshot,
+      state_signal.clone(),
+    ));
+  }
+  // Missed vsyncs sit right under the bars they mark, then the frames that
+  // paid for a screenshot; the counters follow.
+  tracks = tracks
     .child(pass_chart(passes, range, selected, state_signal.clone()))
     .child(missed_vsync_lane(capture, range));
+  if passes
+    .iter()
+    .any(|sample| pass_of(sample).is_some_and(|pass| pass.screenshot))
+  {
+    tracks = tracks.child(screenshot_lane(passes, range));
+  }
   for counter in Counter::ALL {
     tracks = tracks.child(counter_track(counter, passes, range, selected, state_signal.clone()));
   }
@@ -605,6 +674,106 @@ fn missed_vsync_lane(capture: &ProfilerCapture, range: TimeRange) -> Element {
       FontWeight::Normal,
       if count > 0 { RED } else { MUTED },
     )),
+  )
+}
+
+/// The element id of the filmstrip thumbnail of the capture's screenshot `index`.
+pub(crate) fn filmstrip_id(index: usize) -> String {
+  format!("profiler-screenshot-{index}")
+}
+
+/// The element id of the sidebar's screenshot preview.
+pub(crate) const PREVIEW_ID: &str = "profiler-screenshot-preview";
+
+/// The recording's screenshots over equal parts of the time scale, each part
+/// showing the first one placed in it, at its frame's pass. Hovering one
+/// previews it in the sidebar; a click selects its pass.
+fn filmstrip(
+  capture: &ProfilerCapture,
+  range: TimeRange,
+  selected: Option<u64>,
+  hovered: Option<usize>,
+  state_signal: Signal<ProfilerState>,
+) -> Element {
+  let first = capture.screenshots.partition_point(|shot| shot.at_ms < range.start_ms);
+  let shown = capture.screenshots_in(range);
+  let mut cells = [None; FILMSTRIP_CELLS];
+  for (offset, shot) in shown.iter().enumerate() {
+    cells[bucket_of(range, shot.at_ms, FILMSTRIP_CELLS)].get_or_insert(first + offset);
+  }
+  // The parts span the time scale, the track less `BAR_WIDTH`.
+  let mut strip = Row::new()
+    .height(FILMSTRIP_HEIGHT)
+    .flex(1.0)
+    .padding_right(BAR_WIDTH)
+    .background(SURFACE_2);
+  for cell in cells {
+    let mut part = Row::new().height(FILL).flex(1.0).padding_right(2.0);
+    if let Some(index) = cell {
+      let shot = &capture.screenshots[index];
+      let highlighted = hovered == Some(index) || (shot.sequence.is_some() && shot.sequence == selected);
+      let sequence = shot.sequence;
+      part = part.child(
+        Row::new()
+          .id(filmstrip_id(index))
+          .child(screenshot_image(shot))
+          .width(FILL)
+          .height(FILL)
+          .border_inside(1.0, Color::from_hex(if highlighted { PRIMARY } else { BORDER }))
+          .cursor(CursorIcon::Pointer)
+          .on_mouse_enter({
+            let state_signal = state_signal.clone();
+            move || {
+              if state_signal.with_untracked(|state| state.hovered_screenshot != Some(index)) {
+                state_signal.update(|state| state.hovered_screenshot = Some(index));
+              }
+            }
+          })
+          .on_mouse_leave({
+            let state_signal = state_signal.clone();
+            move || {
+              if state_signal.with_untracked(|state| state.hovered_screenshot == Some(index)) {
+                state_signal.update(|state| state.hovered_screenshot = None);
+              }
+            }
+          })
+          .on_click({
+            let state_signal = state_signal.clone();
+            move |_| {
+              if let Some(sequence) = sequence {
+                state_signal.update(|state| state.selected = Some(sequence));
+              }
+            }
+          }),
+      );
+    }
+    strip = strip.child(part);
+  }
+  track_row(
+    strip,
+    Column::new().child(mono_text(
+      &format!("screenshots {}", shown.len()),
+      9.0,
+      FontWeight::Normal,
+      ORANGE,
+    )),
+  )
+}
+
+/// The passes whose frame was copied for a screenshot, under their bars:
+/// their render timings include that copy.
+fn screenshot_lane(passes: &[Arc<ProfileSample>], range: TimeRange) -> Element {
+  let mut cells = vec![None; MARKER_BUCKETS];
+  let mut count = 0;
+  for sample in passes {
+    if pass_of(sample).is_some_and(|pass| pass.screenshot) {
+      cells[bucket_of(range, sample.started_ms, MARKER_BUCKETS)] = Some(ORANGE);
+      count += 1;
+    }
+  }
+  lane(
+    &cells,
+    Column::new().child(mono_text(&format!("captured {count}"), 9.0, FontWeight::Normal, ORANGE)),
   )
 }
 
@@ -882,8 +1051,17 @@ fn legend() -> Element {
     .into()
 }
 
-fn frame_sidebar(capture: &ProfilerCapture, selected: Option<&ProfileSample>) -> Element {
+/// The selected pass's details, under `preview`: the screenshot hovered in
+/// the filmstrip, or what the selected pass's window showed.
+fn frame_sidebar(
+  capture: &ProfilerCapture,
+  selected: Option<&ProfileSample>,
+  preview: Option<&CaptureScreenshot>,
+) -> Element {
   let mut body = Column::new().width(FILL);
+  if let Some(shot) = preview {
+    body = body.child(screenshot_preview(capture, shot));
+  }
   match selected.and_then(|sample| pass_of(sample).map(|pass| (sample, pass))) {
     None => body = body.child(empty_state("Select a frame in the timeline")),
     Some((sample, pass)) => {
@@ -897,6 +1075,9 @@ fn frame_sidebar(capture: &ProfilerCapture, selected: Option<&ProfileSample>) ->
       ];
       if let Some(present) = pass.present.filter(|present| present.missed_vsync()) {
         summary.push(("Missed vsync", present.missed_vsyncs.to_string(), RED));
+      }
+      if pass.screenshot {
+        summary.push(("Screenshot", "copied: render includes it".to_owned(), ORANGE));
       }
       let mut section = Column::new()
         .spacing(8.0)
@@ -932,11 +1113,69 @@ fn frame_sidebar(capture: &ProfilerCapture, selected: Option<&ProfileSample>) ->
         .border_bottom(divider()),
     )
     .child(ScrollVertical::new(body).height(FILL).width(FILL).flex(1.0))
-    .width(340.0)
+    .width(SIDEBAR_WIDTH)
     .height(FILL)
     .background(SURFACE)
     .border_left(divider())
     .into()
+}
+
+/// `shot` at the sidebar's width, aspect kept, with its frame and time.
+fn screenshot_preview(capture: &ProfilerCapture, shot: &CaptureScreenshot) -> Element {
+  let screenshot = &shot.screenshot;
+  let width = SIDEBAR_WIDTH - 32.0;
+  let height = (width * screenshot.height as f32 / screenshot.width.max(1) as f32).min(PREVIEW_MAX_HEIGHT);
+  Column::new()
+    .id(PREVIEW_ID)
+    .spacing(6.0)
+    .child(
+      Row::new()
+        .align_items(Alignment::Center)
+        .spacing(8.0)
+        .child(text("SCREENSHOT", 11.0, FontWeight::Bold, MUTED))
+        .child(Spacer::new().flex(1.0))
+        .child(mono_text(
+          &format!(
+            "{} · frame {} · {}",
+            screenshot.window,
+            screenshot.frame_id,
+            format_offset(capture, shot.at_ms)
+          ),
+          10.0,
+          FontWeight::Normal,
+          MUTED,
+        ))
+        .width(FILL),
+    )
+    .child(
+      Row::new()
+        .child(screenshot_image(shot))
+        .width(width)
+        .height(height)
+        .background(BLACK),
+    )
+    .padding_custom(padding(12.0, 16.0, 12.0, 16.0))
+    .width(FILL)
+    .border_bottom(divider())
+    .into()
+}
+
+/// `shot`'s pixels filling the box, aspect kept; an empty box in a build
+/// without the `raster` feature, which draws no image.
+fn screenshot_image(shot: &CaptureScreenshot) -> Element {
+  #[cfg(feature = "raster")]
+  {
+    crate::components::Image::new(shot.image.clone())
+      .contain()
+      .width(FILL)
+      .height(FILL)
+      .into()
+  }
+  #[cfg(not(feature = "raster"))]
+  {
+    let _ = shot;
+    Row::new().width(FILL).height(FILL).into()
+  }
 }
 
 /// The pass's spans, nested by depth, each placed on the pass's time axis.

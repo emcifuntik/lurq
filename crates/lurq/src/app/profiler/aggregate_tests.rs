@@ -40,6 +40,7 @@ fn pass(sequence: u64, total_ms: u64, spans: Vec<PhaseSpan>) -> Arc<ProfileSampl
       reasons: Default::default(),
       present: None,
       counters: None,
+      screenshot: false,
     }),
   })
 }

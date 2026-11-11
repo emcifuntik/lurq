@@ -1,11 +1,12 @@
 //! A finished Profiler-tab recording, prepared for display: its passes,
-//! markers and application scopes in time order, time ranges over them, the
-//! frame rate of a range and the detail of one pass. Holds only the
-//! content-free samples of the session.
+//! markers, application scopes and screenshots in time order, time ranges
+//! over them, the frame rate of a range and the detail of one pass. Holds the
+//! content-free samples of the session, and the screenshots it took when
+//! asked to, sensitive text in them painted over.
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::app::profiler::{
-  ApplicationScopeSample, InputDispatchSample, PassSample, ProfileReport, ProfileSample, SampleData,
+  ApplicationScopeSample, FrameScreenshot, InputDispatchSample, PassSample, ProfileReport, ProfileSample, SampleData,
 };
 
 /// One 60 Hz refresh: the timeline draws its budget line here and colours the
@@ -53,10 +54,43 @@ pub(crate) struct ProfilerCapture {
   pub scopes: Vec<Arc<ApplicationScopeSample>>,
   /// Application scopes completed but no longer kept.
   pub dropped_scopes: u64,
+  /// The recording's screenshots, ordered by `CaptureScreenshot::at_ms`;
+  /// empty when it took none.
+  pub screenshots: Vec<CaptureScreenshot>,
   pub size_bytes: u64,
   pub stopped_at_limit: bool,
   /// Operations that began before Start, left out of the recording.
   pub boundary_excluded: u64,
+}
+
+/// A screenshot of the recording, placed at its frame.
+#[derive(Clone)]
+pub(crate) struct CaptureScreenshot {
+  pub screenshot: Arc<FrameScreenshot>,
+  /// The pass that presented its frame, when the recording kept it.
+  pub sequence: Option<u64>,
+  /// Where it sits on the time axis: the start of that pass, where the
+  /// pass's bar is; when its frame was asked for, without one.
+  pub at_ms: f64,
+  /// Its pixels as an image, made once for every redraw of the tab.
+  #[cfg(feature = "raster")]
+  pub image: crate::images::ImageData,
+}
+
+impl CaptureScreenshot {
+  /// None when `screenshot`'s pixels do not fill its size.
+  pub(crate) fn new(screenshot: &Arc<FrameScreenshot>, pass: Option<&ProfileSample>) -> Option<Self> {
+    if screenshot.width == 0 || screenshot.rgba.len() != screenshot.width as usize * screenshot.height as usize * 4 {
+      return None;
+    }
+    Some(Self {
+      #[cfg(feature = "raster")]
+      image: crate::images::ImageData::from_rgba(screenshot.rgba.clone(), screenshot.width, screenshot.height),
+      screenshot: screenshot.clone(),
+      sequence: pass.map(|sample| sample.sequence),
+      at_ms: pass.map_or(screenshot.captured_ms, |sample| sample.started_ms),
+    })
+  }
 }
 
 impl ProfilerCapture {
@@ -81,6 +115,19 @@ impl ProfilerCapture {
         .total_cmp(&b.scope.started_ms)
         .then(a.scope.id.0.cmp(&b.scope.id.0))
     });
+    let frames: BTreeMap<(&str, u64), &ProfileSample> = passes
+      .iter()
+      .filter_map(|sample| Some(((sample.window.as_str(), pass_of(sample)?.frame_id?), sample.as_ref())))
+      .collect();
+    let mut screenshots: Vec<_> = report
+      .screenshots
+      .iter()
+      .filter_map(|screenshot| {
+        let pass = frames.get(&(screenshot.window.as_str(), screenshot.frame_id)).copied();
+        CaptureScreenshot::new(screenshot, pass)
+      })
+      .collect();
+    screenshots.sort_by(|a, b| a.at_ms.total_cmp(&b.at_ms));
     Self {
       started_ms: report.started_ms,
       ended_ms: report.ended_ms.unwrap_or(report.observed_ms).max(report.started_ms),
@@ -91,10 +138,32 @@ impl ProfilerCapture {
         .application_scopes
         .as_ref()
         .map_or(0, |scopes| scopes.dropped_scopes),
+      screenshots,
       size_bytes: report.recording.map_or(0, |recording| recording.size_bytes),
       stopped_at_limit: report.recording.is_some_and(|recording| recording.stopped_at_limit),
       boundary_excluded: report.boundary_excluded_samples,
     }
+  }
+
+  /// The screenshots placed in `range`.
+  pub(crate) fn screenshots_in(&self, range: TimeRange) -> &[CaptureScreenshot] {
+    let start = self.screenshots.partition_point(|shot| shot.at_ms < range.start_ms);
+    let end = self.screenshots.partition_point(|shot| shot.at_ms <= range.end_ms);
+    &self.screenshots[start..end.max(start)]
+  }
+
+  /// What pass `sequence`'s window showed: the screenshot of its frame, or
+  /// else the window's latest one placed before it.
+  pub(crate) fn screenshot_for(&self, sequence: u64) -> Option<&CaptureScreenshot> {
+    if let Some(own) = self.screenshots.iter().find(|shot| shot.sequence == Some(sequence)) {
+      return Some(own);
+    }
+    let sample = self.pass(sequence)?;
+    self
+      .screenshots
+      .iter()
+      .rev()
+      .find(|shot| shot.screenshot.window == sample.window && shot.at_ms <= sample.started_ms)
   }
 
   /// The application scopes that overlap `range`.
@@ -500,7 +569,7 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
     "PASS",
     identity
       .into_iter()
-      .chain(count_rows!(pass; rendered, cached_render_list, layout_recalculated, dropped_spans))
+      .chain(count_rows!(pass; rendered, cached_render_list, layout_recalculated, dropped_spans, screenshot))
       .chain(
         timing_rows!(pass; total, layout_update, layout_compute, component_after_layout,
         canvas_recording, canvas_preparation),

@@ -170,6 +170,8 @@ pub(crate) struct WindowProfiler {
   presents: PresentTracker,
   /// A session took samples when the pass began.
   captured: bool,
+  /// The pass's frame is copied for a recording's screenshot.
+  screenshot: bool,
   /// The pass thread's allocation counts when a captured pass began.
   #[cfg(feature = "perf_profile")]
   allocations_start: Option<super::AllocationSnapshot>,
@@ -202,6 +204,7 @@ impl WindowProfiler {
       refresh: None,
       presents: PresentTracker::default(),
       captured: false,
+      screenshot: false,
       #[cfg(feature = "perf_profile")]
       allocations_start: None,
       counters: None,
@@ -306,6 +309,7 @@ impl WindowProfiler {
     self.canvas_preparation = Duration::ZERO;
     self.context.frame_id = Some(frame_id);
     self.captured = self.context.handle.inner.active.load(Ordering::Acquire);
+    self.screenshot = false;
     self.counters = None;
     if let Some(slot) = &self.context.phase {
       slot.begin_spans(self.captured);
@@ -327,6 +331,39 @@ impl WindowProfiler {
   /// the pass's counters (`set_counters`).
   pub(crate) fn captured(&self) -> bool {
     self.captured
+  }
+
+  /// Where this captured pass's frame goes when a recording is due a
+  /// screenshot of it (`ProfilingHandle::screenshot_due`); None otherwise.
+  /// The pass is then marked (`PassSample::screenshot`). The pixels are
+  /// downscaled on the readback worker, never on the pass's thread.
+  #[cfg(all(feature = "perf_profile", feature = "screenshot"))]
+  pub(crate) fn screenshot_target(&mut self) -> Option<crate::app::render_engine::RenderCaptureTarget> {
+    if !self.captured {
+      return None;
+    }
+    let requested = Instant::now();
+    let options = self.context.handle.screenshot_due(&self.context.window, requested)?;
+    self.screenshot = true;
+    let handle = self.context.handle.clone();
+    let window = self.context.window.clone();
+    let frame_id = self.context.frame_id.unwrap_or_default();
+    Some(crate::app::render_engine::RenderCaptureTarget::Bytes(Arc::new(
+      move |frame: Result<crate::app::render_engine::CapturedFrame, String>| {
+        // A frame that was not read back leaves its mark: it still paid.
+        let Ok(frame) = frame else {
+          return;
+        };
+        let scaled = super::screenshot::downscale_rgba(
+          frame.rgba,
+          frame.width,
+          frame.height,
+          options.max_width,
+          options.max_height,
+        );
+        handle.screenshot_taken(&window, frame_id, requested, scaled);
+      },
+    )))
   }
 
   /// The pass thread's allocations since `begin_pass`. Read it before
@@ -424,10 +461,13 @@ impl WindowProfiler {
           reasons: report.reasons,
           present,
           counters: self.counters,
+          // A frame that was not rendered copied nothing.
+          screenshot: self.screenshot && report.rendered,
         }),
       );
     }
     self.counters = None;
+    self.screenshot = false;
     // The inputs since the last present are presented by this frame; a pass
     // that had nothing to do ends them presented by none, and the run of
     // frames with them. A required pass that could not render keeps them.

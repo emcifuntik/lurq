@@ -87,6 +87,8 @@ pub(crate) use loading_images::note_loading_image_built;
 mod outside_press;
 mod overlay_layers;
 mod paste;
+#[cfg(all(test, feature = "screenshot", feature = "perf_profile"))]
+mod profiler_screenshot_tests;
 pub use paste::ClipboardReader;
 #[cfg(test)]
 mod refresh_layout_tests;
@@ -3344,6 +3346,11 @@ impl Tree {
     };
 
     drop(glyph_engine);
+
+    // A recording's screenshot takes a frame no inspector capture takes, as
+    // the window shows it, overlays included.
+    #[cfg(all(feature = "screenshot", feature = "perf_profile"))]
+    let frame_capture = frame_capture.or_else(|| self.profiler_frame_capture());
 
     let gpu_wall_start = Instant::now();
     let _gpu_start = profile_scope!();
@@ -8990,6 +8997,29 @@ impl Tree {
       return target;
     }
     crate::app::capture_redaction::redacting_target(target, origin, self.capture_redactions.clone())
+  }
+
+  /// The whole frame, for a recording due a screenshot of it, its sensitive
+  /// text painted over as in an inspector's capture; None when none is due
+  /// or the engine cannot read frames back.
+  #[cfg(feature = "perf_profile")]
+  fn profiler_frame_capture(&mut self) -> Option<RenderFrameCapture> {
+    if !self
+      .render_engine
+      .as_ref()
+      .is_some_and(|render_engine| render_engine.supports_frame_capture())
+    {
+      return None;
+    }
+    let target = self.profiling.screenshot_target()?;
+    Some(RenderFrameCapture {
+      x: 0,
+      y: 0,
+      width: self.viewport_physical.width.round().max(1.0) as u32,
+      height: self.viewport_physical.height.round().max(1.0) as u32,
+      target: self.inspection_target(target, true, (0, 0)),
+      window_clip: self.screenshot_window_clip(),
+    })
   }
 
   fn drop_unsupported_screenshot(&mut self) {

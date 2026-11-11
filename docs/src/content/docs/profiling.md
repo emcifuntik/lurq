@@ -57,6 +57,34 @@ let report = profiling.end(id)?; // Every sample since the start.
 
 A recording keeps every sample from its start to its `end`, in chunks of 4096 samples, so a long recording never moves what it holds and never drops a sample. `ProfileReport::recording` (None for a bounded session) reports `size_bytes`, an estimate of the memory its samples hold (the samples with their spans and the session's pointers to them; a sample shared with another session is counted in each), and its ceiling `max_bytes`, 1 GiB by default (`DEFAULT_RECORDING_MAX_BYTES`). When the next sample would pass the ceiling, the recording stops by itself: it keeps what it has, records nothing more, and reports `stopped_at_limit = true` with `stopped_ms`, instead of silently dropping samples. It stays readable until `end`. A recording counts against the eight concurrent sessions like any other, follows the same start/end boundary policy and window/DevTools rules, and its application scopes keep the per-session bound of 128. `max_samples` is 0 in its report (null in JSON), `max_bytes` of 0 is refused with `ProfileError::InvalidByteLimit`, and its JSON export adds a `recording` object (`max_bytes`, `size_bytes`, `stopped_at_limit`, `stopped_ms`); `SessionStarted` carries `recording_max_bytes`.
 
+### Frame screenshots
+
+A recording started with `RecordingOptions::screenshots` set also keeps screenshots of presented frames, for a filmstrip over its timeline. It is off by default (`None`): each screenshot reads a frame back from the GPU, and with it off no frame is read back.
+
+```rust
+use lurq::app::profiler::{RecordingOptions, ScreenshotOptions};
+
+let id = profiling
+  .start_recording(RecordingOptions {
+    // At most 4 a second, each fitted into 320 x 200 pixels.
+    screenshots: Some(ScreenshotOptions::default()),
+    ..RecordingOptions::default()
+  })?
+  .id;
+let report = profiling.end(id)?;
+for screenshot in &report.screenshots {
+  // `frame_id` is the `PassSample::frame_id` of the pass that presented it.
+  let (window, frame, width, height) = (&screenshot.window, screenshot.frame_id, screenshot.width, screenshot.height);
+}
+```
+
+- **Rate.** A screenshot is taken of a presented frame at most `max_per_second` times a second (4 by default), counted across the handle's windows; the frames in between take none. Only a pass that began while the recording took samples asks for one, and only of a window the recording takes (DevTools' own windows only with `include_devtools`). With several such recordings the most frequent and the largest bounds apply.
+- **Cost, and the frames that paid it.** The frame that takes one copies its window's texture into a readback buffer in the same submission, then presents as usual. The copy is the only work the frame does for it: the GPU readback, sensitive-text redaction and downscaling run on a worker thread after the present (on DX12 the worker also waits for the copy's fence), never on the frame's thread. The copy still makes that frame's render, encode and submit slower than the same frame without it, so its pass is marked `PassSample::screenshot = true` (`"screenshot": true` in JSON), the DevTools timeline marks it, and its timings should not be read as the app's. Overlays the window shows are captured as shown. A render engine that cannot read frames back takes none.
+- **Redaction.** A screenshot is an inspector's capture: every pixel [sensitive text](../styling-events/#sensitive-text) (`Text::sensitive()`) can touch is painted over with an opaque grey bar before the pixels leave the capture pipeline, exactly as in `lurq_screenshot` and DevTools node screenshots. The window keeps showing the text.
+- **Size.** Each screenshot is averaged down to fit `max_width` x `max_height` (320 x 200 by default), aspect kept, never enlarged, and kept as tight RGBA8 (`FrameScreenshot::rgba`): about 225 KiB for a 16:9 window. Its bytes count toward the recording's `max_bytes` like its samples' (`RecordingStatus::screenshot_bytes` is their part of `size_bytes`, `screenshots` their count); one that would pass the ceiling stops the recording at its limit, as a sample would. At the defaults that is about 0.9 MiB a second while the app renders, so the 1 GiB ceiling allows about 19 minutes, less what the samples hold.
+- **Matching frames.** `FrameScreenshot` carries the `window` and `frame_id` of the frame it shows and `captured_ms`, when that frame's render began; a screenshot of a frame whose pass the recording did not keep still has its time. The readback finishes after its frame, so a screenshot can arrive after later frames; one still being read back when the recording ends is not in it.
+- **Export.** The JSON export lists the screenshots under `recording.screenshots` (`window`, `frame_id`, `captured_ms`, `width`, `height`) with `recording.screenshot_bytes`, without their pixels. A bounded session never takes screenshots; its export is unchanged apart from the additive `screenshot` flag of each pass sample, true only for a frame a recording took one of.
+
 ## Phase spans
 
 A pass that begins while a session takes samples records the span of every phase guard of the pass (the phases listed in [Coverage and units](#coverage-and-units), down to the detailed Canvas phases) into `PassSample::spans`, so a flame chart can be drawn. Each `PhaseSpan` holds the `phase`, its `depth` (0 for the pass itself, then one more for each guard it is nested in) and `start_ns`/`end_ns`, nanoseconds since the collector epoch, the origin of every `*_ms` value in a report. Spans are ordered by start, so a span's parent is the nearest earlier span one level up, and each span lies inside its parent. The first span is the pass's own, ending when the pass completes. A phase around the pass (an input dispatch that runs a nested pass) is not one of its spans.
