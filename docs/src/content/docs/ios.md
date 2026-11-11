@@ -193,6 +193,50 @@ dismisses the keyboard when scrolled (above).
 
 Saved passwords are not offered yet.
 
+## The app and the system
+
+`ctx.window().on_app_event(..)` hears what the system says of the app. Register it in the root component's
+`create`: what the app was started with is told once there is a handler.
+
+```rust
+ctx.window().on_app_event(move |event| match event {
+    AppEvent::Background => save.set(true),
+    AppEvent::OpenUrl(url) => opened.set(url.clone()),
+    AppEvent::Rotated(orientation) => turned.set(*orientation),
+    _ => {}
+});
+```
+
+| `AppEvent` | |
+| --- | --- |
+| `Active`, `Inactive` | The app takes input, or something of the system's is over it |
+| `Background`, `Foreground` | The app is no longer seen, or is coming back |
+| `OpenUrl(url)` | The app was opened with a link: a scheme of its own (`CFBundleURLTypes` in `Info.plist`) |
+| `Shortcut(kind)` | The app was opened by one of its home screen shortcuts |
+| `Rotated(orientation)` | The way the content is turned: at the start, and whenever it changes |
+
+### Turning
+
+A phone held on its side turns the app with it, with no status bar, and the safe area follows. Which ways the
+app may be turned is said before the window runs, with `Orientation`s joined by `|`:
+
+```rust
+WinitWindow::new(app, tree)
+    .with_orientations(Orientation::Portrait | Orientation::LandscapeLeft)
+    .run();
+```
+
+`Orientation` is `Portrait`, `PortraitUpsideDown`, `LandscapeLeft` (the device's top at the left) or
+`LandscapeRight`; `Orientations::LANDSCAPE` is both sides and `Orientations::ALL` every way. The app's
+`Info.plist` names the ways it supports too (`UISupportedInterfaceOrientations`), and a way has to be in both.
+Without `with_orientations` the app turns every way the `Info.plist` names.
+
+### A keyboard attached to the device
+
+Shortcuts take Command, and moving by words Option, as on a Mac. In a text input the keys are the text
+system's, as the screen keyboard's are, but for Tab, which moves the focus, and Escape. Outside an input every
+key reaches the tree as on a desktop.
+
 ## Frames
 
 The shell presents from a `CADisplayLink` at the display's full rate, and only while something changes: an idle

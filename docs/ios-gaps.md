@@ -14,8 +14,9 @@ makes the scene's delegate and puts winit's window into the scene. The app has t
 could say so in code. Going to the background and back, and the lock screen, were tried on a device.
 
 - **One scene.** A second window of the app, on an iPad or an outer display, is not there.
-- **What the scene tells its delegate** (active, background, what it was opened with: a link, a shortcut) is
-  not passed on; winit hears the app's own notifications, which UIKit still sends.
+- **What the app is opened with:** a link of the app's own scheme was seen to bring the app forward in a
+  simulator, where the system's "Open in" question could not be answered, so `AppEvent::OpenUrl` itself was
+  not seen. A universal link and a shortcut: not checked.
 
 ## Text input
 
@@ -34,7 +35,8 @@ inside its input.
   inputs go together.
 - **Saving a password** after a login: not done, for the same reasons.
 - **A code from a message** (`ContentKind::OneTimeCode`): set, not checked. It needs a real message.
-- **A hardware keyboard:** Cmd shortcuts expect Ctrl; arrows and Tab between inputs are not checked.
+- **A hardware keyboard:** its keys are passed to the tree, and shortcuts take Command. Written with no
+  keyboard to try it on: nothing of it was checked.
 - **Putting the keyboard away.** A tap outside an input leaves it up, and a list set to
   (`ScrollState::set_dismisses_keyboard`) puts it away when a finger starts to scroll it. The platform can also
   have the keyboard follow the finger down as the list is dragged; that is not done.
@@ -45,6 +47,8 @@ inside its input.
 
 `StackOutlet` is a stack of screens with a navigation bar (`docs/src/content/docs/routing.md`).
 
+- **The way back's arrow** is the platform's symbol with the `raster` feature; without it, a drawing after
+  it.
 - **The move** is a spring of 500 ms that starts at the finger's speed; the platform's own spring was not
   measured against it.
 - **The bar** is opaque and its content does not scroll under it; there is no large title, no search field
