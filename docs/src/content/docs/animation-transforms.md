@@ -55,6 +55,10 @@ Transition builders include:
 
 `duration(...)`, `duration_ms(...)`, `delay(...)`, `delay_ms(...)`, `easing(...)`, and `linear()` configure timing.
 
+`Easing::Spring { velocity }` eases as a spring that comes to rest without going past its end: quick at first,
+settling slowly. `velocity` is the speed the value already has when the transition starts, as a share of the
+way per duration, and 0 from rest; something a finger lets go of goes on at the finger's speed with it.
+
 ## Keyframe Animations
 
 Register keyframes on the tree before nodes reference them:

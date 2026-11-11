@@ -56,3 +56,8 @@ mod rerender {
   mod only_matched_route_rerenders;
   mod sibling_unchanged;
 }
+
+mod stack {
+  mod custom_bar;
+  mod screens;
+}

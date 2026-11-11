@@ -21,6 +21,141 @@ pub struct WindowInfo {
   pub is_full_screen: bool,
   pub is_decorated: bool,
   pub is_focused: bool,
+  /// The edges of the window the system draws over or cuts off; see [`SafeAreaInsets`].
+  pub safe_area: SafeAreaInsets,
+}
+
+/// What the system tells an app about itself, heard with `ctx.window().on_app_event(..)`. A phone tells all of
+/// it; a desktop shell tells none of it yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppEvent {
+  /// The app is in front and takes input.
+  Active,
+  /// Something of the system's is over the app, or it is on its way out: the app is seen and takes no input.
+  Inactive,
+  /// The app is no longer seen. It is given a moment to save what it must, and may be ended without notice.
+  Background,
+  /// The app is coming back into view.
+  Foreground,
+  /// The app was opened with a link: its own scheme, or a universal link of its site.
+  OpenUrl(String),
+  /// The app was opened by one of its shortcuts on the home screen, named by the shortcut's type.
+  Shortcut(String),
+  /// The way the app's content is turned, told once at the start and again whenever the device is turned to
+  /// a way the app allows.
+  Rotated(Orientation),
+}
+
+/// A way a phone is held, and so the way an app's content is turned. Several are joined with `|` into the
+/// [`Orientations`] an app allows: `Orientation::Portrait | Orientation::LandscapeLeft`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Orientation {
+  /// Upright.
+  Portrait,
+  /// Upright the other way up, the device's top at the bottom. A phone with no home button does not turn
+  /// its content this way whatever an app allows.
+  PortraitUpsideDown,
+  /// On its side, the device's top, where its camera is, at the left.
+  LandscapeLeft,
+  /// On its other side, the device's top at the right.
+  LandscapeRight,
+}
+
+/// The ways an app lets its content be turned: [`Orientation`]s joined with `|`. Given to the window before
+/// it runs; a device turned to a way that is not among them leaves the content as it was. An iOS app's
+/// `Info.plist` names the ways it supports too (`UISupportedInterfaceOrientations`), and only those among
+/// these that it names are ever taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Orientations(u8);
+
+impl Orientations {
+  /// Either side.
+  pub const LANDSCAPE: Self = Self(0b1100);
+  /// Every way.
+  pub const ALL: Self = Self(0b1111);
+
+  const fn bit(orientation: Orientation) -> u8 {
+    match orientation {
+      Orientation::Portrait => 0b0001,
+      Orientation::PortraitUpsideDown => 0b0010,
+      Orientation::LandscapeLeft => 0b0100,
+      Orientation::LandscapeRight => 0b1000,
+    }
+  }
+
+  pub fn contains(self, orientation: Orientation) -> bool {
+    self.0 & Self::bit(orientation) != 0
+  }
+}
+
+impl From<Orientation> for Orientations {
+  fn from(orientation: Orientation) -> Self {
+    Self(Self::bit(orientation))
+  }
+}
+
+impl std::ops::BitOr for Orientation {
+  type Output = Orientations;
+
+  fn bitor(self, other: Self) -> Orientations {
+    Orientations(Orientations::bit(self) | Orientations::bit(other))
+  }
+}
+
+impl std::ops::BitOr<Orientation> for Orientations {
+  type Output = Self;
+
+  fn bitor(self, other: Orientation) -> Self {
+    Self(self.0 | Self::bit(other))
+  }
+}
+
+impl std::ops::BitOr for Orientations {
+  type Output = Self;
+
+  fn bitor(self, other: Self) -> Self {
+    Self(self.0 | other.0)
+  }
+}
+
+impl std::ops::BitOr<Orientations> for Orientation {
+  type Output = Orientations;
+
+  fn bitor(self, other: Orientations) -> Orientations {
+    Orientations(Orientations::bit(self) | other.0)
+  }
+}
+
+type AppEventHandler = Arc<dyn Fn(&AppEvent) + Send + Sync>;
+
+/// A tap of the device's haptic engine, played with `ctx.window().haptic(..)`. A phone has one; where there is
+/// none, nothing happens.
+///
+/// The names are the platform's: an impact for something that lands or snaps into place, a selection for a
+/// value that changes under the finger, and a notification for how something ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Haptic {
+  Light,
+  Medium,
+  Heavy,
+  Selection,
+  Success,
+  Warning,
+  Error,
+}
+
+/// How far in from each edge of the window content stays clear of what the device and the system put there: a
+/// phone's status bar, camera housing, home indicator and rounded corners. In logical pixels, and zero on a
+/// desktop.
+///
+/// The window covers the whole screen, so a background reaches its edges; content that must be read or
+/// touched is padded by these.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SafeAreaInsets {
+  pub top: f32,
+  pub right: f32,
+  pub bottom: f32,
+  pub left: f32,
 }
 
 impl WindowInfo {
@@ -175,6 +310,8 @@ pub struct ScreenshotRegion {
 // Not `Eq`: synthetic input carries pixel positions.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum WindowCommand {
+  /// Play a tap of the device's haptic engine; see [`Haptic`].
+  Haptic(Haptic),
   Close,
   RequestClose(CloseRequestSource),
   SetMinimized(bool),
@@ -247,6 +384,7 @@ struct WindowInner {
   shell_attached: bool,
   resize_reports: resize::ResizeReports,
   close_handler: Option<CloseHandler>,
+  app_event_handler: Option<AppEventHandler>,
 }
 
 impl WindowInner {
@@ -291,6 +429,7 @@ impl Window {
           is_full_screen: false,
           is_decorated: true,
           is_focused: true,
+          safe_area: SafeAreaInsets::default(),
         },
         corner_radius: WindowCornerRadius::Default,
         border_color: WindowBorderColor::Default,
@@ -302,8 +441,28 @@ impl Window {
         shell_attached: false,
         resize_reports: resize::ResizeReports::default(),
         close_handler: None,
+        app_event_handler: None,
       })),
       version_signal: Signal::new(0),
+    }
+  }
+
+  pub(crate) fn set_app_event_handler(&self, handler: Option<AppEventHandler>) {
+    self.inner.write().unwrap().app_event_handler = handler;
+  }
+
+  #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+  pub(crate) fn has_app_event_handler(&self) -> bool {
+    self.inner.read().unwrap().app_event_handler.is_some()
+  }
+
+  /// Gives the window's handler something the system said of the app.
+  #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+  pub(crate) fn dispatch_app_event(&self, event: &AppEvent) {
+    // Never hold the state lock across application code.
+    let handler = self.inner.read().unwrap().app_event_handler.clone();
+    if let Some(handler) = handler {
+      handler(event);
     }
   }
 
@@ -564,6 +723,19 @@ impl Window {
     self.version_signal.set(version);
   }
 
+  /// Sets the insets a shell read from the platform. Public for tests and for shells outside the crate.
+  pub fn set_safe_area(&self, safe_area: SafeAreaInsets) {
+    let version = {
+      let mut inner = self.inner.write().unwrap();
+      if inner.info.safe_area == safe_area {
+        return;
+      }
+      inner.info.safe_area = safe_area;
+      Self::bump_version(&mut inner)
+    };
+    self.version_signal.set(version);
+  }
+
   #[cfg_attr(not(feature = "winit"), allow(dead_code))]
   pub(crate) fn set_focused(&self, focused: bool) {
     let version = {
@@ -615,3 +787,25 @@ impl Window {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod orientation_tests {
+  use super::{Orientation, Orientations};
+
+  #[test]
+  fn orientations_joined_with_or_are_the_ones_named() {
+    let allowed = Orientation::Portrait | Orientation::LandscapeLeft;
+    assert!(allowed.contains(Orientation::Portrait));
+    assert!(allowed.contains(Orientation::LandscapeLeft));
+    assert!(!allowed.contains(Orientation::LandscapeRight));
+    assert!(!allowed.contains(Orientation::PortraitUpsideDown));
+
+    let more = allowed | Orientation::LandscapeRight;
+    assert_eq!(more, Orientation::Portrait | Orientations::LANDSCAPE);
+    assert_eq!(more | Orientation::PortraitUpsideDown, Orientations::ALL);
+    assert_eq!(
+      Orientations::from(Orientation::Portrait) | Orientations::LANDSCAPE,
+      more
+    );
+  }
+}

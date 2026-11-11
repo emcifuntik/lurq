@@ -129,6 +129,21 @@ impl TextInputState {
     }
   }
 
+  /// Where the composition is in the displayed text, [`composed_text`](Self::composed_text), in bytes.
+  pub(crate) fn composition_range(&self) -> Option<std::ops::Range<usize>> {
+    let value = self.value();
+    let inner = self.inner.lock();
+    let span = inner.composition_span(&value)?;
+    Some(span.start..span.start + span.len)
+  }
+
+  /// The caret in the displayed text while composing.
+  pub(crate) fn composition_caret(&self) -> Option<usize> {
+    let value = self.value();
+    let inner = self.inner.lock();
+    Self::composed_caret(&inner, &value)
+  }
+
   /// Rows under the composition, for its underline, in the input's content
   /// coordinates like [`TextInputState::selection_ranges`].
   pub(crate) fn composition_ranges(&self) -> Vec<TextSelectionRange> {

@@ -691,7 +691,7 @@ impl WgpuRenderEngine {
       } else {
         vec![target_format]
       },
-      desired_maximum_frame_latency: 1,
+      desired_maximum_frame_latency: SURFACE_FRAME_LATENCY,
     };
     surface.configure(device, &config);
     self.surface = Some(surface);
@@ -1261,6 +1261,14 @@ impl WgpuRenderEngine {
     None
   }
 }
+
+/// How many frames may wait for the display. One keeps input closest to the screen. On iOS that gives the layer
+/// two drawables, and a frame then waits for the one on screen to come back: measured on an iPhone, every
+/// present took two refreshes, 30 frames a second on a 60 Hz display.
+#[cfg(not(target_os = "ios"))]
+const SURFACE_FRAME_LATENCY: u32 = 1;
+#[cfg(target_os = "ios")]
+const SURFACE_FRAME_LATENCY: u32 = 2;
 
 fn supported_present_mode(requested: wgpu::PresentMode, supported: &[wgpu::PresentMode]) -> wgpu::PresentMode {
   match requested {

@@ -134,6 +134,12 @@ rfd = { version = "0.15", optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2", optional = true }
 
+# iOS: the winit shell reaches UIKit for what winit leaves out (a display link, the status bar's tap).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+# The scripts cosmic-text asks a fallback font for; see `glyph_engine::ios_fallback`.
+unicode-script = "0.5"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8"
 core-video-sys = { version = "0.1", default-features = false, optional = true }

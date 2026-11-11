@@ -38,6 +38,11 @@ impl TextInputState {
     (inner.caret, inner.selection_anchor)
   }
 
+  /// Has the input painted anew, for a change of what is drawn over it that is not its own to know of.
+  pub(crate) fn repaint(&self) {
+    self.mark_layout_dirty_keeping_scroll();
+  }
+
   pub(crate) fn controller_select(&self, anchor: usize, caret: usize) -> bool {
     self.sync_external_value();
     let value = self.value();

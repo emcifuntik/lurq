@@ -18,8 +18,30 @@ pub(crate) struct RouterInner {
 }
 
 struct HistoryEntry {
+  /// Its own among every entry made, and kept as the history moves back and forward over it: what a stack of
+  /// screens tells its screens apart by.
+  id: u64,
   path: String,
   state: Option<Arc<dyn Any + Send + Sync>>,
+}
+
+impl HistoryEntry {
+  fn new(path: String, state: Option<Arc<dyn Any + Send + Sync>>) -> Self {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    Self {
+      id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+      path,
+      state,
+    }
+  }
+}
+
+/// An entry of the history up to where it now is: a screen of a stack.
+#[derive(Clone)]
+pub(crate) struct StackEntry {
+  pub(crate) id: u64,
+  pub(crate) path: String,
+  pub(crate) state: Option<Arc<dyn Any + Send + Sync>>,
 }
 
 pub(crate) struct HistoryStack {
@@ -98,10 +120,7 @@ impl RouterHandle {
       if !history.entries.is_empty() {
         history.entries.truncate(cursor + 1);
       }
-      history.entries.push(HistoryEntry {
-        path: path.clone(),
-        state,
-      });
+      history.entries.push(HistoryEntry::new(path.clone(), state));
       history.cursor = history.entries.len() - 1;
     }
     tracing::debug!(
@@ -137,17 +156,11 @@ impl RouterHandle {
     {
       let mut history = self.inner.history.lock();
       if history.entries.is_empty() {
-        history.entries.push(HistoryEntry {
-          path: path.clone(),
-          state,
-        });
+        history.entries.push(HistoryEntry::new(path.clone(), state));
         history.cursor = 0;
       } else {
         let cursor = history.cursor;
-        history.entries[cursor] = HistoryEntry {
-          path: path.clone(),
-          state,
-        };
+        history.entries[cursor] = HistoryEntry::new(path.clone(), state);
       }
     }
     tracing::debug!(
@@ -165,6 +178,30 @@ impl RouterHandle {
       .entries
       .get(history.cursor)
       .and_then(|entry| entry.state.clone())
+  }
+
+  /// The history from its first entry to the current one, the current last. A path set on the router's signal
+  /// by other means than this handle is not an entry.
+  pub(crate) fn stack(&self) -> Vec<StackEntry> {
+    let history = self.inner.history.lock();
+    if history.entries.is_empty() {
+      // Nothing was pushed yet: the router shows the path it started with.
+      return vec![StackEntry {
+        id: 0,
+        path: self.inner.current_path.get_untracked(),
+        state: None,
+      }];
+    }
+    history
+      .entries
+      .iter()
+      .take(history.cursor + 1)
+      .map(|entry| StackEntry {
+        id: entry.id,
+        path: entry.path.clone(),
+        state: entry.state.clone(),
+      })
+      .collect()
   }
 
   pub fn back(&self) -> bool {

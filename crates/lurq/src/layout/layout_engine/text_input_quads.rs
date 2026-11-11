@@ -16,6 +16,16 @@ use crate::{
   node::{node::Node, node_kind::TextInputState, transform::Transform2D},
 };
 
+/// Where the focused text input was painted, in logical pixels from the window's top-left corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextInputFrame {
+  /// The input's box: x, y, width, height.
+  pub(crate) bounds: (f32, f32, f32, f32),
+  /// Where the input's text coordinates start: a caret at `(x, y)` in them is painted at this plus that.
+  pub(crate) text_origin: (f32, f32),
+  pub(crate) line_height: f32,
+}
+
 /// Thickness of the line under a composition, in logical pixels.
 const COMPOSITION_UNDERLINE_WIDTH: f32 = 1.0;
 
@@ -44,6 +54,11 @@ impl LayoutEngine {
       y: abs_y + vertical_offset + state.caret_y() + band_top,
       width: TEXT_INPUT_CARET_WIDTH,
       height: band_height.max(1.0),
+    }));
+    self.text_input_frame.set(Some(TextInputFrame {
+      bounds: (abs_x, abs_y, result.size.width, result.size.height),
+      text_origin: (abs_x + padding.left, abs_y + vertical_offset + band_top),
+      line_height: band_height.max(1.0),
     }));
 
     let ranges = state.composition_ranges();
@@ -78,6 +93,11 @@ impl LayoutEngine {
         clip: underline_clip,
       });
     }
+  }
+
+  /// Where the focused text input was painted by the last quad resolution.
+  pub(crate) fn text_input_frame(&self) -> Option<TextInputFrame> {
+    self.text_input_frame.get()
   }
 
   /// The focused text input's caret recorded by the last quad resolution.

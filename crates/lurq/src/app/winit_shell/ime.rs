@@ -32,6 +32,11 @@ pub(super) struct ImeSync {
 
 impl ImeSync {
   pub(super) fn apply(&mut self, window: &Window, tree: &Tree) {
+    // On iOS the shell's own view takes the keyboard, with the input's traits; see `ios::TextInput`. winit's
+    // view would bring up a keyboard that knows nothing of the input.
+    #[cfg(target_os = "ios")]
+    let target = None;
+    #[cfg(not(target_os = "ios"))]
     let target = tree.ime_target();
     if target != self.target {
       // Turning the input method off ends a composition left in the input
