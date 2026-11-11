@@ -35,6 +35,9 @@ const MARKER_BUCKETS: usize = 240;
 const OVERVIEW_HEIGHT: f32 = 36.0;
 const CHART_HEIGHT: f32 = 120.0;
 const BAR_WIDTH: f32 = 3.0;
+/// Right of each timeline track, between it and its label.
+const LANE_GAP: f32 = 8.0;
+const LANE_LABEL_WIDTH: f32 = 90.0;
 /// Spans the sidebar lists for one pass; the rest are counted.
 const MAX_PHASE_ROWS: usize = 256;
 
@@ -165,6 +168,15 @@ impl ProfilerState {
   fn drag_bucket(&mut self, bucket: usize) {
     if let (true, Some(anchor)) = (self.range_dragging, self.range_anchor) {
       self.select_buckets(anchor, bucket);
+    }
+  }
+
+  /// True when dragging onto `bucket` would change the range, so a move
+  /// within one bucket renders nothing again.
+  fn drag_changes_range(&self, bucket: usize) -> bool {
+    match (self.range_dragging, self.range_anchor, &self.capture) {
+      (true, Some(anchor), Some(capture)) => self.range != Some(capture.bucket_range(anchor, bucket, OVERVIEW_BUCKETS)),
+      _ => false,
     }
   }
 
@@ -359,7 +371,7 @@ fn overview(capture: &ProfilerCapture, range: TimeRange, state_signal: Signal<Pr
       .on_mouse_move({
         let state_signal = state_signal.clone();
         move |_| {
-          if state_signal.with_untracked(|state| state.range_dragging) {
+          if state_signal.with_untracked(|state| state.drag_changes_range(bucket)) {
             state_signal.update(|state| state.drag_bucket(bucket));
           }
         }
@@ -503,18 +515,7 @@ fn timeline(
       passes.len()
     ))
   } else {
-    Column::new()
-      .spacing(4.0)
-      .child(pass_chart(passes, range, selected, state_signal))
-      .child(marker_lane(capture, range, "input", BLUE, |data| {
-        matches!(data, SampleData::InputDispatch(_))
-      }))
-      .child(marker_lane(capture, range, "ui update", PINK, |data| {
-        matches!(data, SampleData::UiUpdate(_))
-      }))
-      .child(time_axis(capture, range))
-      .width(FILL)
-      .into()
+    timeline_tracks(capture, passes, range, selected, state_signal)
   };
 
   Column::new()
@@ -529,6 +530,42 @@ fn timeline(
     .width(FILL)
     .height(FILL)
     .flex(1.0)
+    .into()
+}
+
+/// The pass chart, the marker lanes and the axis, one row each. Each row's
+/// track takes the width the label column leaves, and its time scale is that
+/// width less `BAR_WIDTH` (so a bar at the range's end stays inside): a time is
+/// at the same x in every row.
+fn timeline_tracks(
+  capture: &ProfilerCapture,
+  passes: &[Arc<ProfileSample>],
+  range: TimeRange,
+  selected: Option<u64>,
+  state_signal: Signal<ProfilerState>,
+) -> Element {
+  Column::new()
+    .spacing(4.0)
+    .child(pass_chart(passes, range, selected, state_signal))
+    .child(marker_lane(capture, range, "input", BLUE, |data| {
+      matches!(data, SampleData::InputDispatch(_))
+    }))
+    .child(marker_lane(capture, range, "ui update", PINK, |data| {
+      matches!(data, SampleData::UiUpdate(_))
+    }))
+    .child(time_axis(capture, range))
+    .width(FILL)
+    .into()
+}
+
+/// One row of the timeline: `track`, which must flex, then its label column.
+fn track_row(track: impl Into<Element>, label: Column) -> Element {
+  Row::new()
+    .align_items(Alignment::Center)
+    .spacing(LANE_GAP)
+    .child(track)
+    .child(label.width(LANE_LABEL_WIDTH))
+    .width(FILL)
     .into()
 }
 
@@ -547,20 +584,25 @@ fn pass_chart(
   // Behind the bars and never hit, so every bar stays clickable.
   let budget_line = Column::new()
     .child(Spacer::new().flex(1.0))
-    .child(
-      Row::new()
-        .align_items(Alignment::Center)
-        .child(Row::new().height(1.0).flex(1.0).background(YELLOW))
-        .child(mono_text(&format_ms(FRAME_BUDGET_MS), 9.0, FontWeight::Normal, YELLOW))
-        .width(FILL),
-    )
+    .child(Row::new().height(1.0).width(FILL).background(YELLOW))
     .child(Spacer::new().height(budget_height))
     .width(FILL)
     .height(FILL)
     .pointer_events_none();
+  // Its label sits beside the line, in the label column.
+  let budget_label = Column::new()
+    .child(Spacer::new().flex(1.0))
+    .child(mono_text(
+      &format!("budget {}", format_ms(FRAME_BUDGET_MS)),
+      9.0,
+      FontWeight::Normal,
+      YELLOW,
+    ))
+    .child(Spacer::new().height((budget_height - 6.0).max(0.0)))
+    .height(CHART_HEIGHT);
   let mut chart = Stack::new()
     .child(budget_line)
-    .width(FILL)
+    .flex(1.0)
     .height(CHART_HEIGHT)
     .background(SURFACE_2);
   for sample in passes {
@@ -582,11 +624,11 @@ fn pass_chart(
       });
     chart = chart.child(placed(range.fraction(sample.started_ms) as f32, bar, Alignment::End));
   }
-  chart.into()
+  track_row(chart, budget_label)
 }
 
-/// `content` at `fraction` of the width, in a full-size layer that only its
-/// content hits.
+/// `content` at `fraction` of the width less its own, in a full-size layer
+/// that only its content hits.
 fn placed(fraction: f32, content: impl Into<Element>, align: Alignment) -> Element {
   let mut row = Row::new()
     .align_items(align)
@@ -619,7 +661,12 @@ fn marker_lane(
       count += 1;
     }
   }
-  let mut lane = Row::new().height(6.0).flex(1.0).background(SURFACE_2);
+  // The parts span the time scale, the track less `BAR_WIDTH`.
+  let mut lane = Row::new()
+    .height(6.0)
+    .flex(1.0)
+    .padding_right(BAR_WIDTH)
+    .background(SURFACE_2);
   // One cell per run of equal parts keeps the lane small.
   let mut start = 0;
   while start < MARKER_BUCKETS {
@@ -635,36 +682,35 @@ fn marker_lane(
     lane = lane.child(cell);
     start = end;
   }
-  Row::new()
-    .align_items(Alignment::Center)
-    .spacing(8.0)
-    .child(lane)
-    .child(mono_text(&format!("{label} {count}"), 9.0, FontWeight::Normal, color).width(90.0))
-    .width(FILL)
-    .into()
+  track_row(
+    lane,
+    Column::new().child(mono_text(&format!("{label} {count}"), 9.0, FontWeight::Normal, color)),
+  )
 }
 
+/// Ticks at each quarter of the time scale, the last part closed by the
+/// range's end.
 fn time_axis(capture: &ProfilerCapture, range: TimeRange) -> Element {
   const TICKS: usize = 4;
-  let mut axis = Row::new().width(FILL).padding_right(98.0);
+  let tick_label = |at: f64| mono_text(&format_offset(capture, at), 9.0, FontWeight::Normal, MUTED);
+  let tick_border = || Border::inside(1.0, Color::from_hex(BORDER));
+  let mut axis = Row::new().flex(1.0).padding_right(BAR_WIDTH);
   for tick in 0..TICKS {
     let at = range.start_ms + range.duration_ms() * tick as f64 / TICKS as f64;
-    axis = axis.child(
-      Row::new()
-        .child(mono_text(&format_offset(capture, at), 9.0, FontWeight::Normal, MUTED))
-        .border_left(Border::inside(1.0, Color::from_hex(BORDER)))
-        .padding_left(3.0)
-        .flex(1.0),
-    );
+    let mut part = Row::new()
+      .child(tick_label(at))
+      .border_left(tick_border())
+      .padding_horizontal(3.0)
+      .flex(1.0);
+    if tick + 1 == TICKS {
+      part = part
+        .child(Spacer::new().flex(1.0))
+        .child(tick_label(range.end_ms))
+        .border_right(tick_border());
+    }
+    axis = axis.child(part);
   }
-  axis
-    .child(mono_text(
-      &format_offset(capture, range.end_ms),
-      9.0,
-      FontWeight::Normal,
-      MUTED,
-    ))
-    .into()
+  track_row(axis, Column::new())
 }
 
 fn legend() -> Element {

@@ -253,6 +253,9 @@ fn ranges_select_passes_by_start_and_keep_a_selection_inside() {
   // the slowest pass inside it is selected.
   state.press_bucket(bucket_of_pass_5, false);
   assert_eq!(state.selected, Some(5));
+  // A move within the pressed bucket changes nothing, so renders nothing.
+  assert!(!state.drag_changes_range(bucket_of_pass_5));
+  assert!(state.drag_changes_range(0));
   // Dragging back to the first bucket widens the range from where it began.
   state.drag_bucket(0);
   let range = state.range.unwrap();
@@ -330,10 +333,85 @@ fn every_stacked_pass_bar_takes_its_own_click() {
   // Between bars, the layers above let the press through to nothing.
   click(&mut tree, WIDTH * 0.3);
   assert_eq!(state.get_untracked().selected, None);
+  let scale = WIDTH - LANE_GAP - LANE_LABEL_WIDTH - BAR_WIDTH;
   for (sequence, fraction) in [(1, 0.1), (2, 0.5), (3, 0.9)] {
-    click(&mut tree, (WIDTH - BAR_WIDTH) * fraction + BAR_WIDTH / 2.0);
+    click(&mut tree, scale * fraction + BAR_WIDTH / 2.0);
     assert_eq!(state.get_untracked().selected, Some(sequence));
   }
+}
+
+/// The node at `path`, child indices from the root.
+fn node_at(tree: &crate::app::Tree, path: &[usize]) -> crate::core::NodeId {
+  let mut element = tree.root().expect("a root");
+  for &index in path {
+    element = element.children().iter().nth(index).expect("a child at the path");
+  }
+  element.node_id()
+}
+
+fn bounds_at(tree: &mut crate::app::Tree, path: &[usize]) -> crate::core::ElementRect {
+  let id = node_at(tree, path);
+  tree
+    .find_element(|element: crate::node::ElementRef<'_>| element.node_id() == id)
+    .expect("laid out")
+    .bounds()
+}
+
+#[test]
+fn bars_markers_and_axis_ticks_share_one_time_scale() {
+  use crate::{
+    app::{App, Tree, profiler::InputDispatchSample},
+    components::Column,
+  };
+  const WIDTH: f32 = 1068.0;
+  // A pass and an input dispatch half way through the range, and a pass at
+  // its end.
+  let passes = vec![
+    sample(1, "main", 500.0, 30.0, true),
+    sample(2, "main", 1000.0, 30.0, true),
+  ];
+  let mut capture = capture(passes.clone(), 1000.0);
+  capture.markers = vec![Arc::new(ProfileSample {
+    sequence: 3,
+    window: "main".into(),
+    started_ms: 500.0,
+    completed_ms: 501.0,
+    data: SampleData::InputDispatch(InputDispatchSample {
+      frame_id: None,
+      kind: crate::app::profiler::InputKind::Pointer,
+      total: Duration::from_millis(1),
+    }),
+  })];
+  let range = capture.whole();
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(WIDTH as u32, 400);
+  tree.set_root(
+    Column::new()
+      .child(timeline_tracks(
+        &capture,
+        &passes,
+        range,
+        None,
+        Signal::new(ProfilerState::default()),
+      ))
+      .size(WIDTH, 400.0),
+  );
+  tree.pass_headless(&mut app);
+
+  // Rows: chart, input lane, ui update lane, axis; each a track then its label.
+  let half_bar = bounds_at(&mut tree, &[0, 0, 0, 1, 1]);
+  let end_bar = bounds_at(&mut tree, &[0, 0, 0, 2, 1]);
+  let half_marker = bounds_at(&mut tree, &[0, 1, 0, 1]);
+  let half_tick = bounds_at(&mut tree, &[0, 3, 0, 2]);
+  let last_part = bounds_at(&mut tree, &[0, 3, 0, 3]);
+  let close = |a: f32, b: f32, what: &str| assert!((a - b).abs() < 0.5, "{what}: {a} vs {b}");
+  let scale = WIDTH - LANE_GAP - LANE_LABEL_WIDTH - BAR_WIDTH;
+  close(half_bar.x, scale * 0.5, "bar at half the range");
+  close(half_marker.x, half_bar.x, "marker at the bar's time");
+  close(half_tick.x, half_bar.x, "tick at the bar's time");
+  close(end_bar.x, scale, "bar at the range's end");
+  close(last_part.x + last_part.width, end_bar.x, "axis end at the last bar");
 }
 
 #[test]
