@@ -13,7 +13,7 @@ use rmcp::{
   ErrorData as McpError, ServerHandler,
   model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation, JsonObject, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
   },
   service::RequestContext,
   transport::streamable_http_server::{
@@ -180,7 +180,7 @@ impl McpService {
 }
 
 impl ServerHandler for McpService {
-  fn get_info(&self) -> ServerInfo {
+  fn get_info(&self) -> ServerConfig {
     let mut instructions = format!(
       "Embedded MCP server for the lurq app {:?}. Drive and inspect the running UI.\n\
        Conventions:\n\
@@ -197,7 +197,7 @@ impl ServerHandler for McpService {
       instructions.push_str(extra);
     }
 
-    let mut info = ServerInfo::default();
+    let mut info = ServerConfig::default();
     info.capabilities = ServerCapabilities::builder().enable_tools().build();
     info.server_info = Implementation::new(
       format!("lurq-{}", self.shared.app_name),
