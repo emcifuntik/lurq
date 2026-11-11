@@ -166,14 +166,14 @@ The Profiler tab records on the inspected tree's [profiling session service](../
 2. While it runs, the top bar shows how long it has run, the memory its samples hold and how many it took, reread four times a second. A recording keeps every sample; at its 1 GiB ceiling it stops taking more and says so.
 3. **Stop recording** ends the session. The recording holds every pass of the inspected windows (the main window and its other secondary windows) that began after Start and finished before Stop, each as its own frame: none is skipped, merged with an identical one, or capped to a fixed count. Passes already running at Start are left out and counted.
 
-DevTools' own window is not recorded. Turn on **Include DevTools** before Start to record it too. **Clear** forgets the recording, and ends one still running.
+DevTools' own window is not recorded. Turn on **Include DevTools** before Start to record it too. Turn on **Components** before Start for a [detailed recording](../profiling/#detailed-recordings): each component render and `after_layout` hook becomes a span named by the component's type, each pass counts the nodes it laid out again per component, and each UI update keeps what made its components render. **Clear** forgets the recording, and ends one still running.
 
 After Stop the tab shows:
 
 - **Recording**: the whole recording in equal slices, each drawn as its longest pass. Press and drag over it, or shift-click to extend from the last press, to select a time range; **Whole recording** selects all of it. A recording of more than 600 passes opens on its last 600.
 - **Frames**: the selected range on a time axis. Each pass is a bar at its start time, as tall as its duration, against a line at the 16.7 ms frame budget (one 60 Hz refresh): green within the budget, yellow over it, red over twice it, faded when the pass presented no frame. Two lanes below mark where input dispatches and UI updates (root rebuilds and subtree refreshes) began. A range with more than 600 passes asks for a narrower one instead of drawing them.
 - **FPS**: from the intervals between frames presented in the range, for the window that presented most. Intervals over 250 ms are the app idling and are left out, so FPS is blank (`–`) when the app was idle, and does not drop because the app paused between bursts.
-- **Frame details** for the selected bar (the slowest pass of the range until you click one): its start, duration and window; its phases from the recorded spans, nested by depth and placed on the pass's own time axis; and everything its sample holds: the pass timings and flags, Canvas text work, and its frame profile's timings, counts, render, Canvas, Canvas asset upload, text and memory figures.
+- **Frame details** for the selected bar (the slowest pass of the range until you click one): its start, duration and window; its phases from the recorded spans, nested by depth and placed on the pass's own time axis; and everything its sample holds: the pass timings and flags, Canvas text work, and its frame profile's timings, counts, render, Canvas, Canvas asset upload, text and memory figures. In a detailed recording the phases include the components by name, **Render causes** lists what made each component render in the UI updates that led to the pass (those of its window since its previous pass, during input handling or inside the pass), such as `signal u32`, `props` or `memo u64 via signal u64`, taken from the notifications as they happened, and **Component layouts** the nodes the pass laid out again per component and reason.
 
 Under the timeline, three views analyse the passes that start in the selected range (**Range**), or the selected pass alone (**Selected frame**):
 
@@ -181,11 +181,13 @@ Under the timeline, three views analyse the passes that start in the selected ra
 - **Call tree**: the spans of one track (Frames, or an application lane) merged by their path from the root, top-down, with total time, self time (total less its children), count, and both times as a percent of the track's total. For Frames that total is the pass time of the passes analysed. Rows open to the passes' phases; click a row to open or close it, click a column title to sort by it.
 - **Bottom-up**: a row per span name with its self time and its total time, and under it the names that called it, outward. A phase inside another of its name counts its total once. The rows' self times add up to the same total as the call tree.
 
+In a detailed recording, components show in all three views by their type name: under `ui_rebuild` each component that rendered (with the components it mounted below it), and under `component_after_layout` each component's hook (with its descendants' hooks below it), so the call tree merges the renders of one component type on one path.
+
 Phases recorded on another thread can overlap: each span is trimmed to its parent and to the end of the sibling before it, so no time counts twice. The aggregation is `lurq::app::profiler::SpanForest` (`forest_of`, `call_tree`, `bottom_up`), plain data that runs on any `ProfileReport`.
 
 Measured on a synthetic recording of 2000 passes with 62,000 spans and the analysis over all of it (`a_recording_of_2000_frames_stays_interactive`, Windows, headless pass of the whole tab, no GPU): opening it takes about 75 ms; in a release build, a hover takes about 1 ms (at most 3 ms), a zoom step 0.7 ms (at most 10 ms), a pan step 0.2 ms, and the first call tree or bottom-up table 8–9 ms, then under 1 ms; a debug build takes 3, 1.6 and 1 ms per hover, zoom and pan step.
 
-The recording holds only phase names, times and counts: no text, prop or signal values, input values or paths. The Signals tab records signal changes.
+The recording holds only phase names, times and counts, and in a detailed recording the static type names of components and of the signals, memos, stores and contexts that made them render: type names, never values. No text, prop or signal values, keys, element or signal ids, input values or paths. The Signals tab records signal changes.
 
 `Tree::last_profile()` returns the latest low-level frame profile for custom tooling. In a build with neither `devtools` nor `perf_profile` it holds default values.
 

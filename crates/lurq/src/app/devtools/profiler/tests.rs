@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use super::*;
 use crate::app::{
-  devtools::profiler_capture::{IDLE_GAP_MS, fps, pass_detail, phase_rows},
+  devtools::profiler_capture::{IDLE_GAP_MS, causes_section, fps, pass_detail, phase_rows},
   profiler::{FrameProfile, PassSample, Phase, PhaseSpan, ProfileSample, SampleData, producer::WindowProfiler},
 };
 
@@ -127,6 +127,84 @@ fn a_recording_on_a_tree_keeps_each_headless_pass_with_its_phases() {
   assert_eq!(fps(capture.passes_in(capture.whole())), None);
 }
 
+thread_local! {
+  static TICKS: std::cell::RefCell<Option<Signal<u32>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Renders the value of its own signal.
+struct TickLabel {
+  ticks: Signal<u32>,
+}
+
+impl crate::app::component::Component for TickLabel {
+  type Props = ();
+
+  fn create(ctx: &mut crate::app::ctx::Ctx) -> Self {
+    let ticks = ctx.signal(0_u32);
+    TICKS.with(|slot| *slot.borrow_mut() = Some(ticks.clone()));
+    Self { ticks }
+  }
+
+  fn render(&self, _ctx: &mut crate::app::ctx::Ctx) -> impl Into<Element> {
+    Text::new(&format!("ticks {}", self.ticks.get()))
+  }
+}
+
+#[test]
+fn a_detailed_recording_shows_components_and_render_causes_in_frame_details() {
+  use crate::app::{App, Tree};
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.mount_root::<TickLabel>(&mut app, ());
+  tree.pass_headless(&mut app);
+  let ticks = TICKS.with(|slot| slot.borrow().clone().unwrap());
+  let mut state = ProfilerState {
+    detailed: true,
+    ..ProfilerState::default()
+  };
+  assert!(state.start(&tree.profiling_handle()));
+  ticks.set(1);
+  tree.pass_headless(&mut app);
+  state.stop();
+  // The choice holds for the next recording, like Include DevTools.
+  assert!(state.detailed);
+
+  let capture = capture_of(&state);
+  let sample = capture
+    .passes
+    .iter()
+    .find(|sample| {
+      phase_rows(pass_of(sample).unwrap())
+        .iter()
+        .any(|row| row.name == "TickLabel")
+    })
+    .expect("the pass that rendered the component names it");
+  let causes = causes_section(&capture.updates_of(sample)).expect("the update's causes");
+  assert_eq!(causes.title, "RENDER CAUSES");
+  assert_eq!(causes.rows, vec![("TickLabel", "signal u32".to_owned())]);
+  assert!(
+    pass_detail(sample, pass_of(sample).unwrap())
+      .iter()
+      .any(|section| section.title == "COMPONENT LAYOUTS")
+  );
+
+  // Without it, no row names a component and no pass has causes.
+  let mut plain = ProfilerState::default();
+  assert!(plain.start(&tree.profiling_handle()));
+  ticks.set(2);
+  tree.pass_headless(&mut app);
+  plain.stop();
+  let capture = capture_of(&plain);
+  for sample in &capture.passes {
+    assert!(
+      phase_rows(pass_of(sample).unwrap())
+        .iter()
+        .all(|row| row.name != "TickLabel")
+    );
+    assert!(causes_section(&capture.updates_of(sample)).is_none());
+  }
+}
+
 #[test]
 fn clear_ends_a_running_recording() {
   let main = WindowProfiler::new();
@@ -162,6 +240,7 @@ fn sample(sequence: u64, window: &str, started_ms: f64, total_ms: f64, rendered:
       frame: rendered.then(FrameProfile::default),
       spans: Vec::new(),
       dropped_spans: 0,
+      component_layouts: Vec::new(),
     }),
   })
 }
@@ -503,12 +582,14 @@ fn the_tab_lays_out_in_every_state() {
       depth: 0,
       start_ns: 400_000_000,
       end_ns: 440_000_000,
+      component: None,
     },
     PhaseSpan {
       phase: Phase::LayoutUpdate,
       depth: 1,
       start_ns: 401_000_000,
       end_ns: 420_000_000,
+      component: None,
     },
   ];
   let mut with_spans = (*sample(2, "main", 400.0, 40.0, true)).clone();
@@ -650,6 +731,7 @@ fn phase_rows_place_spans_on_the_pass_time_axis() {
     depth,
     start_ns,
     end_ns,
+    component: None,
   };
   pass.spans = vec![
     span(Phase::PassSetup, 0, 10_000_000, 14_000_000),

@@ -1,4 +1,11 @@
-//! Content-free profiling contract shared by MCP and future DevTools consumers.
+//! Content-free profiling contract shared by MCP and DevTools consumers.
+//!
+//! A recording holds phase names, times, counts and toolkit window ids. A
+//! detailed recording (`RecordingOptions::detailed`) adds static type names:
+//! the short type names of components and of the signals, memos and contexts
+//! that made them render, taken from `std::any::type_name`. Type names are
+//! allowed; values never are: no text, prop values, keys, element or signal
+//! ids, input values or paths are recorded.
 use std::{sync::Arc, time::Duration};
 
 use super::{ApplicationScopeReport, FrameProfile};
@@ -10,6 +17,9 @@ pub const MAX_WINDOW_ID_BYTES: usize = 256;
 pub const MAX_ENDED_SESSION_IDS: usize = 64;
 /// Phase spans one pass keeps; later ones are counted in `PassSample::dropped_spans`.
 pub const MAX_SPANS_PER_PASS: usize = 1024;
+/// Component spans one pass of a detailed recording keeps, besides its phase
+/// spans; later ones are counted in `PassSample::dropped_spans`.
+pub const MAX_COMPONENT_SPANS_PER_PASS: usize = 8192;
 /// Default ceiling of a recording session: 1 GiB.
 pub const DEFAULT_RECORDING_MAX_BYTES: u64 = 1 << 30;
 
@@ -39,6 +49,12 @@ impl Default for SessionOptions {
 pub struct RecordingOptions {
   pub max_bytes: u64,
   pub include_devtools: bool,
+  /// Also records, per component, a span for each render and `after_layout`
+  /// hook (`PhaseSpan::component`), the nodes each pass laid out again
+  /// (`PassSample::component_layouts`) and what made each update's
+  /// components render (`UiUpdateSample::causes`). Off, a pass pays one
+  /// flag check for it.
+  pub detailed: bool,
 }
 
 impl Default for RecordingOptions {
@@ -46,6 +62,7 @@ impl Default for RecordingOptions {
     Self {
       max_bytes: DEFAULT_RECORDING_MAX_BYTES,
       include_devtools: false,
+      detailed: false,
     }
   }
 }
@@ -60,6 +77,8 @@ pub struct RecordingStatus {
   /// it had and records nothing more.
   pub stopped_at_limit: bool,
   pub stopped_ms: Option<f64>,
+  /// `RecordingOptions::detailed` of the session.
+  pub detailed: bool,
 }
 
 /// A live session's progress without its samples (`ProfilingHandle::status`),
@@ -276,6 +295,10 @@ pub struct PassSample {
   pub spans: Vec<PhaseSpan>,
   /// Spans past `MAX_SPANS_PER_PASS`, not kept.
   pub dropped_spans: u32,
+  /// In a detailed recording, the nodes the pass laid out again (without
+  /// their layout cache), per nearest component and reason, most first.
+  /// Empty otherwise.
+  pub component_layouts: Vec<ComponentLayouts>,
 }
 
 /// One phase guard's lifetime, in nanoseconds since the collector epoch (the
@@ -286,6 +309,83 @@ pub struct PhaseSpan {
   pub depth: u8,
   pub start_ns: u64,
   pub end_ns: u64,
+  /// In a detailed recording, the component a span of `Phase::Rebuild` (its
+  /// render) or `Phase::ComponentAfterLayout` (its hook) belongs to: its
+  /// short static type name. None for the phases themselves.
+  pub component: Option<&'static str>,
+}
+
+/// Nodes one pass laid out again under one component, for one reason (the
+/// reasons of `LURQ_LAYOUT_TRACE`, such as `local-dirty`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ComponentLayouts {
+  /// The short type name of the nearest component at or above the nodes;
+  /// None for nodes outside any mounted component (the root's own output).
+  pub component: Option<&'static str>,
+  pub reason: &'static str,
+  pub nodes: u32,
+}
+
+/// What a component render was for, as a detailed recording saw it happen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RenderTrigger {
+  /// A signal the component created or read in its last render was written.
+  Signal,
+  /// A memo the component read recomputed to a new value.
+  Memo,
+  /// A store the component created was written.
+  Store,
+  /// A reactive context it uses changed, or a context value it read was provided anew.
+  Context,
+  /// A form it created changed.
+  Form,
+  /// Its parent rendered it with other props.
+  Props,
+  /// Its parent rendered it with slot children, which always render again.
+  SlotChildren,
+  /// Its first render, or its first since it came back from offstage.
+  Mount,
+  /// A `for_each` item, which renders with its list.
+  ListItem,
+  /// Its parent asked for a root rebuild, or no notification was seen (one
+  /// sent before the recording started).
+  Unknown,
+}
+
+impl RenderTrigger {
+  pub fn name(self) -> &'static str {
+    match self {
+      Self::Signal => "signal",
+      Self::Memo => "memo",
+      Self::Store => "store",
+      Self::Context => "context",
+      Self::Form => "form",
+      Self::Props => "props",
+      Self::SlotChildren => "slot_children",
+      Self::Mount => "mount",
+      Self::ListItem => "list_item",
+      Self::Unknown => "unknown",
+    }
+  }
+}
+
+/// A reactive source as a cause names it: its kind and the short static type
+/// name of its value (`Signal<Vec<Row>>` is `signal Vec`). Never its value or id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RenderSource {
+  pub trigger: RenderTrigger,
+  pub value_type: Option<&'static str>,
+}
+
+/// One cause of a component render in an update.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RenderCause {
+  /// The short type name of the component that rendered.
+  pub component: &'static str,
+  pub source: RenderSource,
+  /// For a memo, the notification that made it recompute, when it recomputed
+  /// while that notification ran.
+  pub via: Option<RenderSource>,
 }
 
 /// Aggregate CPU work in CanvasTextEngine, separate from the UI GlyphEngine.
@@ -329,6 +429,10 @@ pub struct UiUpdateSample {
   /// Complete update, including commit; do not add to an enclosing pass.
   pub total: Duration,
   pub commit: Duration,
+  /// In a detailed recording, why each component the update rendered did
+  /// render, in render order, each distinct cause once; the notifications
+  /// were recorded as the sources sent them. Empty otherwise.
+  pub causes: Vec<RenderCause>,
 }
 
 #[derive(Clone)]

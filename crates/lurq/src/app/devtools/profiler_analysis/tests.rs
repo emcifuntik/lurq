@@ -26,6 +26,7 @@ pub(crate) fn layered_pass(sequence: u64, start_ms: f64, duration_ms: f64, comma
     depth,
     start_ns: at(from),
     end_ns: at(to),
+    component: None,
   };
   let mut spans = vec![
     span(Phase::PassSetup, 0, 0.0, 1.0),
@@ -67,6 +68,7 @@ pub(crate) fn layered_pass(sequence: u64, start_ms: f64, duration_ms: f64, comma
       frame: None,
       spans,
       dropped_spans: 0,
+      component_layouts: Vec::new(),
     }),
   })
 }

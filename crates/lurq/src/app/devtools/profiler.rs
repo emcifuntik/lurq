@@ -49,6 +49,8 @@ pub(crate) struct ProfilerState {
   recording: Option<Recording>,
   /// Records DevTools' own windows too; read when a recording starts.
   include_devtools: bool,
+  /// Records component spans and render causes; read when a recording starts.
+  detailed: bool,
   capture: Option<Arc<ProfilerCapture>>,
   range: Option<TimeRange>,
   /// The overview bucket the range was pressed on; a shift-press extends from it.
@@ -99,6 +101,7 @@ impl ProfilerState {
     }
     let options = RecordingOptions {
       include_devtools: self.include_devtools,
+      detailed: self.detailed,
       ..RecordingOptions::default()
     };
     match handle.start_recording(options) {
@@ -110,6 +113,7 @@ impl ProfilerState {
             status: handle.status(started.id).ok(),
           }),
           include_devtools: self.include_devtools,
+          detailed: self.detailed,
           ..Self::default()
         };
         true
@@ -152,6 +156,7 @@ impl ProfilerState {
     }
     *self = Self {
       include_devtools: self.include_devtools,
+      detailed: self.detailed,
       ..Self::default()
     };
   }
@@ -261,6 +266,18 @@ pub(crate) fn profiler_actions(
         BORDER,
       )
       .on_click(move |_| toggle_signal.update(|state| state.include_devtools = !state.include_devtools)),
+    );
+    let detailed = state.detailed;
+    let toggle_signal = state_signal.clone();
+    row = row.child(
+      toolbar_button(
+        "box",
+        "Components",
+        if detailed { PRIMARY } else { MUTED },
+        if detailed { SELECTED } else { SURFACE_2 },
+        BORDER,
+      )
+      .on_click(move |_| toggle_signal.update(|state| state.detailed = !state.detailed)),
     );
   }
   row
@@ -785,6 +802,9 @@ fn frame_sidebar(capture: &ProfilerCapture, selected: Option<&ProfileSample>) ->
       body = body
         .child(section)
         .child(phase_section(&capture::phase_rows(pass), pass.dropped_spans));
+      if let Some(causes) = capture::causes_section(&capture.updates_of(sample)) {
+        body = body.child(detail_section(&causes));
+      }
       for detail in capture::pass_detail(sample, pass) {
         body = body.child(detail_section(&detail));
       }

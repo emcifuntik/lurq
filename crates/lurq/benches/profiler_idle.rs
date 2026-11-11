@@ -3,7 +3,8 @@
 //!
 //! - `cargo bench -p lurq --bench profiler_idle` reports `off`: the hooks are compiled out.
 //! - `cargo bench -p lurq --bench profiler_idle --features perf_profile` reports `idle` (compiled in, no session, as
-//!   every DevTools build runs) and `session` (one active session recording every pass).
+//!   every DevTools build runs), `session` (one active session recording every pass) and `detailed` (one detailed
+//!   recording, with component spans, layout counts and render causes).
 //!
 //! Scenes, each run through `Tree::pass_headless`:
 //!
@@ -12,11 +13,16 @@
 //! - `signal_change`: the same rows as components, one of which changes its own signal before each pass, so the pass
 //!   also refreshes a component and lays the tree out again.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, time::Instant};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Bencher, Criterion, criterion_group, criterion_main};
 use lurq::{
-  app::{App, Tree, component::Component, ctx::Ctx},
+  app::{
+    App, Tree,
+    component::Component,
+    ctx::Ctx,
+    profiler::{ProfilingHandle, RecordingOptions, SessionId},
+  },
   components::{Column, Rect, Row, Text},
   core::Signal,
   node::Element,
@@ -82,21 +88,55 @@ impl Component for RowComponent {
 /// The configuration this build measures, with the session it keeps open.
 fn configurations() -> Vec<&'static str> {
   if cfg!(feature = "perf_profile") {
-    vec!["idle", "session"]
+    vec!["idle", "session", "detailed"]
   } else {
     vec!["off"]
   }
 }
 
-fn start_session(tree: &Tree, configuration: &str) -> Option<lurq::app::profiler::SessionId> {
-  (configuration == "session").then(|| tree.profiling_handle().start(Default::default()).unwrap().id)
+fn start_session(handle: &ProfilingHandle, configuration: &str) -> Option<SessionId> {
+  match configuration {
+    "session" => Some(handle.start(Default::default()).unwrap().id),
+    "detailed" => Some(
+      handle
+        .start_recording(RecordingOptions {
+          detailed: true,
+          ..Default::default()
+        })
+        .unwrap()
+        .id,
+    ),
+    _ => None,
+  }
 }
 
-/// Ends the session; it recorded every pass the bench ran (none when a filter skipped the bench).
-fn end_session(tree: &Tree, session: Option<lurq::app::profiler::SessionId>) {
+/// Ends the session; it recorded every pass it timed.
+fn end_session(handle: &ProfilingHandle, session: Option<SessionId>) {
   if let Some(id) = session {
-    tree.profiling_handle().end(id).unwrap();
+    handle.end(id).unwrap();
   }
+}
+
+/// Times `step` in `configuration`. A recording keeps every sample, so the
+/// `detailed` one is started anew for each batch of iterations; a bounded
+/// session stays open across the bench.
+fn measure(b: &mut Bencher, handle: &ProfilingHandle, configuration: &str, mut step: impl FnMut()) {
+  if configuration != "detailed" {
+    let session = start_session(handle, configuration);
+    b.iter(&mut step);
+    end_session(handle, session);
+    return;
+  }
+  b.iter_custom(|iterations| {
+    let session = start_session(handle, configuration);
+    let started = Instant::now();
+    for _ in 0..iterations {
+      step();
+    }
+    let elapsed = started.elapsed();
+    end_session(handle, session);
+    elapsed
+  });
 }
 
 fn bench_profiler_idle(c: &mut Criterion) {
@@ -107,11 +147,12 @@ fn bench_profiler_idle(c: &mut Criterion) {
     tree.resize(800, 1200);
     tree.set_root(static_scene());
     tree.pass_headless(&mut app);
-    let session = start_session(&tree, configuration);
+    let handle = tree.profiling_handle();
     group.bench_function(format!("static/{configuration}"), |b| {
-      b.iter(|| tree.pass_headless(&mut app));
+      measure(b, &handle, configuration, || {
+        tree.pass_headless(&mut app);
+      });
     });
-    end_session(&tree, session);
 
     ROW_SIGNALS.with(|signals| signals.borrow_mut().clear());
     let mut app = App::new();
@@ -120,14 +161,13 @@ fn bench_profiler_idle(c: &mut Criterion) {
     tree.mount_root::<Root>(&mut app, ());
     tree.pass_headless(&mut app);
     let signal = ROW_SIGNALS.with(|signals| signals.borrow()[ROWS / 2].clone());
-    let session = start_session(&tree, configuration);
+    let handle = tree.profiling_handle();
     group.bench_function(format!("signal_change/{configuration}"), |b| {
-      b.iter(|| {
+      measure(b, &handle, configuration, || {
         signal.update(|value| *value += 1);
-        tree.pass_headless(&mut app)
+        tree.pass_headless(&mut app);
       });
     });
-    end_session(&tree, session);
   }
   group.finish();
 }

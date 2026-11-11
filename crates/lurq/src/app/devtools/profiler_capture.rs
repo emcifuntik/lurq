@@ -4,7 +4,10 @@
 //! content-free samples of the session.
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use crate::app::profiler::{ApplicationScopeSample, PassSample, ProfileReport, ProfileSample, SampleData};
+use crate::app::profiler::{
+  ApplicationScopeSample, PassSample, ProfileReport, ProfileSample, RenderCause, RenderSource, SampleData,
+  UiUpdateSample, span_name,
+};
 
 /// One 60 Hz refresh: the timeline draws its budget line here and colours the
 /// passes that take longer.
@@ -143,6 +146,31 @@ impl ProfilerCapture {
       .map(Arc::as_ref)
   }
 
+  /// The UI updates that led to `pass`: those of its window that began
+  /// after its window's previous pass completed and before `pass` completed,
+  /// during event handling before it or inside it.
+  pub(crate) fn updates_of(&self, pass: &ProfileSample) -> Vec<&UiUpdateSample> {
+    let after_ms = self
+      .passes
+      .iter()
+      .filter(|other| {
+        other.window == pass.window && other.sequence != pass.sequence && other.completed_ms <= pass.started_ms
+      })
+      .map(|other| other.completed_ms)
+      .fold(f64::NEG_INFINITY, f64::max);
+    self
+      .markers
+      .iter()
+      .filter(|marker| {
+        marker.window == pass.window && marker.started_ms > after_ms && marker.started_ms <= pass.completed_ms
+      })
+      .filter_map(|marker| match &marker.data {
+        SampleData::UiUpdate(update) => Some(update),
+        SampleData::Pass(_) | SampleData::InputDispatch(_) => None,
+      })
+      .collect()
+  }
+
   /// The longest pass that starts in `range`.
   pub(crate) fn slowest_in(&self, range: TimeRange) -> Option<u64> {
     self
@@ -245,7 +273,8 @@ pub(crate) struct PhaseRow {
 }
 
 /// The pass's spans as rows, offsets from the pass's start; the first span is
-/// the pass itself.
+/// the pass itself. A component span of a detailed recording is named by its
+/// component.
 pub(crate) fn phase_rows(pass: &PassSample) -> Vec<PhaseRow> {
   let Some(origin) = pass.spans.first().map(|span| span.start_ns) else {
     return Vec::new();
@@ -255,12 +284,43 @@ pub(crate) fn phase_rows(pass: &PassSample) -> Vec<PhaseRow> {
     .spans
     .iter()
     .map(|span| PhaseRow {
-      name: if span.depth == 0 { "pass" } else { span.phase.name() },
+      name: if span.depth == 0 { "pass" } else { span_name(span) },
       depth: span.depth,
       offset_ms: ns(span.start_ns.saturating_sub(origin)),
       duration_ms: ns(span.end_ns.saturating_sub(span.start_ns)),
     })
     .collect()
+}
+
+/// What made the updates' components render, one row per distinct cause:
+/// the component, then the source's kind and value type, and for a memo what
+/// made it recompute. None when the updates hold no cause (not a detailed
+/// recording, or no update).
+pub(crate) fn causes_section(updates: &[&UiUpdateSample]) -> Option<DetailSection> {
+  let mut causes: Vec<&RenderCause> = Vec::new();
+  for cause in updates.iter().flat_map(|update| &update.causes) {
+    if !causes.contains(&cause) {
+      causes.push(cause);
+    }
+  }
+  if causes.is_empty() {
+    return None;
+  }
+  let source = |source: &RenderSource| match source.value_type {
+    Some(value_type) => format!("{} {value_type}", source.trigger.name()),
+    None => source.trigger.name().to_owned(),
+  };
+  Some(section(
+    "RENDER CAUSES",
+    causes.into_iter().map(|cause| {
+      let mut value = source(&cause.source);
+      if let Some(via) = &cause.via {
+        value.push_str(" via ");
+        value.push_str(&source(via));
+      }
+      (cause.component, value)
+    }),
+  ))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -325,6 +385,18 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
           count_rows!(text; measure_calls, fill_calls, shape_calls, shape_cache_hits, shape_cache_misses,
           shape_cache_evictions, shape_cache_uncached, shape_cache_stretch_bytes, produced_bitmap_bytes),
         ),
+    ));
+  }
+
+  if !pass.component_layouts.is_empty() {
+    sections.push(section(
+      "COMPONENT LAYOUTS",
+      pass.component_layouts.iter().map(|layout| {
+        (
+          layout.component.unwrap_or("(root output)"),
+          format!("{} {}", layout.nodes, layout.reason),
+        )
+      }),
     ));
   }
 

@@ -35,6 +35,7 @@ mod enabled {
         kind: UiUpdateKind::RootRebuild,
         total: Duration::from_millis(1),
         commit: Duration::ZERO,
+        causes: Vec::new(),
       }),
     );
   }

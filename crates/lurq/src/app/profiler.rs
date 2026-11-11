@@ -18,6 +18,9 @@ pub(crate) mod canvas_text;
 #[cfg(test)]
 mod canvas_upload_tests;
 mod collector;
+pub(crate) mod detail;
+#[cfg(all(test, feature = "perf_profile"))]
+mod detail_tests;
 #[cfg(any(feature = "serde", feature = "mcp"))]
 mod export;
 mod model;
@@ -29,7 +32,7 @@ pub(crate) mod producer;
 mod session_tests;
 
 pub use aggregate::{
-  CallNode, CallSort, CallTree, ForestSpan, PASS_SPAN_NAME, SpanForest, SpanTrack, forest_of, ms_to_ns,
+  CallNode, CallSort, CallTree, ForestSpan, PASS_SPAN_NAME, SpanForest, SpanTrack, forest_of, ms_to_ns, span_name,
 };
 pub use application::{ApplicationScope, ApplicationScopeParent};
 pub use application_model::{
@@ -39,11 +42,12 @@ pub use application_model::{
 };
 pub use collector::ProfilingHandle;
 pub use model::{
-  BuildAvailability, CanvasTextProfile, DEFAULT_RECORDING_MAX_BYTES, InFlightObservation, InputDispatchSample,
-  InputKind, MAX_ACTIVE_SESSIONS, MAX_ENDED_SESSION_IDS, MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS,
-  MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassSample, Phase, PhaseSpan, ProfileError, ProfileReport, ProfileSample,
-  RecordingOptions, RecordingStatus, SampleData, SessionId, SessionOptions, SessionStarted, SessionStatus,
-  UiUpdateKind, UiUpdateSample, WindowStatus,
+  BuildAvailability, CanvasTextProfile, ComponentLayouts, DEFAULT_RECORDING_MAX_BYTES, InFlightObservation,
+  InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS, MAX_COMPONENT_SPANS_PER_PASS, MAX_ENDED_SESSION_IDS,
+  MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS, MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassSample, Phase, PhaseSpan,
+  ProfileError, ProfileReport, ProfileSample, RecordingOptions, RecordingStatus, RenderCause, RenderSource,
+  RenderTrigger, SampleData, SessionId, SessionOptions, SessionStarted, SessionStatus, UiUpdateKind, UiUpdateSample,
+  WindowStatus,
 };
 pub use producer::{PhaseGuard, ProfileContext};
 
