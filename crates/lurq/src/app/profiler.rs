@@ -22,6 +22,9 @@ mod collector;
 mod counter_tests;
 #[cfg(feature = "counting_allocator")]
 mod counting_allocator;
+pub(crate) mod detail;
+#[cfg(all(test, feature = "perf_profile"))]
+mod detail_tests;
 #[cfg(any(feature = "serde", feature = "mcp"))]
 mod export;
 #[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
@@ -47,7 +50,7 @@ mod screenshot_tests;
 mod session_tests;
 
 pub use aggregate::{
-  CallNode, CallSort, CallTree, ForestSpan, PASS_SPAN_NAME, SpanForest, SpanTrack, forest_of, ms_to_ns,
+  CallNode, CallSort, CallTree, ForestSpan, PASS_SPAN_NAME, SpanForest, SpanTrack, forest_of, ms_to_ns, span_name,
 };
 pub use application::{ApplicationScope, ApplicationScopeParent};
 pub use application_model::{
@@ -59,12 +62,13 @@ pub use collector::ProfilingHandle;
 #[cfg(feature = "counting_allocator")]
 pub use counting_allocator::CountingAllocator;
 pub use model::{
-  BuildAvailability, CacheSizes, CanvasTextProfile, DEFAULT_RECORDING_MAX_BYTES, FrameScreenshot,
+  BuildAvailability, CacheSizes, CanvasTextProfile, ComponentLayouts, DEFAULT_RECORDING_MAX_BYTES, FrameScreenshot,
   GpuTimestampAvailability, GpuTiming, InFlightObservation, InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS,
-  MAX_ENDED_SESSION_IDS, MAX_PENDING_INPUTS, MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS, MAX_TRACKED_WINDOWS,
-  MAX_WINDOW_ID_BYTES, PassAllocations, PassCounters, PassSample, Phase, PhaseSpan, PresentTiming, ProfileError,
-  ProfileReport, ProfileSample, RecordingOptions, RecordingStatus, SampleData, ScreenshotOptions, SessionId,
-  SessionOptions, SessionStarted, SessionStatus, UiUpdateKind, UiUpdateSample, WindowStatus,
+  MAX_COMPONENT_SPANS_PER_PASS, MAX_ENDED_SESSION_IDS, MAX_PENDING_INPUTS, MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS,
+  MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassAllocations, PassCounters, PassSample, Phase, PhaseSpan, PresentTiming,
+  ProfileError, ProfileReport, ProfileSample, RecordingOptions, RecordingStatus, RenderCause, RenderSource,
+  RenderTrigger, SampleData, ScreenshotOptions, SessionId, SessionOptions, SessionStarted, SessionStatus, UiUpdateKind,
+  UiUpdateSample, WindowStatus,
 };
 pub use producer::{PhaseGuard, ProfileContext};
 #[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]

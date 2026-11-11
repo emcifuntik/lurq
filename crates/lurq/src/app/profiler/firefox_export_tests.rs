@@ -12,6 +12,7 @@ fn span(phase: Phase, depth: u8, start_ms: u64, end_ms: u64) -> PhaseSpan {
     depth,
     start_ns: start_ms * MS,
     end_ns: end_ms * MS,
+    component: None,
   }
 }
 
@@ -56,8 +57,9 @@ fn pass(sequence: u64, window: &str, at_ms: u64, memory_bytes: Option<usize>) ->
       reasons: crate::app::PassReasons::default(),
       present: None,
       counters: None,
-      screenshot: false,
       gpu: None,
+      component_layouts: Vec::new(),
+      screenshot: false,
     }),
   })
 }
@@ -157,6 +159,7 @@ pub(super) fn full_report() -> ProfileReport {
           kind: UiUpdateKind::SubtreeRefresh,
           total: Duration::from_millis(1),
           commit: Duration::from_micros(250),
+          causes: Vec::new(),
         }),
       ),
       pass(4, "main", 200, Some(6144)),
@@ -412,8 +415,61 @@ fn frames_input_and_ui_updates_are_markers_on_the_ui_thread() {
     "a pass that presented nothing has no frame id"
   );
   assert!(close(markers["data"][2]["commit"].as_f64().unwrap(), 0.25));
+  // An update without causes (not a detailed recording) has no causes field.
+  assert!(markers["data"][2].get("causes").is_none());
   // Only the UI thread holds markers.
   assert_eq!(thread(&profile, "Worker")["markers"]["length"], 0);
+}
+
+#[test]
+fn a_detailed_recording_names_components_in_the_call_tree_and_causes_on_its_updates() {
+  let mut report = full_report();
+  let SampleData::Pass(pass) = &mut Arc::make_mut(&mut report.samples[0]).data else {
+    unreachable!("the first sample is a pass")
+  };
+  // A component render inside ui_rebuild +1..+3, before its commit.
+  let at_ms = pass.spans[0].start_ns / MS;
+  pass.spans.insert(
+    3,
+    PhaseSpan {
+      component: Some("Counter"),
+      ..span(Phase::Rebuild, 3, at_ms + 1, at_ms + 2)
+    },
+  );
+  let SampleData::UiUpdate(update) = &mut Arc::make_mut(&mut report.samples[2]).data else {
+    unreachable!("the third sample is a UI update")
+  };
+  update.causes = vec![
+    RenderCause {
+      component: "Counter",
+      source: RenderSource {
+        trigger: RenderTrigger::Signal,
+        value_type: Some("u32"),
+      },
+      via: None,
+    },
+    RenderCause {
+      component: "Total",
+      source: RenderSource {
+        trigger: RenderTrigger::Memo,
+        value_type: Some("u64"),
+      },
+      via: Some(RenderSource {
+        trigger: RenderTrigger::Signal,
+        value_type: Some("u32"),
+      }),
+    },
+  ];
+  let profile = profile(&report);
+  let ui = thread(&profile, "UI");
+  assert!(
+    strings(ui).contains(&"Counter"),
+    "the component is a function of the call tree"
+  );
+  assert_eq!(
+    ui["markers"]["data"][2]["causes"],
+    "Counter: signal u32; Total: memo u64 via signal u32"
+  );
 }
 
 fn counts(counter: &Value) -> Vec<f64> {

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 
 use super::{
-  ApplicationLane, PassSample, ProfileReport, SampleData, UiUpdateKind,
+  ApplicationLane, PassSample, ProfileReport, RenderCause, RenderSource, SampleData, UiUpdateKind,
   aggregate::{SpanForest, SpanTrack, forest_of, ms_to_ns},
 };
 
@@ -242,12 +242,13 @@ impl Thread {
             UiUpdateKind::RootRebuild => "root_rebuild",
             UiUpdateKind::SubtreeRefresh => "subtree_refresh",
           });
-          (
-            "UI update",
-            CATEGORY_FRAME,
-            json!({ "type": "LurqUiUpdate", "operation": operation, "window": window,
-              "commit": update.commit.as_secs_f64() * 1000.0 }),
-          )
+          let mut data = json!({ "type": "LurqUiUpdate", "operation": operation, "window": window,
+            "commit": update.commit.as_secs_f64() * 1000.0 });
+          // Only a detailed recording's updates have causes.
+          if !update.causes.is_empty() {
+            data["causes"] = Value::from(causes_text(&update.causes));
+          }
+          ("UI update", CATEGORY_FRAME, data)
         }
       };
       let name = self.string(name);
@@ -492,8 +493,26 @@ fn meta() -> Value {
           field("operation", "Operation", "unique-string"),
           field("window", "Window", "unique-string"),
           field("commit", "Commit", "duration"),
+          field("causes", "Render causes", "string"),
         ],
       },
     ],
   })
+}
+
+/// An update's render causes in one line: `Counter: signal u32; Total: memo
+/// u64 via signal u32`. Type names only.
+fn causes_text(causes: &[RenderCause]) -> String {
+  let source = |source: &RenderSource| match source.value_type {
+    Some(value_type) => format!("{} {value_type}", source.trigger.name()),
+    None => source.trigger.name().to_owned(),
+  };
+  causes
+    .iter()
+    .map(|cause| match &cause.via {
+      Some(via) => format!("{}: {} via {}", cause.component, source(&cause.source), source(via)),
+      None => format!("{}: {}", cause.component, source(&cause.source)),
+    })
+    .collect::<Vec<_>>()
+    .join("; ")
 }

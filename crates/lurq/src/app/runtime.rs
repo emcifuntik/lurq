@@ -2177,9 +2177,13 @@ impl Tree {
         reset_element_ref_flags_recursive(&old);
         overlay_host_parts(old)
       });
+      #[cfg(feature = "perf_profile")]
+      let render_span = ctx.render_span(|| None);
       ctx.begin_render();
       let mut node = component.render(ctx).node;
       ctx.end_render();
+      #[cfg(feature = "perf_profile")]
+      drop(render_span);
       #[cfg(feature = "perf_profile")]
       _profile_update.commit();
       node.set_tag_name(component.tag_name());
@@ -2345,6 +2349,10 @@ impl Tree {
   pub fn pass(&mut self, app: &mut App, surface: &(impl HasWindowHandle + HasDisplayHandle)) -> PassReport {
     #[cfg(feature = "perf_profile")]
     let (_profile_start, _profile_phase) = self.profiling.begin_pass(self.frame_count + 1);
+    #[cfg(feature = "perf_profile")]
+    if self.profiling.detailed() {
+      self.layout_engine.count_component_layouts();
+    }
     #[cfg(all(feature = "canvas", feature = "perf_profile"))]
     let _canvas_text = self.profiling.context.canvas_text_scope();
     #[cfg(feature = "perf_profile")]
@@ -2369,6 +2377,10 @@ impl Tree {
     // A blocked notification must remain unfinished to diagnostic readers.
     #[cfg(feature = "perf_profile")]
     {
+      if self.profiling.detailed() {
+        let counts = self.layout_engine.take_component_layouts();
+        self.profiling.component_layouts(counts);
+      }
       let wants_next_frame = report.rendered && self.profiling.capturing() && self.wants_next_frame_at_once();
       self.profiling.set_wants_next_frame(wants_next_frame);
       self.profiling.finish_pass(
@@ -6636,8 +6648,21 @@ impl Tree {
           .profiling
           .context
           .phase(crate::app::profiler::Phase::ComponentAfterLayout);
-        component.after_layout();
-        ctx.after_layout_recursive();
+        // A detailed pass takes a span per component; the one check is here.
+        #[cfg(feature = "perf_profile")]
+        if let Some(spans) = self.profiling.hook_spans() {
+          let _span = spans.enter(ctx.component_name());
+          component.after_layout();
+          ctx.after_layout_recursive_spans(&spans);
+        } else {
+          component.after_layout();
+          ctx.after_layout_recursive();
+        }
+        #[cfg(not(feature = "perf_profile"))]
+        {
+          component.after_layout();
+          ctx.after_layout_recursive();
+        }
         #[cfg(feature = "perf_profile")]
         self
           .profiling

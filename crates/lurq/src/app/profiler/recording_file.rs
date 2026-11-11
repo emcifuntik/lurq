@@ -84,22 +84,36 @@ fn field<T: Field>(map: &Map<String, Value>, key: &str) -> Result<T, String> {
 }
 
 /// A struct as an object of its fields. The pattern and the literal name every
-/// field, so a field added to the struct must be added here.
+/// field, so a field added to the struct must be added here. `field as codec`
+/// writes and reads that field with the module `codec` instead of `Field`.
 macro_rules! record {
-  ($ty:ident { $($field:ident),* $(,)? }) => {
+  ($ty:ident { $($field:ident $(as $codec:ident)?),* $(,)? }) => {
     impl Field for $ty {
       fn encode(&self) -> Value {
         let $ty { $($field),* } = self;
         let mut map = Map::new();
-        $(map.insert(stringify!($field).into(), $field.encode());)*
+        $(map.insert(stringify!($field).into(), record!(@encode $field $($codec)?));)*
         Value::Object(map)
       }
 
       fn decode(value: &Value) -> Result<Self, String> {
         let map = value.as_object().ok_or("expected an object")?;
-        Ok($ty { $($field: field(map, stringify!($field))?),* })
+        Ok($ty { $($field: record!(@decode map $field $($codec)?)),* })
       }
     }
+  };
+  (@encode $field:ident) => {
+    $field.encode()
+  };
+  (@encode $field:ident $codec:ident) => {
+    $codec::encode($field)
+  };
+  (@decode $map:ident $field:ident) => {
+    field($map, stringify!($field))?
+  };
+  (@decode $map:ident $field:ident $codec:ident) => {
+    $codec::decode($map.get(stringify!($field)).unwrap_or(&Value::Null))
+      .map_err(|error| format!("{}: {error}", stringify!($field)))?
   };
 }
 
@@ -228,6 +242,92 @@ fn intern(name: &str) -> Result<&'static str, String> {
       "expected a name of at most {MAX_APPLICATION_LABEL_BYTES} ASCII letters, digits, _, - or ."
     ));
   }
+  leak_once(name)
+}
+
+/// Longest short type name a file may hold.
+const MAX_TYPE_NAME_BYTES: usize = 256;
+
+/// The short static type names of a detailed recording (components, the value
+/// types of signals and memos) as `detail::short_type_name` makes them, so a
+/// tuple or array type keeps its brackets, commas and spaces. Never a path
+/// separator, quote or control character.
+mod type_name {
+  use super::*;
+
+  pub(super) fn encode<T: TypeName>(name: &T) -> Value {
+    name.encode_name()
+  }
+
+  pub(super) fn decode<T: TypeName>(value: &Value) -> Result<T, String> {
+    T::decode_name(value)
+  }
+
+  pub(super) trait TypeName: Sized {
+    fn encode_name(&self) -> Value;
+    fn decode_name(value: &Value) -> Result<Self, String>;
+  }
+
+  impl TypeName for &'static str {
+    fn encode_name(&self) -> Value {
+      Value::from(*self)
+    }
+
+    fn decode_name(value: &Value) -> Result<Self, String> {
+      let name = value.as_str().ok_or("expected a string")?;
+      let valid = !name.is_empty()
+        && name.len() <= MAX_TYPE_NAME_BYTES
+        && name
+          .bytes()
+          .all(|byte| (byte.is_ascii_graphic() || byte == b' ') && !matches!(byte, b'/' | b'\\' | b'"'));
+      if !valid {
+        return Err(format!(
+          "expected a type name of at most {MAX_TYPE_NAME_BYTES} ASCII characters, without / \\ or \""
+        ));
+      }
+      leak_once(name)
+    }
+  }
+
+  impl TypeName for Option<&'static str> {
+    fn encode_name(&self) -> Value {
+      self.map_or(Value::Null, |name| name.encode_name())
+    }
+
+    fn decode_name(value: &Value) -> Result<Self, String> {
+      if value.is_null() {
+        Ok(None)
+      } else {
+        <&'static str>::decode_name(value).map(Some)
+      }
+    }
+  }
+}
+
+/// Why GPU time is not measured: one of `GpuTimestampAvailability::REASONS`,
+/// by its text.
+mod gpu_reason {
+  use super::*;
+
+  pub(super) fn encode(reason: &Option<&'static str>) -> Value {
+    reason.map_or(Value::Null, Value::from)
+  }
+
+  pub(super) fn decode(value: &Value) -> Result<Option<&'static str>, String> {
+    if value.is_null() {
+      return Ok(None);
+    }
+    let reason = value.as_str().ok_or("expected a string")?;
+    GpuTimestampAvailability::REASONS
+      .into_iter()
+      .find(|known| *known == reason)
+      .map(Some)
+      .ok_or_else(|| format!("unknown reason {reason:?}"))
+  }
+}
+
+/// `name`, already checked, as a `&'static str` leaked once.
+fn leak_once(name: &str) -> Result<&'static str, String> {
   static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
   let mut names = NAMES
     .get_or_init(Default::default)
@@ -305,6 +405,21 @@ macro_rules! named {
 named!(Phase, PHASES);
 named!(InputKind, [InputKind::Pointer, InputKind::Keyboard, InputKind::Scroll]);
 named!(ApplicationLane, [ApplicationLane::Ui, ApplicationLane::Worker]);
+named!(
+  RenderTrigger,
+  [
+    RenderTrigger::Signal,
+    RenderTrigger::Memo,
+    RenderTrigger::Store,
+    RenderTrigger::Context,
+    RenderTrigger::Form,
+    RenderTrigger::Props,
+    RenderTrigger::SlotChildren,
+    RenderTrigger::Mount,
+    RenderTrigger::ListItem,
+    RenderTrigger::Unknown,
+  ]
+);
 
 impl Field for UiUpdateKind {
   fn encode(&self) -> Value {
@@ -368,43 +483,9 @@ impl Field for SampleData {
   }
 }
 
-/// Why GPU time was not measured is one of the toolkit's own sentences, so a
-/// file names it by its text and reads back only one of them.
-impl Field for GpuTimestampAvailability {
-  fn encode(&self) -> Value {
-    let Self {
-      available,
-      reason,
-      adapter_backend,
-    } = self;
-    let mut map = Map::new();
-    map.insert("available".into(), available.encode());
-    map.insert("reason".into(), reason.map_or(Value::Null, Value::from));
-    map.insert("adapter_backend".into(), adapter_backend.encode());
-    Value::Object(map)
-  }
-
-  fn decode(value: &Value) -> Result<Self, String> {
-    let map = value.as_object().ok_or("expected an object")?;
-    let reason = match map.get("reason").unwrap_or(&Value::Null) {
-      Value::Null => None,
-      Value::String(text) => Some(
-        GpuTimestampAvailability::REASONS
-          .into_iter()
-          .find(|known| known == text)
-          .unwrap_or(GpuTimestampAvailability::UNKNOWN_REASON),
-      ),
-      _ => return Err("reason: expected a string".to_owned()),
-    };
-    Ok(Self {
-      available: field(map, "available")?,
-      reason,
-      adapter_backend: field(map, "adapter_backend")?,
-    })
-  }
-}
-
-/// Pixels as lowercase hex, two characters a byte.
+/// The screenshots of a recording go into the file with it: they were charged
+/// to the session's `max_bytes` like its samples, so a file stays as bounded
+/// as the recording it holds. Pixels as lowercase hex, two characters a byte.
 impl Field for FrameScreenshot {
   fn encode(&self) -> Value {
     let Self {
@@ -439,7 +520,10 @@ impl Field for FrameScreenshot {
       .get("rgba")
       .and_then(Value::as_str)
       .ok_or("rgba: expected a hex string")?;
-    if pixels.len() != width as usize * height as usize * 8 {
+    let expected = (width as usize)
+      .checked_mul(height as usize)
+      .and_then(|area| area.checked_mul(8));
+    if expected != Some(pixels.len()) {
       return Err("rgba: expected width x height RGBA pixels".to_owned());
     }
     let nibble = |byte: u8| match byte {
@@ -491,6 +575,11 @@ record!(BuildAvailability {
   devtools,
   gpu_timestamps,
 });
+record!(GpuTimestampAvailability {
+  available,
+  reason as gpu_reason,
+  adapter_backend,
+});
 record!(WindowStatus {
   id,
   open,
@@ -511,6 +600,7 @@ record!(RecordingStatus {
   size_bytes,
   stopped_at_limit,
   stopped_ms,
+  detailed,
   screenshots,
   screenshot_bytes,
 });
@@ -540,10 +630,25 @@ record!(PassSample {
   reasons,
   present,
   counters,
-  screenshot,
   gpu,
+  component_layouts,
+  screenshot,
 });
 record!(GpuTiming { ui, canvas });
+record!(ComponentLayouts {
+  component as type_name,
+  reason,
+  nodes,
+});
+record!(RenderCause {
+  component as type_name,
+  source,
+  via,
+});
+record!(RenderSource {
+  trigger,
+  value_type as type_name,
+});
 record!(PassReasons {
   redraw_requested,
   scheduled_redraw,
@@ -593,6 +698,7 @@ record!(PhaseSpan {
   depth,
   start_ns,
   end_ns,
+  component as type_name,
 });
 record!(CanvasTextProfile {
   measure_calls,
@@ -614,6 +720,7 @@ record!(UiUpdateSample {
   kind,
   total,
   commit,
+  causes,
 });
 record!(InputDispatchSample {
   frame_id,

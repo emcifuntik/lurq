@@ -89,6 +89,7 @@ impl ProfileReport {
       "completed_samples"
     };
     let newest = self.samples.last().map(|sample| sample.completed_ms);
+    let detailed = self.recording.is_some_and(|recording| recording.detailed);
     let mut value = json!({
       "schema_version": 1, "id": format!("profile_{}", self.id.0), "status": status,
       "finalized": self.finalized, "started_ms": self.started_ms, "ended_ms": self.ended_ms,
@@ -110,7 +111,7 @@ impl ProfileReport {
         "excluded_from_completed_samples": true, "started_before_session": current.started_before_session
       })).collect::<Vec<_>>(),
       "application_scopes": app.map(|app| app.to_json(self.observed_ms)),
-      "samples": self.samples.iter().map(|sample| sample_json(sample)).collect::<Vec<_>>(),
+      "samples": self.samples.iter().map(|sample| sample_json(sample, detailed)).collect::<Vec<_>>(),
       "scope_semantics": {
         "pass": "Tree::pass wall time; includes nested UI/layout/text/Canvas/render; excludes prior input dispatch",
         "ui_update": "inclusive rebuild/refresh with nested commit; may precede or nest in a pass",
@@ -136,6 +137,7 @@ impl ProfileReport {
       value["recording"] = json!({
         "max_bytes": recording.max_bytes, "size_bytes": recording.size_bytes,
         "stopped_at_limit": recording.stopped_at_limit, "stopped_ms": recording.stopped_ms,
+        "detailed": recording.detailed,
         "screenshot_bytes": recording.screenshot_bytes,
         // Which frames have a screenshot; the pixels are not exported.
         "screenshots": self.screenshots.iter().map(|screenshot| json!({
@@ -148,46 +150,71 @@ impl ProfileReport {
   }
 }
 
-fn sample_json(sample: &ProfileSample) -> Value {
+/// A sample as JSON. Only a detailed recording's export carries its
+/// detailed data (component spans, layouts and causes): a bounded session
+/// sharing samples with one exports what it always did.
+fn sample_json(sample: &ProfileSample, detailed: bool) -> Value {
   let data = match &sample.data {
-    SampleData::Pass(pass) => json!({
-      "kind": "pass", "frame_id": pass.frame_id, "rendered": pass.rendered,
-      "cached_render_list": pass.cached_render_list, "backend": pass.backend,
-      "layout_recalculated": pass.layout_recalculated,
-      "cpu_timings_ms": timings!(pass; total, layout_update, layout_compute, component_after_layout, canvas_recording, canvas_preparation),
-      "canvas_text": pass.canvas_text.map(|text| json!({
-        "cpu_timings_ms": timings!(text; total, buffer_font_shape, glyph_prepare, bitmap_composition),
-        "counts": counts!(text; measure_calls, fill_calls, shape_calls, shape_cache_hits,
-          shape_cache_misses, shape_cache_evictions, shape_cache_uncached, shape_cache_stretch_bytes,
-          produced_bitmap_bytes)
-      })),
-      "frame": pass.frame.as_ref().map(|frame| frame_json(frame, pass.backend, pass.gpu.is_some())),
-      "gpu_timing_ms": pass.gpu.map(GpuTiming::to_json),
-      "spans": pass.spans.iter().map(|span| json!({
-        "phase": span.phase.name(), "depth": span.depth,
-        "start_ms": span.start_ns as f64 / 1e6, "end_ms": span.end_ns as f64 / 1e6
-      })).collect::<Vec<_>>(),
-      "dropped_spans": pass.dropped_spans,
-      "reasons": pass.reasons.names().collect::<Vec<_>>(),
-      "present": pass.present.map(|present| json!({
-        "presented_ms": present.presented_ms,
-        "interval_ms": present.interval.map(ms),
-        "refresh_interval_ms": present.refresh_interval.map(ms),
-        "continuous": present.continuous,
-        "missed_vsync": present.missed_vsync(),
-        "missed_vsyncs": present.missed_vsyncs
-      })),
-      // Additive within schema_version 1; null for a pass without counters.
-      "counters": pass.counters.map(counters_json),
-      // Additive: true when the frame was also copied for a recording's
-      // screenshot, so its render timings include that copy.
-      "screenshot": pass.screenshot
-    }),
-    SampleData::UiUpdate(update) => json!({
-      "kind": "ui_update", "frame_id": update.frame_id,
-      "operation": match update.kind { UiUpdateKind::RootRebuild => "root_rebuild", UiUpdateKind::SubtreeRefresh => "subtree_refresh" },
-      "cpu_timings_ms": timings!(update; total, commit), "inclusive_in_pass": update.frame_id.is_some()
-    }),
+    SampleData::Pass(pass) => {
+      let mut data = json!({
+        "kind": "pass", "frame_id": pass.frame_id, "rendered": pass.rendered,
+        "cached_render_list": pass.cached_render_list, "backend": pass.backend,
+        "layout_recalculated": pass.layout_recalculated,
+        "cpu_timings_ms": timings!(pass; total, layout_update, layout_compute, component_after_layout, canvas_recording, canvas_preparation),
+        "canvas_text": pass.canvas_text.map(|text| json!({
+          "cpu_timings_ms": timings!(text; total, buffer_font_shape, glyph_prepare, bitmap_composition),
+          "counts": counts!(text; measure_calls, fill_calls, shape_calls, shape_cache_hits,
+            shape_cache_misses, shape_cache_evictions, shape_cache_uncached, shape_cache_stretch_bytes,
+            produced_bitmap_bytes)
+        })),
+        "frame": pass.frame.as_ref().map(|frame| frame_json(frame, pass.backend, pass.gpu.is_some())),
+        "gpu_timing_ms": pass.gpu.map(GpuTiming::to_json),
+        "spans": pass.spans.iter().filter(|span| detailed || span.component.is_none()).map(|span| {
+          let mut value = json!({
+            "phase": span.phase.name(), "depth": span.depth,
+            "start_ms": span.start_ns as f64 / 1e6, "end_ms": span.end_ns as f64 / 1e6
+          });
+          if let Some(component) = span.component {
+            value["component"] = component.into();
+          }
+          value
+        }).collect::<Vec<_>>(),
+        "dropped_spans": pass.dropped_spans,
+        "reasons": pass.reasons.names().collect::<Vec<_>>(),
+        "present": pass.present.map(|present| json!({
+          "presented_ms": present.presented_ms,
+          "interval_ms": present.interval.map(ms),
+          "refresh_interval_ms": present.refresh_interval.map(ms),
+          "continuous": present.continuous,
+          "missed_vsync": present.missed_vsync(),
+          "missed_vsyncs": present.missed_vsyncs
+        })),
+        // Additive within schema_version 1; null for a pass without counters.
+        "counters": pass.counters.map(counters_json),
+        // Additive: true when the frame was also copied for a recording's
+        // screenshot, so its render timings include that copy.
+        "screenshot": pass.screenshot
+      });
+      if detailed {
+        data["component_layouts"] = pass
+          .component_layouts
+          .iter()
+          .map(|layout| json!({ "component": layout.component, "reason": layout.reason, "nodes": layout.nodes }))
+          .collect();
+      }
+      data
+    }
+    SampleData::UiUpdate(update) => {
+      let mut data = json!({
+        "kind": "ui_update", "frame_id": update.frame_id,
+        "operation": match update.kind { UiUpdateKind::RootRebuild => "root_rebuild", UiUpdateKind::SubtreeRefresh => "subtree_refresh" },
+        "cpu_timings_ms": timings!(update; total, commit), "inclusive_in_pass": update.frame_id.is_some()
+      });
+      if detailed {
+        data["causes"] = update.causes.iter().map(cause_json).collect();
+      }
+      data
+    }
     SampleData::InputDispatch(input) => json!({
       "kind": "input_dispatch", "frame_id": input.frame_id, "rendered": false,
       "category": input.kind.name(), "cpu_timings_ms": timings!(input; total),
@@ -203,6 +230,15 @@ fn sample_json(sample: &ProfileSample) -> Value {
   };
   json!({ "sequence": sample.sequence, "window": sample.window, "started_ms": sample.started_ms,
     "completed_ms": sample.completed_ms, "data": data })
+}
+
+fn source_json(source: &RenderSource) -> Value {
+  json!({ "trigger": source.trigger.name(), "value_type": source.value_type })
+}
+
+fn cause_json(cause: &RenderCause) -> Value {
+  json!({ "component": cause.component, "source": source_json(&cause.source),
+    "via": cause.via.as_ref().map(source_json) })
 }
 
 fn ms(duration: std::time::Duration) -> f64 {

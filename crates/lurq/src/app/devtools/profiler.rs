@@ -69,6 +69,8 @@ pub(crate) struct ProfilerState {
   recording: Option<Recording>,
   /// Records DevTools' own windows too; read when a recording starts.
   include_devtools: bool,
+  /// Records component spans and render causes; read when a recording starts.
+  detailed: bool,
   /// Takes screenshots of presented frames (`RecordingOptions::screenshots`);
   /// read when a recording starts. Off by default: each one reads a frame
   /// back from the GPU.
@@ -128,6 +130,7 @@ impl ProfilerState {
     }
     let options = RecordingOptions {
       include_devtools: self.include_devtools,
+      detailed: self.detailed,
       screenshots: self.screenshots.then(ScreenshotOptions::default),
       ..RecordingOptions::default()
     };
@@ -140,6 +143,7 @@ impl ProfilerState {
             status: handle.status(started.id).ok(),
           }),
           include_devtools: self.include_devtools,
+          detailed: self.detailed,
           screenshots: self.screenshots,
           ..Self::default()
         };
@@ -182,6 +186,7 @@ impl ProfilerState {
       Ok(report) => {
         *self = Self {
           include_devtools: self.include_devtools,
+          detailed: self.detailed,
           screenshots: self.screenshots,
           ..Self::default()
         };
@@ -214,6 +219,7 @@ impl ProfilerState {
     }
     *self = Self {
       include_devtools: self.include_devtools,
+      detailed: self.detailed,
       screenshots: self.screenshots,
       ..Self::default()
     };
@@ -328,6 +334,18 @@ pub(crate) fn profiler_actions(
         BORDER,
       )
       .on_click(move |_| toggle_signal.update(|state| state.include_devtools = !state.include_devtools)),
+    );
+    let detailed = state.detailed;
+    let toggle_signal = state_signal.clone();
+    row = row.child(
+      toolbar_button(
+        "box",
+        "Components",
+        if detailed { PRIMARY } else { MUTED },
+        if detailed { SELECTED } else { SURFACE_2 },
+        BORDER,
+      )
+      .on_click(move |_| toggle_signal.update(|state| state.detailed = !state.detailed)),
     );
     let screenshots = state.screenshots;
     let toggle_signal = state_signal.clone();
@@ -1283,6 +1301,9 @@ fn frame_sidebar(
       body = body
         .child(section)
         .child(phase_section(&capture::phase_rows(pass), pass.dropped_spans));
+      if let Some(causes) = capture::causes_section(&capture.updates_of(sample)) {
+        body = body.child(detail_section(&causes));
+      }
       let inputs = pass
         .frame_id
         .map(|frame_id| capture.inputs_presented_by(&sample.window, frame_id))

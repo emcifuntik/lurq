@@ -20,7 +20,7 @@ impl<T: SignalValue + Clone + PartialEq + Send + Sync + 'static> Memo<T> {
     let initial = f();
     let deps = tracking::stop_tracking();
 
-    let output = Signal::new(initial);
+    let output = Signal::memo_output(initial);
     let subscriptions: Arc<Mutex<Vec<Box<dyn Send + Sync>>>> = Arc::new(Mutex::new(Vec::new()));
 
     let output_clone = output.clone();
@@ -35,6 +35,17 @@ impl<T: SignalValue + Clone + PartialEq + Send + Sync + 'static> Memo<T> {
 
     let mut subs = subscriptions.lock();
     for entry in deps {
+      // A detailed recording names what made the memo recompute in the
+      // causes its new value sends.
+      #[cfg(feature = "perf_profile")]
+      let recompute: Arc<dyn Fn() + Send + Sync> = {
+        let recompute = recompute.clone();
+        let trigger = entry.source;
+        Arc::new(move || {
+          let _recompute = crate::app::profiler::detail::memo_recompute(trigger);
+          recompute();
+        })
+      };
       let guard = (entry.subscribe_fn)(recompute.clone());
       subs.push(guard);
     }

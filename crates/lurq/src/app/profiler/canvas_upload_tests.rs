@@ -188,6 +188,7 @@ fn profiling_canvas_upload_export_does_not_advertise_wgpu_or_custom_backend_supp
           counters: None,
           screenshot: false,
           gpu: None,
+          component_layouts: Vec::new(),
         }),
       })],
       recording: None,

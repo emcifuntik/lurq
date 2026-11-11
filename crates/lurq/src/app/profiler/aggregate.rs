@@ -7,10 +7,12 @@
 //! scope's parent chain another tree per root scope. Spans are trimmed to
 //! their parent and to the end of an earlier sibling (phases entered on
 //! another thread can overlap), so the self times of a tree add up to its
-//! root's duration and no time counts twice.
+//! root's duration and no time counts twice. The component spans of a
+//! detailed recording are named by their component (`span_name`), so they
+//! show and merge by component type.
 use std::{collections::HashMap, sync::Arc};
 
-use super::{ApplicationLane, ApplicationScopeSample, PassSample, ProfileSample, SampleData};
+use super::{ApplicationLane, ApplicationScopeSample, PassSample, PhaseSpan, ProfileSample, SampleData};
 
 /// The name of the root span of a pass.
 pub const PASS_SPAN_NAME: &str = "pass";
@@ -123,7 +125,7 @@ impl SpanForest {
       stack.truncate(depth.min(stack.len()));
       let parent = *stack.last().expect("the root stays");
       let index = self.push(
-        span.phase.name(),
+        span_name(span),
         SpanTrack::Frames,
         Some(parent),
         span.start_ns,
@@ -308,6 +310,13 @@ impl SpanForest {
 /// Milliseconds since the collector epoch, as a report's `*_ms`, in nanoseconds.
 pub fn ms_to_ns(ms: f64) -> u64 {
   (ms.max(0.0) * 1e6).round() as u64
+}
+
+/// What a span is called in a forest, a flame chart and a table: its
+/// component's type name for a component span of a detailed recording, else
+/// its phase's name.
+pub fn span_name(span: &PhaseSpan) -> &'static str {
+  span.component.unwrap_or_else(|| span.phase.name())
 }
 
 /// A call tree or bottom-up table: rows with their children, in the order

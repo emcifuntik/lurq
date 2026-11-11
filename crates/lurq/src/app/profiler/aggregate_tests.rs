@@ -10,6 +10,7 @@ fn span(phase: Phase, depth: u8, start_ms: u64, end_ms: u64) -> PhaseSpan {
     depth,
     start_ns: start_ms * MS,
     end_ns: end_ms * MS,
+    component: None,
   }
 }
 
@@ -42,6 +43,7 @@ fn pass(sequence: u64, total_ms: u64, spans: Vec<PhaseSpan>) -> Arc<ProfileSampl
       counters: None,
       screenshot: false,
       gpu: None,
+      component_layouts: Vec::new(),
     }),
   })
 }

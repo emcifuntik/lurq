@@ -4,26 +4,28 @@ use serde_json::Value;
 
 use super::{firefox_export_tests::full_report, *};
 
-/// `full_report` with every optional part of a report filled in.
+/// `full_report` with every optional part of a report filled in, as a
+/// detailed recording.
 fn every_field_report() -> ProfileReport {
   let mut report = full_report();
+  report.build.gpu_timestamps = GpuTimestampAvailability {
+    available: true,
+    reason: None,
+    adapter_backend: Some("vulkan"),
+  };
   report.windows = vec![
     WindowStatus {
       id: "main".into(),
       open: true,
       devtools: false,
-      gpu_timestamps: Some(GpuTimestampAvailability {
-        available: true,
-        reason: None,
-        adapter_backend: Some("vulkan"),
-      }),
+      gpu_timestamps: Some(report.build.gpu_timestamps),
     },
     WindowStatus {
       id: "w1".into(),
       open: false,
       devtools: true,
       gpu_timestamps: Some(GpuTimestampAvailability::unavailable(
-        GpuTimestampAvailability::NATIVE_DX12,
+        GpuTimestampAvailability::NO_TIMESTAMP_QUERY,
       )),
     },
   ];
@@ -41,6 +43,7 @@ fn every_field_report() -> ProfileReport {
     size_bytes: 123_456,
     stopped_at_limit: true,
     stopped_ms: Some(399.0),
+    detailed: true,
     screenshots: 1,
     screenshot_bytes: 200,
   });
@@ -53,6 +56,31 @@ fn every_field_report() -> ProfileReport {
     rgba: vec![0, 15, 16, 255, 128, 64, 32, 1],
   })];
   report.boundary_excluded_samples = 2;
+  let update = Arc::make_mut(&mut report.samples[2]);
+  let SampleData::UiUpdate(update) = &mut update.data else {
+    unreachable!("the third sample is a UI update")
+  };
+  update.causes = vec![
+    RenderCause {
+      component: "Counter",
+      source: RenderSource {
+        trigger: RenderTrigger::Signal,
+        value_type: Some("u32"),
+      },
+      via: None,
+    },
+    RenderCause {
+      component: "Total",
+      source: RenderSource {
+        trigger: RenderTrigger::Memo,
+        value_type: Some("(u32, [u8; 4])"),
+      },
+      via: Some(RenderSource {
+        trigger: RenderTrigger::Store,
+        value_type: None,
+      }),
+    },
+  ];
   let first = Arc::make_mut(&mut report.samples[0]);
   let SampleData::Pass(pass) = &mut first.data else {
     unreachable!("the first sample is a pass")
@@ -60,10 +88,23 @@ fn every_field_report() -> ProfileReport {
   pass.backend = "dx12";
   pass.dropped_spans = 3;
   pass.screenshot = true;
+  pass.spans[2].component = Some("Counter");
   pass.gpu = Some(GpuTiming {
-    ui: Duration::from_nanos(1_500_001),
-    canvas: Some(Duration::from_nanos(250)),
+    ui: Duration::from_nanos(123_456),
+    canvas: Some(Duration::from_nanos(7)),
   });
+  pass.component_layouts = vec![
+    ComponentLayouts {
+      component: Some("Counter"),
+      reason: "local-dirty",
+      nodes: 4,
+    },
+    ComponentLayouts {
+      component: None,
+      reason: "local-dirty",
+      nodes: 1,
+    },
+  ];
   pass.canvas_text = Some(CanvasTextProfile {
     shape_calls: 4,
     produced_bitmap_bytes: 1 << 20,
@@ -185,13 +226,22 @@ fn a_recording_file_reads_back_into_the_same_report() {
   assert_eq!(scopes.samples[1].scope.parent_id, Some(ApplicationScopeId(1)));
   assert_eq!(scopes.samples[2].scope.lane, ApplicationLane::Worker);
   assert!(scopes.in_flight[0].started_before_session);
-  match &loaded.samples[2].data {
-    SampleData::UiUpdate(update) => {
+  match (&loaded.samples[2].data, &report.samples[2].data) {
+    (SampleData::UiUpdate(update), SampleData::UiUpdate(original)) => {
       assert_eq!(update.kind, UiUpdateKind::SubtreeRefresh);
       assert_eq!(update.commit, Duration::from_micros(250));
+      assert_eq!(update.causes, original.causes);
     }
     _ => panic!("the third sample is a UI update"),
   }
+  // GPU time and a detailed recording's data read back too.
+  assert_eq!(pass.gpu, pass_of(&report, 0).gpu);
+  assert_eq!(pass.component_layouts, pass_of(&report, 0).component_layouts);
+  assert_eq!(pass.spans[2].component, Some("Counter"));
+  assert_eq!(loaded.build.gpu_timestamps, report.build.gpu_timestamps);
+  let windows: Vec<_> = loaded.windows.iter().map(|window| window.gpu_timestamps).collect();
+  let expected: Vec<_> = report.windows.iter().map(|window| window.gpu_timestamps).collect();
+  assert_eq!(windows, expected);
 }
 
 #[test]
@@ -255,6 +305,29 @@ fn files_that_are_not_recordings_are_refused_with_the_reason() {
   }
   let error = with(&|file| file["report"]["samples"][0]["data"]["pass"]["spans"][1]["phase"] = Value::from("paint"));
   assert!(error.contains("unknown Phase \"paint\""), "{error}");
+  // A component is a type name, never a path or quoted text.
+  for text in ["C:/Users/me", "..\\secrets", "say \"hi\"", ""] {
+    let error = with(&|file| file["report"]["samples"][0]["data"]["pass"]["spans"][1]["component"] = Value::from(text));
+    assert!(error.contains("component: expected a type name"), "{text:?}: {error}");
+  }
+  // Why GPU time is missing is one of the toolkit's reasons.
+  let error = with(&|file| file["report"]["build"]["gpu_timestamps"]["reason"] = Value::from("Quarterly report"));
+  assert!(error.contains("reason: unknown reason"), "{error}");
+  // A screenshot holds exactly its width by height pixels, as hex.
+  let screenshot = |width: u64, height: u64, rgba: &str| {
+    serde_json::json!([{
+      "window": "main", "frame_id": 1, "captured_ms": 1.0, "width": width, "height": height, "rgba": rgba
+    }])
+  };
+  let error = with(&|file| file["report"]["screenshots"] = screenshot(2, 1, "00112233"));
+  assert!(
+    error.contains("screenshots: 0: rgba: expected width x height"),
+    "{error}"
+  );
+  let error = with(&|file| file["report"]["screenshots"] = screenshot(u64::from(u32::MAX), u64::from(u32::MAX), ""));
+  assert!(error.contains("rgba: expected width x height"), "{error}");
+  let error = with(&|file| file["report"]["screenshots"] = screenshot(1, 1, "0011223G"));
+  assert!(error.contains("rgba: expected lowercase hex"), "{error}");
 }
 
 #[test]

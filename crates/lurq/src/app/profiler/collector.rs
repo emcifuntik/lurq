@@ -9,9 +9,10 @@ use std::{
 
 #[cfg(feature = "perf_profile")]
 use super::application_state::{ApplicationSession, ApplicationState};
-use super::{model::*, phase_slot::PhaseSlot};
+use super::{detail, model::*, phase_slot::PhaseSlot};
 
-/// Shared capture API. No UI references, callbacks, redraws or per-node data.
+/// Shared capture API. No UI references, callbacks or redraws; per-component
+/// data only for a detailed recording, by static type name.
 #[derive(Clone)]
 pub struct ProfilingHandle {
   pub(crate) inner: Arc<Inner>,
@@ -20,6 +21,9 @@ pub struct ProfilingHandle {
 pub(crate) struct Inner {
   pub(crate) epoch: Instant,
   pub(crate) active: AtomicBool,
+  /// True while a detailed recording takes samples: the one check a pass or
+  /// an update makes for detailed data.
+  pub(crate) detailed: AtomicBool,
   /// A session that takes samples takes screenshots too: only then does a
   /// frame ask for one (`screenshot_due`).
   pub(crate) screenshots: AtomicBool,
@@ -73,6 +77,7 @@ struct Recording {
   max_bytes: u64,
   /// When a sample would have passed `max_bytes`; nothing is recorded after.
   stopped_at_limit: Option<Instant>,
+  detailed: bool,
   screenshot_options: Option<ScreenshotOptions>,
   screenshots: Vec<Arc<FrameScreenshot>>,
   /// The part of `size_bytes` the screenshots hold.
@@ -96,6 +101,10 @@ impl Session {
   /// False for a recording stopped at its limit, which takes no more samples.
   pub(super) fn receiving(&self) -> bool {
     !matches!(&self.samples, Samples::Recording(recording) if recording.stopped_at_limit.is_some())
+  }
+
+  fn detailed(&self) -> bool {
+    matches!(&self.samples, Samples::Recording(recording) if recording.detailed)
   }
 
   /// Samples of a window marked as DevTools' own are kept only on request.
@@ -236,6 +245,7 @@ impl ProfilingHandle {
       inner: Arc::new(Inner {
         epoch: Instant::now(),
         active: AtomicBool::new(false),
+        detailed: AtomicBool::new(false),
         screenshots: AtomicBool::new(false),
         state: Mutex::new(State {
           next_session: 1,
@@ -294,6 +304,7 @@ impl ProfilingHandle {
         size_bytes: 0,
         max_bytes: options.max_bytes,
         stopped_at_limit: None,
+        detailed: options.detailed,
         screenshot_options: options.screenshots,
         screenshots: Vec::new(),
         screenshot_bytes: 0,
@@ -316,19 +327,20 @@ impl ProfilingHandle {
     let id = SessionId(state.next_session);
     state.next_session = state.next_session.checked_add(1).ok_or(ProfileError::SessionLimit)?;
     let started = Instant::now();
-    state.sessions.insert(
-      id,
-      Session {
-        started,
-        options,
-        samples,
-        completed: 0,
-        dropped: 0,
-        excluded: 0,
-        #[cfg(feature = "perf_profile")]
-        application: ApplicationSession::default(),
-      },
-    );
+    let session = Session {
+      started,
+      options,
+      samples,
+      completed: 0,
+      dropped: 0,
+      excluded: 0,
+      #[cfg(feature = "perf_profile")]
+      application: ApplicationSession::default(),
+    };
+    if session.detailed() {
+      detail::recording_started();
+    }
+    state.sessions.insert(id, session);
     self.update_active(&state);
     Ok(SessionStarted {
       id,
@@ -374,6 +386,7 @@ impl ProfilingHandle {
         size_bytes: recording.size_bytes,
         stopped_at_limit: recording.stopped_at_limit.is_some(),
         stopped_ms: recording.stopped_at_limit.map(|stopped| self.millis(stopped)),
+        detailed: recording.detailed,
         screenshots: recording.screenshots.len() as u64,
         screenshot_bytes: recording.screenshot_bytes,
       }),
@@ -394,19 +407,28 @@ impl ProfilingHandle {
       state.ended.pop_front();
     }
     self.update_active(&state);
+    if session.detailed() {
+      detail::recording_ended();
+    }
     Ok(report)
   }
 
   /// Passes are captured (spans kept, samples made) only while a session
-  /// takes samples; a recording stopped at its limit takes none. Frames are
+  /// takes samples; a recording stopped at its limit takes none. Detailed
+  /// data is captured while a detailed recording takes them, and frames are
   /// read back only while one of them takes screenshots.
   fn update_active(&self, state: &State) {
     let active = state.sessions.values().any(Session::receiving);
+    let detailed = state
+      .sessions
+      .values()
+      .any(|session| session.receiving() && session.detailed());
     let screenshots = state
       .sessions
       .values()
       .any(|session| session.screenshot_options().is_some());
     self.inner.active.store(active, Ordering::Release);
+    self.inner.detailed.store(detailed, Ordering::Release);
     self.inner.screenshots.store(screenshots, Ordering::Release);
   }
 
@@ -849,6 +871,18 @@ impl ProfilingHandle {
   }
 }
 
+impl Drop for Inner {
+  fn drop(&mut self) {
+    // A detailed recording never ended stops keeping notifications with its collector.
+    let state = self.state.get_mut().unwrap_or_else(|error| error.into_inner());
+    for session in state.sessions.values() {
+      if session.detailed() {
+        detail::recording_ended();
+      }
+    }
+  }
+}
+
 /// Newest samples of a session searched for the pass a GPU result belongs to;
 /// a result later than this many samples is dropped, its pass left without.
 const GPU_MATCH_WINDOW: usize = 512;
@@ -893,14 +927,18 @@ fn missing(state: &State, id: SessionId) -> ProfileError {
 /// What keeping `sample` costs a recording: the shared sample with its Arc
 /// counts, its heap parts and the session's pointer to it.
 pub(super) fn retained_bytes(sample: &ProfileSample) -> u64 {
-  let spans = match &sample.data {
-    SampleData::Pass(pass) => pass.spans.capacity() * std::mem::size_of::<PhaseSpan>(),
-    SampleData::UiUpdate(_) | SampleData::InputDispatch(_) => 0,
+  let parts = match &sample.data {
+    SampleData::Pass(pass) => {
+      pass.spans.capacity() * std::mem::size_of::<PhaseSpan>()
+        + pass.component_layouts.capacity() * std::mem::size_of::<ComponentLayouts>()
+    }
+    SampleData::UiUpdate(update) => update.causes.capacity() * std::mem::size_of::<RenderCause>(),
+    SampleData::InputDispatch(_) => 0,
   };
   let bytes = 2 * std::mem::size_of::<usize>()
     + std::mem::size_of::<ProfileSample>()
     + sample.window.capacity()
-    + spans
+    + parts
     + std::mem::size_of::<Arc<ProfileSample>>();
   u64::try_from(bytes).unwrap_or(u64::MAX)
 }
