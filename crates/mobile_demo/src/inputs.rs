@@ -4,7 +4,7 @@
 
 use lurq::{
   app::{component::Component, ctx::Ctx, events::KeyboardEvent},
-  components::{Column, KeyboardKind, ReturnKey, ScrollVertical, Spacer, TextInput},
+  components::{Column, ContentKind, KeyboardKind, ReturnKey, ScrollVertical, Spacer, TextInput},
   core::Signal,
   layout::text_style::{FontWeight, TextStyle},
   node::{Element, color::Color},
@@ -72,11 +72,12 @@ impl Component for InputsScreen {
           .return_key(ReturnKey::Next),
       ))
       .child(field(
-        "Code: digits only",
+        "Code: digits only, and the code from a message",
         TextInput::new(self.code.clone())
           .placeholder("000000")
           .single_line()
-          .keyboard(KeyboardKind::Number),
+          .keyboard(KeyboardKind::Number)
+          .content(ContentKind::OneTimeCode),
       ))
       .child(field("Several lines", TextInput::new(self.notes.clone()).textarea().rows(3, 6)))
       .child(card(
