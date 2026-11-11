@@ -1373,6 +1373,43 @@ impl Ctx {
     self.component_name = name;
   }
 
+  /// The `std::any::type_name` of this context's component.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn component_name(&self) -> &'static str {
+    self.component_name
+  }
+
+  /// What a notification from `source` runs for this component: marks it
+  /// dirty and, while a detailed recording runs, notes `source` as a cause of
+  /// its next render.
+  fn dirty_notifier(
+    &self,
+    #[cfg(feature = "perf_profile")] source: crate::app::profiler::RenderSource,
+  ) -> impl Fn() + Send + Sync + 'static {
+    let dirty = self.dirty.clone();
+    let subtree_dirty = self.subtree_dirty.clone();
+    let ancestor_dirty_slots = self.ancestor_dirty_slots.clone();
+    let batch = self.batch.clone();
+    #[cfg(feature = "perf_profile")]
+    let component = self.component_name;
+    move || {
+      #[cfg(feature = "perf_profile")]
+      crate::app::profiler::detail::note(&dirty, component, source);
+      Self::mark_dirty_targets(&batch, &dirty, &subtree_dirty, &ancestor_dirty_slots);
+    }
+  }
+
+  /// In an update a detailed recording records, the span of this
+  /// component's render, with its causes noted: the notifications it got and
+  /// `trigger()`, the reason its parent rendered it, if any. None otherwise.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn render_span(
+    &self,
+    trigger: impl FnOnce() -> Option<crate::app::profiler::RenderTrigger>,
+  ) -> Option<crate::app::profiler::detail::ComponentSpan> {
+    crate::app::profiler::detail::component_render(&self.dirty, self.component_name, trigger)
+  }
+
   #[cfg(feature = "devtools")]
   pub(crate) fn set_root_props<T: Send + PartialEq + DevtoolsInspectable + 'static>(&mut self, props: T) {
     self.set_props(props);
@@ -1449,13 +1486,9 @@ impl Ctx {
     let debug_handle = sig.subscribe_debug(move |value| {
       update_debug_value_history(&debug_value, &debug_history, format_debug_value(value));
     });
-    let dirty = self.dirty.clone();
-    let subtree_dirty = self.subtree_dirty.clone();
-    let ancestor_dirty_slots = self.ancestor_dirty_slots.clone();
-    let batch = self.batch.clone();
-    let handle = sig.watch(move || {
-      Self::mark_dirty_targets(&batch, &dirty, &subtree_dirty, &ancestor_dirty_slots);
-    });
+    let handle = sig.watch(self.dirty_notifier(crate::app::profiler::detail::source_of::<T>(
+      crate::app::profiler::RenderTrigger::Signal,
+    )));
     self.watch_handles.push(Box::new(debug_handle));
     self.watch_handles.push(Box::new(handle));
     sig
@@ -1464,13 +1497,10 @@ impl Ctx {
   #[cfg(not(feature = "devtools"))]
   pub fn signal<T: SignalValue + Send + Sync + 'static>(&mut self, initial: T) -> Signal<T> {
     let sig = Signal::new(initial);
-    let dirty = self.dirty.clone();
-    let subtree_dirty = self.subtree_dirty.clone();
-    let ancestor_dirty_slots = self.ancestor_dirty_slots.clone();
-    let batch = self.batch.clone();
-    let handle = sig.watch(move || {
-      Self::mark_dirty_targets(&batch, &dirty, &subtree_dirty, &ancestor_dirty_slots);
-    });
+    let handle = sig.watch(self.dirty_notifier(
+      #[cfg(feature = "perf_profile")]
+      crate::app::profiler::detail::source_of::<T>(crate::app::profiler::RenderTrigger::Signal),
+    ));
     self.watch_handles.push(Box::new(handle));
     sig
   }
@@ -1530,15 +1560,15 @@ impl Ctx {
 
   #[cfg(feature = "form")]
   pub fn form(&mut self, options: crate::components::FormOptions) -> crate::components::FormHandle {
-    let dirty = self.dirty.clone();
-    let subtree_dirty = self.subtree_dirty.clone();
-    let ancestor_dirty_slots = self.ancestor_dirty_slots.clone();
-    let batch = self.batch.clone();
     crate::components::FormHandle::with_dirty(
       options,
-      Arc::new(move || {
-        Self::mark_dirty_targets(&batch, &dirty, &subtree_dirty, &ancestor_dirty_slots);
-      }),
+      Arc::new(self.dirty_notifier(
+        #[cfg(feature = "perf_profile")]
+        crate::app::profiler::RenderSource {
+          trigger: crate::app::profiler::RenderTrigger::Form,
+          value_type: None,
+        },
+      )),
     )
   }
 
@@ -1704,13 +1734,10 @@ impl Ctx {
 
   pub fn store<T: SignalValue + Clone + Send + Sync + 'static>(&mut self, initial: T) -> Store<T> {
     let store = Store::new(initial);
-    let dirty = self.dirty.clone();
-    let subtree_dirty = self.subtree_dirty.clone();
-    let ancestor_dirty_slots = self.ancestor_dirty_slots.clone();
-    let batch = self.batch.clone();
-    let handle = store.signal().watch(move || {
-      Self::mark_dirty_targets(&batch, &dirty, &subtree_dirty, &ancestor_dirty_slots);
-    });
+    let handle = store.signal().watch(self.dirty_notifier(
+      #[cfg(feature = "perf_profile")]
+      crate::app::profiler::detail::source_of::<T>(crate::app::profiler::RenderTrigger::Store),
+    ));
     self.watch_handles.push(Box::new(handle));
     store
   }
@@ -1813,13 +1840,10 @@ impl Ctx {
     );
     let ctx = ReactiveContext::new(value);
     self.store_context(ctx.clone());
-    let dirty = self.dirty.clone();
-    let subtree_dirty = self.subtree_dirty.clone();
-    let ancestor_dirty_slots = self.ancestor_dirty_slots.clone();
-    let batch = self.batch.clone();
-    ctx.subscribe(move || {
-      Self::mark_dirty_targets(&batch, &dirty, &subtree_dirty, &ancestor_dirty_slots);
-    });
+    ctx.subscribe(self.dirty_notifier(
+      #[cfg(feature = "perf_profile")]
+      crate::app::profiler::detail::source_of::<T>(crate::app::profiler::RenderTrigger::Context),
+    ));
     ctx
   }
 
@@ -1831,13 +1855,10 @@ impl Ctx {
     );
     self.note_context_read(TypeId::of::<ReactiveContext<T>>());
     let ctx = self.context_map.get::<ReactiveContext<T>>()?;
-    let dirty = self.dirty.clone();
-    let subtree_dirty = self.subtree_dirty.clone();
-    let ancestor_dirty_slots = self.ancestor_dirty_slots.clone();
-    let batch = self.batch.clone();
-    ctx.subscribe(move || {
-      Self::mark_dirty_targets(&batch, &dirty, &subtree_dirty, &ancestor_dirty_slots);
-    });
+    ctx.subscribe(self.dirty_notifier(
+      #[cfg(feature = "perf_profile")]
+      crate::app::profiler::detail::source_of::<T>(crate::app::profiler::RenderTrigger::Context),
+    ));
     Some(ctx)
   }
 
@@ -1896,6 +1917,15 @@ impl Ctx {
       if for_each_item {
         render_again = true;
       } else {
+        #[cfg(feature = "perf_profile")]
+        crate::app::profiler::detail::note(
+          &slot.ctx.dirty,
+          slot.ctx.component_name,
+          crate::app::profiler::RenderSource {
+            trigger: crate::app::profiler::RenderTrigger::Context,
+            value_type: None,
+          },
+        );
         slot.ctx.mark_dirty();
       }
     }
@@ -2289,6 +2319,10 @@ impl Ctx {
       }
 
       slot.offstage = false;
+      #[cfg(feature = "perf_profile")]
+      let resumed = slot.rendered.is_none() || slot.offstage_dirty;
+      #[cfg(feature = "perf_profile")]
+      let mut context_changed = inherited == Inherited::Changed;
       let mut needs_render = has_slot_children
         || props_changed
         || inherited == Inherited::Changed
@@ -2298,8 +2332,27 @@ impl Ctx {
       slot.offstage_dirty = false;
       if !needs_render && inherited == Inherited::Refreshed && slot.ctx.propagate_contexts() {
         needs_render = true;
+        #[cfg(feature = "perf_profile")]
+        {
+          context_changed = true;
+        }
       }
       if needs_render {
+        #[cfg(feature = "perf_profile")]
+        let _span = slot.ctx.render_span(|| {
+          use crate::app::profiler::RenderTrigger;
+          if resumed {
+            Some(RenderTrigger::Mount)
+          } else if props_changed {
+            Some(RenderTrigger::Props)
+          } else if context_changed {
+            Some(RenderTrigger::Context)
+          } else if has_slot_children {
+            Some(RenderTrigger::SlotChildren)
+          } else {
+            None
+          }
+        });
         // Carry runtime state over from the previous render, as a dirty
         // refresh does, so `rendered` keeps sharing the live scroll states
         // with the active tree. A slot resuming from offstage has no node in
@@ -2356,6 +2409,11 @@ impl Ctx {
     child_ctx.set_props(props);
     child_ctx.scope_id = slot_id;
     child_ctx.component_name = type_name;
+    // A first mount's span takes in `create` too.
+    #[cfg(feature = "perf_profile")]
+    let _span = active
+      .then(|| child_ctx.render_span(|| Some(crate::app::profiler::RenderTrigger::Mount)))
+      .flatten();
     let component = C::create(&mut child_ctx);
     let wrapper = ComponentWrapper { component };
     let mut element = Element::new();
@@ -2445,6 +2503,7 @@ impl Ctx {
       }
       group_ctx.inherit_contexts(&self.context_map);
       group_ctx.scope_id = slot_id;
+      group_ctx.component_name = ForEachSlot::TYPE_NAME;
       let slot = ChildSlot {
         id: slot_id,
         key: None,
@@ -2500,6 +2559,10 @@ impl Ctx {
     if can_reuse {
       let slot = &mut self.children[cursor];
       slot.ctx.inherit_contexts(&self.context_map);
+      #[cfg(feature = "perf_profile")]
+      let _span = slot
+        .ctx
+        .render_span(|| Some(crate::app::profiler::RenderTrigger::ListItem));
       slot.ctx.begin_render();
       let mut element = component_fn(&mut slot.ctx, item);
       slot.ctx.end_render();
@@ -2539,6 +2602,9 @@ impl Ctx {
     }
     child_ctx.inherit_contexts(&self.context_map);
     child_ctx.scope_id = slot_id;
+    child_ctx.component_name = ForEachSlot::TYPE_NAME;
+    #[cfg(feature = "perf_profile")]
+    let _span = child_ctx.render_span(|| Some(crate::app::profiler::RenderTrigger::Mount));
     child_ctx.begin_render();
     let mut element = component_fn(&mut child_ctx, item);
     child_ctx.end_render();
@@ -2673,23 +2739,18 @@ impl Ctx {
       self.context_map.set_revision(previous.revision());
     }
     let deps = tracking::stop_tracking();
-    let dirty = self.dirty.clone();
-    let subtree_dirty = self.subtree_dirty.clone();
-    let ancestor_dirty_slots = self.ancestor_dirty_slots.clone();
-    let batch = self.batch.clone();
-    self.render_watch_handles = deps
+    let handles = deps
       .into_iter()
       .map(|dep| {
-        let dirty = dirty.clone();
-        let subtree_dirty = subtree_dirty.clone();
-        let ancestor_dirty_slots = ancestor_dirty_slots.clone();
-        let batch = batch.clone();
-        let handle = (dep.subscribe_fn)(Arc::new(move || {
-          Self::mark_dirty_targets(&batch, &dirty, &subtree_dirty, &ancestor_dirty_slots);
-        }));
+        let notifier = self.dirty_notifier(
+          #[cfg(feature = "perf_profile")]
+          dep.source,
+        );
+        let handle = (dep.subscribe_fn)(Arc::new(notifier));
         Box::new(handle) as Box<dyn Any + Send + Sync>
       })
       .collect();
+    self.render_watch_handles = handles;
   }
 
   pub(crate) fn any_dirty(&self) -> bool {
@@ -2700,6 +2761,17 @@ impl Ctx {
     for slot in self.children.iter().filter(|slot| !slot.offstage) {
       slot.component.after_layout();
       slot.ctx.after_layout_recursive();
+    }
+  }
+
+  /// [`Self::after_layout_recursive`] in a pass a detailed recording takes:
+  /// each component's span holds its hook and its descendants' spans.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn after_layout_recursive_spans(&self, spans: &crate::app::profiler::detail::HookSpans) {
+    for slot in self.children.iter().filter(|slot| !slot.offstage) {
+      let _span = spans.enter(slot.component.type_name());
+      slot.component.after_layout();
+      slot.ctx.after_layout_recursive_spans(spans);
     }
   }
 
@@ -2818,6 +2890,8 @@ impl Ctx {
       }
 
       if slot.ctx.is_dirty() {
+        #[cfg(feature = "perf_profile")]
+        let _span = slot.ctx.render_span(|| None);
         let old_rendered = slot.rendered.take();
         slot.ctx.begin_render();
         let mut element = slot.component.render(&mut slot.ctx);

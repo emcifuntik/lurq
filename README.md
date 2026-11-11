@@ -40,7 +40,7 @@ Useful optional features:
 | `devtools` | In-app DevTools window |
 | `mcp` | Embeddable MCP server for AI agents to drive and inspect a running app |
 | `screenshot` | Capture the next fully composed window frame to PNG; enabled automatically by `devtools` |
-| `perf_profile` | Frame timing and memory counters, including `Tree::last_profile` |
+| `perf_profile` | Frame timing and memory counters, including `Tree::last_profile`; enabled automatically by `devtools` |
 
 ## Example
 

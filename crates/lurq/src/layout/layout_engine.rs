@@ -593,6 +593,20 @@ impl LayoutEngine {
     *self.theme_seen.borrow_mut() = Some((theme.clone(), version));
   }
 
+  /// Counts, from now until [`Self::take_component_layouts`], the nodes the
+  /// computes lay out from scratch per nearest component and reason (a pass
+  /// of a detailed profiling recording).
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn count_component_layouts(&mut self) {
+    self.trace.start_counting();
+  }
+
+  /// The counts since [`Self::count_component_layouts`], which stops.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn take_component_layouts(&mut self) -> layout_trace::ComponentLayoutCounts {
+    self.trace.take_counts()
+  }
+
   /// Lays `node` out under the theme of the last [`Self::set_theme`] (the
   /// defaults before any).
   pub(crate) fn compute(

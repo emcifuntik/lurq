@@ -75,19 +75,24 @@ impl FramePacing {
     let Some(changes_at) = changes_at else {
       return;
     };
-    let refresh = match self.refresh {
+    let refresh = self.refresh_interval(refresh, now);
+    let next_frame_at = frame_due(changes_at, self.last_frame, refresh);
+    if now >= next_frame_at {
+      tree.request_redraw();
+    } else {
+      tree.request_redraw_at(next_frame_at);
+    }
+  }
+
+  /// The display's refresh interval, read with `refresh` at most once a second.
+  pub(super) fn refresh_interval(&mut self, refresh: impl FnOnce() -> Duration, now: Instant) -> Duration {
+    match self.refresh {
       Some((interval, read_at)) if now.duration_since(read_at) < REFRESH_RECHECK => interval,
       _ => {
         let interval = refresh();
         self.refresh = Some((interval, now));
         interval
       }
-    };
-    let next_frame_at = frame_due(changes_at, self.last_frame, refresh);
-    if now >= next_frame_at {
-      tree.request_redraw();
-    } else {
-      tree.request_redraw_at(next_frame_at);
     }
   }
 }

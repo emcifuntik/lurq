@@ -151,6 +151,7 @@ pub(crate) fn icon(name: &str, size: f32, color: &str) -> Text {
     "arrow-right" => '\u{e04b}',
     "box" => '\u{e061}',
     "bug" => '\u{e20c}',
+    "image" => '\u{e0f6}',
     "chevron-down" => '\u{e06d}',
     "chevron-right" => '\u{e06f}',
     "circle" => '\u{e083}',

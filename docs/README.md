@@ -35,7 +35,7 @@ Ignored Rustdoc examples are not validated by `cargo test --doc`; guide fragment
 - Release checks and publishing: [publish workflow](../.github/workflows/publish-crates.yml).
 - Deployment: [docs workflow](../.github/workflows/deploy-docs.yml).
 
-When releasing, update installation snippets in the README and guides together. `devtools` and `perf_profile` are independent features; desktop examples must select a render engine explicitly.
+When releasing, update installation snippets in the README and guides together. `devtools` enables `perf_profile` (and `screenshot`); desktop examples must select a render engine explicitly.
 
 ## Historical material
 

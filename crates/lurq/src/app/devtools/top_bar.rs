@@ -1,6 +1,6 @@
 use super::{
   DevToolsBoolCallback, DevToolsDebugOverlayCallback, DevToolsPathCallback, DevToolsTab,
-  debug_overlay_path_for_selection, profiler, signals,
+  debug_overlay_path_for_selection, signals,
   style::{
     BORDER, FILL, MUTED, PRIMARY, SELECTED, SURFACE, SURFACE_2, TEXT, badge, icon, text, toolbar_button, toolbar_input,
     toolbar_search_input,
@@ -28,11 +28,6 @@ pub(crate) fn top_bar(
   on_save_node_screenshot: Option<DevToolsPathCallback>,
   active_tab: DevToolsTab,
   active_tab_signal: Signal<DevToolsTab>,
-  profiler_recording: bool,
-  profiler_recording_signal: Signal<bool>,
-  profiler_commits_signal: Signal<Vec<profiler::ProfilerCommitSnapshot>>,
-  profiler_selected_commit_signal: Signal<usize>,
-  profiler_last_recorded_signature_signal: Signal<u64>,
   signals_recording: bool,
   signals_recording_store: Store<signals::SignalsRecordingState>,
 ) -> Element {
@@ -71,13 +66,8 @@ pub(crate) fn top_bar(
     ))
     .child(Spacer::new().flex(1.0))
     .child(match active_tab {
-      DevToolsTab::Profiler => profiler_actions(
-        profiler_recording,
-        profiler_recording_signal,
-        profiler_commits_signal,
-        profiler_selected_commit_signal,
-        profiler_last_recorded_signature_signal,
-      ),
+      // The Profiler tab draws its actions in a toolbar of its own.
+      DevToolsTab::Profiler => Row::new().align_items(Alignment::Center).into(),
       DevToolsTab::Signals => signals_actions(signals_recording, signals_recording_store),
       #[cfg(feature = "persistent_storage")]
       DevToolsTab::PersistentStorage => Row::new().align_items(Alignment::Center).into(),
@@ -153,38 +143,6 @@ fn signals_actions(recording: bool, recording_store: Store<signals::SignalsRecor
       }),
     )
     .child(toolbar_input("Filter signals...", None))
-    .into()
-}
-
-fn profiler_actions(
-  recording: bool,
-  recording_signal: Signal<bool>,
-  commits_signal: Signal<Vec<profiler::ProfilerCommitSnapshot>>,
-  selected_commit_signal: Signal<usize>,
-  last_recorded_signature_signal: Signal<u64>,
-) -> Element {
-  let color = if recording { "#ef4444" } else { PRIMARY };
-  let label = if recording { "Recording..." } else { "Start recording" };
-  Row::new()
-    .align_items(Alignment::Center)
-    .spacing(8.0)
-    .child(
-      toolbar_button(
-        "circle",
-        label,
-        color,
-        if recording { "#ef444420" } else { SURFACE_2 },
-        if recording { "#ef444460" } else { BORDER },
-      )
-      .on_click(move |_| recording_signal.set(!recording)),
-    )
-    .child(
-      toolbar_button("trash-2", "Clear", MUTED, SURFACE_2, BORDER).on_click(move |_| {
-        commits_signal.set(Vec::new());
-        selected_commit_signal.set(0);
-        last_recorded_signature_signal.set(profiler::EMPTY_FRAME_SIGNATURE);
-      }),
-    )
     .into()
 }
 

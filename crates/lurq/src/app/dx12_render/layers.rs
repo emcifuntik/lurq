@@ -479,6 +479,10 @@ impl Dx12State {
     self
       .command_list
       .DrawIndexedInstanced(crate::render::gpu::QuadVertex::INDICES.len() as u32, 1, 0, 0, 0);
+    #[cfg(feature = "perf_profile")]
+    {
+      self.draw_calls += 1;
+    }
     Ok(())
   }
 }

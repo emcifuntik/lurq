@@ -43,6 +43,8 @@ impl Renderer {
       back.image.texture.height(),
     );
     let mut encoder = device.create_command_encoder(&Default::default());
+    #[cfg(feature = "perf_profile")]
+    gpu_timing::begin_canvas(&mut self.gpu_marks, &mut encoder);
     encoder.copy_texture_to_texture(
       back.image.texture.as_image_copy(),
       image.texture.as_image_copy(),
@@ -52,6 +54,8 @@ impl Renderer {
         depth_or_array_layers: 1,
       },
     );
+    #[cfg(feature = "perf_profile")]
+    gpu_timing::end_canvas(&mut self.gpu_marks, &mut encoder);
     queue.submit([encoder.finish()]);
     if let Some(old) = back.artwork.replace(std::sync::Arc::new(Artwork { image })) {
       self.retired_artwork.push(ArtworkLease {
@@ -92,6 +96,8 @@ impl Renderer {
         .unwrap(),
     );
     let mut encoder = device.create_command_encoder(&Default::default());
+    #[cfg(feature = "perf_profile")]
+    gpu_timing::begin_canvas(&mut self.gpu_marks, &mut encoder);
     {
       let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
         label: Some("canvas retained artwork"),
@@ -112,6 +118,8 @@ impl Renderer {
       pass.set_vertex_buffer(0, vertices.slice(..));
       pass.draw(0..6, 0..1);
     }
+    #[cfg(feature = "perf_profile")]
+    gpu_timing::end_canvas(&mut self.gpu_marks, &mut encoder);
     canvas.presentation_event(PresentationEvent::Quad);
     queue.submit([encoder.finish()]);
   }

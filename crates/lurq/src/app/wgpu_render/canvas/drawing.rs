@@ -76,6 +76,8 @@ impl Renderer {
       drop(_asset_phase);
     }
     let mut encoder = device.create_command_encoder(&Default::default());
+    #[cfg(feature = "perf_profile")]
+    gpu_timing::begin_canvas(&mut self.gpu_marks, &mut encoder);
     if prepared.clear {
       let _pass = encoder.begin_render_pass(&RenderPassDescriptor {
         label: Some("canvas clear"),
@@ -290,6 +292,8 @@ impl Renderer {
         );
       }
     }
+    #[cfg(feature = "perf_profile")]
+    gpu_timing::end_canvas(&mut self.gpu_marks, &mut encoder);
     let _submit_start = profile_scope!();
     #[cfg(feature = "perf_profile")]
     let _submit_phase = self

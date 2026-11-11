@@ -34,8 +34,12 @@ dx12 = ["render"]
 winit = ["dep:winit"]
 resources = ["dep:ureq"]
 screenshot = ["dep:image"]
-devtools = ["screenshot", "dep:rfd"]
+# `serde_json` writes and reads the Profiler tab's recording files.
+devtools = ["screenshot", "dep:rfd", "dep:serde_json", "perf_profile"]
 perf_profile = []
+# `lurq::app::profiler::CountingAllocator`, a global allocator wrapper the
+# application installs so profiling sessions report allocations per frame.
+counting_allocator = ["perf_profile"]
 router = []
 # Embeddable MCP server: lets an AI agent drive and inspect a running lurq app
 # (screenshot, read the element tree, click/type, navigate). Off by default;
@@ -82,7 +86,8 @@ usvg = { version = "0.45", optional = true }
 lyon = { version = "1", optional = true }
 tiny-skia = { version = "0.11", optional = true, default-features = false, features = ["std", "simd"] }
 ureq = { version = "3.3.0", optional = true }
-serde_json = { version = "1", optional = true }
+# `float_roundtrip` reads back every f64 a recording file holds exactly.
+serde_json = { version = "1", optional = true, features = ["float_roundtrip"] }
 tokio = { version = "1.52.3", optional = true, features = ["rt", "rt-multi-thread", "sync"] }
 tracing.workspace = true
 lurq_macros = { version = "0.1.2", path = "../lurq_macros" }
@@ -152,6 +157,10 @@ windows = { version = "0.62.2", features = ["Win32_Graphics_Gdi"] }
 name = "resources_tests"
 required-features = ["resources"]
 
+[[test]]
+name = "counting_allocator"
+required-features = ["counting_allocator"]
+
 [[example]]
 name = "dx12_capture_check"
 required-features = ["screenshot", "dx12"]
@@ -200,6 +209,10 @@ required-features = ["winit", "dx12", "perf_profile"]
 name = "dx12_glyph_atlas_probe"
 required-features = ["screenshot", "dx12", "perf_profile"]
 
+[[example]]
+name = "counting_allocator"
+required-features = ["counting_allocator"]
+
 [[bench]]
 name = "layout"
 harness = false
@@ -222,6 +235,15 @@ harness = false
 [[bench]]
 name = "component_refresh"
 harness = false
+
+[[bench]]
+name = "profiler_idle"
+harness = false
+
+[[bench]]
+name = "counting_allocator"
+harness = false
+required-features = ["counting_allocator"]
 
 
 [[bench]]
