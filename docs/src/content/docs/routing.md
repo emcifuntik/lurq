@@ -151,9 +151,20 @@ A screen says what the bar shows for it by calling `ctx.navigation_item` in its 
 | `trailing(element)` | What is at the bar's trailing end while this screen is on top |
 | `title_view(element)` | What stands in the middle of the bar in place of the title |
 | `bar_hidden(true)` | No bar over this screen: it reaches the top of the outlet, under the status bar |
+| `large_title(true)` | The title large at the top of the content, scrolling away with it |
 
 The way back says the title of the screen under while there is room for it beside the top screen's title, and
 `Back` when there is not.
+
+A screen with a large title puts its content in `StackOutlet::large_title_scroll(ctx, content)`, which draws
+the title over the content and scrolls the two as one. While the large title is in view the bar shows no title
+and no color of its own; when the title has scrolled away the bar's title and color come in.
+`StackOutlet::screen_scroll(ctx)` gives that list's `ScrollState`.
+
+```rust
+ctx.navigation_item(NavigationItem::new("Inbox").large_title(true));
+StackOutlet::large_title_scroll(ctx, messages)
+```
 
 For a bar that is the app's own altogether, give the outlet a builder with `StackOutletProps::bar_with`. It
 is called with the state of the stack and returns the bar, which the outlet puts across its top:

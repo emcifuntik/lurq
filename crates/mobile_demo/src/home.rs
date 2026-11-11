@@ -2,7 +2,7 @@
 
 use lurq::{
   app::ctx::Ctx,
-  components::{Column, Link, Row, ScrollVertical, Spacer},
+  components::{Column, Link, Row, Spacer, StackOutlet},
   layout::{Alignment, text_style::FontWeight},
   node::{Element, color::Color},
 };
@@ -64,7 +64,10 @@ pub(crate) fn home(ctx: &mut Ctx) -> Element {
   } else {
     format!("App events, the latest first: {}", said.join(", "))
   }));
-  ScrollVertical::new(list).flex(1.0).background(BG).into()
+  StackOutlet::large_title_scroll(ctx, list)
+    .flex(1.0)
+    .background(BG)
+    .into()
 }
 
 fn screen_row(ctx: &mut Ctx, screen: &Screen) -> Element {

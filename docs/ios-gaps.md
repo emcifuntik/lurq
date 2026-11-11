@@ -50,8 +50,10 @@ inside its input.
   it.
 - **The move** is a spring of 500 ms that starts at the finger's speed; the platform's own spring was not
   measured against it.
-- **The bar** is opaque and its content does not scroll under it; there is no large title, no search field
-  and no material.
+- **The bar** is opaque when it has a color: content does not show through it, since the renderer has no
+  blur to make the platform's material with. There is no search field in it.
+- **A large title** scrolls away with the content and the bar's title comes in after it; the platform also
+  shrinks the large title into the small one, and stretches it when the content is pulled down.
 - **A way back with no room even for `Back`** keeps the word; the platform leaves the arrow alone.
 - **Sheets:** a screen that comes up from the bottom over the stack, with its detents and the drag that
   puts it away. Not there.

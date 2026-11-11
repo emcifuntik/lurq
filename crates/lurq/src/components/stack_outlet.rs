@@ -15,7 +15,14 @@
 //! with the title of the screen under it. A screen says what the bar shows with
 //! [`Ctx::navigation_item`](crate::app::ctx::Ctx::navigation_item). The titles move with the screens.
 
-use std::{any::Any, sync::Arc, time::Duration};
+use std::{
+  any::Any,
+  sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+  },
+  time::Duration,
+};
 
 use parking_lot::Mutex;
 
@@ -28,11 +35,11 @@ use crate::{
     events::{EdgePanEvent, GesturePhase, ScreenEdge},
     window::SafeAreaInsets,
   },
-  components::{Column, Row, Stack, Text},
+  components::{Column, Row, ScrollVertical, Stack, Text},
   core::{ElementRef, Signal},
   layout::{
     Alignment,
-    layout_kind::Justify,
+    layout_kind::{Justify, ScrollState},
     text_style::{FontWeight, TextStyle},
   },
   node::{Element, color::Color, dimension::Dimension, transform::Transform2D},
@@ -61,6 +68,11 @@ const BACK_SPEED: f32 = 500.0;
 const NO_DRAG: f32 = -1.0;
 /// The bar's height, and its height in a window too low for that: a phone held on its side.
 const BAR_HEIGHT: f32 = 44.0;
+/// A large title: its size, the space around it, and how long the bar's own title takes to come and go.
+const LARGE_TITLE_SIZE: f32 = 34.0;
+const LARGE_TITLE_HEIGHT: f32 = 52.0;
+const LARGE_TITLE_INSET: f32 = 16.0;
+const TITLE_FADE: Duration = Duration::from_millis(200);
 const LOW_BAR_HEIGHT: f32 = 32.0;
 const LOW_WINDOW: f32 = 480.0;
 /// What the way back says when the title of the screen under has no room, or there is none.
@@ -151,6 +163,7 @@ pub struct NavigationItem {
   pub trailing: Option<Element>,
   pub title_view: Option<Element>,
   pub bar_hidden: bool,
+  pub large_title: bool,
 }
 
 impl NavigationItem {
@@ -163,6 +176,7 @@ impl NavigationItem {
       trailing: None,
       title_view: None,
       bar_hidden: false,
+      large_title: false,
     }
   }
 
@@ -207,6 +221,14 @@ impl NavigationItem {
     self
   }
 
+  /// Shows the title large, at the top of the screen's content, where it scrolls away with the content; the
+  /// bar's own title comes in once it has. The screen puts its content in
+  /// [`StackOutlet::large_title_scroll`], which draws the large title over it and scrolls the two.
+  pub fn large_title(mut self, large: bool) -> Self {
+    self.large_title = large;
+    self
+  }
+
   fn same_as(&self, other: &Self) -> bool {
     self.title == other.title
       && self.back_title == other.back_title
@@ -215,6 +237,7 @@ impl NavigationItem {
       && self.trailing.is_some() == other.trailing.is_some()
       && self.title_view.is_some() == other.title_view.is_some()
       && self.bar_hidden == other.bar_hidden
+      && self.large_title == other.large_title
   }
 }
 
@@ -224,6 +247,10 @@ pub(crate) struct NavigationSlot {
   item: Arc<Mutex<NavigationItem>>,
   /// The outlet reads this in its render, to be rendered again when an item changes.
   changed: Signal<u64>,
+  /// What scrolls the screen's content under a large title.
+  scroll: ScrollState,
+  /// The color the bar gives a title.
+  title_color: Option<Color>,
 }
 
 impl NavigationSlot {
@@ -345,7 +372,7 @@ struct Layer {
 }
 
 /// What a screen keeps of its part of the bar from one render to the next.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct LayerBar {
   item: Arc<Mutex<NavigationItem>>,
   /// The title as it is laid out in the bar, and the way back's whole label laid out unseen: how wide each is
@@ -354,6 +381,23 @@ struct LayerBar {
   back_probe: ElementRef,
   /// The label does not fit, and the way back says only that it goes back.
   short_back: bool,
+  /// What scrolls the screen's content under a large title, and whether that title has scrolled out of view
+  /// (`after_layout`).
+  scroll: ScrollState,
+  title_gone: Arc<AtomicBool>,
+}
+
+impl Default for LayerBar {
+  fn default() -> Self {
+    Self {
+      item: Arc::default(),
+      title: ElementRef::default(),
+      back_probe: ElementRef::default(),
+      short_back: false,
+      scroll: ScrollState::new(),
+      title_gone: Arc::default(),
+    }
+  }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -564,6 +608,11 @@ impl Component for StackOutlet {
           slot: NavigationSlot {
             item: layer.bar.item.clone(),
             changed: self.changed.clone(),
+            scroll: layer.bar.scroll.clone(),
+            title_color: match &props.bar {
+              Some(Bar::Standard(bar)) => Some(bar.title),
+              _ => None,
+            },
           },
         },
         id == front || id == back,
@@ -698,12 +747,16 @@ impl Component for StackOutlet {
       let back_label = index
         .checked_sub(1)
         .map(|under| back_label_of(&layers[under].bar.item.lock()));
+      // Taken and let go here: a lock taken inside the struct below would be held to its end.
+      let item = layer.bar.item.lock().clone();
+      let title_shown = !item.large_title || layer.bar.title_gone.load(Ordering::Acquire);
       Some(BarPart {
-        item: layer.bar.item.lock().clone(),
+        item,
         back_label,
         short_back: layer.bar.short_back,
         title: layer.bar.title.clone(),
         back_probe: layer.bar.back_probe.clone(),
+        title_shown,
       })
     };
     let (back_part, front_part) = (part_of(back), part_of(front));
@@ -711,6 +764,9 @@ impl Component for StackOutlet {
     // one such screen gives way to another.
     let shows = |part: &Option<BarPart>| part.as_ref().map(|part| if part.item.bar_hidden { 0.0 } else { 1.0 });
     let front_shows = shows(&front_part).unwrap_or(1.0);
+    // The line under the bar comes with the bar's title: over a large title still in view the bar is one
+    // with the content.
+    let lined = front_part.as_ref().is_none_or(|part| part.title_shown);
     let shown_share = front_shows * (1.0 - out) + shows(&back_part).unwrap_or(front_shows) * out;
     let mut items = Stack::new().width(FILL).height(bar_height);
     if let Some(part) = back_part {
@@ -753,11 +809,25 @@ impl Component for StackOutlet {
               .padding_top(safe_area.top)
               .padding_left(safe_area.left)
               .padding_right(safe_area.right)
-              .background(bar.background)
+              // Over a large title still in view the bar has no color of its own: it is one with what is
+              // behind the screens.
+              .background(if lined {
+                bar.background
+              } else {
+                Color::new(bar.background.r(), bar.background.g(), bar.background.b(), 0)
+              })
+              .transition(Transition::background_color().duration(TITLE_FADE))
               .child(items),
           ),
       )
-      .child(Row::new().width(FILL).height(0.5 * shown_share).background(bar.border))
+      .child(
+        Row::new()
+          .width(FILL)
+          .height(0.5 * shown_share)
+          .background(bar.border)
+          .opacity(if lined { 1.0 } else { 0.0 })
+          .transition(Transition::opacity().duration(TITLE_FADE)),
+      )
       .child(Column::new().width(FILL).flex(1.0).child(screens))
       .into()
   }
@@ -779,6 +849,12 @@ impl Component for StackOutlet {
       let room = (width - layer.bar.title.width()) / 2.0 - BACK_LEADING - BACK_GAP;
       let short = layer.bar.back_probe.width() > room;
       changed |= std::mem::replace(&mut layer.bar.short_back, short) != short;
+    }
+    // Whether each large title has scrolled out of view, all but its last few points: the bar's own title
+    // comes in then. Looked at after every layout, which every scroll ends in, however it was scrolled.
+    for layer in shown.layers.iter().chain(shown.leaving.iter()) {
+      let gone = layer.bar.scroll.scroll_y() > LARGE_TITLE_HEIGHT - 8.0;
+      changed |= layer.bar.title_gone.swap(gone, Ordering::AcqRel) != gone;
     }
     if changed {
       self.changed.update(|version| *version += 1);
@@ -803,6 +879,8 @@ struct BarPart {
   short_back: bool,
   title: ElementRef,
   back_probe: ElementRef,
+  /// The title is in the bar: always, but for a large title that is still in view in the content.
+  title_shown: bool,
 }
 
 /// One screen's part of the bar: its title in the middle, the way back before it and what the screen put at
@@ -838,7 +916,13 @@ fn bar_item(
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .pointer_events_none()
-    .child(Row::new().ref_element(part.title.clone()).child(middle))
+    .child(
+      Row::new()
+        .ref_element(part.title.clone())
+        .child(middle)
+        .opacity(if part.title_shown { 1.0 } else { 0.0 })
+        .transition(Transition::opacity().duration(TITLE_FADE)),
+    )
     .transform(Transform2D::translate(shift, 0.0))
     .transition(Transition::transform().duration(pace).easing(curve));
 
@@ -939,6 +1023,45 @@ fn chevron(color: Color) -> Element {
 }
 
 impl StackOutlet {
+  /// A screen's content under its large title ([`NavigationItem::large_title`]), the two scrolling as one: the
+  /// title goes up out of view with the content, and the bar's own title comes in when it has. Call it in the
+  /// screen's `render`, after `ctx.navigation_item`. Outside a stack, or for a screen whose item asks for no
+  /// large title, it is the content in a list that scrolls.
+  pub fn large_title_scroll(ctx: &mut Ctx, content: impl Into<Element>) -> ScrollVertical {
+    let Some(slot) = ctx.use_context::<NavigationSlot>() else {
+      return ScrollVertical::new(content.into());
+    };
+    let item = slot.item.lock().clone();
+    if !item.large_title {
+      return ScrollVertical::new(content.into()).with_scroll_state(slot.scroll.clone());
+    }
+    let title = Row::new()
+      .width(FILL)
+      .height(LARGE_TITLE_HEIGHT)
+      .align_items(Alignment::Center)
+      .padding_horizontal(LARGE_TITLE_INSET)
+      .child(
+        Text::styled(
+          &item.title,
+          TextStyle {
+            font_size: LARGE_TITLE_SIZE,
+            weight: FontWeight::Bold,
+            color: slot.title_color.unwrap_or(Color::from_hex("#000000")),
+            ..TextStyle::default()
+          },
+        )
+        .nowrap(),
+      );
+    ScrollVertical::new(Column::new().width(FILL).child(title).child(content.into()))
+      .with_scroll_state(slot.scroll.clone())
+  }
+
+  /// The state of the list [`large_title_scroll`](Self::large_title_scroll) makes for this screen, to set it
+  /// up or to scroll it; `None` outside a stack.
+  pub fn screen_scroll(ctx: &mut Ctx) -> Option<ScrollState> {
+    ctx.use_context::<NavigationSlot>().map(|slot| slot.scroll)
+  }
+
   /// A stack of screens with no bar.
   pub fn mount(ctx: &mut Ctx) -> Element {
     ctx.mount::<Self>(StackOutletProps::default())
