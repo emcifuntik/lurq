@@ -33,9 +33,10 @@ pub use application_model::{
 };
 pub use collector::ProfilingHandle;
 pub use model::{
-  BuildAvailability, CanvasTextProfile, InFlightObservation, InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS,
-  MAX_ENDED_SESSION_IDS, MAX_SAMPLES_PER_SESSION, MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassSample, Phase,
-  ProfileError, ProfileReport, ProfileSample, SampleData, SessionId, SessionOptions, SessionStarted, UiUpdateKind,
+  BuildAvailability, CanvasTextProfile, DEFAULT_RECORDING_MAX_BYTES, InFlightObservation, InputDispatchSample,
+  InputKind, MAX_ACTIVE_SESSIONS, MAX_ENDED_SESSION_IDS, MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS,
+  MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassSample, Phase, PhaseSpan, ProfileError, ProfileReport, ProfileSample,
+  RecordingOptions, RecordingStatus, SampleData, SessionId, SessionOptions, SessionStarted, UiUpdateKind,
   UiUpdateSample, WindowStatus,
 };
 pub use producer::{PhaseGuard, ProfileContext};

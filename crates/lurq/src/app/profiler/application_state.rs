@@ -143,7 +143,7 @@ impl ProfilingHandle {
     let live = state.application.live[slot].take().unwrap();
     let mut sample = None;
     for session in state.sessions.values_mut() {
-      if live.devtools && !session.options.include_devtools {
+      if (live.devtools && !session.options.include_devtools) || !session.receiving() {
         continue;
       }
       if live.started < session.started {

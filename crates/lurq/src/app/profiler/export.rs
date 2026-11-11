@@ -47,10 +47,20 @@ impl BuildAvailability {
 
 impl SessionStarted {
   pub fn to_json(&self) -> Value {
-    json!({ "schema_version": 1, "status": "recording", "id": format!("profile_{}", self.id.0),
+    // A recording's scopes are bounded only by the per-session scope limit.
+    let scope_limit = if self.recording_max_bytes.is_some() {
+      usize::MAX
+    } else {
+      self.max_samples
+    };
+    let mut value = json!({ "schema_version": 1, "status": "recording", "id": format!("profile_{}", self.id.0),
       "started_ms": self.started_ms, "max_samples": self.max_samples, "build": self.build.to_json(),
-      "application_scope_max_samples": self.max_samples.min(super::MAX_APPLICATION_SCOPES_PER_SESSION),
-      "boundary_policy": "whole_completed_operations", "requests_redraw": false })
+      "application_scope_max_samples": scope_limit.min(super::MAX_APPLICATION_SCOPES_PER_SESSION),
+      "boundary_policy": "whole_completed_operations", "requests_redraw": false });
+    if let Some(max_bytes) = self.recording_max_bytes {
+      value["recording"] = json!({ "max_bytes": max_bytes });
+    }
+    value
   }
 }
 
@@ -66,7 +76,7 @@ impl ProfileReport {
       "completed_samples"
     };
     let newest = self.samples.last().map(|sample| sample.completed_ms);
-    json!({
+    let mut value = json!({
       "schema_version": 1, "id": format!("profile_{}", self.id.0), "status": status,
       "finalized": self.finalized, "started_ms": self.started_ms, "ended_ms": self.ended_ms,
       "observed_ms": self.observed_ms, "time_origin": "collector_monotonic_epoch",
@@ -101,7 +111,16 @@ impl ProfileReport {
         "submit_present": "CPU API wall time, not GPU execution",
         "fps": "on-demand rendering; sample count/interval is not throughput or FPS"
       }
-    })
+    });
+    // Additive: a bounded session's export has no such key.
+    if let Some(recording) = self.recording {
+      value["max_samples"] = Value::Null;
+      value["recording"] = json!({
+        "max_bytes": recording.max_bytes, "size_bytes": recording.size_bytes,
+        "stopped_at_limit": recording.stopped_at_limit, "stopped_ms": recording.stopped_ms
+      });
+    }
+    value
   }
 }
 
@@ -119,7 +138,12 @@ fn sample_json(sample: &ProfileSample) -> Value {
           produced_bitmap_bytes)
       })),
       "frame": pass.frame.as_ref().map(|frame| frame_json(frame, pass.backend)),
-      "gpu_timing_ms": null
+      "gpu_timing_ms": null,
+      "spans": pass.spans.iter().map(|span| json!({
+        "phase": span.phase.name(), "depth": span.depth,
+        "start_ms": span.start_ns as f64 / 1e6, "end_ms": span.end_ns as f64 / 1e6
+      })).collect::<Vec<_>>(),
+      "dropped_spans": pass.dropped_spans
     }),
     SampleData::UiUpdate(update) => json!({
       "kind": "ui_update", "frame_id": update.frame_id,

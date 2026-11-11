@@ -1,22 +1,13 @@
 #![cfg_attr(not(feature = "perf_profile"), allow(dead_code))]
-#[cfg(all(
-  feature = "canvas",
-  any(
-    feature = "perf_profile",
-    feature = "wgpu",
-    all(feature = "dx12", target_os = "windows")
-  )
-))]
-use std::sync::atomic::Ordering;
 use std::{
-  sync::Arc,
+  sync::{Arc, atomic::Ordering},
   time::{Duration, Instant},
 };
 
 use super::{
   FrameProfile, ProfilingHandle,
   model::*,
-  phase_slot::{PhaseSlot, Published},
+  phase_slot::{Entered, PhaseSlot},
 };
 use crate::app::PassReport;
 
@@ -26,7 +17,7 @@ pub struct ProfileContext {
   handle: ProfilingHandle,
   window: Arc<str>,
   /// None when the collector does not track this window.
-  phase: Option<Arc<PhaseSlot>>,
+  pub(super) phase: Option<Arc<PhaseSlot>>,
   frame_id: Option<u64>,
 }
 
@@ -40,16 +31,17 @@ impl ProfileContext {
   pub(crate) fn canvas_text_scope(&self) -> super::canvas_text::PassScope {
     super::canvas_text::PassScope::new(self.capture_active())
   }
-  /// Publishes `phase` in the window's slot; takes no collector lock.
+  /// Publishes `phase` in the window's slot; takes no collector lock. In a
+  /// captured pass, its span is kept when the guard drops.
   pub fn phase(&self, phase: Phase) -> PhaseGuard {
-    let previous = self
+    let entered = self
       .phase
       .as_ref()
       .map(|slot| slot.enter(self.frame_id, phase))
       .unwrap_or_default();
     PhaseGuard {
       slot: self.phase.clone(),
-      previous,
+      entered,
     }
   }
 
@@ -144,13 +136,13 @@ impl Drop for UpdateGuard {
 
 pub struct PhaseGuard {
   slot: Option<Arc<PhaseSlot>>,
-  previous: Published,
+  entered: Entered,
 }
 
 impl Drop for PhaseGuard {
   fn drop(&mut self) {
     if let Some(slot) = &self.slot {
-      slot.restore(self.previous);
+      slot.exit(self.entered);
     }
   }
 }
@@ -163,6 +155,8 @@ pub(crate) struct WindowProfiler {
   component_after_layout: Duration,
   canvas_recording: Duration,
   canvas_preparation: Duration,
+  /// The pass guard's entry: the root of the pass's spans.
+  pass_entry: Entered,
 }
 
 impl WindowProfiler {
@@ -182,6 +176,7 @@ impl WindowProfiler {
       component_after_layout: Duration::ZERO,
       canvas_recording: Duration::ZERO,
       canvas_preparation: Duration::ZERO,
+      pass_entry: Entered::default(),
     }
   }
 
@@ -229,7 +224,12 @@ impl WindowProfiler {
     self.canvas_recording = Duration::ZERO;
     self.canvas_preparation = Duration::ZERO;
     self.context.frame_id = Some(frame_id);
-    (Instant::now(), self.context.phase(Phase::PassSetup))
+    if let Some(slot) = &self.context.phase {
+      slot.begin_spans(self.context.handle.inner.active.load(Ordering::Acquire));
+    }
+    let guard = self.context.phase(Phase::PassSetup);
+    self.pass_entry = guard.entered;
+    (Instant::now(), guard)
   }
 
   pub(crate) fn layout(&mut self, duration: Duration) {
@@ -254,6 +254,13 @@ impl WindowProfiler {
     backend: &'static str,
     frame: Option<&FrameProfile>,
   ) {
+    // Always stops the capture; the pass guard, still open, ends its root span here.
+    let (spans, dropped_spans) = self
+      .context
+      .phase
+      .as_ref()
+      .and_then(|slot| slot.finish_spans(self.pass_entry, report.required))
+      .unwrap_or_default();
     if report.required {
       self.context.handle.record(
         &self.context.window,
@@ -281,6 +288,8 @@ impl WindowProfiler {
           },
           backend,
           frame: frame.cloned(),
+          spans,
+          dropped_spans,
         }),
       );
     }

@@ -36,6 +36,30 @@ Window IDs are toolkit identities (`main`, `w1`, and hierarchical IDs for nested
 
 After the root tree closes, surviving handles may read/end existing sessions, but cannot start a new one. Unknown IDs and already-ended IDs error. The last 64 ended IDs are remembered; older IDs may be reported as unknown. MCP can only read/end sessions it started. Revoking Observe, disabling MCP or denying a profiling tool cancels MCP-owned sessions and discards their reports; in-process sessions continue. Regranting permission does not revive cancelled IDs. MCP shutdown cancels its own sessions.
 
+## Two session modes
+
+`start(SessionOptions)` starts a **bounded** session, the one described above and the only one MCP starts: at most `max_samples` samples, oldest dropped first.
+
+`start_recording(RecordingOptions)` starts a **recording** session, meant for a DevTools recording that runs from the user's start to the user's stop:
+
+```rust
+use lurq::app::profiler::RecordingOptions;
+
+let profiling = tree.profiling_handle();
+let id = profiling.start_recording(RecordingOptions::default())?.id;
+// While it runs, a UI can show how much it holds:
+let size = profiling.read(id)?.recording.unwrap().size_bytes;
+let report = profiling.end(id)?; // Every sample since the start.
+```
+
+A recording keeps every sample from its start to its `end`, in chunks of 4096 samples, so a long recording never moves what it holds and never drops a sample. `ProfileReport::recording` (None for a bounded session) reports `size_bytes`, an estimate of the memory its samples hold (the samples with their spans and the session's pointers to them; a sample shared with another session is counted in each), and its ceiling `max_bytes`, 1 GiB by default (`DEFAULT_RECORDING_MAX_BYTES`). When the next sample would pass the ceiling, the recording stops by itself: it keeps what it has, records nothing more, and reports `stopped_at_limit = true` with `stopped_ms`, instead of silently dropping samples. It stays readable until `end`. A recording counts against the eight concurrent sessions like any other, follows the same start/end boundary policy and window/DevTools rules, and its application scopes keep the per-session bound of 128. `max_samples` is 0 in its report (null in JSON), `max_bytes` of 0 is refused with `ProfileError::InvalidByteLimit`, and its JSON export adds a `recording` object (`max_bytes`, `size_bytes`, `stopped_at_limit`, `stopped_ms`); `SessionStarted` carries `recording_max_bytes`.
+
+## Phase spans
+
+A pass that begins while a session takes samples records the span of every phase guard of the pass (the phases listed in [Coverage and units](#coverage-and-units), down to the detailed Canvas phases) into `PassSample::spans`, so a flame chart can be drawn. Each `PhaseSpan` holds the `phase`, its `depth` (0 for the pass itself, then one more for each guard it is nested in) and `start_ns`/`end_ns`, nanoseconds since the collector epoch, the origin of every `*_ms` value in a report. Spans are ordered by start, so a span's parent is the nearest earlier span one level up, and each span lies inside its parent. The first span is the pass's own, ending when the pass completes. A phase around the pass (an input dispatch that runs a nested pass) is not one of its spans.
+
+Spans are written without the collector lock and without allocating: each window has a buffer of `MAX_SPANS_PER_PASS` (1024) span slots of atomics, allocated by the window's first captured pass, which a phase guard fills on exit with one atomic add; spans past it are counted in `PassSample::dropped_spans`. The pass's spans are copied into one `Vec` when it completes. A pass that begins with no session taking samples records no span and allocates nothing for them; a session started mid-pass excludes that pass anyway. JSON adds `spans` (`phase`, `depth`, `start_ms`, `end_ms`) and `dropped_spans` to each pass sample; the version-1 fields are unchanged. Spans hold only phase names and times, never text, values or paths.
+
 ## Coverage and units
 
 Toolkit stage timings are **CPU wall-clock milliseconds**; application scopes are explicitly **synchronous wall milliseconds**, including lock/I/O waits. Monotonic timestamps are relative to the collector's creation and are not calendar timestamps. Build metadata reports the toolkit version, target OS/architecture, relevant compiled features and `debug_assertions`. Cargo profile and optimization level are explicitly not embedded; debug assertions are not a reliable substitute for the build command.

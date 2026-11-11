@@ -8,6 +8,10 @@ pub const MAX_SAMPLES_PER_SESSION: usize = 240;
 pub const MAX_TRACKED_WINDOWS: usize = 64;
 pub const MAX_WINDOW_ID_BYTES: usize = 256;
 pub const MAX_ENDED_SESSION_IDS: usize = 64;
+/// Phase spans one pass keeps; later ones are counted in `PassSample::dropped_spans`.
+pub const MAX_SPANS_PER_PASS: usize = 1024;
+/// Default ceiling of a recording session: 1 GiB.
+pub const DEFAULT_RECORDING_MAX_BYTES: u64 = 1 << 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId(pub u64);
@@ -28,11 +32,43 @@ impl Default for SessionOptions {
   }
 }
 
+/// A DevTools recording: runs from `start_recording` to `end` and keeps every
+/// sample, until its retained size would pass `max_bytes`; it then stops with
+/// `RecordingStatus::stopped_at_limit` instead of dropping samples.
+#[derive(Clone, Copy, Debug)]
+pub struct RecordingOptions {
+  pub max_bytes: u64,
+  pub include_devtools: bool,
+}
+
+impl Default for RecordingOptions {
+  fn default() -> Self {
+    Self {
+      max_bytes: DEFAULT_RECORDING_MAX_BYTES,
+      include_devtools: false,
+    }
+  }
+}
+
+/// The state of a recording session; None in a bounded session's report.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecordingStatus {
+  pub max_bytes: u64,
+  /// Estimated memory the session's samples hold, counted per session.
+  pub size_bytes: u64,
+  /// True once a sample would have passed `max_bytes`: the session keeps what
+  /// it had and records nothing more.
+  pub stopped_at_limit: bool,
+  pub stopped_ms: Option<f64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileError {
   FeatureDisabled,
   SessionLimit,
   InvalidSampleLimit,
+  /// A recording session's `max_bytes` is zero.
+  InvalidByteLimit,
   UnknownSession,
   AlreadyEnded,
   Closed,
@@ -47,6 +83,7 @@ impl std::fmt::Display for ProfileError {
       Self::FeatureDisabled => "profiling requires the perf_profile Cargo feature",
       Self::SessionLimit => "the concurrent profiling session limit is reached",
       Self::InvalidSampleLimit => unreachable!("handled above"),
+      Self::InvalidByteLimit => "max_bytes must be above zero",
       Self::UnknownSession => "unknown profiling session id",
       Self::AlreadyEnded => "profiling session already ended",
       Self::Closed => "profiling producer has closed",
@@ -221,6 +258,22 @@ pub struct PassSample {
   pub backend: &'static str,
   /// Present only after a successful render; never reused from a prior frame.
   pub frame: Option<FrameProfile>,
+  /// Every phase guard of the pass, the pass itself first (depth 0), ordered
+  /// by start; a span's depth is its guard's nesting below the pass. Empty when
+  /// the pass started with no session active.
+  pub spans: Vec<PhaseSpan>,
+  /// Spans past `MAX_SPANS_PER_PASS`, not kept.
+  pub dropped_spans: u32,
+}
+
+/// One phase guard's lifetime, in nanoseconds since the collector epoch (the
+/// origin of every `*_ms` value in a report).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhaseSpan {
+  pub phase: Phase,
+  pub depth: u8,
+  pub start_ns: u64,
+  pub end_ns: u64,
 }
 
 /// Aggregate CPU work in CanvasTextEngine, separate from the UI GlyphEngine.
@@ -274,6 +327,7 @@ pub struct ProfileReport {
   pub ended_ms: Option<f64>,
   pub observed_ms: f64,
   pub build: BuildAvailability,
+  /// 0 for a recording session, which keeps every sample.
   pub max_samples: usize,
   pub completed_samples: u64,
   pub dropped_samples: u64,
@@ -284,12 +338,17 @@ pub struct ProfileReport {
   pub samples: Vec<Arc<ProfileSample>>,
   /// Independent application wall scopes; None when perf_profile is disabled.
   pub application_scopes: Option<ApplicationScopeReport>,
+  /// Some for a recording session (`ProfilingHandle::start_recording`).
+  pub recording: Option<RecordingStatus>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SessionStarted {
   pub id: SessionId,
   pub started_ms: f64,
+  /// 0 for a recording session, which keeps every sample.
   pub max_samples: usize,
   pub build: BuildAvailability,
+  /// The ceiling of a recording session; None for a bounded session.
+  pub recording_max_bytes: Option<u64>,
 }

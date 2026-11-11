@@ -492,4 +492,188 @@ mod enabled {
       assert!(!json.to_string().contains("Profile fixture"));
     }
   }
+
+  fn finish(producer: &mut WindowProfiler, started: Instant) {
+    producer.finish_pass(
+      started,
+      &crate::app::PassReport {
+        required: true,
+        ..Default::default()
+      },
+      "none",
+      None,
+    );
+  }
+
+  fn pass_of(sample: &ProfileSample) -> &PassSample {
+    match &sample.data {
+      SampleData::Pass(pass) => pass,
+      _ => panic!("expected a pass"),
+    }
+  }
+
+  #[test]
+  fn a_real_pass_carries_spans_nested_like_its_phase_guards() {
+    use crate::{
+      app::{App, Tree},
+      components::{Column, Text},
+    };
+    let mut tree = Tree::new();
+    let mut app = App::new();
+    tree.set_root(Column::new().child(Text::new("Span fixture")));
+    let handle = tree.profiling_handle();
+    let id = handle.start(Default::default()).unwrap().id;
+    tree.pass_headless(&mut app);
+    let report = handle.end(id).unwrap();
+    let sample = report.samples.last().unwrap();
+    let spans = &pass_of(sample).spans;
+    assert_eq!((spans[0].phase, spans[0].depth), (Phase::PassSetup, 0));
+    let layout = spans.iter().position(|span| span.phase == Phase::LayoutUpdate).unwrap();
+    assert_eq!(spans[layout].depth, 1);
+    let compute = spans.iter().find(|span| span.phase == Phase::LayoutCompute).unwrap();
+    assert!(compute.depth > spans[layout].depth);
+    assert!(spans[layout].start_ns <= compute.start_ns && compute.end_ns <= spans[layout].end_ns);
+    // Start and end share the report's origin, the collector epoch.
+    let ms = |ns: u64| ns as f64 / 1e6;
+    assert!((ms(spans[0].start_ns) - sample.started_ms).abs() < 1.);
+    assert!(ms(spans[0].end_ns) <= sample.completed_ms);
+    for (index, span) in spans.iter().enumerate().skip(1) {
+      let parent = spans[..index]
+        .iter()
+        .rev()
+        .find(|parent| parent.depth + 1 == span.depth)
+        .unwrap();
+      assert!(parent.start_ns <= span.start_ns && span.end_ns <= parent.end_ns);
+    }
+    #[cfg(any(feature = "serde", feature = "mcp"))]
+    {
+      let json = report.to_json();
+      let data = &json["samples"][report.samples.len() - 1]["data"];
+      assert_eq!(data["spans"].as_array().unwrap().len(), spans.len());
+      assert_eq!(data["spans"][0]["phase"], "pass_setup");
+      assert_eq!(data["spans"][0]["depth"], 0);
+      assert_eq!(data["spans"][0]["start_ms"], ms(spans[0].start_ns));
+      assert_eq!(data["dropped_spans"], 0);
+      // Version-1 fields of a bounded session stay as they were.
+      assert_eq!(json["schema_version"], 1);
+      assert_eq!(json["max_samples"], SessionOptions::default().max_samples);
+      assert!(json.get("recording").is_none());
+      assert!(!json.to_string().contains("Span fixture"));
+    }
+  }
+
+  #[test]
+  fn without_a_session_a_pass_keeps_no_spans_and_allocates_no_buffer() {
+    let mut producer = WindowProfiler::new();
+    let handle = producer.handle();
+    let (started, pass) = producer.begin_pass(1);
+    drop(producer.context.phase(Phase::LayoutUpdate));
+    finish(&mut producer, started);
+    drop(pass);
+    let slot = producer.context.phase.clone().unwrap();
+    assert!(!slot.span_buffer_allocated());
+    // A session that ended stops the capture of the passes after it as well.
+    let id = handle.start(Default::default()).unwrap().id;
+    let (started, pass) = producer.begin_pass(2);
+    finish(&mut producer, started);
+    drop(pass);
+    let report = handle.end(id).unwrap();
+    assert_eq!(pass_of(&report.samples[0]).spans.len(), 1);
+    let (started, pass) = producer.begin_pass(3);
+    assert!(!slot.span_capture_active());
+    finish(&mut producer, started);
+    drop(pass);
+  }
+
+  #[test]
+  fn a_recording_keeps_every_sample_and_reports_its_size() {
+    let mut producer = WindowProfiler::new();
+    let handle = producer.handle();
+    let started = handle.start_recording(Default::default()).unwrap();
+    assert_eq!(started.recording_max_bytes, Some(DEFAULT_RECORDING_MAX_BYTES));
+    let bounded = handle.start(Default::default()).unwrap().id;
+    let total = MAX_SAMPLES_PER_SESSION * 2 + 3;
+    for frame in 0..total {
+      let (begun, pass) = producer.begin_pass(frame as u64 + 1);
+      finish(&mut producer, begun);
+      drop(pass);
+    }
+    let live = handle.read(started.id).unwrap();
+    let status = live.recording.unwrap();
+    assert!(status.size_bytes > 0 && !status.stopped_at_limit);
+    let report = handle.end(started.id).unwrap();
+    assert_eq!(report.samples.len(), total);
+    assert_eq!((report.completed_samples, report.dropped_samples), (total as u64, 0));
+    assert!(
+      report
+        .samples
+        .windows(2)
+        .all(|pair| pair[0].sequence < pair[1].sequence)
+    );
+    assert!(report.recording.unwrap().size_bytes >= status.size_bytes);
+    // The bounded session alongside it keeps its own limit.
+    let bounded = handle.end(bounded).unwrap();
+    assert_eq!(bounded.samples.len(), SessionOptions::default().max_samples);
+    assert!(bounded.recording.is_none());
+    #[cfg(any(feature = "serde", feature = "mcp"))]
+    {
+      let json = report.to_json();
+      assert_eq!(json["recording"]["stopped_at_limit"], false);
+      assert_eq!(json["returned_samples"], total);
+      assert!(json["recording"]["size_bytes"].as_u64().unwrap() > 0);
+    }
+  }
+
+  #[test]
+  fn a_recording_stops_at_its_ceiling_instead_of_dropping() {
+    let mut producer = WindowProfiler::new();
+    let handle = producer.handle();
+    assert!(matches!(
+      handle.start_recording(RecordingOptions {
+        max_bytes: 0,
+        ..Default::default()
+      }),
+      Err(ProfileError::InvalidByteLimit)
+    ));
+    let pass = || {
+      let mut producer = WindowProfiler::new();
+      let handle = producer.handle();
+      let id = handle.start(Default::default()).unwrap().id;
+      let (begun, guard) = producer.begin_pass(1);
+      finish(&mut producer, begun);
+      drop(guard);
+      super::super::collector::retained_bytes(&handle.end(id).unwrap().samples[0])
+    };
+    // Room for three passes, not four.
+    let ceiling = pass() * 3 + pass() / 2;
+    let id = handle
+      .start_recording(RecordingOptions {
+        max_bytes: ceiling,
+        ..Default::default()
+      })
+      .unwrap()
+      .id;
+    for frame in 0..6 {
+      let (begun, guard) = producer.begin_pass(frame + 1);
+      finish(&mut producer, begun);
+      drop(guard);
+    }
+    let report = handle.read(id).unwrap();
+    let status = report.recording.unwrap();
+    assert!(status.stopped_at_limit);
+    assert!(status.stopped_ms.is_some());
+    assert!(status.size_bytes <= ceiling);
+    assert_eq!(report.samples.len(), 3);
+    assert_eq!((report.completed_samples, report.dropped_samples), (3, 0));
+    // Stopped, it is no longer capturing: passes keep no spans.
+    let (begun, guard) = producer.begin_pass(9);
+    assert!(!producer.context.phase.as_ref().unwrap().span_capture_active());
+    finish(&mut producer, begun);
+    drop(guard);
+    let ended = handle.end(id).unwrap();
+    assert_eq!(ended.samples.len(), 3);
+    assert!(ended.recording.unwrap().stopped_at_limit);
+    #[cfg(any(feature = "serde", feature = "mcp"))]
+    assert_eq!(ended.to_json()["recording"]["stopped_at_limit"], true);
+  }
 }
