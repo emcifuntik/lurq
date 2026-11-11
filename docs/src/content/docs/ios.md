@@ -140,6 +140,12 @@ ctx.window().haptic(Haptic::Selection);
 `Haptic` is `Light`, `Medium`, `Heavy`, `Selection`, `Success`, `Warning` or `Error`. It does nothing where there
 is no haptic engine.
 
+## Screens
+
+`StackOutlet` moves between the router's screens as the platform's apps do: a push comes in from the right, a
+finger from the left edge drags the top screen back, the screens under stay alive, and a navigation bar shows
+the title and the way back. See [A Stack Of Screens](../routing/#a-stack-of-screens).
+
 ## Scrolling
 
 Scroll containers scroll under a finger as `UIScrollView` does: the content follows the finger, goes on with

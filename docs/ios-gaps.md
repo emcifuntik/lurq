@@ -43,6 +43,17 @@ where UIKit says the selection is.
 - **Emoji in transformed text** (rotated, scaled) draw nothing: only the plain path draws them through Core
   Text.
 
+## Screens
+
+`StackOutlet` is a stack of screens with a navigation bar (`docs/src/content/docs/routing.md`).
+
+- **The move** is a curve of 350 ms, not the platform's spring, and a finger that lets go carries no speed
+  into it.
+- **The bar** is opaque and its content does not scroll under it; there is no large title, no search field
+  and no material. The way back's chevron is a character, not the platform's symbol.
+- **A screen cannot hide the bar** or put its own view in the title's place.
+- **Sheets and tabs:** not there.
+
 ## Touch
 
 - **A long press of several fingers** has no event.

@@ -90,6 +90,71 @@ fn app_shell(ctx: &mut Ctx) -> Element {
 
 Nested layouts work the same way: a child layout can render another `Outlet`.
 
+## A Stack Of Screens
+
+`StackOutlet` goes where an `Outlet` would, and moves between screens as a phone's apps do. It is added after
+**lurq 0.59.1**. An `Outlet` shows the current route and drops the one before; a `StackOutlet` keeps every
+entry of the history, from the first to the current one, as a screen of its own:
+
+- a `push` brings the new screen in from the right, over the one before;
+- `back` takes the top screen out to the right and unmounts it;
+- a screen under the top one stays mounted, with its state and its scroll, and is not laid out or painted
+  until it shows again;
+- on a touch screen a finger in from the left edge drags the top screen, and takes it back when lifted past
+  half the width or fast enough;
+- a `replace` swaps the top screen with no move.
+
+```rust
+use lurq::{
+  app::ctx::Ctx,
+  components::{NavigationBar, NavigationItem, StackOutlet, StackOutletProps, Text},
+  node::Element,
+  router::Routes,
+};
+
+fn routes() -> Routes {
+  Routes::new().layout("/", shell, |routes| {
+    routes
+      .route("/", |ctx| {
+        ctx.navigation_item(NavigationItem::new("Inbox"));
+        Text::new("Inbox").into()
+      })
+      .route("/message/:id", |ctx| {
+        ctx.navigation_item(NavigationItem::new("Message"));
+        ctx.mount::<MessageScreen>(())
+      })
+  })
+}
+
+fn shell(ctx: &mut Ctx) -> Element {
+  StackOutlet::mount_with(ctx, StackOutletProps::new().bar(NavigationBar::new()))
+}
+```
+
+Give the history its first entry in `create` with `router.replace("/")`: it is the screen at the bottom of the
+stack, the one the others go back to.
+
+`StackOutlet::mount(ctx)` is the stack alone. With `StackOutletProps::bar` it draws a navigation bar over its
+screens, under the safe area's top: the top screen's title, and the way back with the title of the screen
+under it. The titles move with the screens, and with the finger. `NavigationBar::new()` is a light bar and
+`NavigationBar::dark()` a dark one; `background`, `tint`, `title` and `border` set its colors.
+
+A screen says what the bar shows for it by calling `ctx.navigation_item` in its `render`, or in its route:
+
+| `NavigationItem` | |
+|------------------|--|
+| `new(title)` | The title in the middle of the bar |
+| `back_title(text)` | What the way back says on the screen pushed over this one, in place of the title |
+| `back_gesture(false)` | A finger from the edge does not take this screen back; the bar's way back still does |
+| `trailing(element)` | What is at the bar's trailing end while this screen is on top |
+
+A screen of a stack reads its own entry: `ctx.route_params()` and `ctx.route_state()` give what the screen was
+opened with, whatever was pushed over it since. `ctx.route_path()` is the router's current path on every
+screen.
+
+`StackOutletProps::background` paints behind each screen; a screen with no background of its own shows the
+one under it through while it moves.
+
 ## Links
 
 `Link` reads the router navigator from context, so it must be rendered inside `Router::mount`.
