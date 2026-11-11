@@ -409,3 +409,49 @@ fn a_window_too_low_for_it_has_no_large_title() {
   assert_eq!(large_title_width(&mut tree), 0.0, "the title is in the bar alone");
   assert!(shows(&mut tree, "Gamma"));
 }
+
+#[test]
+fn a_long_press_on_the_way_back_lists_the_screens_under_and_goes_to_the_one_tapped() {
+  let (mut tree, router) = setup();
+  router.push("/second");
+  settle(&mut tree);
+  router.push("/user/7");
+  settle(&mut tree);
+  assert!(!shows(&mut tree, "Alpha"), "two screens down, and not named anywhere");
+
+  // On the way back, at the bar's leading end.
+  tree.touch_press(20.0, 22.0);
+  tree.touch_long_press(20.0, 22.0);
+  tree.touch_release(20.0, 22.0);
+  run_pass(&mut tree);
+  assert_eq!(
+    router.path().get_untracked(),
+    "/user/7",
+    "the lift of the long press is not a tap"
+  );
+  let row = tree
+    .find_element(|element| element.text_content() == Some("Alpha"))
+    .expect("the list names the screen at the bottom");
+
+  let (x, y, width, height) = row.rect();
+  crate::support::pointer_click(
+    &mut tree,
+    x + width / 2.0,
+    y + height / 2.0,
+    lurq::app::events::MouseButton::Left,
+  );
+  settle(&mut tree);
+  assert_eq!(router.path().get_untracked(), "/first");
+  assert!(shows(&mut tree, "first screen"));
+  assert!(!shows(&mut tree, "second screen"), "the screen passed over is gone");
+}
+
+#[test]
+fn going_back_by_more_than_there_is_stops_at_the_first_entry() {
+  let (_tree, router) = setup();
+  router.push("/second");
+  router.push("/held");
+  assert!(router.back_by(5));
+  assert_eq!(router.path().get_untracked(), "/first");
+  assert!(!router.back_by(1), "nothing under the first entry");
+}

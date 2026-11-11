@@ -220,6 +220,9 @@ StackOutletProps::new().motion(StackMotion {
 | `large_title_growth` | 1.1 | How much larger a large title gets when pulled down |
 | `large_title_pull` | 150 | The pull, in logical pixels, that takes it there |
 
+A long press on the way back lists the screens under the top one, the nearest first; a tap on one goes back
+to it at once, past the screens between (`navigator.back_by(steps)`).
+
 In the bar, a title too long for it ends in an ellipsis; the way back says `Back` when the title of the screen
 under has no room, and is its arrow alone when `Back` has none. A window lower than 480 logical pixels, a phone
 on its side, has no large titles: the title is in the bar. What a screen gives as `leading`, `trailing` or
@@ -254,6 +257,7 @@ if let Some(navigator) = ctx.navigator() {
   navigator.push("/profile");
   navigator.replace("/login");
   navigator.back();
+  navigator.back_by(2); // two entries at once
   navigator.forward();
 }
 ```

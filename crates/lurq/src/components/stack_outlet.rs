@@ -32,7 +32,7 @@ use crate::{
   app::{
     component::Component,
     ctx::{Ctx, Timeout},
-    events::{EdgePanEvent, GesturePhase, ScreenEdge},
+    events::{EdgePanEvent, GesturePhase, LongPressEvent, ScreenEdge},
     window::SafeAreaInsets,
   },
   components::{Column, Row, ScrollVertical, Stack, Text, TextOverflow},
@@ -120,6 +120,8 @@ const CHEVRON_POINT_SIZE: f32 = 17.0;
 /// title.
 const BACK_LEADING: f32 = 9.0 + CHEVRON_WIDTH + BACK_SPACING;
 const BACK_GAP: f32 = 8.0;
+/// How wide the list of the screens under is.
+const BACK_MENU_WIDTH: f32 = 250.0;
 /// About how wide [`BACK`] is in the bar's text.
 const BACK_WIDTH: f32 = 40.0;
 const FILL: Dimension = Dimension::Pct(100.0);
@@ -500,6 +502,8 @@ pub struct StackOutlet {
   settle: Timeout,
   /// The outlet as it is laid out: where its corner is in the window.
   origin: ElementRef,
+  /// The list of the screens under the top one, which a long press on the way back opens.
+  menu: BackMenu,
 }
 
 impl Component for StackOutlet {
@@ -546,6 +550,10 @@ impl Component for StackOutlet {
       begin,
       settle,
       origin: ElementRef::default(),
+      menu: BackMenu {
+        open: Signal::new(false),
+        held: Arc::default(),
+      },
     }
   }
 
@@ -560,6 +568,7 @@ impl Component for StackOutlet {
     let _ = navigator.path().get();
     let _ = self.changed.get();
     let drag = self.drag.get();
+    let menu_open = self.menu.open.get();
 
     // The screens: the entries at the history's end that have a route at this outlet.
     let mut entries = Vec::new();
@@ -833,6 +842,14 @@ impl Component for StackOutlet {
       })
     };
     let (back_part, mut front_part) = (part_of(back), part_of(front));
+    // The screens under the top one, the nearest first: what a long press on the way back lists.
+    let menu_titles: Vec<String> = shown
+      .layers
+      .iter()
+      .rev()
+      .skip(1)
+      .map(|layer| back_label_of(&layer.bar.item.lock()))
+      .collect();
 
     // A large title in view on the screen behind goes to the front screen's way back as that screen comes
     // in, and back as it goes out: one title, drawn here over both, between the two places.
@@ -920,6 +937,7 @@ impl Component for StackOutlet {
         pace,
         curve,
         false,
+        &self.menu,
       ));
     }
     if let Some(part) = front_part {
@@ -932,6 +950,7 @@ impl Component for StackOutlet {
         pace,
         curve,
         true,
+        &self.menu,
       ));
     }
     drop(shown);
@@ -971,12 +990,63 @@ impl Component for StackOutlet {
           .transition(Transition::opacity().duration(line_pace).easing(line_curve)),
       )
       .child(Column::new().width(FILL).flex(1.0).child(screens));
-    Stack::new()
+    let mut whole = Stack::new()
       .size(FILL, FILL)
       .ref_element(self.origin.clone())
       .child(content)
-      .child(overlay)
-      .into()
+      .child(overlay);
+    if menu_open && !menu_titles.is_empty() {
+      // Over everything: a tap on a screen's name goes back to it, and a tap anywhere else puts the list away.
+      let close = self.menu.clone();
+      let mut list = Column::new()
+        .width(BACK_MENU_WIDTH)
+        .background(bar.background)
+        .border_inside(0.5, bar.border)
+        .rounded(13.0)
+        .clip()
+        .absolute_position(safe_area.left + 8.0, safe_area.top + bar_height + 4.0);
+      for (steps, title) in menu_titles.iter().enumerate() {
+        let (navigator, open) = (navigator.clone(), self.menu.open.clone());
+        let steps = steps + 1;
+        if steps > 1 {
+          list = list.child(Row::new().width(FILL).height(0.5).background(bar.border));
+        }
+        list = list.child(
+          Row::new()
+            .width(FILL)
+            .height(BAR_HEIGHT)
+            .align_items(Alignment::Center)
+            .padding_horizontal(16.0)
+            .child(
+              Text::styled(
+                title,
+                TextStyle {
+                  font_size: 17.0,
+                  color: bar.title,
+                  ..TextStyle::default()
+                },
+              )
+              .nowrap(),
+            )
+            .on_click(move |_| {
+              open.set(false);
+              navigator.back_by(steps);
+            }),
+        );
+      }
+      whole = whole.child(
+        Stack::new()
+          .size(FILL, FILL)
+          .child(Row::new().size(FILL, FILL).on_click(move |_| {
+            // The list came up under the finger that opened it: that finger's lift leaves it open.
+            if !close.held.swap(false, Ordering::AcqRel) {
+              close.open.set(false);
+            }
+          }))
+          .child(list),
+      );
+    }
+    whole.into()
   }
 
   fn after_layout(&self) {
@@ -1038,6 +1108,14 @@ fn back_label_of(under: &NavigationItem) -> String {
     None if under.title.is_empty() => BACK.to_owned(),
     None => under.title.clone(),
   }
+}
+
+/// The list a long press on the way back opens: whether it is open, and that the press which opened it is
+/// still down, whose lift is not a tap on the way back.
+#[derive(Clone)]
+struct BackMenu {
+  open: Signal<bool>,
+  held: Arc<AtomicBool>,
 }
 
 /// A large title on its way between the content of the screen behind and the way back of the screen in
@@ -1134,6 +1212,7 @@ fn bar_item(
   pace: Duration,
   curve: Easing,
   front: bool,
+  menu: &BackMenu,
 ) -> Element {
   let text = |content: &str, weight: FontWeight, color: Color| {
     Text::styled(
@@ -1199,8 +1278,21 @@ fn bar_item(
             .ref_element(part.label.clone())
             .opacity(if part.label_hidden { 0.0 } else { 1.0 }),
         )
-        .on_click(move |_| {
-          navigator.back();
+        .on_click({
+          let menu = menu.clone();
+          move |_| {
+            // The lift of the press that opened the list is not a tap.
+            if !menu.held.swap(false, Ordering::AcqRel) {
+              navigator.back();
+            }
+          }
+        })
+        .on_long_press({
+          let menu = menu.clone();
+          move |_: LongPressEvent| {
+            menu.held.store(true, Ordering::Release);
+            menu.open.set(true);
+          }
         }),
     );
     // The whole label, laid out and not seen, for its width.

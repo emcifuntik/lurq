@@ -52,7 +52,8 @@ inside its input.
   blur to make the platform's material with.
 - **How things move** in the stack (the spring's length, how far a large title grows and the way it takes to
   a way back) was set by eye and not measured against the platform; `StackMotion` changes the numbers.
-- **A long press on the way back** shows no list of the screens under.
+- **The list a long press on the way back opens** is plain: no blur behind it, no animation as it comes, and
+  it is not dimmed like the platform's menu.
 - **No search field, no toolbar at the bottom, no prompt over the title.**
 - **Sheets:** a screen that comes up from the bottom over the stack, with its detents and the drag that
   puts it away. Not there.
