@@ -39,7 +39,6 @@ where UIKit says the selection is.
   (`ScrollState::set_dismisses_keyboard`) puts it away when a finger starts to scroll it. The platform can also
   have the keyboard follow the finger down as the list is dragged; that is not done.
 - **Several lines:** scrolling inside the input with a finger, and the caret in a long text, are not checked.
-- **The screen turning** with the keyboard up: not checked.
 - **Emoji in transformed text** (rotated, scaled) draw nothing: only the plain path draws them through Core
   Text.
 
@@ -50,8 +49,8 @@ where UIKit says the selection is.
 - **The move** is a curve of 350 ms, not the platform's spring, and a finger that lets go carries no speed
   into it.
 - **The bar** is opaque and its content does not scroll under it; there is no large title, no search field
-  and no material. The way back's chevron is a character, not the platform's symbol.
-- **A screen cannot hide the bar** or put its own view in the title's place.
+  and no material.
+- **A way back with no room even for `Back`** keeps the word; the platform leaves the arrow alone.
 - **Sheets and tabs:** not there.
 
 ## Touch
@@ -72,7 +71,10 @@ where UIKit says the selection is.
 
 ## The platform
 
-- **The screen turning:** not checked.
+- **The screen turning.** The window, the safe area and the keyboard follow, and a phone on its side shows
+  no status bar. Now and then, turned back upright, the window shows a frame drawn for half its height until
+  something asks for another; the shell asks for one when the window's size is not the last frame's, which
+  made it rarer and did not end it. Not looked into further.
 - **Light and dark appearance, Dynamic Type, VoiceOver:** not done.
 - **Features of lurq other than touch and text** have not been run on iOS: `resources` (the network; `ring`
   did not build without Xcode), `persistent_storage`, `image`, `svg`, `markdown`, the developer tools.

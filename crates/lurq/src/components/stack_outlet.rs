@@ -28,7 +28,7 @@ use crate::{
     events::{EdgePanEvent, GesturePhase, ScreenEdge},
   },
   components::{Column, Row, Stack, Text},
-  core::Signal,
+  core::{ElementRef, Signal},
   layout::{
     Alignment,
     layout_kind::Justify,
@@ -63,7 +63,21 @@ const BACK_SHARE: f32 = 0.5;
 const BACK_SPEED: f32 = 500.0;
 /// No finger is dragging the top screen.
 const NO_DRAG: f32 = -1.0;
+/// The bar's height, and its height in a window too low for that: a phone held on its side.
 const BAR_HEIGHT: f32 = 44.0;
+const LOW_BAR_HEIGHT: f32 = 32.0;
+const LOW_WINDOW: f32 = 480.0;
+/// What the way back says when the title of the screen under has no room, or there is none.
+const BACK: &str = "Back";
+/// The way back's arrow, its stroke, and the space between it and the label.
+const CHEVRON_WIDTH: f32 = 11.0;
+const CHEVRON_HEIGHT: f32 = 20.0;
+const CHEVRON_STROKE: f32 = 2.6;
+const BACK_SPACING: f32 = 5.0;
+/// From the bar's edge to where the way back's label starts, and the least space between the label and the
+/// title.
+const BACK_LEADING: f32 = 9.0 + CHEVRON_WIDTH + BACK_SPACING;
+const BACK_GAP: f32 = 8.0;
 const FILL: Dimension = Dimension::Pct(100.0);
 
 /// The bar a [`StackOutlet`] draws over its screens, and its colors. The bar is as high as a phone's, 44
@@ -135,6 +149,8 @@ pub struct NavigationItem {
   pub(crate) back_title: Option<String>,
   pub(crate) back_gesture: bool,
   pub(crate) trailing: Option<Element>,
+  pub(crate) title_view: Option<Element>,
+  pub(crate) bar_hidden: bool,
 }
 
 impl NavigationItem {
@@ -144,6 +160,8 @@ impl NavigationItem {
       back_title: None,
       back_gesture: true,
       trailing: None,
+      title_view: None,
+      bar_hidden: false,
     }
   }
 
@@ -167,11 +185,27 @@ impl NavigationItem {
     self
   }
 
+  /// What stands in the middle of the bar in place of the title: a control, a picture. The title still names
+  /// the screen on the way back to it. Shown as [`trailing`](Self::trailing) is.
+  pub fn title_view(mut self, element: impl Into<Element>) -> Self {
+    self.title_view = Some(element.into());
+    self
+  }
+
+  /// Takes the bar away while this screen is the top one: the screen then reaches the top of the outlet, under
+  /// the status bar, and keeps clear of it by the safe area itself.
+  pub fn bar_hidden(mut self, hidden: bool) -> Self {
+    self.bar_hidden = hidden;
+    self
+  }
+
   fn same_as(&self, other: &Self) -> bool {
     self.title == other.title
       && self.back_title == other.back_title
       && self.back_gesture == other.back_gesture
       && self.trailing.is_some() == other.trailing.is_some()
+      && self.title_view.is_some() == other.title_view.is_some()
+      && self.bar_hidden == other.bar_hidden
   }
 }
 
@@ -230,7 +264,19 @@ impl crate::app::component::DevtoolsInspectable for StackOutletProps {
 struct Layer {
   entry: StackEntry,
   matches: Arc<Vec<RouteMatch>>,
+  bar: LayerBar,
+}
+
+/// What a screen keeps of its part of the bar from one render to the next.
+#[derive(Clone, Default)]
+struct LayerBar {
   item: Arc<Mutex<NavigationItem>>,
+  /// The title as it is laid out in the bar, and the way back's whole label laid out unseen: how wide each is
+  /// says whether the label has room beside the title (`after_layout`).
+  title: ElementRef,
+  back_probe: ElementRef,
+  /// The label does not fit, and the way back says only that it goes back.
+  short_back: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -339,6 +385,11 @@ impl Component for StackOutlet {
 
     let window = ctx.window();
     let (width, safe_area) = (window.logical_width(), window.safe_area);
+    let bar_height = if window.logical_height() < LOW_WINDOW {
+      LOW_BAR_HEIGHT
+    } else {
+      BAR_HEIGHT
+    };
 
     let mut shown = self.shown.lock();
     shown.width = width;
@@ -363,12 +414,12 @@ impl Component for StackOutlet {
       shown.layers = entries
         .into_iter()
         .map(|(entry, matches)| {
-          let item = old
+          let bar = old
             .iter()
             .find(|layer| layer.entry.id == entry.id)
-            .map(|layer| layer.item.clone())
+            .map(|layer| layer.bar.clone())
             .unwrap_or_default();
-          Layer { entry, matches, item }
+          Layer { entry, matches, bar }
         })
         .collect();
       self.begin.cancel();
@@ -421,7 +472,7 @@ impl Component for StackOutlet {
           depth,
           state: layer.entry.state.clone(),
           slot: NavigationSlot {
-            item: layer.item.clone(),
+            item: layer.bar.item.clone(),
             changed: self.changed.clone(),
           },
         },
@@ -469,7 +520,10 @@ impl Component for StackOutlet {
         // The stack's: the history is not also moved by the swipe this would end as.
         event.prevent_default();
         event.stop_propagation();
-        let allowed = shown.layers.last().is_some_and(|layer| layer.item.lock().back_gesture);
+        let allowed = shown
+          .layers
+          .last()
+          .is_some_and(|layer| layer.bar.item.lock().back_gesture);
         if !allowed || shown.motion != Motion::None {
           return;
         }
@@ -502,38 +556,48 @@ impl Component for StackOutlet {
 
     // The bar: the front screen's item, and the back screen's while they move.
     let layers: Vec<&Layer> = shown.layers.iter().chain(shown.leaving.iter()).collect();
-    let item_of = |id: Option<u64>| {
+    let part_of = |id: Option<u64>| {
       let index = layers.iter().position(|layer| Some(layer.entry.id) == id)?;
-      let item = layers[index].item.lock().clone();
-      let back = index.checked_sub(1).map(|under| {
-        let under = layers[under].item.lock();
+      let layer = layers[index];
+      let back_label = index.checked_sub(1).map(|under| {
+        let under = layers[under].bar.item.lock();
         match under.back_title.clone() {
           Some(title) => title,
-          None if under.title.is_empty() => "Back".to_owned(),
+          None if under.title.is_empty() => BACK.to_owned(),
           None => under.title.clone(),
         }
       });
-      Some((item, back))
+      Some(BarPart {
+        item: layer.bar.item.lock().clone(),
+        back_label,
+        short_back: layer.bar.short_back,
+        title: layer.bar.title.clone(),
+        back_probe: layer.bar.back_probe.clone(),
+      })
     };
-    let mut items = Stack::new().width(FILL).height(BAR_HEIGHT);
-    if let Some((item, back_label)) = item_of(back) {
+    let (back_part, front_part) = (part_of(back), part_of(front));
+    // How much of the bar there is: all of it, or none over a screen that hides it, and between the two as
+    // one such screen gives way to another.
+    let shows = |part: &Option<BarPart>| part.as_ref().map(|part| if part.item.bar_hidden { 0.0 } else { 1.0 });
+    let front_shows = shows(&front_part).unwrap_or(1.0);
+    let shown_share = front_shows * (1.0 - out) + shows(&back_part).unwrap_or(front_shows) * out;
+    let mut items = Stack::new().width(FILL).height(bar_height);
+    if let Some(part) = back_part {
       items = items.child(bar_item(
         &bar,
         &navigator,
-        &item,
-        back_label,
+        part,
         out,
         -(1.0 - out) * width * PARALLAX,
         pace,
         false,
       ));
     }
-    if let Some((item, back_label)) = item_of(front) {
+    if let Some(part) = front_part {
       items = items.child(bar_item(
         &bar,
         &navigator,
-        &item,
-        back_label,
+        part,
         1.0 - out,
         out * width * 0.5,
         pace,
@@ -547,42 +611,74 @@ impl Component for StackOutlet {
       .child(
         Column::new()
           .width(FILL)
-          .padding_top(safe_area.top)
-          .padding_left(safe_area.left)
-          .padding_right(safe_area.right)
-          .background(bar.background)
-          .child(items),
+          .height((safe_area.top + bar_height) * shown_share)
+          .clip()
+          .transition(Transition::height().duration(pace).easing(CURVE))
+          .child(
+            Column::new()
+              .width(FILL)
+              .padding_top(safe_area.top)
+              .padding_left(safe_area.left)
+              .padding_right(safe_area.right)
+              .background(bar.background)
+              .child(items),
+          ),
       )
-      .child(Row::new().width(FILL).height(0.5).background(bar.border))
+      .child(Row::new().width(FILL).height(0.5 * shown_share).background(bar.border))
       .child(Column::new().width(FILL).flex(1.0).child(screens))
       .into()
   }
 
   fn after_layout(&self) {
-    if std::mem::take(&mut self.shown.lock().begin_due) {
+    let mut shown = self.shown.lock();
+    if std::mem::take(&mut shown.begin_due) {
       self.begin.restart();
+    }
+    // Whether each way back has room for its label beside the title, now that both are laid out. The title
+    // is in the middle of the bar, so the label has half of what the title leaves.
+    let width = shown.width;
+    let shown = &mut *shown;
+    let mut changed = false;
+    for layer in shown.layers.iter_mut().chain(shown.leaving.iter_mut()) {
+      if !layer.bar.title.is_attached() || !layer.bar.back_probe.is_attached() {
+        continue;
+      }
+      let room = (width - layer.bar.title.width()) / 2.0 - BACK_LEADING - BACK_GAP;
+      let short = layer.bar.back_probe.width() > room;
+      changed |= std::mem::replace(&mut layer.bar.short_back, short) != short;
+    }
+    if changed {
+      self.changed.update(|version| *version += 1);
     }
   }
 }
 
+/// One screen's part of the bar.
+struct BarPart {
+  item: NavigationItem,
+  /// What the way back says when there is room; `None` on the screen at the bottom, which has none.
+  back_label: Option<String>,
+  short_back: bool,
+  title: ElementRef,
+  back_probe: ElementRef,
+}
+
 /// One screen's part of the bar: its title in the middle, the way back before it and what the screen put at
 /// the end. `shift` is how far the title is from the middle.
-#[allow(clippy::too_many_arguments)]
 fn bar_item(
   bar: &NavigationBar,
   navigator: &Navigator,
-  item: &NavigationItem,
-  back_label: Option<String>,
+  part: BarPart,
   opacity: f32,
   shift: f32,
   pace: Duration,
   front: bool,
 ) -> Element {
-  let text = |content: &str, font_size: f32, weight: FontWeight, color: Color| {
+  let text = |content: &str, weight: FontWeight, color: Color| {
     Text::styled(
       content,
       TextStyle {
-        font_size,
+        font_size: 17.0,
         weight,
         color,
         ..TextStyle::default()
@@ -590,35 +686,50 @@ fn bar_item(
     )
     .nowrap()
   };
+  let middle: Element = match &part.item.title_view {
+    Some(view) => view.clone(),
+    None => text(&part.item.title, FontWeight::SemiBold, bar.title).into(),
+  };
   let title = Row::new()
     .size(FILL, FILL)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .pointer_events_none()
-    .child(text(&item.title, 17.0, FontWeight::SemiBold, bar.title))
+    .child(Row::new().ref_element(part.title.clone()).child(middle))
     .transform(Transform2D::translate(shift, 0.0))
     .transition(Transition::transform().duration(pace).easing(CURVE));
 
+  let mut whole = Stack::new().size(FILL, FILL).child(title);
   let mut sides = Row::new().size(FILL, FILL).align_items(Alignment::Center);
-  if let Some(label) = back_label {
+  if let Some(label) = &part.back_label {
     let navigator = navigator.clone();
+    let says = if part.short_back { BACK } else { label.as_str() };
     sides = sides.child(
       Row::new()
         .id("navigation-back")
         .align_items(Alignment::Center)
         .height(FILL)
-        .padding_left(8.0)
+        .padding_left(BACK_LEADING - CHEVRON_WIDTH - BACK_SPACING)
         .padding_right(12.0)
-        .spacing(4.0)
-        .child(text("‹", 30.0, FontWeight::Normal, bar.tint))
-        .child(text(&label, 17.0, FontWeight::Normal, bar.tint))
+        .spacing(BACK_SPACING)
+        .child(chevron(bar.tint))
+        .child(text(says, FontWeight::Normal, bar.tint))
         .on_click(move |_| {
           navigator.back();
         }),
     );
+    // The whole label, laid out and not seen, for its width.
+    whole =
+      whole.child(
+        Row::new().opacity(0.0).pointer_events_none().child(
+          Row::new()
+            .ref_element(part.back_probe.clone())
+            .child(text(label, FontWeight::Normal, bar.tint)),
+        ),
+      );
   }
   sides = sides.child(Row::new().flex(1.0));
-  if let Some(trailing) = &item.trailing {
+  if let Some(trailing) = &part.item.trailing {
     sides = sides.child(
       Row::new()
         .align_items(Alignment::Center)
@@ -627,12 +738,44 @@ fn bar_item(
     );
   }
 
-  let mut whole = Stack::new().size(FILL, FILL).child(title).child(sides).opacity(opacity);
+  let mut whole = whole.child(sides).opacity(opacity);
   if !front {
     whole = whole.pointer_events_none();
   }
   whole
     .transition(Transition::opacity().duration(pace).easing(CURVE))
+    .into()
+}
+
+/// The way back's arrow: two strokes that meet at a point on the left, as the platform draws it.
+fn chevron(color: Color) -> Element {
+  // Each stroke goes from the point, at the middle of the left side, to a corner on the right.
+  let (rise, run) = (
+    CHEVRON_HEIGHT / 2.0 - CHEVRON_STROKE / 2.0,
+    CHEVRON_WIDTH - CHEVRON_STROKE,
+  );
+  let length = rise.hypot(run) + CHEVRON_STROKE;
+  let angle = rise.atan2(run);
+  let stroke = |up: bool| {
+    let (centre_x, centre_y) = (
+      CHEVRON_STROKE / 2.0 + run / 2.0,
+      CHEVRON_HEIGHT / 2.0 + if up { -rise / 2.0 } else { rise / 2.0 },
+    );
+    Row::new()
+      .width(length)
+      .height(CHEVRON_STROKE)
+      .rounded(CHEVRON_STROKE / 2.0)
+      .background(color)
+      .transform(
+        Transform2D::translate(centre_x - length / 2.0, centre_y - CHEVRON_STROKE / 2.0)
+          .then(&Transform2D::rotate(if up { -angle } else { angle })),
+      )
+  };
+  Stack::new()
+    .width(CHEVRON_WIDTH)
+    .height(CHEVRON_HEIGHT)
+    .child(stroke(true))
+    .child(stroke(false))
     .into()
 }
 

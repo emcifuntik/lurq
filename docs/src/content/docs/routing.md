@@ -135,7 +135,8 @@ Give the history its first entry in `create` with `router.replace("/")`: it is t
 stack, the one the others go back to.
 
 `StackOutlet::mount(ctx)` is the stack alone. With `StackOutletProps::bar` it draws a navigation bar over its
-screens, under the safe area's top: the top screen's title, and the way back with the title of the screen
+screens, under the safe area's top, 44 logical pixels high and 32 in a window lower than 480, as a phone held
+on its side is: the top screen's title, and the way back with the title of the screen
 under it. The titles move with the screens, and with the finger. `NavigationBar::new()` is a light bar and
 `NavigationBar::dark()` a dark one; `background`, `tint`, `title` and `border` set its colors.
 
@@ -147,6 +148,11 @@ A screen says what the bar shows for it by calling `ctx.navigation_item` in its 
 | `back_title(text)` | What the way back says on the screen pushed over this one, in place of the title |
 | `back_gesture(false)` | A finger from the edge does not take this screen back; the bar's way back still does |
 | `trailing(element)` | What is at the bar's trailing end while this screen is on top |
+| `title_view(element)` | What stands in the middle of the bar in place of the title |
+| `bar_hidden(true)` | No bar over this screen: it reaches the top of the outlet, under the status bar |
+
+The way back says the title of the screen under while there is room for it beside the top screen's title, and
+`Back` when there is not.
 
 A screen of a stack reads its own entry: `ctx.route_params()` and `ctx.route_state()` give what the screen was
 opened with, whatever was pushed over it since. `ctx.route_path()` is the router's current path on every

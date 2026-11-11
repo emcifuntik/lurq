@@ -73,6 +73,20 @@ impl Component for Root {
             ctx.navigation_item(NavigationItem::new("Held").back_gesture(false));
             Text::new("held screen").into()
           })
+          .route("/long", |ctx| {
+            ctx.navigation_item(NavigationItem::new(
+              "A title too long to stand beside another as the way back",
+            ));
+            Text::new("long screen").into()
+          })
+          .route("/bare", |ctx| {
+            ctx.navigation_item(NavigationItem::new("Bare").bar_hidden(true));
+            Text::new("bare screen").into()
+          })
+          .route("/pictured", |ctx| {
+            ctx.navigation_item(NavigationItem::new("Pictured").title_view(Text::new("a view for a title")));
+            Text::new("pictured screen").into()
+          })
           .route("/user/:id", |ctx| {
             let id = ctx.route_params().get("id").unwrap_or("none").to_owned();
             Text::new(&format!("user {id}")).into()
@@ -115,6 +129,12 @@ fn shows(tree: &mut Tree, text: &str) -> bool {
     .is_some()
 }
 
+fn has_way_back(tree: &mut Tree) -> bool {
+  tree
+    .find_element(|element| element.id() == Some("navigation-back"))
+    .is_some()
+}
+
 #[test]
 fn a_screen_stays_mounted_under_the_one_pushed_over_it() {
   let (mut tree, router) = setup();
@@ -154,13 +174,13 @@ fn both_screens_are_shown_while_one_comes_in() {
 fn the_bar_shows_the_top_screens_title_and_the_way_back_to_the_one_under() {
   let (mut tree, router) = setup();
   assert!(shows(&mut tree, "Alpha"));
-  assert!(!shows(&mut tree, "‹"), "nothing to go back to");
+  assert!(!has_way_back(&mut tree), "nothing to go back to");
 
   router.push("/second");
   settle(&mut tree);
   assert!(shows(&mut tree, "Beta"));
   assert!(shows(&mut tree, "Alpha"), "the way back says where it goes");
-  assert!(shows(&mut tree, "‹"));
+  assert!(has_way_back(&mut tree));
 }
 
 #[test]
@@ -223,4 +243,48 @@ fn a_screen_that_turned_the_gesture_off_is_not_taken_back_by_a_finger() {
   swipe_from_the_left_edge(&mut tree, 300.0);
   settle(&mut tree);
   assert_eq!(router.path().get_untracked(), "/held");
+}
+
+#[test]
+fn the_way_back_says_only_back_when_the_title_under_has_no_room() {
+  let (mut tree, router) = setup();
+  router.push("/long");
+  settle(&mut tree);
+  router.push("/second");
+  settle(&mut tree);
+
+  assert!(has_way_back(&mut tree));
+  assert!(shows(&mut tree, "Back"), "the label that does not fit gives way");
+}
+
+#[test]
+fn a_screen_can_take_the_bar_away() {
+  let (mut tree, router) = setup();
+  let bar_height = |tree: &mut Tree| {
+    tree
+      .find_element(|element| element.text_content() == Some("Alpha") || element.text_content() == Some("Bare"))
+      .map(|title| title.rect().1)
+  };
+  assert!(bar_height(&mut tree).is_some());
+
+  router.push("/bare");
+  settle(&mut tree);
+  let screen = tree
+    .find_element(|element| element.text_content() == Some("bare screen"))
+    .expect("the screen");
+  assert!(
+    screen.rect().1 < 1.0,
+    "the screen starts at the top: {:?}",
+    screen.rect()
+  );
+}
+
+#[test]
+fn a_screen_can_put_a_view_in_the_titles_place() {
+  let (mut tree, router) = setup();
+  router.push("/pictured");
+  settle(&mut tree);
+
+  assert!(shows(&mut tree, "a view for a title"));
+  assert!(!shows(&mut tree, "Pictured"), "the view stands in for the title");
 }
