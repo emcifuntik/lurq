@@ -70,6 +70,9 @@ const CHEVRON_WIDTH: f32 = 11.0;
 const CHEVRON_HEIGHT: f32 = 20.0;
 const CHEVRON_STROKE: f32 = 2.6;
 const BACK_SPACING: f32 = 5.0;
+/// The point size the platform's arrow is asked for at: the label's.
+#[cfg(all(target_os = "ios", feature = "raster"))]
+const CHEVRON_POINT_SIZE: f32 = 17.0;
 /// From the bar's edge to where the way back's label starts, and the least space between the label and the
 /// title.
 const BACK_LEADING: f32 = 9.0 + CHEVRON_WIDTH + BACK_SPACING;
@@ -894,8 +897,17 @@ fn bar_item(
     .into()
 }
 
-/// The way back's arrow: two strokes that meet at a point on the left, as the platform draws it.
+/// The way back's arrow: the platform's symbol on iOS with the `raster` feature, and otherwise two strokes
+/// that meet at a point on the left, drawn after it.
 fn chevron(color: Color) -> Element {
+  // The platform's own, where there is a platform to ask and images to show it with.
+  #[cfg(all(target_os = "ios", feature = "raster"))]
+  if let Some(symbol) = crate::app::ios_symbol::symbol("chevron.backward", CHEVRON_POINT_SIZE, color) {
+    return crate::components::Image::new(symbol.image)
+      .width(symbol.width)
+      .height(symbol.height)
+      .into();
+  }
   // Each stroke goes from the point, at the middle of the left side, to a corner on the right.
   let (rise, run) = (
     CHEVRON_HEIGHT / 2.0 - CHEVRON_STROKE / 2.0,
