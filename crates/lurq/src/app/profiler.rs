@@ -24,6 +24,8 @@ mod counter_tests;
 mod counting_allocator;
 #[cfg(any(feature = "serde", feature = "mcp"))]
 mod export;
+#[cfg(all(test, feature = "perf_profile"))]
+mod latency_tests;
 mod model;
 mod phase_slot;
 #[cfg(all(test, feature = "perf_profile"))]
@@ -46,10 +48,11 @@ pub use collector::ProfilingHandle;
 pub use counting_allocator::CountingAllocator;
 pub use model::{
   BuildAvailability, CacheSizes, CanvasTextProfile, DEFAULT_RECORDING_MAX_BYTES, GpuTimestampAvailability, GpuTiming,
-  InFlightObservation, InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS, MAX_ENDED_SESSION_IDS,
+  InFlightObservation, InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS, MAX_ENDED_SESSION_IDS, MAX_PENDING_INPUTS,
   MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS, MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassAllocations, PassCounters,
-  PassSample, Phase, PhaseSpan, ProfileError, ProfileReport, ProfileSample, RecordingOptions, RecordingStatus,
-  SampleData, SessionId, SessionOptions, SessionStarted, SessionStatus, UiUpdateKind, UiUpdateSample, WindowStatus,
+  PassSample, Phase, PhaseSpan, PresentTiming, ProfileError, ProfileReport, ProfileSample, RecordingOptions,
+  RecordingStatus, SampleData, SessionId, SessionOptions, SessionStarted, SessionStatus, UiUpdateKind, UiUpdateSample,
+  WindowStatus,
 };
 pub use producer::{PhaseGuard, ProfileContext};
 

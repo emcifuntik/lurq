@@ -123,8 +123,10 @@ impl ProfileReport {
         "canvas": "CPU processing; recording includes uploads and WGPU submission; tessellation includes mesh cache lookup",
         "canvas_asset_upload_details": "DX12 captured encodes only; four CPU subscopes nested in asset_upload; cache_eviction is outside asset_upload inside Canvas total; cache byte counters are policy charges, not GPU allocation/RSS; WGPU or uncaptured details are null",
         "submit_present": "CPU API wall time, not GPU execution",
-        "gpu_timing": "WGPU timestamp queries, only while a session is active: ui is the UI encoder from the start of its first render pass to the end of the window pass; canvas sums the Canvas command buffers of the frame, each start to end (null when the frame had none or not all were measured); arrives frames later, matched by window and frame_id; null when it never arrived or the adapter has no timestamp queries (see build.gpu_timestamps)",
-        "fps": "on-demand rendering; sample count/interval is not throughput or FPS"
+        "fps": "on-demand rendering; sample count/interval is not throughput or FPS",
+        "present": "presented_ms is when the backend's present call returned on the CPU, not when the display showed the frame; missed_vsync only inside a continuous run of frames (each wanted within a refresh of the previous present), never across an idle gap",
+        "input_latency": "an input sample starts when the shell's handler received the event (no OS timestamp); queue_delay to its dispatch, input_to_present to the CPU present of the first frame presented after it; no positions, keys or text",
+        "gpu_timing": "WGPU timestamp queries, only while a session is active: ui is the UI encoder from the start of its first render pass to the end of the window pass; canvas sums the Canvas command buffers of the frame, each start to end (null when the frame had none or not all were measured); arrives frames later, matched by window and frame_id; null when it never arrived or the adapter has no timestamp queries (see build.gpu_timestamps)"
       }
     });
     // Additive: a bounded session's export has no such key.
@@ -159,6 +161,15 @@ fn sample_json(sample: &ProfileSample) -> Value {
         "start_ms": span.start_ns as f64 / 1e6, "end_ms": span.end_ns as f64 / 1e6
       })).collect::<Vec<_>>(),
       "dropped_spans": pass.dropped_spans,
+      "reasons": pass.reasons.names().collect::<Vec<_>>(),
+      "present": pass.present.map(|present| json!({
+        "presented_ms": present.presented_ms,
+        "interval_ms": present.interval.map(ms),
+        "refresh_interval_ms": present.refresh_interval.map(ms),
+        "continuous": present.continuous,
+        "missed_vsync": present.missed_vsync(),
+        "missed_vsyncs": present.missed_vsyncs
+      })),
       // Additive within schema_version 1; null for a pass without counters.
       "counters": pass.counters.map(counters_json)
     }),
@@ -170,11 +181,22 @@ fn sample_json(sample: &ProfileSample) -> Value {
     SampleData::InputDispatch(input) => json!({
       "kind": "input_dispatch", "frame_id": input.frame_id, "rendered": false,
       "category": input.kind.name(), "cpu_timings_ms": timings!(input; total),
-      "inclusive_in_pass": input.frame_id.is_some()
+      "inclusive_in_pass": input.frame_id.is_some(),
+      "interaction_id": input.interaction_id,
+      "presented_frame_id": input.presented_frame_id,
+      "latency_ms": {
+        "queue_delay": ms(input.queue_delay),
+        "dispatch": ms(input.total),
+        "input_to_present": input.input_to_present.map(ms)
+      }
     }),
   };
   json!({ "sequence": sample.sequence, "window": sample.window, "started_ms": sample.started_ms,
     "completed_ms": sample.completed_ms, "data": data })
+}
+
+fn ms(duration: std::time::Duration) -> f64 {
+  duration.as_secs_f64() * 1000.
 }
 
 fn counters_json(counters: PassCounters) -> Value {

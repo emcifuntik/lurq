@@ -5,7 +5,8 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::app::profiler::{
-  ApplicationScopeSample, GpuTimestampAvailability, PassSample, ProfileReport, ProfileSample, SampleData,
+  ApplicationScopeSample, GpuTimestampAvailability, InputDispatchSample, PassSample, ProfileReport, ProfileSample,
+  SampleData,
 };
 
 /// One 60 Hz refresh: the timeline draws its budget line here and colours the
@@ -214,6 +215,109 @@ pub(crate) fn pass_of(sample: &ProfileSample) -> Option<&PassSample> {
   }
 }
 
+pub(crate) fn input_of(sample: &ProfileSample) -> Option<&InputDispatchSample> {
+  match &sample.data {
+    SampleData::InputDispatch(input) => Some(input),
+    SampleData::Pass(_) | SampleData::UiUpdate(_) => None,
+  }
+}
+
+/// The pass presented a frame that missed a vsync inside a run of frames.
+pub(crate) fn missed_vsync(sample: &ProfileSample) -> bool {
+  pass_of(sample)
+    .and_then(|pass| pass.present)
+    .is_some_and(|present| present.missed_vsync())
+}
+
+/// Why the pass ran, comma separated; "-" for no reason recorded.
+pub(crate) fn reasons_text(pass: &PassSample) -> String {
+  let names: Vec<_> = pass.reasons.names().collect();
+  if names.is_empty() {
+    "-".to_owned()
+  } else {
+    names.join(", ")
+  }
+}
+
+/// The inputs received in one part of the input lane.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct InputBucket {
+  pub inputs: usize,
+  /// The longest input-to-present latency among them; None when no frame
+  /// presented any of them.
+  pub max_latency_ms: Option<f64>,
+}
+
+impl ProfilerCapture {
+  /// `buckets` equal parts of `range`, each with the inputs received in it.
+  pub(crate) fn input_buckets(&self, range: TimeRange, buckets: usize) -> Vec<InputBucket> {
+    let mut parts = vec![InputBucket::default(); buckets];
+    if buckets == 0 {
+      return parts;
+    }
+    for sample in self.markers_in(range) {
+      let Some(input) = input_of(sample) else {
+        continue;
+      };
+      let part = &mut parts[bucket_of(range, sample.started_ms, buckets)];
+      part.inputs += 1;
+      if let Some(latency) = input.input_to_present.map(ms) {
+        part.max_latency_ms = Some(part.max_latency_ms.map_or(latency, |max| max.max(latency)));
+      }
+    }
+    parts
+  }
+
+  /// `buckets` equal parts of `range`, true where a pass that missed a vsync
+  /// starts, and how many such passes there are.
+  pub(crate) fn missed_vsync_buckets(&self, range: TimeRange, buckets: usize) -> (Vec<bool>, usize) {
+    let mut parts = vec![false; buckets];
+    let mut count = 0;
+    for sample in self.passes_in(range).iter().filter(|sample| missed_vsync(sample)) {
+      if buckets > 0 {
+        parts[bucket_of(range, sample.started_ms, buckets)] = true;
+      }
+      count += 1;
+    }
+    (parts, count)
+  }
+
+  /// The inputs frame `frame_id` of `window` presented, in dispatch order.
+  pub(crate) fn inputs_presented_by(&self, window: &str, frame_id: u64) -> Vec<&InputDispatchSample> {
+    let mut inputs: Vec<_> = self
+      .markers
+      .iter()
+      .filter(|sample| sample.window == window)
+      .filter_map(|sample| input_of(sample))
+      .filter(|input| input.presented_frame_id == Some(frame_id))
+      .collect();
+    inputs.sort_by_key(|input| input.interaction_id);
+    inputs
+  }
+}
+
+/// One row per input a frame presented: its interaction id, queue delay,
+/// dispatch and input-to-present latency.
+pub(crate) fn input_detail(inputs: &[&InputDispatchSample]) -> Option<DetailSection> {
+  (!inputs.is_empty()).then(|| {
+    section(
+      "INPUT",
+      inputs.iter().map(|input| {
+        (
+          input.kind.name(),
+          format!(
+            "#{} queue {} · dispatch {} · present {}",
+            input.interaction_id,
+            format_duration(input.queue_delay),
+            format_duration(input.total),
+            input.input_to_present.map_or_else(|| "-".to_owned(), format_duration)
+          ),
+        )
+      }),
+    )
+  })
+}
+
 pub(crate) fn ms(duration: Duration) -> f64 {
   duration.as_secs_f64() * 1000.0
 }
@@ -403,6 +507,7 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
     ),
     ("backend", pass.backend.to_owned()),
     ("spans", pass.spans.len().to_string()),
+    ("reasons", reasons_text(pass)),
   ];
   let mut sections = vec![section(
     "PASS",
@@ -423,6 +528,20 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
         ("canvas", gpu.canvas.map_or_else(|| "-".to_owned(), format_duration)),
         ("total", format_duration(gpu.total())),
       ],
+    ));
+  }
+
+  if let Some(present) = &pass.present {
+    let optional = |value: Option<Duration>| value.map_or_else(|| "-".to_owned(), format_duration);
+    sections.push(section(
+      "PRESENT",
+      [
+        ("presented_ms", format_ms(present.presented_ms)),
+        ("interval", optional(present.interval)),
+        ("refresh_interval", optional(present.refresh_interval)),
+      ]
+      .into_iter()
+      .chain(count_rows!(present; continuous, missed_vsyncs)),
     ));
   }
 

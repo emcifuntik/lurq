@@ -89,15 +89,6 @@ impl ProfileContext {
       .then(|| self.phase(phase))
   }
 
-  pub(crate) fn input(&self, kind: InputKind) -> InputGuard {
-    InputGuard {
-      context: self.clone(),
-      kind,
-      started: Instant::now(),
-      _phase: self.phase(Phase::InputDispatch),
-    }
-  }
-
   pub(crate) fn update(&self, kind: UiUpdateKind) -> UpdateGuard {
     UpdateGuard {
       context: self.clone(),
@@ -110,23 +101,32 @@ impl ProfileContext {
   }
 }
 
+/// One input dispatch (`WindowProfiler::input`). Hand it back to
+/// `WindowProfiler::end_input` with whether the input asked for a frame; one
+/// dropped instead waits for the window's next presented frame.
+#[cfg(feature = "perf_profile")]
 pub(crate) struct InputGuard {
   context: ProfileContext,
   kind: InputKind,
+  received: Instant,
   started: Instant,
+  wants_frame: bool,
   _phase: PhaseGuard,
 }
 
+#[cfg(feature = "perf_profile")]
 impl Drop for InputGuard {
   fn drop(&mut self) {
-    self.context.handle.record(
+    self.context.handle.input_dispatched(
       &self.context.window,
-      self.started,
-      SampleData::InputDispatch(InputDispatchSample {
-        frame_id: self.context.frame_id,
+      super::collector::DispatchedInput {
         kind: self.kind,
-        total: self.started.elapsed(),
-      }),
+        frame_id: self.context.frame_id,
+        received: self.received,
+        dispatch_started: self.started,
+        dispatch: self.started.elapsed(),
+      },
+      self.wants_frame,
     );
   }
 }
@@ -187,6 +187,17 @@ pub(crate) struct WindowProfiler {
   canvas_preparation: Duration,
   /// The pass guard's entry: the root of the pass's spans.
   pass_entry: Entered,
+  /// When the shell received the event it dispatches next (`stamp_input`).
+  received: Option<Instant>,
+  /// When an input that asked for a frame first came since the last present.
+  wanted: Option<Instant>,
+  /// The last present, when its pass ended wanting the next frame at once.
+  continuing_from: Option<Instant>,
+  wants_next_frame: bool,
+  /// When this pass's present returned (`presented`).
+  presented_at: Option<Instant>,
+  refresh: Option<Duration>,
+  presents: PresentTracker,
   /// A session took samples when the pass began.
   captured: bool,
   /// The pass thread's allocation counts when a captured pass began.
@@ -213,11 +224,71 @@ impl WindowProfiler {
       canvas_recording: Duration::ZERO,
       canvas_preparation: Duration::ZERO,
       pass_entry: Entered::default(),
+      received: None,
+      wanted: None,
+      continuing_from: None,
+      wants_next_frame: false,
+      presented_at: None,
+      refresh: None,
+      presents: PresentTracker::default(),
       captured: false,
       #[cfg(feature = "perf_profile")]
       allocations_start: None,
       counters: None,
     }
+  }
+
+  /// A session takes samples: what a pass or input records is kept.
+  pub(crate) fn capturing(&self) -> bool {
+    self.context.handle.inner.active.load(Ordering::Acquire)
+  }
+
+  /// When the shell received the event it is about to dispatch; None for an
+  /// event that is not input, so the stamp never reaches a later input.
+  pub(crate) fn stamp_input(&mut self, received: Option<Instant>) {
+    self.received = received;
+  }
+
+  /// Starts an input dispatch: its queue delay runs from the shell's stamp,
+  /// which only this input takes.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn input(&mut self, kind: InputKind) -> InputGuard {
+    let started = Instant::now();
+    InputGuard {
+      context: self.context.clone(),
+      kind,
+      received: self.received.take().unwrap_or(started),
+      started,
+      wants_frame: true,
+      _phase: self.context.phase(Phase::InputDispatch),
+    }
+  }
+
+  /// Ends an input dispatch. One that asked for no frame is presented by
+  /// none; the others wait for the next presented frame, which they make
+  /// part of a continuous run when they came within a refresh of the last.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn end_input(&mut self, mut input: InputGuard, wants_frame: bool) {
+    input.wants_frame = wants_frame;
+    if wants_frame {
+      self.wanted = Some(self.wanted.map_or(input.received, |wanted| wanted.min(input.received)));
+    }
+  }
+
+  /// The refresh of the window's display, as its shell reads it.
+  pub(crate) fn set_refresh_interval(&mut self, refresh: Option<Duration>) {
+    self.refresh = refresh;
+  }
+
+  /// The pass's present returned at `at`.
+  pub(crate) fn presented(&mut self, at: Instant) {
+    self.presented_at = Some(at);
+  }
+
+  /// The pass ended wanting the next frame at once (an animation, a
+  /// continuous image): that frame continues the run.
+  pub(crate) fn set_wants_next_frame(&mut self, wants: bool) {
+    self.wants_next_frame = wants;
   }
 
   pub(crate) fn attach(&mut self, parent: &Self, id: String, devtools: bool) {
@@ -330,12 +401,33 @@ impl WindowProfiler {
       .as_ref()
       .and_then(|slot| slot.finish_spans(self.pass_entry, report.required))
       .unwrap_or_default();
+    let presented_at = self.presented_at.take();
+    let frame_id = self.context.frame_id.take();
+    let presented = report
+      .rendered
+      .then(|| (frame_id.unwrap(), presented_at.unwrap_or_else(Instant::now)));
+    let present = presented.map(|(_, at)| {
+      // First wanted when the frame before ended wanting it, or when the
+      // first input that asked for it came.
+      let wanted = self.continuing_from.into_iter().chain(self.wanted).min();
+      let (interval, continuous, missed_vsyncs) = self.presents.present(at, wanted, self.refresh);
+      self.continuing_from = self.wants_next_frame.then_some(at);
+      self.wanted = None;
+      PresentTiming {
+        presented_ms: self.context.handle.millis(at),
+        interval,
+        refresh_interval: self.refresh,
+        continuous,
+        missed_vsyncs,
+      }
+    });
+    self.wants_next_frame = false;
     if report.required {
       self.context.handle.record(
         &self.context.window,
         start,
         SampleData::Pass(PassSample {
-          frame_id: report.rendered.then_some(self.context.frame_id.unwrap()),
+          frame_id: presented.map(|(frame_id, _)| frame_id),
           rendered: report.rendered,
           cached_render_list: report.used_cached_render_list,
           total: start.elapsed(),
@@ -359,13 +451,32 @@ impl WindowProfiler {
           frame: frame.cloned(),
           spans,
           dropped_spans,
+          reasons: report.reasons,
+          present,
           counters: self.counters,
           gpu: None,
         }),
       );
     }
     self.counters = None;
-    self.context.frame_id = None;
+    // The inputs since the last present are presented by this frame; a pass
+    // that had nothing to do ends them presented by none, and the run of
+    // frames with them. A required pass that could not render keeps them.
+    if presented.is_some() || !report.required {
+      #[cfg(feature = "perf_profile")]
+      self.context.handle.inputs_presented(&self.context.window, presented);
+      self.wanted = None;
+    }
+    if !report.required {
+      self.continuing_from = None;
+    }
+  }
+
+  /// Ends the run of frames: the window stopped asking for them (it was
+  /// hidden), so its next frame comes after a gap, not late.
+  pub(crate) fn break_run(&mut self) {
+    self.continuing_from = None;
+    self.wanted = None;
   }
 }
 

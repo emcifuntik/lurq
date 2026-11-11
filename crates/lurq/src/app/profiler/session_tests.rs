@@ -261,7 +261,7 @@ mod enabled {
     let mut producer = WindowProfiler::new();
     let handle = producer.handle();
     let id = handle.start(Default::default()).unwrap().id;
-    let input = producer.context.input(InputKind::Pointer);
+    let input = producer.input(InputKind::Pointer);
     let (started, pass) = producer.begin_pass(1);
     producer.finish_pass(
       started,
