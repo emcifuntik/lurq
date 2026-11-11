@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Duration};
 use super::{
   profiler_analysis::AnalysisProps,
   profiler_capture::{
-    self as capture, DetailSection, FRAME_BUDGET_MS, MAX_TIMELINE_PASSES, PhaseRow, ProfilerCapture, TimeRange,
-    bucket_of, format_bytes, format_ms, format_span, ms, pass_of,
+    self as capture, Counter, DetailSection, FRAME_BUDGET_MS, MAX_TIMELINE_PASSES, PhaseRow, ProfilerCapture,
+    TimeRange, bucket_of, format_bytes, format_ms, format_span, ms, pass_of,
   },
   style::{
     BLUE, BORDER, FILL, MUTED, PINK, PRIMARY, SELECTED, SIGNAL_GREEN, SURFACE, SURFACE_2, TEXT, YELLOW, empty_state,
@@ -35,12 +35,15 @@ const OVERVIEW_BUCKETS: usize = 120;
 const MARKER_BUCKETS: usize = 240;
 const OVERVIEW_HEIGHT: f32 = 36.0;
 const CHART_HEIGHT: f32 = 120.0;
+/// Height of each counter track under the pass chart.
+const COUNTER_HEIGHT: f32 = 24.0;
 const BAR_WIDTH: f32 = 3.0;
 /// Right of each timeline track, between it and its label.
 const LANE_GAP: f32 = 8.0;
 const LANE_LABEL_WIDTH: f32 = 90.0;
 /// Spans the sidebar lists for one pass; the rest are counted.
 const MAX_PHASE_ROWS: usize = 256;
+pub(crate) const LOAD_WHILE_RECORDING: &str = "Load skipped: a recording is running; Stop it, then Load again";
 
 /// The Profiler tab: the recording Start opened on the inspected tree's
 /// profiling handle, or the capture Stop finished or Load read, and what is
@@ -130,16 +133,24 @@ impl ProfilerState {
       return;
     };
     match recording.handle.end(recording.id) {
-      Ok(report) => self.show(report),
+      Ok(report) => {
+        // What went wrong during the recording (a file picked while it ran)
+        // is not about the capture it made.
+        self.error = None;
+        self.show(report);
+      }
       Err(error) => self.error = Some(error.to_string()),
     }
   }
 
   /// Shows the report of a recording file Save wrote
   /// (`ProfileReport::from_recording_file`) in place of the capture; keeps
-  /// the capture when the file could not be read. Not while recording.
+  /// the capture when the file could not be read. A file picked while a
+  /// recording runs (one started while the dialog was open) is not loaded,
+  /// and the top bar says so.
   pub(crate) fn load(&mut self, file: Result<ProfileReport, String>) {
     if self.recording.is_some() {
+      self.error = Some(LOAD_WHILE_RECORDING.to_owned());
       return;
     }
     match file {
@@ -245,8 +256,8 @@ pub(crate) fn profiler_actions(
   if let Some(status) = state.recording.as_ref().map(recording_status_line) {
     row = row.child(mono_text(&status, 11.0, FontWeight::Medium, RED));
   }
-  // Without a capture the tab's body shows the error instead.
-  if let (Some(error), Some(_)) = (&state.error, &state.capture) {
+  // Without a capture and not recording, the tab's body shows the error instead.
+  if let Some(error) = state.error.as_ref().filter(|_| recording || state.capture.is_some()) {
     row = row.child(mono_text(error, 11.0, FontWeight::Medium, RED).nowrap());
   }
   row = row.child(
@@ -611,6 +622,7 @@ fn timeline(
     .filter_map(|sample| pass_of(sample))
     .filter(|pass| ms(pass.total) > FRAME_BUDGET_MS)
     .count();
+  let missed_frames = passes.iter().filter(|sample| capture::missed_vsync(sample)).count();
   let header = Row::new()
     .align_items(Alignment::Center)
     .spacing(12.0)
@@ -637,6 +649,12 @@ fn timeline(
       10.0,
       FontWeight::Normal,
       if long_frames > 0 { YELLOW } else { MUTED },
+    ))
+    .child(mono_text(
+      &format!("{missed_frames} missed vsync"),
+      10.0,
+      FontWeight::Normal,
+      if missed_frames > 0 { RED } else { MUTED },
     ))
     .child(Spacer::new().flex(1.0))
     .child(mono_text(&format!("FPS {fps}"), 11.0, FontWeight::Bold, TEXT))
@@ -666,10 +684,10 @@ fn timeline(
     .into()
 }
 
-/// The pass chart, the marker lanes and the axis, one row each. Each row's
-/// track takes the width the label column leaves, and its time scale is that
-/// width less `BAR_WIDTH` (so a bar at the range's end stays inside): a time is
-/// at the same x in every row.
+/// The pass chart, the counter tracks, the marker lanes and the axis, one row
+/// each. Each row's track takes the width the label column leaves, and its time
+/// scale is that width less `BAR_WIDTH` (so a bar at the range's end stays
+/// inside): a time is at the same x in every row.
 fn timeline_tracks(
   capture: &ProfilerCapture,
   passes: &[Arc<ProfileSample>],
@@ -677,12 +695,16 @@ fn timeline_tracks(
   selected: Option<u64>,
   state_signal: Signal<ProfilerState>,
 ) -> Element {
-  Column::new()
+  // Missed vsyncs sit right under the bars they mark; the counters follow.
+  let mut tracks = Column::new()
     .spacing(4.0)
-    .child(pass_chart(passes, range, selected, state_signal))
-    .child(marker_lane(capture, range, "input", BLUE, |data| {
-      matches!(data, SampleData::InputDispatch(_))
-    }))
+    .child(pass_chart(passes, range, selected, state_signal.clone()))
+    .child(missed_vsync_lane(capture, range));
+  for counter in Counter::ALL {
+    tracks = tracks.child(counter_track(counter, passes, range, selected, state_signal.clone()));
+  }
+  tracks
+    .child(input_lane(capture, range))
     .child(marker_lane(capture, range, "ui update", PINK, |data| {
       matches!(data, SampleData::UiUpdate(_))
     }))
@@ -691,6 +713,107 @@ fn timeline_tracks(
     .into()
 }
 
+/// The frames that missed a vsync inside a run of frames, under their bars.
+fn missed_vsync_lane(capture: &ProfilerCapture, range: TimeRange) -> Element {
+  let (missed, count) = capture.missed_vsync_buckets(range, MARKER_BUCKETS);
+  let cells: Vec<_> = missed.into_iter().map(|missed| missed.then_some(RED)).collect();
+  lane(
+    &cells,
+    Column::new().child(mono_text(
+      &format!("missed vsync {count}"),
+      9.0,
+      FontWeight::Normal,
+      if count > 0 { RED } else { MUTED },
+    )),
+  )
+}
+
+/// One counter's value per pass, a bar at the pass's start as in the pass
+/// chart; a click selects the pass. Its label shows the selected pass's value,
+/// or the range's highest, or that the counter is unavailable.
+fn counter_track(
+  counter: Counter,
+  passes: &[Arc<ProfileSample>],
+  range: TimeRange,
+  selected: Option<u64>,
+  state_signal: Signal<ProfilerState>,
+) -> Element {
+  let mut track = Stack::new().flex(1.0).height(COUNTER_HEIGHT).background(SURFACE_2);
+  let Some(points) = capture::counter_points(counter, passes) else {
+    return track_row(
+      track,
+      Column::new().child(mono_text(
+        &format!("{} unavailable", counter.label()),
+        9.0,
+        FontWeight::Normal,
+        MUTED,
+      )),
+    );
+  };
+  let highest = points.iter().map(|point| point.value).fold(0.0, f64::max);
+  for point in &points {
+    let is_selected = selected == Some(point.sequence);
+    let sequence = point.sequence;
+    let height = if highest > 0.0 {
+      (point.value / highest) as f32 * COUNTER_HEIGHT
+    } else {
+      0.0
+    };
+    let bar = Row::new()
+      .width(BAR_WIDTH)
+      .height(height.max(1.0))
+      .background(if is_selected { PRIMARY } else { BLUE })
+      .opacity(if is_selected { 1.0 } else { 0.7 })
+      .cursor(CursorIcon::Pointer)
+      .on_click({
+        let state_signal = state_signal.clone();
+        move |_| state_signal.update(|state| state.selected = Some(sequence))
+      });
+    track = track.child(placed(range.fraction(point.started_ms) as f32, bar, Alignment::End));
+  }
+  let shown = points
+    .iter()
+    .find(|point| selected == Some(point.sequence))
+    .map(|point| point.value)
+    .or_else(|| (!points.is_empty()).then_some(highest));
+  let value = shown.map_or_else(|| "–".to_owned(), |value| counter.format(value));
+  track_row(
+    track,
+    Column::new().child(mono_text(
+      &format!("{} {value}", counter.label()),
+      9.0,
+      FontWeight::Normal,
+      TEXT,
+    )),
+  )
+}
+
+/// Each input where the shell received it, coloured by its input-to-present
+/// latency (the longest in its part); blue where no frame presented it.
+fn input_lane(capture: &ProfilerCapture, range: TimeRange) -> Element {
+  let buckets = capture.input_buckets(range, MARKER_BUCKETS);
+  let count: usize = buckets.iter().map(|bucket| bucket.inputs).sum();
+  let max_latency = buckets
+    .iter()
+    .filter_map(|bucket| bucket.max_latency_ms)
+    .fold(None, |max: Option<f64>, latency| {
+      Some(max.map_or(latency, |max| max.max(latency)))
+    });
+  let cells: Vec<_> = buckets
+    .iter()
+    .map(|bucket| (bucket.inputs > 0).then(|| bucket.max_latency_ms.map_or(BLUE, latency_color)))
+    .collect();
+  let mut label = Column::new().child(mono_text(&format!("input {count}"), 9.0, FontWeight::Normal, BLUE));
+  if let Some(max) = max_latency {
+    label = label.child(mono_text(
+      &format!("max {}", format_ms(max)),
+      9.0,
+      FontWeight::Normal,
+      latency_color(max),
+    ));
+  }
+  lane(&cells, label)
+}
 /// One row of the timeline: `track`, which must flex, then its label column.
 fn track_row(track: impl Into<Element>, label: Column) -> Element {
   Row::new()
@@ -783,17 +906,26 @@ fn marker_lane(
   capture: &ProfilerCapture,
   range: TimeRange,
   label: &str,
-  color: &str,
+  color: &'static str,
   kind: impl Fn(&SampleData) -> bool,
 ) -> Element {
-  let mut marked = vec![false; MARKER_BUCKETS];
+  let mut marked = vec![None; MARKER_BUCKETS];
   let mut count = 0;
   for sample in capture.markers_in(range) {
     if kind(&sample.data) {
-      marked[bucket_of(range, sample.started_ms, MARKER_BUCKETS)] = true;
+      marked[bucket_of(range, sample.started_ms, MARKER_BUCKETS)] = Some(color);
       count += 1;
     }
   }
+  lane(
+    &marked,
+    Column::new().child(mono_text(&format!("{label} {count}"), 9.0, FontWeight::Normal, color)),
+  )
+}
+
+/// A lane of equal parts of the time scale, each in its colour (None for
+/// none), then its label.
+fn lane(cells: &[Option<&'static str>], label: Column) -> Element {
   // The parts span the time scale, the track less `BAR_WIDTH`.
   let mut lane = Row::new()
     .height(6.0)
@@ -802,23 +934,20 @@ fn marker_lane(
     .background(SURFACE_2);
   // One cell per run of equal parts keeps the lane small.
   let mut start = 0;
-  while start < MARKER_BUCKETS {
-    let value = marked[start];
-    let end = marked[start..]
+  while start < cells.len() {
+    let value = cells[start];
+    let end = cells[start..]
       .iter()
-      .position(|marked| *marked != value)
-      .map_or(MARKER_BUCKETS, |offset| start + offset);
+      .position(|cell| *cell != value)
+      .map_or(cells.len(), |offset| start + offset);
     let mut cell = Row::new().height(FILL).flex((end - start) as f32);
-    if value {
+    if let Some(color) = value {
       cell = cell.background(color);
     }
     lane = lane.child(cell);
     start = end;
   }
-  track_row(
-    lane,
-    Column::new().child(mono_text(&format!("{label} {count}"), 9.0, FontWeight::Normal, color)),
-  )
+  track_row(lane, label)
 }
 
 /// Ticks at each quarter of the time scale, the last part closed by the
@@ -863,7 +992,7 @@ fn legend() -> Element {
     .child(swatch(RED, "over twice the budget"))
     .child(swatch(PRIMARY, "selected"))
     .child(text(
-      "faded: not presented · click a bar to inspect it",
+      "faded: not presented · click a bar to inspect it · inputs coloured by input-to-present latency, blue: no frame",
       10.0,
       FontWeight::Normal,
       MUTED,
@@ -879,12 +1008,16 @@ fn frame_sidebar(capture: &ProfilerCapture, selected: Option<&ProfileSample>) ->
     None => body = body.child(empty_state("Select a frame in the timeline")),
     Some((sample, pass)) => {
       let total_ms = ms(pass.total);
-      let summary = [
+      let mut summary = vec![
         ("Start", format_offset(capture, sample.started_ms), TEXT),
         ("Duration", format_ms(total_ms), duration_color(total_ms)),
         ("Presented", if pass.rendered { "yes" } else { "no" }.to_owned(), TEXT),
+        ("Reasons", capture::reasons_text(pass), TEXT),
         ("Window", sample.window.clone(), MUTED),
       ];
+      if let Some(present) = pass.present.filter(|present| present.missed_vsync()) {
+        summary.push(("Missed vsync", present.missed_vsyncs.to_string(), RED));
+      }
       let mut section = Column::new()
         .spacing(8.0)
         .padding_custom(padding(12.0, 16.0, 12.0, 16.0))
@@ -896,7 +1029,14 @@ fn frame_sidebar(capture: &ProfilerCapture, selected: Option<&ProfileSample>) ->
       body = body
         .child(section)
         .child(phase_section(&capture::phase_rows(pass), pass.dropped_spans));
-      for detail in capture::pass_detail(sample, pass) {
+      let inputs = pass
+        .frame_id
+        .map(|frame_id| capture.inputs_presented_by(&sample.window, frame_id))
+        .unwrap_or_default();
+      for detail in capture::input_detail(&inputs)
+        .into_iter()
+        .chain(capture::pass_detail(sample, pass))
+      {
         body = body.child(detail_section(&detail));
       }
     }
@@ -1001,6 +1141,18 @@ fn duration_color(ms: f64) -> &'static str {
   if ms > FRAME_BUDGET_MS * 2.0 {
     RED
   } else if ms > FRAME_BUDGET_MS {
+    YELLOW
+  } else {
+    SIGNAL_GREEN
+  }
+}
+
+/// An input-to-present latency: green within three frame budgets (50 ms),
+/// yellow within six, red above.
+fn latency_color(ms: f64) -> &'static str {
+  if ms > FRAME_BUDGET_MS * 6.0 {
+    RED
+  } else if ms > FRAME_BUDGET_MS * 3.0 {
     YELLOW
   } else {
     SIGNAL_GREEN

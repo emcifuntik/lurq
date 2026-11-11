@@ -48,10 +48,40 @@ fn every_field_report() -> ProfileReport {
     glyph_prepare: Duration::from_nanos(7),
     ..CanvasTextProfile::default()
   });
+  pass.reasons = crate::app::PassReasons {
+    timer_run: true,
+    layout_dirty: true,
+    ..Default::default()
+  };
+  pass.present = Some(PresentTiming {
+    presented_ms: 109.75,
+    interval: Some(Duration::from_micros(16_667)),
+    refresh_interval: Some(Duration::from_micros(16_666)),
+    continuous: true,
+    missed_vsyncs: 2,
+  });
+  pass.counters = Some(PassCounters {
+    nodes: 321,
+    memory_bytes: 8192,
+    caches: CacheSizes {
+      glyph_atlas_bytes: 1 << 22,
+      canvas_asset_cache_bytes: 77,
+      ..CacheSizes::default()
+    },
+    allocations: Some(PassAllocations {
+      allocations: 10,
+      frees: 9,
+      allocated_bytes: 1000,
+      freed_bytes: 900,
+      live_bytes: 1 << 30,
+    }),
+  });
   let frame = pass.frame.as_mut().unwrap();
   frame.quad_count = 17;
   frame.glyph_engine.rich_cosmic_shape = Duration::from_nanos(999);
   frame.render.present = Duration::from_micros(42);
+  frame.render.draw_calls = 23;
+  frame.render.canvas.asset_cache_bytes = 4321;
   frame.render.canvas.asset_upload_details = Some(CanvasAssetUploadProfile {
     pixel_packing: Duration::from_nanos(11),
     cache_entries_after: 5,
@@ -90,9 +120,23 @@ fn a_recording_file_reads_back_into_the_same_report() {
   assert_eq!(pass.backend, "dx12");
   assert_eq!(pass.spans, pass_of(&report, 0).spans);
   assert_eq!(pass.canvas_text.unwrap().total, Duration::from_nanos(1_234_567));
+  assert_eq!(pass.reasons, pass_of(&report, 0).reasons);
+  assert_eq!(pass.present, pass_of(&report, 0).present);
+  assert_eq!(pass.counters, pass_of(&report, 0).counters);
   let frame = pass.frame.as_ref().unwrap();
   assert_eq!(frame.memory.total_bytes, 4096);
   assert_eq!(frame.glyph_engine.rich_cosmic_shape, Duration::from_nanos(999));
+  assert_eq!(frame.render.draw_calls, 23);
+  assert_eq!(frame.render.canvas.asset_cache_bytes, 4321);
+  match &loaded.samples[1].data {
+    SampleData::InputDispatch(input) => {
+      assert_eq!(input.interaction_id, 1);
+      assert_eq!(input.queue_delay, Duration::from_micros(500));
+      assert_eq!(input.presented_frame_id, Some(4));
+      assert_eq!(input.input_to_present, Some(Duration::from_millis(90)));
+    }
+    _ => panic!("the second sample is an input dispatch"),
+  }
   assert_eq!(
     frame.render.canvas.asset_upload_details,
     pass_of(&report, 0)
@@ -172,11 +216,33 @@ fn files_that_are_not_recordings_are_refused_with_the_reason() {
     error.contains("report: samples: 0: data: pass: total: expected nanoseconds"),
     "{error}"
   );
-  // Names are identifiers, never text.
-  let error = with(&|file| {
-    file["report"]["application_scopes"]["samples"][0]["scope"]["label"] = Value::from("Quarterly report.pdf")
-  });
-  assert!(error.contains("label: expected an identifier"), "{error}");
+  // Names are names, never text or paths.
+  for text in ["Quarterly report.pdf", "C:/Users/me", "..\\secrets", ""] {
+    let error = with(&|file| file["report"]["application_scopes"]["samples"][0]["scope"]["label"] = Value::from(text));
+    assert!(error.contains("label: expected a name"), "{text:?}: {error}");
+  }
   let error = with(&|file| file["report"]["samples"][0]["data"]["pass"]["spans"][1]["phase"] = Value::from("paint"));
   assert!(error.contains("unknown Phase \"paint\""), "{error}");
+}
+
+#[test]
+fn a_custom_backend_name_saves_in_a_form_that_loads() {
+  let long = "x".repeat(MAX_APPLICATION_LABEL_BYTES + 10).leak();
+  for (backend, saved) in [
+    ("my-engine", "my-engine"),
+    ("vulkan.1_3", "vulkan.1_3"),
+    ("my engine/v2", "my_engine_v2"),
+    ("moteur-é", "moteur-_"),
+    ("", "_"),
+    (&*long, &long[..MAX_APPLICATION_LABEL_BYTES]),
+  ] {
+    let mut report = full_report();
+    let SampleData::Pass(pass) = &mut Arc::make_mut(&mut report.samples[0]).data else {
+      unreachable!("the first sample is a pass")
+    };
+    pass.backend = backend;
+    let loaded = ProfileReport::from_recording_file(&report.to_recording_file())
+      .unwrap_or_else(|error| panic!("{backend:?}: {error}"));
+    assert_eq!(pass_of(&loaded, 0).backend, saved, "{backend:?}");
+  }
 }

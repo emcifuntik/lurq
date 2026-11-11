@@ -8,7 +8,7 @@
 //! taken at each point where the innermost span changes, weighted by the time
 //! until the next one, so the call tree's totals are the spans' durations.
 //! Threads: "UI" holds the passes' phase spans, the frame, input and UI update
-//! markers and the memory counter; "UI scopes" and "Worker" hold the
+//! markers and the memory counters; "UI scopes" and "Worker" hold the
 //! application scopes of those lanes. Spans that overlap on one track (passes
 //! of two windows, scopes of two workers) go to a further thread of it.
 use std::collections::HashMap;
@@ -97,7 +97,7 @@ pub(super) fn firefox_profile(report: &ProfileReport) -> Value {
     "threads": threads,
     "pages": [],
     "profilerOverhead": [],
-    "counters": memory_counter(report).into_iter().collect::<Vec<_>>(),
+    "counters": memory_counters(report),
   })
 }
 
@@ -227,11 +227,15 @@ impl Thread {
         ),
         SampleData::InputDispatch(input) => {
           let kind = self.string(input.kind.name());
-          (
-            "Input",
-            CATEGORY_INPUT,
-            json!({ "type": "LurqInput", "kind": kind, "window": window }),
-          )
+          let mut data = json!({ "type": "LurqInput", "kind": kind, "window": window,
+            "interactionId": input.interaction_id,
+            "queueDelay": input.queue_delay.as_secs_f64() * 1000.0,
+            "dispatch": input.total.as_secs_f64() * 1000.0 });
+          if let (Some(frame_id), Some(latency)) = (input.presented_frame_id, input.input_to_present) {
+            data["presentedFrameId"] = Value::from(frame_id);
+            data["inputToPresent"] = Value::from(latency.as_secs_f64() * 1000.0);
+          }
+          ("Input", CATEGORY_INPUT, data)
         }
         SampleData::UiUpdate(update) => {
           let operation = self.string(match update.kind {
@@ -352,16 +356,47 @@ fn pass_data(sequence: u64, window: usize, pass: &PassSample) -> Value {
   data
 }
 
-/// The runtime's memory estimate after each presented pass that has one.
-fn memory_counter(report: &ProfileReport) -> Option<Value> {
+/// The memory counters: the runtime's estimate after each pass that has one,
+/// and the live heap after each pass a `CountingAllocator` counted.
+fn memory_counters(report: &ProfileReport) -> Vec<Value> {
+  let runtime = counter(
+    report,
+    "Runtime memory",
+    "lurq's estimate of the runtime's memory at the end of each pass (without pass counters, its estimate cached once per second); not a heap allocation trace",
+    |pass| {
+      pass
+        .counters
+        .map(|counters| counters.memory_bytes)
+        .or(pass.frame.as_ref().map(|frame| frame.memory.total_bytes))
+        .map(|bytes| bytes as f64)
+    },
+  );
+  let heap = counter(
+    report,
+    "Live heap",
+    "bytes allocated and not yet freed by every thread at the end of each pass, counted by lurq's CountingAllocator",
+    |pass| {
+      pass
+        .counters
+        .and_then(|counters| counters.allocations)
+        .map(|allocations| allocations.live_bytes as f64)
+    },
+  );
+  runtime.into_iter().chain(heap).collect()
+}
+
+/// A counter of `value` at the end of each pass that has one; None without any.
+fn counter(
+  report: &ProfileReport,
+  name: &str,
+  description: &str,
+  value: impl Fn(&PassSample) -> Option<f64>,
+) -> Option<Value> {
   let mut points: Vec<(u64, f64)> = report
     .samples
     .iter()
     .filter_map(|sample| match &sample.data {
-      SampleData::Pass(pass) => pass
-        .frame
-        .as_ref()
-        .map(|frame| (ms_to_ns(sample.completed_ms), frame.memory.total_bytes as f64)),
+      SampleData::Pass(pass) => value(pass).map(|value| (ms_to_ns(sample.completed_ms), value)),
       SampleData::UiUpdate(_) | SampleData::InputDispatch(_) => None,
     })
     .collect();
@@ -370,18 +405,18 @@ fn memory_counter(report: &ProfileReport) -> Option<Value> {
   }
   points.sort_by_key(|(at_ns, _)| *at_ns);
   // A counter's samples are changes from the previous one.
-  let (mut previous_ns, mut previous_bytes) = (0, 0.0);
+  let (mut previous_ns, mut previous_value) = (0, 0.0);
   let mut time_deltas = Vec::with_capacity(points.len());
   let mut counts = Vec::with_capacity(points.len());
-  for (at_ns, bytes) in &points {
+  for (at_ns, value) in &points {
     time_deltas.push((at_ns - previous_ns) as f64 / 1e6);
-    counts.push(bytes - previous_bytes);
-    (previous_ns, previous_bytes) = (*at_ns, *bytes);
+    counts.push(value - previous_value);
+    (previous_ns, previous_value) = (*at_ns, *value);
   }
   Some(json!({
     "category": "Memory",
-    "name": "Runtime memory",
-    "description": "lurq's cached estimate of the runtime's memory, sampled at most once per second; not a heap allocation trace",
+    "name": name,
+    "description": description,
     "mainThreadIndex": 0,
     "pid": PID,
     "samples": {
@@ -425,7 +460,15 @@ fn meta() -> Value {
         "display": display,
         "chartLabel": "{marker.data.kind}",
         "tableLabel": "{marker.name} {marker.data.kind}",
-        "fields": [field("kind", "Kind", "unique-string"), field("window", "Window", "unique-string")],
+        "fields": [
+          field("kind", "Kind", "unique-string"),
+          field("window", "Window", "unique-string"),
+          field("interactionId", "Interaction", "integer"),
+          field("queueDelay", "Queue delay", "duration"),
+          field("dispatch", "Dispatch", "duration"),
+          field("presentedFrameId", "Presented in frame", "integer"),
+          field("inputToPresent", "Input to present", "duration"),
+        ],
       },
       {
         "name": "LurqPass",

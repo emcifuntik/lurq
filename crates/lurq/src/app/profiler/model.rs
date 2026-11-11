@@ -2,6 +2,7 @@
 use std::{sync::Arc, time::Duration};
 
 use super::{ApplicationScopeReport, FrameProfile};
+use crate::app::PassReasons;
 
 pub const MAX_ACTIVE_SESSIONS: usize = 8;
 pub const MAX_SAMPLES_PER_SESSION: usize = 240;
@@ -10,6 +11,9 @@ pub const MAX_WINDOW_ID_BYTES: usize = 256;
 pub const MAX_ENDED_SESSION_IDS: usize = 64;
 /// Phase spans one pass keeps; later ones are counted in `PassSample::dropped_spans`.
 pub const MAX_SPANS_PER_PASS: usize = 1024;
+/// Dispatched inputs a window holds until a frame presents them; an older one
+/// is recorded as presented by none.
+pub const MAX_PENDING_INPUTS: usize = 256;
 /// Default ceiling of a recording session: 1 GiB.
 pub const DEFAULT_RECORDING_MAX_BYTES: u64 = 1 << 30;
 
@@ -239,11 +243,84 @@ impl InputKind {
   }
 }
 
+/// One input event, from when the shell received it to the first frame
+/// presented after it. Its sample starts when the shell received it. Holds
+/// the kind only: never a pointer position, key, code or text.
 #[derive(Clone)]
 pub struct InputDispatchSample {
+  /// The pass the dispatch nested in; None for an event dispatched between passes.
   pub frame_id: Option<u64>,
   pub kind: InputKind,
+  /// The dispatch: from the tree's handler entry to its return.
   pub total: Duration,
+  /// Numbers the inputs of one profiling handle from 1, in dispatch order.
+  pub interaction_id: u64,
+  /// From when the shell received the event to its dispatch. Zero for input
+  /// the shell did not stamp (synthetic input, a tree driven without a shell).
+  pub queue_delay: Duration,
+  /// The first frame presented after the dispatch; None when none followed:
+  /// the event asked for no frame, or the session ended first.
+  pub presented_frame_id: Option<u64>,
+  /// From when the shell received the event to when that frame's present
+  /// call returned (CPU time; see `PresentTiming`).
+  pub input_to_present: Option<Duration>,
+}
+
+/// When a presented frame showed, against the window's frame before it.
+/// `presented_ms` is when the backend's present call returned on the CPU: no
+/// backend reports when the display scanned the frame out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PresentTiming {
+  pub presented_ms: f64,
+  /// Since the window's previous presented frame; None for its first.
+  pub interval: Option<Duration>,
+  /// The refresh of the window's display as its shell last read it; None
+  /// without a shell that reports it.
+  pub refresh_interval: Option<Duration>,
+  /// The frame was wanted within one refresh of the previous present (a
+  /// running animation, a drag, a scroll): it continues a run of frames.
+  /// False after an idle gap, which is not a dropped frame.
+  pub continuous: bool,
+  /// Refreshes the frame missed, counted from when it was wanted, or from the
+  /// previous present when wanted before it; 0 outside a continuous run.
+  pub missed_vsyncs: u32,
+}
+
+impl PresentTiming {
+  pub fn missed_vsync(&self) -> bool {
+    self.missed_vsyncs > 0
+  }
+}
+
+/// The present of a window's last frame, to time the next one against.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PresentTracker {
+  last: Option<std::time::Instant>,
+}
+
+impl PresentTracker {
+  /// Times a frame presented at `presented`, first wanted at `wanted`, on a
+  /// display refreshing every `refresh`. A frame continues a run when it was
+  /// wanted no later than a refresh after the previous present; it missed
+  /// vsyncs when it presented over half a refresh after the refresh it was due.
+  pub(crate) fn present(
+    &mut self,
+    presented: std::time::Instant,
+    wanted: Option<std::time::Instant>,
+    refresh: Option<Duration>,
+  ) -> (Option<Duration>, bool, u32) {
+    let previous = self.last.replace(presented);
+    let interval = previous.map(|previous| presented.saturating_duration_since(previous));
+    let (Some(previous), Some(wanted), Some(refresh)) = (previous, wanted, refresh) else {
+      return (interval, false, 0);
+    };
+    if refresh.is_zero() || wanted > previous + refresh {
+      return (interval, false, 0);
+    }
+    let late = presented.saturating_duration_since(wanted.max(previous));
+    let refreshes = (late.as_secs_f64() / refresh.as_secs_f64()).round();
+    (interval, true, (refreshes as u32).saturating_sub(1))
+  }
 }
 
 #[derive(Clone)]
@@ -276,6 +353,13 @@ pub struct PassSample {
   pub spans: Vec<PhaseSpan>,
   /// Spans past `MAX_SPANS_PER_PASS`, not kept.
   pub dropped_spans: u32,
+  /// Why the pass ran (`PassReport::reasons`).
+  pub reasons: PassReasons,
+  /// Some for a presented pass.
+  pub present: Option<PresentTiming>,
+  /// Sizes taken at the end of the pass; None when the pass started with no
+  /// session active.
+  pub counters: Option<PassCounters>,
 }
 
 /// One phase guard's lifetime, in nanoseconds since the collector epoch (the
@@ -286,6 +370,50 @@ pub struct PhaseSpan {
   pub depth: u8,
   pub start_ns: u64,
   pub end_ns: u64,
+}
+
+/// Counts and sizes of a captured pass, taken when it ends. Draw calls, quads,
+/// rects, glyphs and Canvas batches of a presented frame are in its
+/// `FrameProfile` (`render.draw_calls`, `quad_count`, ..., `render.canvas.batches`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PassCounters {
+  /// Nodes of the window's live tree.
+  pub nodes: usize,
+  /// The runtime memory estimate (`RuntimeMemoryProfile::total_bytes`), taken
+  /// at the end of this pass rather than the cached once-per-second value.
+  pub memory_bytes: usize,
+  pub caches: CacheSizes,
+  /// The pass thread's allocations during the pass; None when no
+  /// `CountingAllocator` is installed (or lurq lacks its feature).
+  pub allocations: Option<PassAllocations>,
+}
+
+/// Sizes of the caches a pass draws from, in bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CacheSizes {
+  /// The shared glyph atlas's RGBA pixels (CPU copy; each window's renderer
+  /// holds a GPU texture of the same size).
+  pub glyph_atlas_bytes: usize,
+  /// The UI GlyphEngine's estimate of its text caches and buffers.
+  pub text_cache_bytes: usize,
+  /// Charged bytes of the shared Canvas text engine's shape cache; 0 before
+  /// any Canvas drew text.
+  pub canvas_text_cache_bytes: usize,
+  /// Charged bytes of the textures this window's renderer keeps for Canvas
+  /// images and text, as of its last presented frame.
+  pub canvas_asset_cache_bytes: usize,
+}
+
+/// What the pass thread allocated during one pass, counted by an installed
+/// `CountingAllocator`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PassAllocations {
+  pub allocations: u64,
+  pub frees: u64,
+  pub allocated_bytes: u64,
+  pub freed_bytes: u64,
+  /// Bytes allocated and not yet freed by every thread, at the end of the pass.
+  pub live_bytes: u64,
 }
 
 /// Aggregate CPU work in CanvasTextEngine, separate from the UI GlyphEngine.

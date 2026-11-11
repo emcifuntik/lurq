@@ -87,7 +87,7 @@ impl ShapeCache {
     self.shapes.is_framed()
   }
 
-  #[cfg(test)]
+  #[cfg(any(test, feature = "perf_profile"))]
   pub(super) fn bytes(&self) -> usize {
     self.shapes.bytes()
   }

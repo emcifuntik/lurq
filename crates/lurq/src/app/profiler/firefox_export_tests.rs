@@ -53,6 +53,9 @@ fn pass(sequence: u64, window: &str, at_ms: u64, memory_bytes: Option<usize>) ->
         span(Phase::Render, 1, at_ms + 7, at_ms + 9),
       ],
       dropped_spans: 0,
+      reasons: crate::app::PassReasons::default(),
+      present: None,
+      counters: None,
     }),
   })
 }
@@ -137,6 +140,10 @@ pub(super) fn full_report() -> ProfileReport {
           frame_id: None,
           kind: InputKind::Pointer,
           total: Duration::from_millis(1),
+          interaction_id: 1,
+          queue_delay: Duration::from_micros(500),
+          presented_frame_id: Some(4),
+          input_to_present: Some(Duration::from_millis(90)),
         }),
       ),
       marker_sample(
@@ -391,6 +398,11 @@ fn frames_input_and_ui_updates_are_markers_on_the_ui_thread() {
   let input = &markers["data"][1];
   assert_eq!(strings[input["kind"].as_u64().unwrap() as usize], "pointer");
   assert_eq!(strings[input["window"].as_u64().unwrap() as usize], "main");
+  assert_eq!(input["interactionId"], 1);
+  assert!(close(input["queueDelay"].as_f64().unwrap(), 0.5));
+  assert!(close(input["dispatch"].as_f64().unwrap(), 1.0));
+  assert_eq!(input["presentedFrameId"], 4);
+  assert!(close(input["inputToPresent"].as_f64().unwrap(), 90.0));
   assert_eq!(markers["data"][0]["frameId"], 1);
   assert!(
     markers["data"][4].get("frameId").is_none(),
@@ -401,6 +413,15 @@ fn frames_input_and_ui_updates_are_markers_on_the_ui_thread() {
   assert_eq!(thread(&profile, "Worker")["markers"]["length"], 0);
 }
 
+fn counts(counter: &Value) -> Vec<f64> {
+  counter["samples"]["count"]
+    .as_array()
+    .unwrap()
+    .iter()
+    .map(|count| count.as_f64().unwrap())
+    .collect()
+}
+
 #[test]
 fn the_memory_counter_adds_up_to_each_presented_estimate() {
   let profile = profile(&full_report());
@@ -408,22 +429,61 @@ fn the_memory_counter_adds_up_to_each_presented_estimate() {
   assert_eq!(counters.len(), 1);
   let counter = &counters[0];
   assert_eq!(counter["category"], "Memory");
+  assert_eq!(counter["name"], "Runtime memory");
   assert_eq!(counter["mainThreadIndex"], 0);
   let samples = &counter["samples"];
   assert_eq!(samples["length"], 2);
-  let counts: Vec<f64> = samples["count"]
-    .as_array()
-    .unwrap()
-    .iter()
-    .map(|count| count.as_f64().unwrap())
-    .collect();
-  assert_eq!(counts, vec![4096.0, 2048.0]);
+  assert_eq!(counts(counter), vec![4096.0, 2048.0]);
   assert_eq!(samples["timeDeltas"][0], 110.0);
   assert_eq!(samples["timeDeltas"][1], 100.0);
 
-  // Without a frame profile there is nothing to count.
+  // Without a frame profile or pass counters there is nothing to count.
   let unpresented = profile_of_samples(vec![pass(1, "main", 100, None)]);
   assert_eq!(unpresented["counters"], Value::Array(Vec::new()));
+}
+
+/// `pass` with counters taken at its end, and allocations when `live_bytes`.
+fn counted_pass(
+  sequence: u64,
+  at_ms: u64,
+  frame_memory: Option<usize>,
+  memory_bytes: usize,
+  live_bytes: Option<u64>,
+) -> Arc<ProfileSample> {
+  let mut sample = Arc::unwrap_or_clone(pass(sequence, "main", at_ms, frame_memory));
+  let SampleData::Pass(pass) = &mut sample.data else {
+    unreachable!()
+  };
+  pass.counters = Some(PassCounters {
+    nodes: 12,
+    memory_bytes,
+    caches: CacheSizes::default(),
+    allocations: live_bytes.map(|live_bytes| PassAllocations {
+      live_bytes,
+      ..PassAllocations::default()
+    }),
+  });
+  Arc::new(sample)
+}
+
+#[test]
+fn pass_counters_feed_the_memory_and_live_heap_counters() {
+  let profile = profile_of_samples(vec![
+    // The pass's own estimate wins over the frame's cached one.
+    counted_pass(1, 100, Some(1), 1000, Some(5000)),
+    // Counted without a presented frame, and without an allocator.
+    counted_pass(2, 200, None, 1500, None),
+    counted_pass(3, 300, None, 1200, Some(4000)),
+  ]);
+  let counters = profile["counters"].as_array().unwrap();
+  let names: Vec<_> = counters
+    .iter()
+    .map(|counter| counter["name"].as_str().unwrap())
+    .collect();
+  assert_eq!(names, vec!["Runtime memory", "Live heap"]);
+  assert_eq!(counts(&counters[0]), vec![1000.0, 500.0, -300.0]);
+  assert_eq!(counts(&counters[1]), vec![5000.0, -1000.0]);
+  assert_eq!(counters[1]["samples"]["timeDeltas"][1], 200.0);
 }
 
 fn profile_of_samples(samples: Vec<Arc<ProfileSample>>) -> Value {

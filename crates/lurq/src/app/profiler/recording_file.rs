@@ -16,6 +16,7 @@ use super::{
   ApplicationScopeReport, ApplicationScopeSample, CanvasAssetUploadProfile, CanvasProfile, FrameProfile,
   GlyphEngineProfile, MAX_APPLICATION_LABEL_BYTES, RenderProfile, RuntimeMemoryProfile, model::*, phase_slot::PHASES,
 };
+use crate::app::PassReasons;
 
 /// The `format` of a recording file.
 pub const RECORDING_FILE_FORMAT: &str = "lurq-recording";
@@ -180,8 +181,9 @@ impl Field for Arc<str> {
 /// Static identifiers of the toolkit or of the application's source, such as
 /// a render backend or an application scope label.
 impl Field for &'static str {
+  /// As [`file_name`], which [`intern`] always reads back.
   fn encode(&self) -> Value {
-    Value::from(*self)
+    Value::from(file_name(self))
   }
 
   fn decode(value: &Value) -> Result<Self, String> {
@@ -189,15 +191,41 @@ impl Field for &'static str {
   }
 }
 
-/// `name` as a `&'static str`, each distinct name leaked once. Only names an
-/// application scope label may be are taken, so a file cannot carry text in them.
+/// A byte a name in the file may hold: an ASCII letter or digit, `_`, `-` or
+/// `.`. No whitespace or path separator.
+fn is_name_byte(byte: u8) -> bool {
+  byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+}
+
+/// `name` as the file keeps it. Scope labels and the toolkit's backends are
+/// kept as they are; another name (a custom `RenderEngine::profile_backend`)
+/// has each other character replaced by `_` and is cut to
+/// `MAX_APPLICATION_LABEL_BYTES`, so that every saved file loads.
+fn file_name(name: &str) -> std::borrow::Cow<'_, str> {
+  if !name.is_empty() && name.len() <= MAX_APPLICATION_LABEL_BYTES && name.bytes().all(is_name_byte) {
+    return name.into();
+  }
+  let mut kept: String = name
+    .chars()
+    .map(|char| match u8::try_from(char) {
+      Ok(byte) if is_name_byte(byte) => char,
+      _ => '_',
+    })
+    .take(MAX_APPLICATION_LABEL_BYTES)
+    .collect();
+  if kept.is_empty() {
+    kept.push('_');
+  }
+  kept.into()
+}
+
+/// `name` as a `&'static str`, each distinct name leaked once. Only names
+/// [`file_name`] writes are taken, so a file cannot carry text in them.
 fn intern(name: &str) -> Result<&'static str, String> {
-  let valid = !name.is_empty()
-    && name.len() <= MAX_APPLICATION_LABEL_BYTES
-    && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+  let valid = !name.is_empty() && name.len() <= MAX_APPLICATION_LABEL_BYTES && name.bytes().all(is_name_byte);
   if !valid {
     return Err(format!(
-      "expected an identifier of at most {MAX_APPLICATION_LABEL_BYTES} ASCII letters, digits or _"
+      "expected a name of at most {MAX_APPLICATION_LABEL_BYTES} ASCII letters, digits, _, - or ."
     ));
   }
   static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
@@ -405,6 +433,53 @@ record!(PassSample {
   frame,
   spans,
   dropped_spans,
+  reasons,
+  present,
+  counters,
+});
+record!(PassReasons {
+  redraw_requested,
+  scheduled_redraw,
+  timer_run,
+  timer_active,
+  future_completed,
+  future_active,
+  timeline_active,
+  continuous_redraw_image,
+  perf_overlay,
+  pending_click,
+  input_interaction,
+  text_input_caret,
+  theme_changed,
+  component_dirty,
+  element_ref_dirty,
+  layout_dirty,
+});
+record!(PresentTiming {
+  presented_ms,
+  interval,
+  refresh_interval,
+  continuous,
+  missed_vsyncs,
+});
+record!(PassCounters {
+  nodes,
+  memory_bytes,
+  caches,
+  allocations,
+});
+record!(CacheSizes {
+  glyph_atlas_bytes,
+  text_cache_bytes,
+  canvas_text_cache_bytes,
+  canvas_asset_cache_bytes,
+});
+record!(PassAllocations {
+  allocations,
+  frees,
+  allocated_bytes,
+  freed_bytes,
+  live_bytes,
 });
 record!(PhaseSpan {
   phase,
@@ -433,7 +508,15 @@ record!(UiUpdateSample {
   total,
   commit,
 });
-record!(InputDispatchSample { frame_id, kind, total });
+record!(InputDispatchSample {
+  frame_id,
+  kind,
+  total,
+  interaction_id,
+  queue_delay,
+  presented_frame_id,
+  input_to_present,
+});
 record!(FrameProfile {
   layout,
   layout_recalculated,
@@ -524,6 +607,7 @@ record!(RenderProfile {
   glyph_atlas_full_uploads,
   glyph_atlas_arena_uploads,
   glyph_atlas_dedicated_uploads,
+  draw_calls,
   buffer_upload,
   image_upload,
   encode,
@@ -545,6 +629,7 @@ record!(CanvasProfile {
   tiles,
   uploaded_asset_bytes,
   asset_cache_budget_bytes,
+  asset_cache_bytes,
   asset_cache_stretch_bytes,
   asset_cache_uncached,
   asset_cache_uncached_bytes,

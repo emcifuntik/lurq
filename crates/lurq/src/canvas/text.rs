@@ -176,6 +176,11 @@ impl CanvasTextEngine {
   pub(crate) fn is_framed(&self) -> bool {
     self.shaped.is_framed()
   }
+  /// Charged bytes of the shaped text the engine keeps, for the profiler.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn shape_cache_bytes(&self) -> usize {
+    self.shaped.bytes()
+  }
 
   pub(super) fn shape(
     &mut self,

@@ -67,6 +67,9 @@ pub(crate) fn layered_pass(sequence: u64, start_ms: f64, duration_ms: f64, comma
       frame: None,
       spans,
       dropped_spans: 0,
+      reasons: Default::default(),
+      present: None,
+      counters: None,
     }),
   })
 }
