@@ -162,6 +162,8 @@ fn sample(sequence: u64, window: &str, started_ms: f64, total_ms: f64, rendered:
       frame: rendered.then(FrameProfile::default),
       spans: Vec::new(),
       dropped_spans: 0,
+      reasons: crate::app::PassReasons::default(),
+      present: None,
     }),
   })
 }
@@ -380,6 +382,10 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
       frame_id: None,
       kind: crate::app::profiler::InputKind::Pointer,
       total: Duration::from_millis(1),
+      interaction_id: 1,
+      queue_delay: Duration::ZERO,
+      presented_frame_id: None,
+      input_to_present: None,
     }),
   })];
   let range = capture.whole();
@@ -399,12 +405,13 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
   );
   tree.pass_headless(&mut app);
 
-  // Rows: chart, input lane, ui update lane, axis; each a track then its label.
+  // Rows: chart, missed vsync lane, input lane, ui update lane, axis; each a
+  // track then its label.
   let half_bar = bounds_at(&mut tree, &[0, 0, 0, 1, 1]);
   let end_bar = bounds_at(&mut tree, &[0, 0, 0, 2, 1]);
-  let half_marker = bounds_at(&mut tree, &[0, 1, 0, 1]);
-  let half_tick = bounds_at(&mut tree, &[0, 3, 0, 2]);
-  let last_part = bounds_at(&mut tree, &[0, 3, 0, 3]);
+  let half_marker = bounds_at(&mut tree, &[0, 2, 0, 1]);
+  let half_tick = bounds_at(&mut tree, &[0, 4, 0, 2]);
+  let last_part = bounds_at(&mut tree, &[0, 4, 0, 3]);
   let close = |a: f32, b: f32, what: &str| assert!((a - b).abs() < 0.5, "{what}: {a} vs {b}");
   let scale = WIDTH - LANE_GAP - LANE_LABEL_WIDTH - BAR_WIDTH;
   close(half_bar.x, scale * 0.5, "bar at half the range");
@@ -537,4 +544,120 @@ fn pass_detail_shows_the_whole_frame_profile() {
   assert_eq!(row("COUNTS", "quad_count").as_deref(), Some("0"));
   assert_eq!(row("TEXT", "shape_text").as_deref(), Some("0.00ms"));
   assert_eq!(row("MEMORY", "total_bytes").as_deref(), Some("0"));
+}
+
+/// `sample` presented with `missed_vsyncs`, run by a redraw request.
+fn with_present(sample: Arc<ProfileSample>, missed_vsyncs: u32) -> Arc<ProfileSample> {
+  let mut sample = (*sample).clone();
+  if let SampleData::Pass(pass) = &mut sample.data {
+    pass.reasons.redraw_requested = true;
+    pass.present = Some(crate::app::profiler::PresentTiming {
+      presented_ms: sample.completed_ms,
+      interval: Some(Duration::from_millis(16 * (u64::from(missed_vsyncs) + 1))),
+      refresh_interval: Some(Duration::from_millis(16)),
+      continuous: true,
+      missed_vsyncs,
+    });
+  }
+  Arc::new(sample)
+}
+
+/// An input received at `started_ms`, presented by `frame` `latency_ms` later.
+fn input_marker(sequence: u64, started_ms: f64, frame: Option<(u64, f64)>) -> Arc<ProfileSample> {
+  Arc::new(ProfileSample {
+    sequence,
+    window: "main".into(),
+    started_ms,
+    completed_ms: started_ms + 1.0,
+    data: SampleData::InputDispatch(crate::app::profiler::InputDispatchSample {
+      frame_id: None,
+      kind: crate::app::profiler::InputKind::Pointer,
+      total: Duration::from_micros(500),
+      interaction_id: sequence,
+      queue_delay: Duration::from_micros(250),
+      presented_frame_id: frame.map(|(frame_id, _)| frame_id),
+      input_to_present: frame.map(|(_, latency_ms)| Duration::from_secs_f64(latency_ms / 1000.0)),
+    }),
+  })
+}
+
+#[test]
+fn missed_frames_and_input_latencies_fill_their_lanes_and_the_frame_details() {
+  // Frame 2 missed two vsyncs; frame 1 made its refresh.
+  let passes = vec![
+    with_present(sample(1, "main", 100.0, 4.0, true), 0),
+    with_present(sample(2, "main", 600.0, 40.0, true), 2),
+  ];
+  let mut capture = capture(passes, 1000.0);
+  // Two inputs frame 2 presented, and one no frame presented.
+  capture.markers = vec![
+    input_marker(10, 550.0, Some((2, 90.0))),
+    input_marker(11, 560.0, Some((2, 80.0))),
+    input_marker(12, 900.0, None),
+  ];
+  let range = capture.whole();
+
+  let (missed, count) = capture.missed_vsync_buckets(range, 10);
+  assert_eq!(count, 1);
+  let marked: Vec<_> = missed
+    .iter()
+    .enumerate()
+    .filter_map(|(bucket, missed)| missed.then_some(bucket))
+    .collect();
+  assert_eq!(marked, vec![6], "only the bucket where frame 2 starts");
+  let inputs = capture.input_buckets(range, 10);
+  assert_eq!(inputs[5].inputs, 2);
+  assert!((inputs[5].max_latency_ms.unwrap() - 90.0).abs() < 1e-6);
+  assert_eq!(inputs[9].inputs, 1);
+  assert_eq!(inputs[9].max_latency_ms, None);
+  assert_eq!(inputs.iter().map(|bucket| bucket.inputs).sum::<usize>(), 3);
+
+  let presented = capture.inputs_presented_by("main", 2);
+  assert_eq!(
+    presented.iter().map(|input| input.interaction_id).collect::<Vec<_>>(),
+    vec![10, 11]
+  );
+  assert!(capture.inputs_presented_by("main", 1).is_empty());
+  let detail = capture::input_detail(&presented).unwrap();
+  assert_eq!(detail.title, "INPUT");
+  assert_eq!(
+    detail.rows[0],
+    (
+      "pointer",
+      "#10 queue 0.25ms · dispatch 0.50ms · present 90.00ms".to_owned()
+    )
+  );
+  assert!(capture::input_detail(&[]).is_none());
+
+  let late = &capture.passes[1];
+  let sections = pass_detail(late, pass_of(late).unwrap());
+  assert_eq!(sections[1].title, "PRESENT");
+  let row = |title: &str, label: &str| {
+    sections
+      .iter()
+      .find(|section| section.title == title)
+      .and_then(|section| section.rows.iter().find(|(name, _)| *name == label))
+      .map(|(_, value)| value.clone())
+  };
+  assert_eq!(row("PASS", "reasons").as_deref(), Some("redraw_requested"));
+  assert_eq!(row("PRESENT", "missed_vsyncs").as_deref(), Some("2"));
+  assert_eq!(row("PRESENT", "continuous").as_deref(), Some("true"));
+  assert_eq!(row("PRESENT", "interval").as_deref(), Some("48.00ms"));
+
+  // The tab lays out with the late frame selected.
+  let state = ProfilerState {
+    capture: Some(Arc::new(capture)),
+    range: Some(range),
+    selected: Some(2),
+    ..ProfilerState::default()
+  };
+  let mut app = crate::app::App::new();
+  let mut tree = crate::app::Tree::new();
+  tree.resize(1440, 860);
+  tree.set_root(
+    Column::new()
+      .child(profiler_view(&state, Signal::new(state.clone())))
+      .size(1440.0, 860.0),
+  );
+  tree.pass_headless(&mut app);
 }

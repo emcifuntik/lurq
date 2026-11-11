@@ -549,6 +549,30 @@ impl PassReasons {
       || self.layout_dirty
   }
 
+  /// The names of the reasons that are set, in declaration order.
+  pub fn names(self) -> impl Iterator<Item = &'static str> {
+    [
+      ("redraw_requested", self.redraw_requested),
+      ("scheduled_redraw", self.scheduled_redraw),
+      ("timer_run", self.timer_run),
+      ("timer_active", self.timer_active),
+      ("future_completed", self.future_completed),
+      ("future_active", self.future_active),
+      ("timeline_active", self.timeline_active),
+      ("continuous_redraw_image", self.continuous_redraw_image),
+      ("perf_overlay", self.perf_overlay),
+      ("pending_click", self.pending_click),
+      ("input_interaction", self.input_interaction),
+      ("text_input_caret", self.text_input_caret),
+      ("theme_changed", self.theme_changed),
+      ("component_dirty", self.component_dirty),
+      ("element_ref_dirty", self.element_ref_dirty),
+      ("layout_dirty", self.layout_dirty),
+    ]
+    .into_iter()
+    .filter_map(|(name, set)| set.then_some(name))
+  }
+
   fn merge(&mut self, other: Self) {
     self.redraw_requested |= other.redraw_requested;
     self.scheduled_redraw |= other.scheduled_redraw;
@@ -1398,9 +1422,12 @@ impl Tree {
   }
 
   /// Forgets the redraws scheduled with [`Tree::request_redraw_at`]; the next pass schedules what it still needs.
+  /// The shell calls it while the window is hidden: its next frame comes after a gap, not late.
   #[cfg_attr(not(feature = "winit"), allow(dead_code))]
   pub(crate) fn drop_scheduled_redraws(&mut self) {
     self.scheduled_redraw_at = None;
+    #[cfg(feature = "perf_profile")]
+    self.profiling.break_run();
   }
 
   #[cfg_attr(not(feature = "winit"), allow(dead_code))]
@@ -2335,17 +2362,35 @@ impl Tree {
     // Publish completion only after observers and MCP reconciliation/replies.
     // A blocked notification must remain unfinished to diagnostic readers.
     #[cfg(feature = "perf_profile")]
-    self.profiling.finish_pass(
-      _profile_start,
-      &report,
-      self
-        .render_engine
-        .as_ref()
-        .map(|engine| engine.profile_backend())
-        .unwrap_or("none"),
-      report.rendered.then_some(&self.last_profile),
-    );
+    {
+      let wants_next_frame = report.rendered && self.profiling.capturing() && self.wants_next_frame_at_once();
+      self.profiling.set_wants_next_frame(wants_next_frame);
+      self.profiling.finish_pass(
+        _profile_start,
+        &report,
+        self
+          .render_engine
+          .as_ref()
+          .map(|engine| engine.profile_backend())
+          .unwrap_or("none"),
+        report.rendered.then_some(&self.last_profile),
+      );
+    }
     report
+  }
+
+  /// Whether the frame just presented wants the next one at once, as the
+  /// shell paces them: something that changes with every frame (a running
+  /// animation or transition, a continuous image, a moving autoscroll, the
+  /// perf overlay) or a redraw already asked for. Profiling counts the frames
+  /// that follow as one run, and only there a late frame missed a vsync.
+  #[cfg(feature = "perf_profile")]
+  fn wants_next_frame_at_once(&self) -> bool {
+    self.needs_redraw
+      || self.perf_overlay_enabled
+      || self.autoscroll_moving()
+      || self.has_continuous_redraw_image()
+      || self.next_timeline_change().is_some_and(|at| at <= Instant::now())
   }
 
   fn pass_inner(&mut self, app: &mut App, surface: &(impl HasWindowHandle + HasDisplayHandle)) -> PassReport {
@@ -3295,6 +3340,10 @@ impl Tree {
       self.needs_redraw = true;
       return report;
     }
+    // When the backend's present call returned: the CPU side of the present,
+    // which is all wgpu and DXGI's Present report.
+    #[cfg(feature = "perf_profile")]
+    self.profiling.presented(Instant::now());
     report.rendered = true;
     if let Some(root) = self.root.as_ref() {
       root.clear_guards();
@@ -3433,7 +3482,7 @@ impl Tree {
   /// Meta key (Cmd on macOS, the Windows key on Windows) too.
   pub fn mouse_move_with_meta(&mut self, x: f32, y: f32, shift: bool, ctrl: bool, alt: bool, meta: bool) {
     #[cfg(feature = "perf_profile")]
-    let _input = self.profiling.context.input(crate::app::profiler::InputKind::Pointer);
+    let input = self.profiling.input(crate::app::profiler::InputKind::Pointer);
     self.track_pointer(x, y);
     let active_scrollbar_drag = self.dragging_scroll.is_some();
     self.dispatch_mouse(
@@ -3446,11 +3495,13 @@ impl Tree {
     if !active_scrollbar_drag {
       self.apply_reactive_updates_after_event();
     }
+    #[cfg(feature = "perf_profile")]
+    self.end_profiled_input(input);
   }
 
   pub fn mouse_leave_window(&mut self) {
     #[cfg(feature = "perf_profile")]
-    let _input = self.profiling.context.input(crate::app::profiler::InputKind::Pointer);
+    let input = self.profiling.input(crate::app::profiler::InputKind::Pointer);
     self.pointer = None;
     if self.end_autoscroll() {
       // The release that follows, if it comes, belongs to the autoscroll.
@@ -3458,6 +3509,32 @@ impl Tree {
     }
     self.clear_hover_path();
     self.apply_reactive_updates_after_event();
+    #[cfg(feature = "perf_profile")]
+    self.end_profiled_input(input);
+  }
+
+  /// Ends a profiled input dispatch with whether it left a frame to draw.
+  #[cfg(feature = "perf_profile")]
+  fn end_profiled_input(&mut self, input: crate::app::profiler::producer::InputGuard) {
+    let wants_frame = self.profiling.capturing() && self.needs_redraw();
+    self.profiling.end_input(input, wants_frame);
+  }
+
+  /// When the shell received the input event it dispatches next; None for
+  /// any other event. Only kept with the `perf_profile` feature, for the
+  /// input samples' queue delay and latency.
+  #[cfg(feature = "perf_profile")]
+  #[cfg_attr(not(feature = "winit"), allow(dead_code))]
+  pub(crate) fn stamp_profiled_input(&mut self, received: Option<Instant>) {
+    self.profiling.stamp_input(received);
+  }
+
+  /// The refresh interval of the display the window is on, as the shell
+  /// reads it; profiling times presented frames against it.
+  #[cfg(feature = "perf_profile")]
+  #[cfg_attr(not(feature = "winit"), allow(dead_code))]
+  pub(crate) fn set_profiled_refresh_interval(&mut self, refresh: Duration) {
+    self.profiling.set_refresh_interval(Some(refresh));
   }
 
   pub fn mouse_down(&mut self, x: f32, y: f32, button: MouseButton) {
@@ -3481,11 +3558,16 @@ impl Tree {
     meta: bool,
   ) {
     #[cfg(feature = "perf_profile")]
-    let _input = self.profiling.context.input(crate::app::profiler::InputKind::Pointer);
+    let input = self.profiling.input(crate::app::profiler::InputKind::Pointer);
+    self.dispatch_mouse_down(x, y, button, MouseModifiers { shift, ctrl, alt, meta });
+    #[cfg(feature = "perf_profile")]
+    self.end_profiled_input(input);
+  }
+
+  fn dispatch_mouse_down(&mut self, x: f32, y: f32, button: MouseButton, modifiers: MouseModifiers) {
     self.track_pointer(x, y);
     self.lay_out_rebuilt_for_input();
     self.set_input_modality(focus_visible::InputModality::Pointer);
-    let modifiers = MouseModifiers { shift, ctrl, alt, meta };
     if self.swallowed_press == Some(button) {
       // Its release never arrived (the OS took it); this is a new press.
       self.swallowed_press = None;
@@ -3558,10 +3640,15 @@ impl Tree {
     meta: bool,
   ) {
     #[cfg(feature = "perf_profile")]
-    let _input = self.profiling.context.input(crate::app::profiler::InputKind::Pointer);
+    let input = self.profiling.input(crate::app::profiler::InputKind::Pointer);
+    self.dispatch_mouse_up(x, y, button, MouseModifiers { shift, ctrl, alt, meta });
+    #[cfg(feature = "perf_profile")]
+    self.end_profiled_input(input);
+  }
+
+  fn dispatch_mouse_up(&mut self, x: f32, y: f32, button: MouseButton, modifiers: MouseModifiers) {
     self.track_pointer(x, y);
     self.lay_out_rebuilt_for_input();
-    let modifiers = MouseModifiers { shift, ctrl, alt, meta };
     if self.swallowed_press == Some(button) {
       self.swallowed_press = None;
       // The pointer now hovers whatever the closed popup exposed.
@@ -3697,7 +3784,7 @@ impl Tree {
 
   pub fn scroll(&mut self, x: f32, y: f32, delta_x: f32, delta_y: f32, phase: ScrollPhase) {
     #[cfg(feature = "perf_profile")]
-    let _input = self.profiling.context.input(crate::app::profiler::InputKind::Scroll);
+    let input = self.profiling.input(crate::app::profiler::InputKind::Scroll);
     self.track_pointer(x, y);
     self.lay_out_rebuilt_for_input();
     let horizontal_taken = self.dispatch_scroll(x, y, delta_x, delta_y, phase);
@@ -3709,6 +3796,8 @@ impl Tree {
       horizontal_taken,
     );
     self.apply_reactive_updates_after_event();
+    #[cfg(feature = "perf_profile")]
+    self.end_profiled_input(input);
   }
 
   pub fn key_down(&mut self, key: String, code: String, shift: bool, ctrl: bool, alt: bool) {
@@ -3717,7 +3806,13 @@ impl Tree {
 
   pub fn key_down_with_meta(&mut self, key: String, code: String, shift: bool, ctrl: bool, alt: bool, meta: bool) {
     #[cfg(feature = "perf_profile")]
-    let _input = self.profiling.context.input(crate::app::profiler::InputKind::Keyboard);
+    let input = self.profiling.input(crate::app::profiler::InputKind::Keyboard);
+    self.dispatch_key_down(key, code, shift, ctrl, alt, meta);
+    #[cfg(feature = "perf_profile")]
+    self.end_profiled_input(input);
+  }
+
+  fn dispatch_key_down(&mut self, key: String, code: String, shift: bool, ctrl: bool, alt: bool, meta: bool) {
     self.rebuild_if_dirty();
     if (key == "Escape" || code == "Escape") && self.end_autoscroll() {
       // Esc ends the autoscroll and does nothing else; the release that
@@ -3818,7 +3913,13 @@ impl Tree {
 
   pub fn key_up_with_meta(&mut self, key: String, code: String, shift: bool, ctrl: bool, alt: bool, meta: bool) {
     #[cfg(feature = "perf_profile")]
-    let _input = self.profiling.context.input(crate::app::profiler::InputKind::Keyboard);
+    let input = self.profiling.input(crate::app::profiler::InputKind::Keyboard);
+    self.dispatch_key_up(key, code, shift, ctrl, alt, meta);
+    #[cfg(feature = "perf_profile")]
+    self.end_profiled_input(input);
+  }
+
+  fn dispatch_key_up(&mut self, key: String, code: String, shift: bool, ctrl: bool, alt: bool, meta: bool) {
     self.rebuild_if_dirty();
     let composing = self.is_composition_key_up(&key, &code);
     let mut evt = KeyboardEvent {
@@ -5867,6 +5968,8 @@ impl Tree {
       self.cached_render_list = Some(cached);
       return Some(false);
     }
+    #[cfg(feature = "perf_profile")]
+    self.profiling.presented(Instant::now());
     let gpu_wall_dur = gpu_wall_start.elapsed();
     let _gpu_dur = profile_elapsed!(_gpu_start);
     #[cfg(feature = "perf_profile")]
