@@ -37,6 +37,7 @@ mod file_drag;
 mod frame_pacing;
 #[cfg(test)]
 mod frame_pacing_tests;
+mod frame_source;
 mod history_swipes;
 mod ime;
 #[cfg(target_os = "ios")]
@@ -53,7 +54,8 @@ mod touch;
 mod touch_tests;
 
 use file_drag::FileDragShell;
-use frame_pacing::{FramePacing, PresentedFrame, refresh_interval};
+use frame_pacing::PresentedFrame;
+use frame_source::FrameSource;
 use loop_wait::{LoopNeeds, LoopWait};
 
 const CONTINUOUS_REDRAW_GRACE: Duration = Duration::from_millis(500);
@@ -300,11 +302,10 @@ struct ManagedWindow {
   on_position_changed: Option<PositionChangedFn>,
   on_size_changed: Option<SizeChangedFn>,
   size_reporter: SizeReporter,
-  redraw_pending: bool,
   close_exits: bool,
   last_tick: Instant,
   last_paint: Instant,
-  pacing: FramePacing,
+  frames: FrameSource,
   continuous_redraw_until: Option<Instant>,
   /// Last direct present from inside the mouse-move stream (interactive
   /// drags paint here — see the CursorMoved arm).
@@ -313,9 +314,6 @@ struct ManagedWindow {
   file_drag: FileDragShell,
   #[cfg(target_os = "ios")]
   touch: touch::TouchPointer,
-  /// The display's refreshes, which frames are presented at; made with the window.
-  #[cfg(target_os = "ios")]
-  frame_link: Option<ios::FrameLink>,
   #[cfg(target_os = "ios")]
   status_bar_tap: Option<ios::StatusBarTap>,
   /// How much of the window the keyboard covered at the last frame, in logical pixels.
@@ -357,11 +355,10 @@ impl ManagedWindow {
       on_position_changed,
       on_size_changed,
       size_reporter: SizeReporter::default(),
-      redraw_pending: false,
       close_exits,
       last_tick: Instant::now(),
       last_paint: Instant::now(),
-      pacing: FramePacing::default(),
+      frames: FrameSource::default(),
       continuous_redraw_until: None,
       last_interaction_present: Instant::now(),
       ime: ime::ImeSync::default(),
@@ -369,7 +366,6 @@ impl ManagedWindow {
       #[cfg(target_os = "ios")]
       touch: touch::TouchPointer::default(),
       #[cfg(target_os = "ios")]
-      frame_link: None,
       #[cfg(target_os = "ios")]
       status_bar_tap: None,
       #[cfg(target_os = "ios")]
@@ -487,7 +483,7 @@ impl ManagedWindow {
         .set_double_click_distance(touch::DOUBLE_TAP_DISTANCE * window.scale_factor() as f32);
       self.tree.set_double_click_interval(touch::DOUBLE_TAP_INTERVAL);
       ios::watch_keyboard();
-      self.frame_link = Some(ios::FrameLink::new());
+      self.frames.attach();
       if let Ok(RawWindowHandle::UiKit(handle)) = window.window_handle().map(|handle| handle.as_raw()) {
         ios::join_scene(handle.ui_view);
         self.status_bar_tap = Some(ios::StatusBarTap::new(handle.ui_view));
@@ -559,7 +555,7 @@ impl ManagedWindow {
             event_loop.exit();
           } else {
             self.window = None;
-            self.redraw_pending = false;
+            self.frames.settle();
             closed = true;
           }
         }
@@ -686,32 +682,14 @@ impl ManagedWindow {
   }
 
   fn request_redraw(&mut self) {
-    if self.redraw_pending {
-      return;
-    }
-    if let Some(w) = &self.window {
-      self.redraw_pending = true;
-      // On iOS the frame is presented at the display's next refresh, from `about_to_wait`; see [`ios`].
-      #[cfg(target_os = "ios")]
-      if let Some(link) = &mut self.frame_link {
-        link.set_running(true);
-        return;
-      }
-      w.request_redraw();
+    if let Some(window) = &self.window {
+      self.frames.request(window);
     }
   }
 
-  /// Whether the display refreshed and a frame is wanted for it. Stops the refreshes once none is.
+  /// Whether a frame is to be presented in this turn of the loop; see [`FrameSource::take_due`].
   fn take_frame_due(&mut self) -> bool {
-    #[cfg(target_os = "ios")]
-    if let Some(link) = &mut self.frame_link {
-      let wanted = self.redraw_pending || self.tree.needs_redraw();
-      if !wanted {
-        link.set_running(false);
-      }
-      return wanted && link.take_due();
-    }
-    false
+    self.frames.take_due(self.tree.needs_redraw())
   }
 
   fn present_now(&mut self, app: &mut App, request_followup_redraw: bool) -> bool {
@@ -746,7 +724,7 @@ impl ManagedWindow {
           status_bar_tap.set_height(f64::from(safe_area.top));
         }
       }
-      self.redraw_pending = false;
+      self.frames.settle();
       let setup = setup_started_at.elapsed();
       let pass_started_at = Instant::now();
       let report = self.tree.pass(app, w);
@@ -766,7 +744,7 @@ impl ManagedWindow {
       let mut paint_duration = Duration::ZERO;
       if presented {
         let now = Instant::now();
-        self.pacing.presented(PresentedFrame {
+        self.frames.presented(PresentedFrame {
           started: pass_started_at,
           presented: now,
         });
@@ -868,9 +846,7 @@ impl ManagedWindow {
     } else {
       // Before the scheduled redraws are ticked: a hidden window drops them.
       let window = self.window.as_ref();
-      self
-        .pacing
-        .request_frame(&mut self.tree, || refresh_interval(window), now);
+      self.frames.request_timeline_frame(&mut self.tree, window, now);
     }
     self.tree.tick_scheduled_redraw(now);
     if !has_continuous_video {
@@ -903,7 +879,7 @@ impl ManagedWindow {
 
   fn handle_event(&mut self, app: &mut App, event_loop: &ActiveEventLoop, event: WindowEvent) -> bool {
     self.tree.set_app_ref(app);
-    self.pacing.handle_event(&event);
+    self.frames.handle_event(&event);
     if self.file_drag.on_event(&event) {
       // Delivered at the turn's end, once the burst of one file per event
       // is complete; see `file_drag`.
@@ -1112,7 +1088,7 @@ impl ManagedWindow {
       }
       // UIKit draws a view from `drawRect:`, which is where winit sends this event from, and drops a
       // `setNeedsDisplay` made inside it: a redraw the pass asks for (a second layout pass, an animation's next
-      // frame) would wait for an event that never comes, and with `redraw_pending` set nothing would ask again.
+      // frame) would wait for an event that never comes, and with the frame still asked for nothing would ask again.
       // The loop takes another turn instead, and asks from there.
       #[cfg(target_os = "ios")]
       WindowEvent::RedrawRequested => {
@@ -1144,9 +1120,8 @@ struct ManagedSecondaryWindow {
   cursor: CursorIcon,
   modifiers: ModifiersState,
   attrs: Option<WindowAttributes>,
-  redraw_pending: bool,
   close_requested: bool,
-  pacing: FramePacing,
+  frames: FrameSource,
   ime: ime::ImeSync,
   file_drag: FileDragShell,
 }
@@ -1165,9 +1140,8 @@ impl ManagedSecondaryWindow {
           .with_decorations(secondary.decorations())
           .with_inner_size(winit::dpi::LogicalSize::new(secondary.width(), secondary.height())),
       ),
-      redraw_pending: false,
       close_requested: false,
-      pacing: FramePacing::default(),
+      frames: FrameSource::default(),
       ime: ime::ImeSync::default(),
       file_drag: FileDragShell::default(),
     }
@@ -1190,7 +1164,7 @@ impl ManagedSecondaryWindow {
   }
 
   fn request_close(&mut self) {
-    self.redraw_pending = false;
+    self.frames.settle();
     self.close_requested = true;
   }
 
@@ -1382,12 +1356,8 @@ impl ManagedSecondaryWindow {
   }
 
   fn request_redraw(&mut self) {
-    if self.redraw_pending {
-      return;
-    }
-    if let Some(w) = &self.window {
-      self.redraw_pending = true;
-      w.request_redraw();
+    if let Some(window) = &self.window {
+      self.frames.request(window);
     }
   }
 
@@ -1396,13 +1366,13 @@ impl ManagedSecondaryWindow {
       let size = w.inner_size();
       tree.set_scale_factor(w.scale_factor() as f32);
       tree.resize(size.width, size.height);
-      self.redraw_pending = false;
+      self.frames.settle();
       let started = Instant::now();
       let presented = tree.pass(app, w).rendered;
       // See the main window's `present_now`.
       set_window_cursor(w, &mut self.cursor, tree.cursor());
       if presented {
-        self.pacing.presented(PresentedFrame {
+        self.frames.presented(PresentedFrame {
           started,
           presented: Instant::now(),
         });
@@ -1426,7 +1396,7 @@ impl ManagedSecondaryWindow {
     tree.tick_futures();
     self.file_drag.flush(tree, self.window.as_ref(), self.cursor_pos);
     let window = self.window.as_ref();
-    self.pacing.request_frame(tree, || refresh_interval(window), now);
+    self.frames.request_timeline_frame(tree, window, now);
     tree.tick_scheduled_redraw(now);
     self.check_redraw(tree);
   }
@@ -1439,7 +1409,7 @@ impl ManagedSecondaryWindow {
     tree: &mut Tree,
   ) -> bool {
     tree.set_app_ref(app);
-    self.pacing.handle_event(&event);
+    self.frames.handle_event(&event);
     if self.file_drag.on_event(&event) {
       return false;
     }
@@ -1902,7 +1872,7 @@ impl ApplicationHandler for WinitHandler {
     if self.main.window_id() == Some(id) {
       if matches!(event, WindowEvent::RedrawRequested) && self.main.has_continuous_redraw_video_recently(Instant::now())
       {
-        self.main.redraw_pending = false;
+        self.main.frames.settle();
         return;
       }
       let started_at = Instant::now();
@@ -2065,7 +2035,8 @@ impl ApplicationHandler for WinitHandler {
         .is_some_and(|secondary| secondary.tree().has_continuous_redraw_video())
     });
     let has_continuous_video = main_has_continuous_video || secondary_has_continuous_video;
-    let redraw_pending = self.main.redraw_pending || self.secondaries.iter().any(|secondary| secondary.redraw_pending);
+    let redraw_pending =
+      self.main.frames.pending() || self.secondaries.iter().any(|secondary| secondary.frames.pending());
     let redraw_requested = self.main.tree.needs_redraw()
       || self.secondaries.iter().any(|secondary_window| {
         self
