@@ -130,6 +130,108 @@ fn a_recording_on_a_tree_keeps_each_headless_pass_with_its_phases() {
   assert_eq!(fps(capture.passes_in(capture.whole())), None);
 }
 
+/// What the tab draws of a capture: its passes, markers and scopes by sequence
+/// and time, and the call tree of its whole range on every track.
+fn drawn(capture: &ProfilerCapture) -> impl PartialEq + std::fmt::Debug + use<> {
+  use crate::app::profiler::{SpanTrack, forest_of};
+  let times = |samples: &[Arc<ProfileSample>]| {
+    samples
+      .iter()
+      .map(|sample| {
+        (
+          sample.sequence,
+          sample.window.clone(),
+          sample.started_ms,
+          sample.completed_ms,
+        )
+      })
+      .collect::<Vec<_>>()
+  };
+  let whole = capture.whole();
+  let forest = forest_of(capture.passes_in(whole), capture.scopes_in(whole));
+  (
+    (
+      whole,
+      capture.default_range(),
+      capture.size_bytes,
+      capture.boundary_excluded,
+    ),
+    times(&capture.passes),
+    times(&capture.markers),
+    capture
+      .scopes
+      .iter()
+      .map(|scope| (scope.scope.label, scope.scope.started_ms, scope.wall))
+      .collect::<Vec<_>>(),
+    SpanTrack::ALL.map(|track| forest.call_tree(track)),
+    capture
+      .passes
+      .iter()
+      .map(|sample| phase_rows(pass_of(sample).unwrap()))
+      .collect::<Vec<_>>(),
+  )
+}
+
+#[test]
+fn a_saved_recording_loads_back_into_the_same_timeline_and_call_tree() {
+  use crate::{
+    app::{App, Tree},
+    components::{Column, Text},
+  };
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.set_root(Column::new().child(Text::new("Profiler fixture")));
+  let mut state = ProfilerState::default();
+  assert!(state.start(&tree.profiling_handle()));
+  for _ in 0..3 {
+    tree.pass_headless(&mut app);
+  }
+  state.stop();
+  let saved = state
+    .report
+    .as_ref()
+    .expect("Stop keeps the report")
+    .to_recording_file();
+
+  let mut loaded = ProfilerState::default();
+  loaded.load(ProfileReport::from_recording_file(&saved).map_err(|error| error.to_string()));
+  assert!(loaded.error.is_none());
+  assert_eq!(drawn(&capture_of(&loaded)), drawn(&capture_of(&state)));
+  assert_eq!(capture_of(&loaded).passes.len(), 3);
+  assert_eq!(loaded.range, state.range);
+  assert_eq!(loaded.selected, state.selected);
+  // Saved again, the loaded recording is the same file.
+  assert_eq!(loaded.report.as_ref().unwrap().to_recording_file(), saved);
+  // The tab draws it, with the file actions.
+  tab_tree(Signal::new(loaded.clone()), 1440, 860);
+
+  // A file that cannot be read leaves the capture shown and says why.
+  loaded.load(Err("Load failed: not a lurq recording".to_owned()));
+  assert_eq!(drawn(&capture_of(&loaded)), drawn(&capture_of(&state)));
+  assert_eq!(loaded.error.as_deref(), Some("Load failed: not a lurq recording"));
+  tab_tree(Signal::new(loaded.clone()), 1440, 860);
+  // A file picked while a recording runs is not loaded, and the top bar says so.
+  assert!(loaded.start(&tree.profiling_handle()));
+  loaded.load(ProfileReport::from_recording_file(&saved).map_err(|error| error.to_string()));
+  assert!(loaded.capture.is_none());
+  assert!(loaded.recording());
+  assert_eq!(loaded.error.as_deref(), Some(LOAD_WHILE_RECORDING));
+  let (_app, recording_tab) = tab_tree(Signal::new(loaded.clone()), 1440, 860);
+  assert!(has_text(&recording_tab, LOAD_WHILE_RECORDING));
+  // Stop shows its own capture, without the message.
+  loaded.stop();
+  assert!(loaded.error.is_none());
+  assert!(loaded.capture.is_some());
+}
+
+/// Some element of the tree shows `text`.
+fn has_text(tree: &crate::app::Tree, text: &str) -> bool {
+  fn find(element: crate::node::ElementRef<'_>, text: &str) -> bool {
+    element.text_content() == Some(text) || element.children().iter().any(|child| find(child, text))
+  }
+  tree.root().is_some_and(|root| find(root, text))
+}
+
 #[test]
 fn clear_ends_a_running_recording() {
   let main = WindowProfiler::new();

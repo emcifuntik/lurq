@@ -15,7 +15,7 @@ use crate::{
   app::{
     ctx::Interval,
     events::MouseEvent,
-    profiler::{ProfileSample, ProfilingHandle, RecordingOptions, SampleData, SessionId, SessionStatus},
+    profiler::{ProfileReport, ProfileSample, ProfilingHandle, RecordingOptions, SampleData, SessionId, SessionStatus},
   },
   components::{Column, Row, ScrollVertical, Spacer, Stack, Text},
   core::Signal,
@@ -45,14 +45,18 @@ const LANE_GAP: f32 = 8.0;
 const LANE_LABEL_WIDTH: f32 = 90.0;
 /// Spans the sidebar lists for one pass; the rest are counted.
 const MAX_PHASE_ROWS: usize = 256;
+pub(crate) const LOAD_WHILE_RECORDING: &str = "Load skipped: a recording is running; Stop it, then Load again";
 
 /// The Profiler tab: the recording Start opened on the inspected tree's
-/// profiling handle, or the capture Stop finished, and what is selected in it.
+/// profiling handle, or the capture Stop finished or Load read, and what is
+/// selected in it.
 #[derive(Clone, Default)]
 pub(crate) struct ProfilerState {
   recording: Option<Recording>,
   /// Records DevTools' own windows too; read when a recording starts.
   include_devtools: bool,
+  /// The report `capture` was made from, which Save writes.
+  report: Option<Arc<ProfileReport>>,
   capture: Option<Arc<ProfilerCapture>>,
   range: Option<TimeRange>,
   /// The overview bucket the range was pressed on; a shift-press extends from it.
@@ -132,14 +136,44 @@ impl ProfilerState {
     };
     match recording.handle.end(recording.id) {
       Ok(report) => {
-        let capture = ProfilerCapture::from_report(&report);
-        let range = capture.default_range();
-        self.selected = capture.slowest_in(range);
-        self.range = Some(range);
-        self.capture = Some(Arc::new(capture));
+        // What went wrong during the recording (a file picked while it ran)
+        // is not about the capture it made.
+        self.error = None;
+        self.show(report);
       }
       Err(error) => self.error = Some(error.to_string()),
     }
+  }
+
+  /// Shows the report of a recording file Save wrote
+  /// (`ProfileReport::from_recording_file`) in place of the capture; keeps
+  /// the capture when the file could not be read. A file picked while a
+  /// recording runs (one started while the dialog was open) is not loaded,
+  /// and the top bar says so.
+  pub(crate) fn load(&mut self, file: Result<ProfileReport, String>) {
+    if self.recording.is_some() {
+      self.error = Some(LOAD_WHILE_RECORDING.to_owned());
+      return;
+    }
+    match file {
+      Ok(report) => {
+        *self = Self {
+          include_devtools: self.include_devtools,
+          ..Self::default()
+        };
+        self.show(report);
+      }
+      Err(error) => self.error = Some(error),
+    }
+  }
+
+  fn show(&mut self, report: ProfileReport) {
+    let capture = ProfilerCapture::from_report(&report);
+    let range = capture.default_range();
+    self.selected = capture.slowest_in(range);
+    self.range = Some(range);
+    self.capture = Some(Arc::new(capture));
+    self.report = Some(Arc::new(report));
   }
 
   /// Rereads the running recording's duration and size.
@@ -210,7 +244,7 @@ impl ProfilerState {
 }
 
 /// Start/Stop, the live status of a running recording, the DevTools-window
-/// toggle and Clear, for the top bar.
+/// toggle, the file actions and Clear, for the top bar.
 pub(crate) fn profiler_actions(
   state: &ProfilerState,
   state_signal: Signal<ProfilerState>,
@@ -223,6 +257,10 @@ pub(crate) fn profiler_actions(
   let mut row = Row::new().align_items(Alignment::Center).spacing(8.0);
   if let Some(status) = state.recording.as_ref().map(recording_status_line) {
     row = row.child(mono_text(&status, 11.0, FontWeight::Medium, RED));
+  }
+  // Without a capture and not recording, the tab's body shows the error instead.
+  if let Some(error) = state.error.as_ref().filter(|_| recording || state.capture.is_some()) {
+    row = row.child(mono_text(error, 11.0, FontWeight::Medium, RED).nowrap());
   }
   row = row.child(
     toolbar_button(
@@ -266,6 +304,7 @@ pub(crate) fn profiler_actions(
       )
       .on_click(move |_| toggle_signal.update(|state| state.include_devtools = !state.include_devtools)),
     );
+    row = file_actions(row, state, &state_signal);
   }
   row
     .child(
@@ -275,6 +314,87 @@ pub(crate) fn profiler_actions(
       }),
     )
     .into()
+}
+
+/// Load, and with a capture Save (a lurq recording file) and Export for the
+/// Firefox Profiler. Each asks for its file on a thread of its own, so the
+/// dialog does not hold up DevTools' passes.
+#[cfg(not(target_os = "ios"))]
+fn file_actions(mut row: Row, state: &ProfilerState, state_signal: &Signal<ProfilerState>) -> Row {
+  let on_thread = |state_signal: &Signal<ProfilerState>, run: fn(Signal<ProfilerState>)| {
+    let state_signal = state_signal.clone();
+    move |_| {
+      let state_signal = state_signal.clone();
+      std::thread::spawn(move || run(state_signal));
+    }
+  };
+  row = row.child(
+    toolbar_button("arrow-right", "Load", MUTED, SURFACE_2, BORDER).on_click(on_thread(state_signal, load_from_file)),
+  );
+  if state.report.is_some() {
+    row = row
+      .child(
+        toolbar_button("box", "Save", MUTED, SURFACE_2, BORDER).on_click(on_thread(state_signal, |state_signal| {
+          save_to_file(state_signal, false)
+        })),
+      )
+      .child(
+        toolbar_button("external-link", "Export for Firefox Profiler", MUTED, SURFACE_2, BORDER)
+          .on_click(on_thread(state_signal, |state_signal| save_to_file(state_signal, true))),
+      );
+  }
+  row
+}
+
+/// iOS has no file dialog (`rfd` has no backend for it); the converters stay
+/// available as `ProfileReport::to_recording_file` and `to_firefox_profile`.
+#[cfg(target_os = "ios")]
+fn file_actions(row: Row, _state: &ProfilerState, _state_signal: &Signal<ProfilerState>) -> Row {
+  row
+}
+
+#[cfg(not(target_os = "ios"))]
+fn load_from_file(state_signal: Signal<ProfilerState>) {
+  let Some(path) = rfd::FileDialog::new()
+    .add_filter("lurq recording", &["json"])
+    .pick_file()
+  else {
+    return;
+  };
+  // Read and parsed here, so a long file does not hold the state's lock.
+  let report = std::fs::read_to_string(&path)
+    .map_err(|error| format!("Load failed: {error}"))
+    .and_then(|file| ProfileReport::from_recording_file(&file).map_err(|error| format!("Load failed: {error}")));
+  state_signal.update(|state| state.load(report));
+}
+
+/// Writes the capture as a lurq recording file, or for the Firefox Profiler.
+#[cfg(not(target_os = "ios"))]
+fn save_to_file(state_signal: Signal<ProfilerState>, firefox: bool) {
+  let (filter, file_name) = if firefox {
+    ("Firefox Profiler profile", "lurq-firefox-profile.json")
+  } else {
+    ("lurq recording", "recording.lurq.json")
+  };
+  let Some(path) = rfd::FileDialog::new()
+    .add_filter(filter, &["json"])
+    .set_file_name(file_name)
+    .save_file()
+  else {
+    return;
+  };
+  let report = state_signal.with_untracked(|state| state.report.clone());
+  let Some(report) = report else {
+    return;
+  };
+  let file = if firefox {
+    report.to_firefox_profile()
+  } else {
+    report.to_recording_file()
+  };
+  if let Err(error) = std::fs::write(&path, file) {
+    state_signal.update(|state| state.error = Some(format!("Save failed: {error}")));
+  }
 }
 
 fn recording_status_line(recording: &Recording) -> String {
