@@ -48,10 +48,8 @@ inside its input.
 
 - **The way back's arrow** is the platform's symbol with the `raster` feature; without it, a drawing after
   it.
-- **The move** is a spring of 500 ms that starts at the finger's speed; the platform's own spring was not
-  measured against it.
 - **The bar** is opaque when it has a color: content does not show through it, since the renderer has no
-  blur to make the platform's material with. There is no search field in it.
+  blur to make the platform's material with.
 - **How things move** in the stack (the spring's length, how far a large title grows and the way it takes to
   a way back) was set by eye and not measured against the platform; `StackMotion` changes the numbers.
 - **A long press on the way back** shows no list of the screens under.
