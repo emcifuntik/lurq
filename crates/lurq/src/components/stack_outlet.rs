@@ -72,6 +72,8 @@ const BAR_HEIGHT: f32 = 44.0;
 const LARGE_TITLE_SIZE: f32 = 34.0;
 const LARGE_TITLE_HEIGHT: f32 = 52.0;
 const LARGE_TITLE_INSET: f32 = 16.0;
+/// How large the bar's text is beside a large title.
+const SMALL_TITLE_SHARE: f32 = 17.0 / LARGE_TITLE_SIZE;
 /// How much larger the large title gets as the content is pulled down, and the pull that takes it there.
 const LARGE_TITLE_GROWTH: f32 = 1.1;
 const LARGE_TITLE_PULL: f32 = 150.0;
@@ -254,6 +256,9 @@ pub(crate) struct NavigationSlot {
   /// down past its top, which the large title grows with.
   scroll: ScrollState,
   pull: Signal<f32>,
+  /// See [`LayerBar`].
+  large: ElementRef,
+  flying: Signal<bool>,
   /// The color the bar gives a title.
   title_color: Option<Color>,
 }
@@ -391,6 +396,12 @@ struct LayerBar {
   scroll: ScrollState,
   title_gone: Arc<AtomicBool>,
   pull: Signal<f32>,
+  /// The large title as it is laid out in the content, and the way back's label as it is laid out in the bar:
+  /// the two places a title goes between as a screen is pushed over this one or taken off it.
+  large: ElementRef,
+  label: ElementRef,
+  /// The large title is on its way between the two, drawn by the outlet: the screen's own is not shown.
+  flying: Signal<bool>,
 }
 
 impl Default for LayerBar {
@@ -403,6 +414,9 @@ impl Default for LayerBar {
       scroll: ScrollState::new(),
       title_gone: Arc::default(),
       pull: Signal::new(0.0),
+      large: ElementRef::default(),
+      label: ElementRef::default(),
+      flying: Signal::new(false),
     }
   }
 }
@@ -444,6 +458,8 @@ pub struct StackOutlet {
   drag: Signal<f32>,
   begin: Timeout,
   settle: Timeout,
+  /// The outlet as it is laid out: where its corner is in the window.
+  origin: ElementRef,
 }
 
 impl Component for StackOutlet {
@@ -488,6 +504,7 @@ impl Component for StackOutlet {
       drag,
       begin,
       settle,
+      origin: ElementRef::default(),
     }
   }
 
@@ -617,6 +634,8 @@ impl Component for StackOutlet {
             changed: self.changed.clone(),
             scroll: layer.bar.scroll.clone(),
             pull: layer.bar.pull.clone(),
+            large: layer.bar.large.clone(),
+            flying: layer.bar.flying.clone(),
             title_color: match &props.bar {
               Some(Bar::Standard(bar)) => Some(bar.title),
               _ => None,
@@ -765,9 +784,67 @@ impl Component for StackOutlet {
         title: layer.bar.title.clone(),
         back_probe: layer.bar.back_probe.clone(),
         title_shown,
+        label: layer.bar.label.clone(),
+        label_hidden: false,
       })
     };
-    let (back_part, front_part) = (part_of(back), part_of(front));
+    let (back_part, mut front_part) = (part_of(back), part_of(front));
+
+    // A large title in view on the screen behind goes to the front screen's way back as that screen comes
+    // in, and back as it goes out: one title, drawn here over both, between the two places.
+    let layer_of = |id: Option<u64>| layers.iter().copied().find(|layer| Some(layer.entry.id) == id);
+    let flight = match (layer_of(back), layer_of(front), &back_part, &front_part) {
+      (Some(under), Some(over), Some(under_part), Some(over_part))
+        if under_part.item.large_title
+          && !under.bar.title_gone.load(Ordering::Acquire)
+          && !under_part.item.bar_hidden
+          && !over_part.item.bar_hidden
+          && over_part.item.leading.is_none()
+          && over_part.back_label.is_some()
+          && under.bar.large.is_attached() =>
+      {
+        let origin = self.origin.rect();
+        let large = under.bar.large.rect();
+        let label = over.bar.label.rect();
+        // Until the label is laid out, at the push's first frame, it is taken to be where the title is: the
+        // title is all there is to see then.
+        let label = if over.bar.label.is_attached() && label.2 > 0.0 {
+          label
+        } else {
+          (
+            large.0,
+            large.1,
+            large.2 * SMALL_TITLE_SHARE,
+            large.3 * SMALL_TITLE_SHARE,
+          )
+        };
+        (large.2 > 0.0 && large.3 > 0.0).then(|| Flight {
+          title: under_part.item.title.clone(),
+          says: if over_part.short_back {
+            BACK.to_owned()
+          } else {
+            over_part.back_label.clone().unwrap_or_default()
+          },
+          large: (large.0 - origin.0, large.1 - origin.1, large.2, large.3),
+          label: (label.0 - origin.0, label.1 - origin.1, label.2, label.3),
+        })
+      }
+      _ => None,
+    };
+    for layer in &layers {
+      let flying = flight.is_some() && Some(layer.entry.id) == back;
+      if layer.bar.flying.get_untracked() != flying {
+        layer.bar.flying.set(flying);
+      }
+    }
+    if let (Some(_), Some(part)) = (&flight, &mut front_part) {
+      part.label_hidden = true;
+    }
+    let overlay = Stack::new().size(FILL, FILL).pointer_events_none();
+    let overlay = match &flight {
+      Some(flight) => flight.draw(overlay, &bar, out, pace, curve),
+      None => overlay,
+    };
     // How much of the bar there is: all of it, or none over a screen that hides it, and between the two as
     // one such screen gives way to another.
     let shows = |part: &Option<BarPart>| part.as_ref().map(|part| if part.item.bar_hidden { 0.0 } else { 1.0 });
@@ -803,7 +880,7 @@ impl Component for StackOutlet {
     }
     drop(shown);
 
-    Column::new()
+    let content = Column::new()
       .size(FILL, FILL)
       .child(
         Column::new()
@@ -836,7 +913,12 @@ impl Component for StackOutlet {
           .opacity(if lined { 1.0 } else { 0.0 })
           .transition(Transition::opacity().duration(TITLE_FADE)),
       )
-      .child(Column::new().width(FILL).flex(1.0).child(screens))
+      .child(Column::new().width(FILL).flex(1.0).child(screens));
+    Stack::new()
+      .size(FILL, FILL)
+      .ref_element(self.origin.clone())
+      .child(content)
+      .child(overlay)
       .into()
   }
 
@@ -884,6 +966,70 @@ fn back_label_of(under: &NavigationItem) -> String {
   }
 }
 
+/// A large title on its way between the content of the screen behind and the way back of the screen in
+/// front: where it is at each end, in the outlet, and what it says there.
+struct Flight {
+  title: String,
+  says: String,
+  large: (f32, f32, f32, f32),
+  label: (f32, f32, f32, f32),
+}
+
+impl Flight {
+  /// Adds the title to `overlay`, `out` of the way from the label to the content: the large one, which
+  /// shrinks and fades as it nears the label, and the label, which grows and fades as it nears the content.
+  fn draw(&self, overlay: Stack, bar: &NavigationBar, out: f32, pace: Duration, curve: Easing) -> Stack {
+    let between = |at_label: f32, at_large: f32| at_label + (at_large - at_label) * out;
+    let centre = (
+      between(self.label.0 + self.label.2 / 2.0, self.large.0 + self.large.2 / 2.0),
+      between(self.label.1 + self.label.3 / 2.0, self.large.1 + self.large.3 / 2.0),
+    );
+    let part = |says: &str, size: f32, weight: FontWeight, color: Color, laid: (f32, f32), scale: f32, opacity: f32| {
+      Text::styled(
+        says,
+        TextStyle {
+          font_size: size,
+          weight,
+          color,
+          ..TextStyle::default()
+        },
+      )
+      .nowrap()
+      // Laid out at the outlet's corner, scaled about its middle and then put where it goes.
+      .transform(
+        Transform2D::translate(centre.0 - laid.0 / 2.0, centre.1 - laid.1 / 2.0).then(&Transform2D::scale_uniform(scale)),
+      )
+      .opacity(opacity)
+      .transition(Transition::transform().duration(pace).easing(curve))
+      .transition(Transition::opacity().duration(pace).easing(curve))
+    };
+    let ratio = if self.large.3 > 0.0 && self.label.3 > 0.0 {
+      self.label.3 / self.large.3
+    } else {
+      SMALL_TITLE_SHARE
+    };
+    overlay
+      .child(part(
+        &self.title,
+        LARGE_TITLE_SIZE,
+        FontWeight::Bold,
+        bar.title,
+        (self.large.2, self.large.3),
+        between(ratio, 1.0),
+        out,
+      ))
+      .child(part(
+        &self.says,
+        17.0,
+        FontWeight::Normal,
+        bar.tint,
+        (self.label.2, self.label.3),
+        between(1.0, 1.0 / ratio),
+        1.0 - out,
+      ))
+  }
+}
+
 /// One screen's part of the bar.
 struct BarPart {
   item: NavigationItem,
@@ -894,6 +1040,10 @@ struct BarPart {
   back_probe: ElementRef,
   /// The title is in the bar: always, but for a large title that is still in view in the content.
   title_shown: bool,
+  /// The way back's label as it is laid out, and whether it is left out of view: while the outlet carries
+  /// the title of the screen under to it or away.
+  label: ElementRef,
+  label_hidden: bool,
 }
 
 /// One screen's part of the bar: its title in the middle, the way back before it and what the screen put at
@@ -960,7 +1110,11 @@ fn bar_item(
         .padding_right(12.0)
         .spacing(BACK_SPACING)
         .child(chevron(bar.tint))
-        .child(text(says, FontWeight::Normal, bar.tint))
+        .child(
+          text(says, FontWeight::Normal, bar.tint)
+            .ref_element(part.label.clone())
+            .opacity(if part.label_hidden { 0.0 } else { 1.0 }),
+        )
         .on_click(move |_| {
           navigator.back();
         }),
@@ -1052,6 +1206,8 @@ impl StackOutlet {
       title: item.title.clone(),
       color: slot.title_color.unwrap_or(Color::from_hex("#000000")),
       pull: slot.pull.clone(),
+      large: slot.large.clone(),
+      flying: slot.flying.clone(),
     });
     ScrollVertical::new(Column::new().width(FILL).child(title).child(content.into()))
       .with_scroll_state(slot.scroll.clone())
@@ -1078,6 +1234,8 @@ struct LargeTitleProps {
   title: String,
   color: Color,
   pull: Signal<f32>,
+  large: ElementRef,
+  flying: Signal<bool>,
 }
 
 impl PartialEq for LargeTitleProps {
@@ -1121,7 +1279,10 @@ impl Component for LargeTitle {
           },
         )
         .nowrap()
-        .id("navigation-large-title"),
+        .id("navigation-large-title")
+        .ref_element(props.large.clone())
+        // While the outlet carries the title to or from a way back, this one is not seen.
+        .opacity(if props.flying.get() { 0.0 } else { 1.0 }),
       )
   }
 }
