@@ -24,6 +24,10 @@ mod counter_tests;
 mod counting_allocator;
 #[cfg(any(feature = "serde", feature = "mcp"))]
 mod export;
+#[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
+mod firefox_export;
+#[cfg(all(test, any(feature = "serde", feature = "mcp", feature = "devtools")))]
+mod firefox_export_tests;
 #[cfg(all(test, feature = "perf_profile"))]
 mod latency_tests;
 mod model;
@@ -31,6 +35,10 @@ mod phase_slot;
 #[cfg(all(test, feature = "perf_profile"))]
 mod phase_tests;
 pub(crate) mod producer;
+#[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
+mod recording_file;
+#[cfg(all(test, any(feature = "serde", feature = "mcp", feature = "devtools")))]
+mod recording_file_tests;
 #[cfg(all(feature = "screenshot", feature = "perf_profile"))]
 pub(crate) mod screenshot;
 #[cfg(all(test, feature = "perf_profile", feature = "screenshot"))]
@@ -51,14 +59,19 @@ pub use collector::ProfilingHandle;
 #[cfg(feature = "counting_allocator")]
 pub use counting_allocator::CountingAllocator;
 pub use model::{
-  BuildAvailability, CacheSizes, CanvasTextProfile, DEFAULT_RECORDING_MAX_BYTES, FrameScreenshot, InFlightObservation,
-  InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS, MAX_ENDED_SESSION_IDS, MAX_PENDING_INPUTS,
-  MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS, MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassAllocations, PassCounters,
-  PassSample, Phase, PhaseSpan, PresentTiming, ProfileError, ProfileReport, ProfileSample, RecordingOptions,
-  RecordingStatus, SampleData, ScreenshotOptions, SessionId, SessionOptions, SessionStarted, SessionStatus,
-  UiUpdateKind, UiUpdateSample, WindowStatus,
+  BuildAvailability, CacheSizes, CanvasTextProfile, DEFAULT_RECORDING_MAX_BYTES, FrameScreenshot,
+  GpuTimestampAvailability, GpuTiming, InFlightObservation, InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS,
+  MAX_ENDED_SESSION_IDS, MAX_PENDING_INPUTS, MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS, MAX_TRACKED_WINDOWS,
+  MAX_WINDOW_ID_BYTES, PassAllocations, PassCounters, PassSample, Phase, PhaseSpan, PresentTiming, ProfileError,
+  ProfileReport, ProfileSample, RecordingOptions, RecordingStatus, SampleData, ScreenshotOptions, SessionId,
+  SessionOptions, SessionStarted, SessionStatus, UiUpdateKind, UiUpdateSample, WindowStatus,
 };
 pub use producer::{PhaseGuard, ProfileContext};
+#[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
+pub use {
+  firefox_export::FIREFOX_PROCESSED_PROFILE_VERSION,
+  recording_file::{RECORDING_FILE_FORMAT, RECORDING_FILE_VERSION, RecordingFileError},
+};
 
 /// A thread's allocation counts since it started, and live bytes then.
 #[cfg(feature = "perf_profile")]

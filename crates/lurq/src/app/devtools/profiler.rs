@@ -16,7 +16,8 @@ use crate::{
     ctx::Interval,
     events::MouseEvent,
     profiler::{
-      ProfileSample, ProfilingHandle, RecordingOptions, SampleData, ScreenshotOptions, SessionId, SessionStatus,
+      ProfileReport, ProfileSample, ProfilingHandle, RecordingOptions, SampleData, ScreenshotOptions, SessionId,
+      SessionStatus,
     },
   },
   components::{Column, Row, ScrollVertical, Spacer, Stack, Text},
@@ -30,6 +31,9 @@ use crate::{
 
 const RED: &str = "#ef4444";
 const BLACK: &str = "#000000";
+/// The screenshot filmstrip and the frames that copied a screenshot; orange
+/// is GPU time.
+const CAPTURED: &str = "#2dd4bf";
 /// How often the status line of a running recording is reread.
 pub(crate) const STATUS_INTERVAL: Duration = Duration::from_millis(250);
 /// Equal parts of the whole recording in the overview strip.
@@ -44,6 +48,8 @@ const FILMSTRIP_HEIGHT: f32 = 48.0;
 const PREVIEW_MAX_HEIGHT: f32 = 240.0;
 const OVERVIEW_HEIGHT: f32 = 36.0;
 const CHART_HEIGHT: f32 = 120.0;
+/// The GPU track's height; its scale is one frame budget or its longest bar.
+const GPU_TRACK_HEIGHT: f32 = 32.0;
 /// Height of each counter track under the pass chart.
 const COUNTER_HEIGHT: f32 = 24.0;
 const BAR_WIDTH: f32 = 3.0;
@@ -53,9 +59,11 @@ const LANE_LABEL_WIDTH: f32 = 90.0;
 const SIDEBAR_WIDTH: f32 = 340.0;
 /// Spans the sidebar lists for one pass; the rest are counted.
 const MAX_PHASE_ROWS: usize = 256;
+pub(crate) const LOAD_WHILE_RECORDING: &str = "Load skipped: a recording is running; Stop it, then Load again";
 
 /// The Profiler tab: the recording Start opened on the inspected tree's
-/// profiling handle, or the capture Stop finished, and what is selected in it.
+/// profiling handle, or the capture Stop finished or Load read, and what is
+/// selected in it.
 #[derive(Clone, Default)]
 pub(crate) struct ProfilerState {
   recording: Option<Recording>,
@@ -65,6 +73,8 @@ pub(crate) struct ProfilerState {
   /// read when a recording starts. Off by default: each one reads a frame
   /// back from the GPU.
   screenshots: bool,
+  /// The report `capture` was made from, which Save writes.
+  report: Option<Arc<ProfileReport>>,
   capture: Option<Arc<ProfilerCapture>>,
   range: Option<TimeRange>,
   /// The overview bucket the range was pressed on; a shift-press extends from it.
@@ -149,14 +159,45 @@ impl ProfilerState {
     };
     match recording.handle.end(recording.id) {
       Ok(report) => {
-        let capture = ProfilerCapture::from_report(&report);
-        let range = capture.default_range();
-        self.selected = capture.slowest_in(range);
-        self.range = Some(range);
-        self.capture = Some(Arc::new(capture));
+        // What went wrong during the recording (a file picked while it ran)
+        // is not about the capture it made.
+        self.error = None;
+        self.show(report);
       }
       Err(error) => self.error = Some(error.to_string()),
     }
+  }
+
+  /// Shows the report of a recording file Save wrote
+  /// (`ProfileReport::from_recording_file`) in place of the capture; keeps
+  /// the capture when the file could not be read. A file picked while a
+  /// recording runs (one started while the dialog was open) is not loaded,
+  /// and the top bar says so.
+  pub(crate) fn load(&mut self, file: Result<ProfileReport, String>) {
+    if self.recording.is_some() {
+      self.error = Some(LOAD_WHILE_RECORDING.to_owned());
+      return;
+    }
+    match file {
+      Ok(report) => {
+        *self = Self {
+          include_devtools: self.include_devtools,
+          screenshots: self.screenshots,
+          ..Self::default()
+        };
+        self.show(report);
+      }
+      Err(error) => self.error = Some(error),
+    }
+  }
+
+  fn show(&mut self, report: ProfileReport) {
+    let capture = ProfilerCapture::from_report(&report);
+    let range = capture.default_range();
+    self.selected = capture.slowest_in(range);
+    self.range = Some(range);
+    self.capture = Some(Arc::new(capture));
+    self.report = Some(Arc::new(report));
   }
 
   /// Rereads the running recording's duration and size.
@@ -228,7 +269,7 @@ impl ProfilerState {
 }
 
 /// Start/Stop, the live status of a running recording, the DevTools-window
-/// toggle and Clear, for the top bar.
+/// toggle, the file actions and Clear, for the top bar.
 pub(crate) fn profiler_actions(
   state: &ProfilerState,
   state_signal: Signal<ProfilerState>,
@@ -241,6 +282,10 @@ pub(crate) fn profiler_actions(
   let mut row = Row::new().align_items(Alignment::Center).spacing(8.0);
   if let Some(status) = state.recording.as_ref().map(recording_status_line) {
     row = row.child(mono_text(&status, 11.0, FontWeight::Medium, RED));
+  }
+  // Without a capture and not recording, the tab's body shows the error instead.
+  if let Some(error) = state.error.as_ref().filter(|_| recording || state.capture.is_some()) {
+    row = row.child(mono_text(error, 11.0, FontWeight::Medium, RED).nowrap());
   }
   row = row.child(
     toolbar_button(
@@ -296,6 +341,7 @@ pub(crate) fn profiler_actions(
       )
       .on_click(move |_| toggle_signal.update(|state| state.screenshots = !state.screenshots)),
     );
+    row = file_actions(row, state, &state_signal);
   }
   row
     .child(
@@ -305,6 +351,87 @@ pub(crate) fn profiler_actions(
       }),
     )
     .into()
+}
+
+/// Load, and with a capture Save (a lurq recording file) and Export for the
+/// Firefox Profiler. Each asks for its file on a thread of its own, so the
+/// dialog does not hold up DevTools' passes.
+#[cfg(not(target_os = "ios"))]
+fn file_actions(mut row: Row, state: &ProfilerState, state_signal: &Signal<ProfilerState>) -> Row {
+  let on_thread = |state_signal: &Signal<ProfilerState>, run: fn(Signal<ProfilerState>)| {
+    let state_signal = state_signal.clone();
+    move |_| {
+      let state_signal = state_signal.clone();
+      std::thread::spawn(move || run(state_signal));
+    }
+  };
+  row = row.child(
+    toolbar_button("arrow-right", "Load", MUTED, SURFACE_2, BORDER).on_click(on_thread(state_signal, load_from_file)),
+  );
+  if state.report.is_some() {
+    row = row
+      .child(
+        toolbar_button("box", "Save", MUTED, SURFACE_2, BORDER).on_click(on_thread(state_signal, |state_signal| {
+          save_to_file(state_signal, false)
+        })),
+      )
+      .child(
+        toolbar_button("external-link", "Export for Firefox Profiler", MUTED, SURFACE_2, BORDER)
+          .on_click(on_thread(state_signal, |state_signal| save_to_file(state_signal, true))),
+      );
+  }
+  row
+}
+
+/// iOS has no file dialog (`rfd` has no backend for it); the converters stay
+/// available as `ProfileReport::to_recording_file` and `to_firefox_profile`.
+#[cfg(target_os = "ios")]
+fn file_actions(row: Row, _state: &ProfilerState, _state_signal: &Signal<ProfilerState>) -> Row {
+  row
+}
+
+#[cfg(not(target_os = "ios"))]
+fn load_from_file(state_signal: Signal<ProfilerState>) {
+  let Some(path) = rfd::FileDialog::new()
+    .add_filter("lurq recording", &["json"])
+    .pick_file()
+  else {
+    return;
+  };
+  // Read and parsed here, so a long file does not hold the state's lock.
+  let report = std::fs::read_to_string(&path)
+    .map_err(|error| format!("Load failed: {error}"))
+    .and_then(|file| ProfileReport::from_recording_file(&file).map_err(|error| format!("Load failed: {error}")));
+  state_signal.update(|state| state.load(report));
+}
+
+/// Writes the capture as a lurq recording file, or for the Firefox Profiler.
+#[cfg(not(target_os = "ios"))]
+fn save_to_file(state_signal: Signal<ProfilerState>, firefox: bool) {
+  let (filter, file_name) = if firefox {
+    ("Firefox Profiler profile", "lurq-firefox-profile.json")
+  } else {
+    ("lurq recording", "recording.lurq.json")
+  };
+  let Some(path) = rfd::FileDialog::new()
+    .add_filter(filter, &["json"])
+    .set_file_name(file_name)
+    .save_file()
+  else {
+    return;
+  };
+  let report = state_signal.with_untracked(|state| state.report.clone());
+  let Some(report) = report else {
+    return;
+  };
+  let file = if firefox {
+    report.to_firefox_profile()
+  } else {
+    report.to_recording_file()
+  };
+  if let Err(error) = std::fs::write(&path, file) {
+    state_signal.update(|state| state.error = Some(format!("Save failed: {error}")));
+  }
 }
 
 fn recording_status_line(recording: &Recording) -> String {
@@ -615,9 +742,11 @@ fn timeline(
     .into()
 }
 
-/// The filmstrip of a recording with screenshots, the pass chart, the counter
-/// tracks, the marker lanes and the axis, one row each. Each row's track takes
-/// the width the label column leaves, and its time scale is that width less
+/// The filmstrip of a recording with screenshots, the pass chart, the
+/// missed-vsync lane, the lane of frames that copied a screenshot, the GPU
+/// track, the counter tracks, the marker lanes and the axis, one row each.
+/// Each row's track takes the width the label column leaves, and its time
+/// scale is that width less
 /// `BAR_WIDTH` (so a bar at the range's end stays inside): a time is at the
 /// same x in every row.
 fn timeline_tracks(
@@ -639,7 +768,7 @@ fn timeline_tracks(
     ));
   }
   // Missed vsyncs sit right under the bars they mark, then the frames that
-  // paid for a screenshot; the counters follow.
+  // paid for a screenshot; GPU time and the counters follow.
   tracks = tracks
     .child(pass_chart(passes, range, selected, state_signal.clone()))
     .child(missed_vsync_lane(capture, range));
@@ -649,6 +778,7 @@ fn timeline_tracks(
   {
     tracks = tracks.child(screenshot_lane(passes, range));
   }
+  tracks = tracks.child(gpu_track(capture, passes, range));
   for counter in Counter::ALL {
     tracks = tracks.child(counter_track(counter, passes, range, selected, state_signal.clone()));
   }
@@ -755,7 +885,7 @@ fn filmstrip(
       &format!("screenshots {}", shown.len()),
       9.0,
       FontWeight::Normal,
-      ORANGE,
+      CAPTURED,
     )),
   )
 }
@@ -767,13 +897,18 @@ fn screenshot_lane(passes: &[Arc<ProfileSample>], range: TimeRange) -> Element {
   let mut count = 0;
   for sample in passes {
     if pass_of(sample).is_some_and(|pass| pass.screenshot) {
-      cells[bucket_of(range, sample.started_ms, MARKER_BUCKETS)] = Some(ORANGE);
+      cells[bucket_of(range, sample.started_ms, MARKER_BUCKETS)] = Some(CAPTURED);
       count += 1;
     }
   }
   lane(
     &cells,
-    Column::new().child(mono_text(&format!("captured {count}"), 9.0, FontWeight::Normal, ORANGE)),
+    Column::new().child(mono_text(
+      &format!("captured {count}"),
+      9.0,
+      FontWeight::Normal,
+      CAPTURED,
+    )),
   )
 }
 
@@ -872,6 +1007,51 @@ fn track_row(track: impl Into<Element>, label: Column) -> Element {
     .child(label.width(LANE_LABEL_WIDTH))
     .width(FILL)
     .into()
+}
+
+/// The GPU time of each pass that has one (UI and Canvas passes, from wgpu
+/// timestamp queries), a bar at the pass's start; or why none was measured.
+fn gpu_track(capture: &ProfilerCapture, passes: &[Arc<ProfileSample>], range: TimeRange) -> Element {
+  let measured: Vec<_> = passes
+    .iter()
+    .filter_map(|sample| Some((sample.started_ms, pass_of(sample)?.gpu?)))
+    .collect();
+  let scale = measured
+    .iter()
+    .map(|(_, gpu)| ms(gpu.total()))
+    .fold(FRAME_BUDGET_MS, f64::max);
+  let mut track = Stack::new().flex(1.0).height(GPU_TRACK_HEIGHT).background(SURFACE_2);
+  if measured.is_empty() {
+    let note = if capture.gpu_timestamps.available {
+      "No GPU results arrived for these passes".to_owned()
+    } else {
+      format!("GPU time not measured: {}", capture.gpu_missing_reason())
+    };
+    track = track.child(
+      Row::new()
+        .align_items(Alignment::Center)
+        .child(mono_text(&note, 9.0, FontWeight::Normal, MUTED))
+        .padding_horizontal(6.0)
+        .width(FILL)
+        .height(FILL),
+    );
+  }
+  for (started_ms, gpu) in &measured {
+    let bar = Row::new()
+      .width(BAR_WIDTH)
+      .height(((ms(gpu.total()) / scale) as f32 * GPU_TRACK_HEIGHT).max(2.0))
+      .background(ORANGE);
+    track = track.child(placed(range.fraction(*started_ms) as f32, bar, Alignment::End));
+  }
+  track_row(
+    track,
+    Column::new().child(mono_text(
+      &format!("gpu {}/{}", measured.len(), passes.len()),
+      9.0,
+      FontWeight::Normal,
+      ORANGE,
+    )),
+  )
 }
 
 fn pass_chart(
@@ -1040,6 +1220,7 @@ fn legend() -> Element {
     .child(swatch(YELLOW, "over budget"))
     .child(swatch(RED, "over twice the budget"))
     .child(swatch(PRIMARY, "selected"))
+    .child(swatch(ORANGE, "GPU time"))
     .child(text(
       "faded: not presented · click a bar to inspect it · inputs coloured by input-to-present latency, blue: no frame",
       10.0,
@@ -1066,9 +1247,13 @@ fn frame_sidebar(
     None => body = body.child(empty_state("Select a frame in the timeline")),
     Some((sample, pass)) => {
       let total_ms = ms(pass.total);
+      let gpu = pass
+        .gpu
+        .map_or_else(|| "–".to_owned(), |gpu| format_ms(ms(gpu.total())));
       let mut summary = vec![
         ("Start", format_offset(capture, sample.started_ms), TEXT),
         ("Duration", format_ms(total_ms), duration_color(total_ms)),
+        ("GPU", gpu, ORANGE),
         ("Presented", if pass.rendered { "yes" } else { "no" }.to_owned(), TEXT),
         ("Reasons", capture::reasons_text(pass), TEXT),
         ("Window", sample.window.clone(), MUTED),
@@ -1077,7 +1262,7 @@ fn frame_sidebar(
         summary.push(("Missed vsync", present.missed_vsyncs.to_string(), RED));
       }
       if pass.screenshot {
-        summary.push(("Screenshot", "copied: render includes it".to_owned(), ORANGE));
+        summary.push(("Screenshot", "copied: render includes it".to_owned(), CAPTURED));
       }
       let mut section = Column::new()
         .spacing(8.0)
@@ -1086,6 +1271,14 @@ fn frame_sidebar(
         .border_bottom(divider());
       for (label, value, color) in summary {
         section = section.child(detail_row(label, &value, color));
+      }
+      if pass.rendered && pass.gpu.is_none() {
+        section = section.child(text(
+          &format!("No GPU time: {}", capture.gpu_missing_reason()),
+          10.0,
+          FontWeight::Normal,
+          MUTED,
+        ));
       }
       body = body
         .child(section)

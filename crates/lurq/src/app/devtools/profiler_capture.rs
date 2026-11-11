@@ -6,7 +6,8 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::app::profiler::{
-  ApplicationScopeSample, FrameScreenshot, InputDispatchSample, PassSample, ProfileReport, ProfileSample, SampleData,
+  ApplicationScopeSample, FrameScreenshot, GpuTimestampAvailability, InputDispatchSample, PassSample, ProfileReport,
+  ProfileSample, SampleData,
 };
 
 /// One 60 Hz refresh: the timeline draws its budget line here and colours the
@@ -61,6 +62,8 @@ pub(crate) struct ProfilerCapture {
   pub stopped_at_limit: bool,
   /// Operations that began before Start, left out of the recording.
   pub boundary_excluded: u64,
+  /// Whether the recorded windows' adapters measured GPU time, and why not.
+  pub gpu_timestamps: GpuTimestampAvailability,
 }
 
 /// A screenshot of the recording, placed at its frame.
@@ -142,6 +145,16 @@ impl ProfilerCapture {
       size_bytes: report.recording.map_or(0, |recording| recording.size_bytes),
       stopped_at_limit: report.recording.is_some_and(|recording| recording.stopped_at_limit),
       boundary_excluded: report.boundary_excluded_samples,
+      gpu_timestamps: report.build.gpu_timestamps,
+    }
+  }
+
+  /// Why a presented pass has no GPU time: its adapter does not measure, or
+  /// its result never arrived.
+  pub(crate) fn gpu_missing_reason(&self) -> &'static str {
+    match self.gpu_timestamps.reason {
+      Some(reason) if !self.gpu_timestamps.available => reason,
+      _ => "its GPU result never arrived",
     }
   }
 
@@ -575,6 +588,17 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
         canvas_recording, canvas_preparation),
       ),
   )];
+
+  if let Some(gpu) = pass.gpu {
+    sections.push(section(
+      "GPU",
+      [
+        ("ui", format_duration(gpu.ui)),
+        ("canvas", gpu.canvas.map_or_else(|| "-".to_owned(), format_duration)),
+        ("total", format_duration(gpu.total())),
+      ],
+    ));
+  }
 
   if let Some(present) = &pass.present {
     let optional = |value: Option<Duration>| value.map_or_else(|| "-".to_owned(), format_duration);

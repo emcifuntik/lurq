@@ -22,9 +22,39 @@ pub struct ProfileContext {
 }
 
 impl ProfileContext {
-  #[cfg(all(feature = "canvas", feature = "perf_profile"))]
+  #[cfg(all(feature = "perf_profile", any(feature = "canvas", feature = "wgpu")))]
   pub(crate) fn capture_active(&self) -> bool {
     self.handle.inner.active.load(Ordering::Acquire)
+  }
+
+  /// The frame id of the pass in progress; None outside a pass.
+  #[cfg(all(feature = "wgpu", feature = "perf_profile"))]
+  pub(crate) fn frame_id(&self) -> Option<u64> {
+    self.frame_id
+  }
+
+  /// True when `other` publishes for the same window of the same collector.
+  #[cfg(all(
+    feature = "perf_profile",
+    any(feature = "wgpu", all(feature = "dx12", target_os = "windows"))
+  ))]
+  pub(crate) fn same_window(&self, other: &Self) -> bool {
+    Arc::ptr_eq(&self.handle.inner, &other.handle.inner) && Arc::ptr_eq(&self.window, &other.window)
+  }
+
+  /// Reports whether this window's renderer measures GPU time on its adapter.
+  #[cfg(all(
+    feature = "perf_profile",
+    any(feature = "wgpu", all(feature = "dx12", target_os = "windows"))
+  ))]
+  pub(crate) fn report_gpu_timestamps(&self, availability: GpuTimestampAvailability) {
+    self.handle.set_gpu_timestamps(&self.window, availability);
+  }
+
+  /// Attaches GPU time that arrived late to this window's pass of `frame_id`.
+  #[cfg(all(feature = "wgpu", feature = "perf_profile"))]
+  pub(crate) fn record_gpu(&self, frame_id: u64, gpu: GpuTiming) {
+    self.handle.record_gpu(&self.window, frame_id, gpu);
   }
 
   #[cfg(all(feature = "canvas", feature = "perf_profile"))]
@@ -463,6 +493,7 @@ impl WindowProfiler {
           counters: self.counters,
           // A frame that was not rendered copied nothing.
           screenshot: self.screenshot && report.rendered,
+          gpu: None,
         }),
       );
     }

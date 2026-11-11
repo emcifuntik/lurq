@@ -334,9 +334,16 @@ impl ProfilingHandle {
       id,
       started_ms: self.millis(started),
       max_samples: 0,
-      build: BuildAvailability::default(),
+      build: build_availability(&state, options.include_devtools),
       recording_max_bytes: None,
     })
+  }
+
+  /// What this build can measure, GPU time as the renderers of the tracked
+  /// windows (DevTools' own left out) reported it for their adapters.
+  pub fn availability(&self) -> BuildAvailability {
+    let state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    build_availability(&state, false)
   }
 
   /// Returns immutable owned data without waiting for an event-loop pass.
@@ -448,7 +455,7 @@ impl ProfilingHandle {
       started_ms: self.millis(session.started),
       ended_ms: finalized.then(|| self.millis(now)),
       observed_ms: self.millis(now),
-      build: BuildAvailability::default(),
+      build: build_availability(state, session.options.include_devtools),
       max_samples,
       completed_samples: session.completed,
       dropped_samples: session.dropped,
@@ -509,6 +516,7 @@ impl ProfilingHandle {
           id: id.into(),
           open: true,
           devtools,
+          gpu_timestamps: None,
         },
         phase: phase.clone(),
         #[cfg(feature = "perf_profile")]
@@ -773,6 +781,61 @@ impl ProfilingHandle {
     }
   }
 
+  /// Keeps what `window`'s renderer reported about GPU timestamps on its adapter.
+  #[cfg_attr(
+    not(all(
+      feature = "perf_profile",
+      any(feature = "wgpu", all(feature = "dx12", target_os = "windows"))
+    )),
+    allow(dead_code)
+  )]
+  pub(crate) fn set_gpu_timestamps(&self, window: &str, availability: GpuTimestampAvailability) {
+    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(window) = state.windows.get_mut(window) {
+      window.status.gpu_timestamps = Some(availability);
+    }
+  }
+
+  /// Attaches GPU time that arrived late to `window`'s pass of `frame_id` in
+  /// every live session that still holds it. Ended sessions' reports keep the
+  /// samples they had: a pass is replaced by an updated copy, never changed.
+  #[cfg_attr(not(all(feature = "wgpu", feature = "perf_profile")), allow(dead_code))]
+  pub(crate) fn record_gpu(&self, window: &str, frame_id: u64, gpu: GpuTiming) {
+    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    // One updated copy, shared like the pass by every session holding it.
+    let mut updated: Option<(Arc<ProfileSample>, Arc<ProfileSample>)> = None;
+    for session in state.sessions.values_mut() {
+      let awaits = |sample: &&mut Arc<ProfileSample>| awaits_gpu(sample, window, frame_id);
+      let found = match &mut session.samples {
+        Samples::Bounded(samples) => samples.iter_mut().rev().take(GPU_MATCH_WINDOW).find(awaits),
+        Samples::Recording(recording) => recording
+          .chunks
+          .iter_mut()
+          .rev()
+          .flat_map(|chunk| chunk.iter_mut().rev())
+          .take(GPU_MATCH_WINDOW)
+          .find(awaits),
+      };
+      let Some(slot) = found else {
+        continue;
+      };
+      let fresh = match &updated {
+        Some((old, fresh)) if Arc::ptr_eq(old, slot) => fresh.clone(),
+        _ => {
+          let mut copy = ProfileSample::clone(slot);
+          if let SampleData::Pass(pass) = &mut copy.data {
+            pass.gpu = Some(gpu);
+          }
+          let fresh = Arc::new(copy);
+          updated = Some((slot.clone(), fresh.clone()));
+          fresh
+        }
+      };
+      // The copy is no larger than the pass the recording already counted.
+      *slot = fresh;
+    }
+  }
+
   pub(crate) fn close(&self) {
     let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
     #[cfg(feature = "perf_profile")]
@@ -783,6 +846,39 @@ impl ProfilingHandle {
       window.phase.set_open(false);
     }
     // Sessions can still be ended/read through surviving handles.
+  }
+}
+
+/// Newest samples of a session searched for the pass a GPU result belongs to;
+/// a result later than this many samples is dropped, its pass left without.
+const GPU_MATCH_WINDOW: usize = 512;
+
+fn awaits_gpu(sample: &ProfileSample, window: &str, frame_id: u64) -> bool {
+  sample.window == window
+    && matches!(&sample.data, SampleData::Pass(pass) if pass.frame_id == Some(frame_id) && pass.gpu.is_none())
+}
+
+/// Build availability with GPU timestamps from the windows a session sees:
+/// available when any of their adapters measures, otherwise the reason of the
+/// first window (by id) that reported one, otherwise the build's own.
+fn build_availability(state: &State, include_devtools: bool) -> BuildAvailability {
+  let reported = || {
+    state
+      .windows
+      .values()
+      .map(|window| &window.status)
+      .filter(|status| include_devtools || !status.devtools)
+      .filter_map(|status| Some((status.id.as_str(), status.gpu_timestamps?)))
+  };
+  let gpu_timestamps = reported()
+    .filter(|(_, gpu)| gpu.available)
+    .min_by(|a, b| a.0.cmp(b.0))
+    .or_else(|| reported().min_by(|a, b| a.0.cmp(b.0)))
+    .map(|(_, gpu)| gpu)
+    .unwrap_or_default();
+  BuildAvailability {
+    gpu_timestamps,
+    ..BuildAvailability::default()
   }
 }
 

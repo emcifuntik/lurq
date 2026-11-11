@@ -682,6 +682,17 @@ impl RenderEngine for Dx12RenderEngine {
   }
   #[cfg(feature = "perf_profile")]
   fn set_profile_context(&mut self, context: crate::app::profiler::ProfileContext) {
+    // Once per window: this renderer has no GPU timestamp queries yet.
+    if !self
+      .profile_context
+      .as_ref()
+      .is_some_and(|current| current.same_window(&context))
+    {
+      use crate::app::profiler::GpuTimestampAvailability;
+      context.report_gpu_timestamps(GpuTimestampAvailability::unavailable(
+        GpuTimestampAvailability::NATIVE_DX12,
+      ));
+    }
     self.profile_context = Some(context);
   }
   #[cfg(feature = "canvas")]

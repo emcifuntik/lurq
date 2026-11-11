@@ -11,6 +11,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use wgpu::*;
 
 use super::DynamicBuffer;
+#[cfg(feature = "perf_profile")]
+use super::gpu_timing;
 use crate::{
   app::profile_support::{profile_elapsed, profile_if, profile_scope},
   canvas::{
@@ -40,6 +42,9 @@ pub(super) struct Renderer {
   pub(super) profile: crate::app::profile_types::CanvasProfile,
   #[cfg(feature = "perf_profile")]
   pub(super) profile_context: Option<crate::app::profiler::ProfileContext>,
+  /// Brackets each command buffer with GPU timestamps while a frame is measured.
+  #[cfg(feature = "perf_profile")]
+  pub(super) gpu_marks: Option<gpu_timing::CanvasMarks>,
   meshes: MeshCache,
   surfaces: HashMap<CanvasId, Backing>,
   fronts: HashMap<CanvasId, (u64, Backing)>,
@@ -281,6 +286,8 @@ impl Renderer {
     let old = self.surfaces.remove(&id);
     let image = Texture::new(device, &self.image_layout, &self.nearest, &self.linear, width, height);
     let mut encoder = device.create_command_encoder(&Default::default());
+    #[cfg(feature = "perf_profile")]
+    gpu_timing::begin_canvas(&mut self.gpu_marks, &mut encoder);
     let constants = [0., 0., width as f32, height as f32, width as f32, height as f32, 0., 0.];
     let buffer = self.globals.write(device, queue, &constants).unwrap();
     let globals = global_group(device, &self.globals_layout, buffer);
@@ -305,6 +312,8 @@ impl Renderer {
         pass.draw(0..3, 0..1);
       }
     }
+    #[cfg(feature = "perf_profile")]
+    gpu_timing::end_canvas(&mut self.gpu_marks, &mut encoder);
     let _submit_start = profile_scope!();
     queue.submit([encoder.finish()]);
     profile_if! { self.profile.submit += profile_elapsed!(_submit_start); }

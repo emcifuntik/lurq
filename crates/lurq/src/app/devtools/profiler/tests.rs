@@ -4,8 +4,8 @@ use super::*;
 use crate::app::{
   devtools::profiler_capture::{IDLE_GAP_MS, fps, pass_detail, phase_rows},
   profiler::{
-    FrameProfile, PassAllocations, PassCounters, PassSample, Phase, PhaseSpan, ProfileSample, SampleData,
-    producer::WindowProfiler,
+    FrameProfile, GpuTimestampAvailability, GpuTiming, PassAllocations, PassCounters, PassSample, Phase, PhaseSpan,
+    ProfileSample, SampleData, producer::WindowProfiler,
   },
 };
 
@@ -128,6 +128,108 @@ fn a_recording_on_a_tree_keeps_each_headless_pass_with_its_phases() {
   }
   // Headless passes present nothing, so there is no frame rate to show.
   assert_eq!(fps(capture.passes_in(capture.whole())), None);
+}
+
+/// What the tab draws of a capture: its passes, markers and scopes by sequence
+/// and time, and the call tree of its whole range on every track.
+fn drawn(capture: &ProfilerCapture) -> impl PartialEq + std::fmt::Debug + use<> {
+  use crate::app::profiler::{SpanTrack, forest_of};
+  let times = |samples: &[Arc<ProfileSample>]| {
+    samples
+      .iter()
+      .map(|sample| {
+        (
+          sample.sequence,
+          sample.window.clone(),
+          sample.started_ms,
+          sample.completed_ms,
+        )
+      })
+      .collect::<Vec<_>>()
+  };
+  let whole = capture.whole();
+  let forest = forest_of(capture.passes_in(whole), capture.scopes_in(whole));
+  (
+    (
+      whole,
+      capture.default_range(),
+      capture.size_bytes,
+      capture.boundary_excluded,
+    ),
+    times(&capture.passes),
+    times(&capture.markers),
+    capture
+      .scopes
+      .iter()
+      .map(|scope| (scope.scope.label, scope.scope.started_ms, scope.wall))
+      .collect::<Vec<_>>(),
+    SpanTrack::ALL.map(|track| forest.call_tree(track)),
+    capture
+      .passes
+      .iter()
+      .map(|sample| phase_rows(pass_of(sample).unwrap()))
+      .collect::<Vec<_>>(),
+  )
+}
+
+#[test]
+fn a_saved_recording_loads_back_into_the_same_timeline_and_call_tree() {
+  use crate::{
+    app::{App, Tree},
+    components::{Column, Text},
+  };
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.set_root(Column::new().child(Text::new("Profiler fixture")));
+  let mut state = ProfilerState::default();
+  assert!(state.start(&tree.profiling_handle()));
+  for _ in 0..3 {
+    tree.pass_headless(&mut app);
+  }
+  state.stop();
+  let saved = state
+    .report
+    .as_ref()
+    .expect("Stop keeps the report")
+    .to_recording_file();
+
+  let mut loaded = ProfilerState::default();
+  loaded.load(ProfileReport::from_recording_file(&saved).map_err(|error| error.to_string()));
+  assert!(loaded.error.is_none());
+  assert_eq!(drawn(&capture_of(&loaded)), drawn(&capture_of(&state)));
+  assert_eq!(capture_of(&loaded).passes.len(), 3);
+  assert_eq!(loaded.range, state.range);
+  assert_eq!(loaded.selected, state.selected);
+  // Saved again, the loaded recording is the same file.
+  assert_eq!(loaded.report.as_ref().unwrap().to_recording_file(), saved);
+  // The tab draws it, with the file actions.
+  tab_tree(Signal::new(loaded.clone()), 1440, 860);
+
+  // A file that cannot be read leaves the capture shown and says why.
+  loaded.load(Err("Load failed: not a lurq recording".to_owned()));
+  assert_eq!(drawn(&capture_of(&loaded)), drawn(&capture_of(&state)));
+  assert_eq!(loaded.error.as_deref(), Some("Load failed: not a lurq recording"));
+  tab_tree(Signal::new(loaded.clone()), 1440, 860);
+  // A file picked while a recording runs is not loaded, and the top bar says so.
+  assert!(loaded.start(&tree.profiling_handle()));
+  loaded.load(ProfileReport::from_recording_file(&saved).map_err(|error| error.to_string()));
+  assert!(loaded.capture.is_none());
+  assert!(loaded.recording());
+  assert_eq!(loaded.error.as_deref(), Some(LOAD_WHILE_RECORDING));
+  let (_app, recording_tab) = tab_tree(Signal::new(loaded.clone()), 1440, 860);
+  assert!(has_text(&recording_tab, LOAD_WHILE_RECORDING));
+  // Stop shows its own capture, without the message.
+  loaded.stop();
+  assert!(loaded.error.is_none());
+  assert!(loaded.capture.is_some());
+}
+
+/// Some element of the tree shows `text`.
+fn has_text(tree: &crate::app::Tree, text: &str) -> bool {
+  fn find(element: crate::node::ElementRef<'_>, text: &str) -> bool {
+    element.text_content() == Some(text) || element.children().iter().any(|child| find(child, text))
+  }
+  tree.root().is_some_and(|root| find(root, text))
 }
 
 #[test]
@@ -269,6 +371,7 @@ fn sample(sequence: u64, window: &str, started_ms: f64, total_ms: f64, rendered:
       present: None,
       counters: None,
       screenshot: false,
+      gpu: None,
     }),
   })
 }
@@ -285,7 +388,17 @@ fn capture(passes: Vec<Arc<ProfileSample>>, ended_ms: f64) -> ProfilerCapture {
     size_bytes: 0,
     stopped_at_limit: false,
     boundary_excluded: 0,
+    gpu_timestamps: GpuTimestampAvailability::default(),
   }
+}
+
+/// `sample` with `gpu` as its GPU time.
+fn with_gpu(sample: Arc<ProfileSample>, gpu: GpuTiming) -> Arc<ProfileSample> {
+  let mut sample = (*sample).clone();
+  if let SampleData::Pass(pass) = &mut sample.data {
+    pass.gpu = Some(gpu);
+  }
+  Arc::new(sample)
 }
 
 #[test]
@@ -474,10 +587,15 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
     components::Column,
   };
   const WIDTH: f32 = 1068.0;
-  // A pass and an input dispatch half way through the range, and a pass at
-  // its end; the second pass has twice the nodes of the first.
+  // A pass with GPU time and an input dispatch half way through the range,
+  // and a pass at its end whose GPU result never arrived; the second pass has
+  // twice the nodes of the first.
+  let gpu = GpuTiming {
+    ui: Duration::from_millis(4),
+    canvas: Some(Duration::from_millis(2)),
+  };
   let passes = vec![
-    with_nodes(sample(1, "main", 500.0, 30.0, true), 10),
+    with_gpu(with_nodes(sample(1, "main", 500.0, 30.0, true), 10), gpu),
     with_nodes(sample(2, "main", 1000.0, 30.0, true), 20),
   ];
   let mut capture = capture(passes.clone(), 1000.0);
@@ -514,19 +632,27 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
   );
   tree.pass_headless(&mut app);
 
-  // Rows: chart, missed vsync lane, the counter tracks (fps, nodes, draw
-  // calls, memory, allocs), input lane, ui update lane, axis; each a track
-  // then its label.
+  // Rows: chart, missed vsync lane, GPU track, the counter tracks (fps,
+  // nodes, draw calls, memory, allocs), input lane, ui update lane, axis; each
+  // a track then its label.
   let half_bar = bounds_at(&mut tree, &[0, 0, 0, 1, 1]);
   let end_bar = bounds_at(&mut tree, &[0, 0, 0, 2, 1]);
-  let half_nodes = bounds_at(&mut tree, &[0, 3, 0, 0, 1]);
-  let end_nodes = bounds_at(&mut tree, &[0, 3, 0, 1, 1]);
-  let half_marker = bounds_at(&mut tree, &[0, 7, 0, 1]);
-  let half_tick = bounds_at(&mut tree, &[0, 9, 0, 2]);
-  let last_part = bounds_at(&mut tree, &[0, 9, 0, 3]);
+  let half_gpu_bar = bounds_at(&mut tree, &[0, 2, 0, 0, 1]);
+  let half_nodes = bounds_at(&mut tree, &[0, 4, 0, 0, 1]);
+  let end_nodes = bounds_at(&mut tree, &[0, 4, 0, 1, 1]);
+  let half_marker = bounds_at(&mut tree, &[0, 8, 0, 1]);
+  let half_tick = bounds_at(&mut tree, &[0, 10, 0, 2]);
+  let last_part = bounds_at(&mut tree, &[0, 10, 0, 3]);
   let close = |a: f32, b: f32, what: &str| assert!((a - b).abs() < 0.5, "{what}: {a} vs {b}");
   let scale = WIDTH - LANE_GAP - LANE_LABEL_WIDTH - BAR_WIDTH;
   close(half_bar.x, scale * 0.5, "bar at half the range");
+  close(half_gpu_bar.x, half_bar.x, "GPU bar at the pass's time");
+  // 6 ms of GPU time on a scale of one frame budget.
+  close(
+    half_gpu_bar.height,
+    (6.0 / FRAME_BUDGET_MS) as f32 * GPU_TRACK_HEIGHT,
+    "GPU bar height",
+  );
   close(half_nodes.x, half_bar.x, "counter bar at the pass bar's time");
   close(end_nodes.x, end_bar.x, "last counter bar at the last pass bar");
   close(
@@ -661,6 +787,42 @@ fn tab_tree(state: Signal<ProfilerState>, width: u32, height: u32) -> (crate::ap
   tree.pass_headless(&mut app);
   tree.pass_headless(&mut app);
   (app, tree)
+}
+
+#[test]
+fn the_gpu_track_says_why_no_gpu_time_was_measured() {
+  use crate::{
+    app::{App, Tree},
+    components::Column,
+  };
+  let passes = vec![sample(1, "main", 500.0, 30.0, true)];
+  let mut capture = capture(passes.clone(), 1000.0);
+  capture.gpu_timestamps = GpuTimestampAvailability::unavailable(GpuTimestampAvailability::NATIVE_DX12);
+  assert_eq!(capture.gpu_missing_reason(), GpuTimestampAvailability::NATIVE_DX12);
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(800, 300);
+  tree.set_root(
+    Column::new()
+      .child(gpu_track(&capture, &passes, capture.whole()))
+      .size(800.0, 300.0),
+  );
+  tree.pass_headless(&mut app);
+  let note = tree
+    .find_element(|element: crate::node::ElementRef<'_>| {
+      element
+        .text_content()
+        .is_some_and(|text| text.contains(GpuTimestampAvailability::NATIVE_DX12))
+    })
+    .is_some();
+  assert!(note, "the track names the reason");
+  // On an adapter that measures, a pass without GPU time is one whose result never arrived.
+  capture.gpu_timestamps = GpuTimestampAvailability {
+    available: true,
+    reason: None,
+    adapter_backend: Some("vulkan"),
+  };
+  assert_eq!(capture.gpu_missing_reason(), "its GPU result never arrived");
 }
 
 #[test]
@@ -879,6 +1041,27 @@ fn pass_detail_shows_the_whole_frame_profile() {
   assert_eq!(row("COUNTS", "quad_count").as_deref(), Some("0"));
   assert_eq!(row("TEXT", "shape_text").as_deref(), Some("0.00ms"));
   assert_eq!(row("MEMORY", "total_bytes").as_deref(), Some("0"));
+}
+
+#[test]
+fn pass_detail_shows_gpu_time_once_it_arrived() {
+  let measured = with_gpu(
+    sample(1, "main", 0.0, 4.0, true),
+    GpuTiming {
+      ui: Duration::from_micros(1500),
+      canvas: None,
+    },
+  );
+  let detail = pass_detail(&measured, pass_of(&measured).unwrap());
+  assert_eq!(detail[1].title, "GPU");
+  assert_eq!(
+    detail[1].rows,
+    vec![
+      ("ui", "1.50ms".to_owned()),
+      ("canvas", "-".to_owned()),
+      ("total", "1.50ms".to_owned())
+    ]
+  );
 }
 
 /// `sample` presented with `missed_vsyncs`, run by a redraw request.

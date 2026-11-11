@@ -71,6 +71,7 @@ pub(crate) fn layered_pass(sequence: u64, start_ms: f64, duration_ms: f64, comma
       present: None,
       counters: None,
       screenshot: false,
+      gpu: None,
     }),
   })
 }
@@ -114,6 +115,7 @@ pub(crate) fn capture_of(
     size_bytes: 0,
     stopped_at_limit: false,
     boundary_excluded: 0,
+    gpu_timestamps: Default::default(),
   }
 }
 

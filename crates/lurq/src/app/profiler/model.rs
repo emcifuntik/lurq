@@ -171,6 +171,9 @@ pub struct BuildAvailability {
   pub wgpu: bool,
   pub dx12: bool,
   pub devtools: bool,
+  /// Available when a window's wgpu adapter offers timestamp queries; in a
+  /// report, from the windows the session sees.
+  pub gpu_timestamps: GpuTimestampAvailability,
 }
 
 impl Default for BuildAvailability {
@@ -182,7 +185,87 @@ impl Default for BuildAvailability {
       wgpu: cfg!(feature = "wgpu"),
       dx12: cfg!(all(feature = "dx12", target_os = "windows")),
       devtools: cfg!(feature = "devtools"),
+      gpu_timestamps: GpuTimestampAvailability::default(),
     }
+  }
+}
+
+/// Whether GPU time is measured, as a window's renderer reported it for its
+/// adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuTimestampAvailability {
+  pub available: bool,
+  /// Why GPU time is not measured; None when it is.
+  pub reason: Option<&'static str>,
+  /// The wgpu backend of the adapter ("vulkan", "metal", "dx12", "gl", ...);
+  /// None before a wgpu adapter reported.
+  pub adapter_backend: Option<&'static str>,
+}
+
+impl GpuTimestampAvailability {
+  #[cfg_attr(not(all(feature = "wgpu", feature = "perf_profile")), allow(dead_code))]
+  pub(crate) const NO_TIMESTAMP_QUERY: &'static str = "the wgpu adapter does not offer timestamp queries";
+  #[cfg_attr(
+    not(all(feature = "dx12", target_os = "windows", feature = "perf_profile")),
+    allow(dead_code)
+  )]
+  pub(crate) const NATIVE_DX12: &'static str = "the native DX12 renderer does not measure GPU time";
+  const NO_PERF_PROFILE: &'static str = "GPU timestamp queries require the perf_profile Cargo feature";
+  const NO_WGPU: &'static str = "only the wgpu renderer measures GPU time";
+  const NO_WGPU_FRAME: &'static str = "no window has rendered with wgpu yet";
+  /// Every reason the toolkit gives, which a recording file reads back.
+  #[cfg_attr(not(any(feature = "serde", feature = "mcp", feature = "devtools")), allow(dead_code))]
+  pub(crate) const REASONS: [&'static str; 5] = [
+    Self::NO_TIMESTAMP_QUERY,
+    Self::NATIVE_DX12,
+    Self::NO_PERF_PROFILE,
+    Self::NO_WGPU,
+    Self::NO_WGPU_FRAME,
+  ];
+  /// A reason a recording file holds that this build does not give.
+  #[cfg_attr(not(any(feature = "serde", feature = "mcp", feature = "devtools")), allow(dead_code))]
+  pub(crate) const UNKNOWN_REASON: &'static str = "not measured when recorded";
+
+  pub(crate) fn unavailable(reason: &'static str) -> Self {
+    Self {
+      available: false,
+      reason: Some(reason),
+      adapter_backend: None,
+    }
+  }
+}
+
+impl Default for GpuTimestampAvailability {
+  /// Before any renderer reported: why this build cannot measure, or that no
+  /// wgpu frame has rendered yet.
+  fn default() -> Self {
+    Self::unavailable(if !cfg!(feature = "perf_profile") {
+      Self::NO_PERF_PROFILE
+    } else if !cfg!(feature = "wgpu") {
+      Self::NO_WGPU
+    } else {
+      Self::NO_WGPU_FRAME
+    })
+  }
+}
+
+/// GPU execution time of one presented frame, from wgpu timestamp queries.
+/// Arrives one or more frames after its pass; a pass whose result never
+/// arrived keeps `PassSample::gpu` None.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuTiming {
+  /// The UI encoder: start of its first render pass (an opacity layer, or the
+  /// window) to the end of the window pass.
+  pub ui: Duration,
+  /// The Canvas renderer's command buffers this frame, each from its start to
+  /// its end, summed (render passes and tile copies; no explicit readbacks).
+  /// None when the frame submitted no Canvas work or not all of it was measured.
+  pub canvas: Option<Duration>,
+}
+
+impl GpuTiming {
+  pub fn total(&self) -> Duration {
+    self.ui + self.canvas.unwrap_or_default()
   }
 }
 
@@ -251,6 +334,8 @@ pub struct WindowStatus {
   pub id: String,
   pub open: bool,
   pub devtools: bool,
+  /// As the window's renderer reported it for its adapter; None before it did.
+  pub gpu_timestamps: Option<GpuTimestampAvailability>,
 }
 
 #[derive(Clone, Debug)]
@@ -418,6 +503,9 @@ pub struct PassSample {
   /// its render, encode and submit include that copy, so it is slower than
   /// the same frame without one.
   pub screenshot: bool,
+  /// GPU time of this frame, matched by window and frame id when its query
+  /// results arrive, frames later; None until then, or for good when they never do.
+  pub gpu: Option<GpuTiming>,
 }
 
 /// One phase guard's lifetime, in nanoseconds since the collector epoch (the
