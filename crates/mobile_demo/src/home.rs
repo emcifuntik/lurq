@@ -37,6 +37,11 @@ pub(crate) const SCREENS: &[Screen] = &[
     title: "Virtual list",
     checks: "Ten thousand uneven rows mounted as they come into view: momentum, the ends, the way to the top",
   },
+  Screen {
+    path: "/inputs",
+    title: "Inputs",
+    checks: "The on-screen keyboard, what it types into a field, and a field it would cover",
+  },
 ];
 
 pub(crate) fn title_of(path: &str) -> &'static str {

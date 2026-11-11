@@ -10,6 +10,7 @@
 
 mod gestures;
 mod home;
+mod inputs;
 mod scroll;
 mod touch;
 mod ui;
@@ -57,6 +58,7 @@ fn routes() -> Routes {
       .route("/", home::home)
       .route("/touch", |ctx| ctx.mount::<touch::TouchScreen>(()))
       .route("/gestures", |ctx| ctx.mount::<gestures::GesturesScreen>(()))
+      .route("/inputs", |ctx| ctx.mount::<inputs::InputsScreen>(()))
       .route("/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
       .route("/virtual-list", |ctx| ctx.mount::<virtual_list::VirtualListScreen>(()))
       .fallback(home::home)
