@@ -227,3 +227,37 @@ impl StatusBarTap {
     STATUS_BAR_TAPPED.swap(false, Ordering::AcqRel)
   }
 }
+
+/// Plays a tap of the haptic engine through UIKit's feedback generators. Main thread only.
+pub(super) fn play_haptic(haptic: crate::app::window::Haptic) {
+  use crate::app::window::Haptic;
+  unsafe {
+    match haptic {
+      Haptic::Light | Haptic::Medium | Haptic::Heavy => {
+        // `UIImpactFeedbackStyle`: light 0, medium 1, heavy 2.
+        let style: isize = match haptic {
+          Haptic::Light => 0,
+          Haptic::Medium => 1,
+          _ => 2,
+        };
+        let generator: objc2::rc::Allocated<AnyObject> = msg_send![class!(UIImpactFeedbackGenerator), alloc];
+        let generator: Retained<AnyObject> = msg_send![generator, initWithStyle: style];
+        let _: () = msg_send![&*generator, impactOccurred];
+      }
+      Haptic::Selection => {
+        let generator: Retained<AnyObject> = msg_send![class!(UISelectionFeedbackGenerator), new];
+        let _: () = msg_send![&*generator, selectionChanged];
+      }
+      Haptic::Success | Haptic::Warning | Haptic::Error => {
+        // `UINotificationFeedbackType`: success 0, warning 1, error 2.
+        let kind: isize = match haptic {
+          Haptic::Success => 0,
+          Haptic::Warning => 1,
+          _ => 2,
+        };
+        let generator: Retained<AnyObject> = msg_send![class!(UINotificationFeedbackGenerator), new];
+        let _: () = msg_send![&*generator, notificationOccurred: kind];
+      }
+    }
+  }
+}

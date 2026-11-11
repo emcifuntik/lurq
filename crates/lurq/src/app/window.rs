@@ -25,6 +25,22 @@ pub struct WindowInfo {
   pub safe_area: SafeAreaInsets,
 }
 
+/// A tap of the device's haptic engine, played with `ctx.window().haptic(..)`. A phone has one; where there is
+/// none, nothing happens.
+///
+/// The names are the platform's: an impact for something that lands or snaps into place, a selection for a
+/// value that changes under the finger, and a notification for how something ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Haptic {
+  Light,
+  Medium,
+  Heavy,
+  Selection,
+  Success,
+  Warning,
+  Error,
+}
+
 /// How far in from each edge of the window content stays clear of what the device and the system put there: a
 /// phone's status bar, camera housing, home indicator and rounded corners. In logical pixels, and zero on a
 /// desktop.
@@ -191,6 +207,8 @@ pub struct ScreenshotRegion {
 // Not `Eq`: synthetic input carries pixel positions.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum WindowCommand {
+  /// Play a tap of the device's haptic engine; see [`Haptic`].
+  Haptic(Haptic),
   Close,
   RequestClose(CloseRequestSource),
   SetMinimized(bool),

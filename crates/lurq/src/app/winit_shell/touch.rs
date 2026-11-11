@@ -9,13 +9,13 @@
 //! and nothing is hovered: a finger has no hover.
 //!
 //! - Rested for [`PRESS_DELAY`], it presses, so what it is on shows its pressed state.
-//! - Lifted within [`TAP_SLOP`], it clicks where it landed. A tap quicker than the delay still shows the
-//!   pressed state, for [`TAP_HIGHLIGHT`].
+//! - Lifted within [`TAP_SLOP`], it taps where it landed: the click comes at once, and what was tapped shows
+//!   its pressed state for [`TAP_HIGHLIGHT`] even when the tap was quicker than the delay.
 //! - Moved past the slop, it scrolls, and a press already sent ends without a click. The content starts from
 //!   where it is: the travel that told the scroll from a tap is not caught up with. The scroll goes on after
 //!   the finger lifts, slowing down, until it stops or reaches an end of the content.
-//! - Rested for [`LONG_PRESS`], it stays the pointer whatever it does next: text selection and `on_drag_*`
-//!   sessions over a list start this way.
+//! - Rested for [`LONG_PRESS`], it is a long press (`on_long_press`) and stays the pointer whatever it does
+//!   next: text selection and `on_drag_*` sessions over a list start this way.
 //!
 //! A finger that lands while content is still moving, with momentum or springing back from past an end, catches
 //! it: the content stops, nothing is pressed, and any move scrolls on from there with no slop.
@@ -37,12 +37,16 @@ use crate::app::{events::ScrollPhase, runtime::TouchMomentum};
 /// How far apart two taps may land and still be a double tap, in logical pixels.
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
 pub(super) const DOUBLE_TAP_DISTANCE: f32 = 40.0;
+/// How long after a tap the next one is still a double tap; UIKit's.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(super) const DOUBLE_TAP_INTERVAL: Duration = Duration::from_millis(350);
 /// How far a finger may travel and still tap, in logical pixels.
 const TAP_SLOP: f64 = 10.0;
 /// How long a finger rests over content that scrolls before it presses; a scroll view's delay of content
 /// touches.
 pub(super) const PRESS_DELAY: Duration = Duration::from_millis(150);
-/// How long a tap quicker than [`PRESS_DELAY`] holds its press, so that it shows.
+/// How long what a tap landed on goes on showing as pressed, so that a quick tap shows.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
 pub(super) const TAP_HIGHLIGHT: Duration = Duration::from_millis(80);
 /// How long a finger rests over content that scrolls before it no longer scrolls it.
 pub(super) const LONG_PRESS: Duration = Duration::from_millis(500);
@@ -61,6 +65,11 @@ pub(super) enum TouchAction {
   Press { x: f64, y: f64 },
   /// The left button comes up at the point, which clicks, and the pointer leaves.
   Release { x: f64, y: f64 },
+  /// A press and its release at the point at once: a tap, whose click is not held back.
+  Tap { x: f64, y: f64 },
+  /// The finger rested at the point: `on_long_press`. The shell tells back whether a handler took it; see
+  /// [`TouchPointer::long_press_taken`].
+  LongPress { x: f64, y: f64 },
   /// The held press ends without a click, and the pointer leaves.
   CancelPress { x: f64, y: f64 },
   /// Content a finger caught and held still is let go: past an end, it springs back.
@@ -94,6 +103,12 @@ enum State {
   /// The press was sent and the finger is the pointer until it lifts.
   Dragging {
     id: u64,
+    /// Where the finger is.
+    at: (f64, f64),
+    /// When the finger becomes a long press if it stays near where it landed, and where that is.
+    rest: Option<(Instant, (f64, f64))>,
+    /// A handler took the long press: the finger clicks nothing when it lifts.
+    taken: bool,
   },
   Scrolling {
     /// The fingers on the content and where each one is: the one that started the scroll, and those that
@@ -120,8 +135,6 @@ struct Fling {
 pub(super) struct TouchPointer {
   state: State,
   fling: Option<Fling>,
-  /// The release of a quick tap's press, and when it is due.
-  tap_release: Option<(Instant, (f64, f64))>,
   /// How a scroll goes on after the finger lifts; the app's, from the tree.
   momentum: TouchMomentum,
 }
@@ -131,7 +144,6 @@ impl Default for TouchPointer {
     Self {
       state: State::Idle,
       fling: None,
-      tap_release: None,
       momentum: TouchMomentum::default(),
     }
   }
@@ -187,8 +199,7 @@ impl TouchPointer {
     if !matches!(self.state, State::Idle) {
       return Vec::new();
     }
-    // The tap before this touch ends first: a double tap is two whole clicks.
-    let mut actions: Vec<TouchAction> = self.take_tap_release().into_iter().collect();
+    let mut actions = Vec::new();
     let fling = self.fling.take();
     if fling.is_some() || springing {
       self.state = State::Pending {
@@ -202,7 +213,12 @@ impl TouchPointer {
       return actions;
     }
     if !scrolls(position) {
-      self.state = State::Dragging { id };
+      self.state = State::Dragging {
+        id,
+        at: position,
+        rest: Some((now + LONG_PRESS, position)),
+        taken: false,
+      };
       actions.push(TouchAction::Press {
         x: position.0,
         y: position.1,
@@ -254,10 +270,17 @@ impl TouchPointer {
         actions.push(scroll(start, (0.0, 0.0), ScrollPhase::Start));
         actions
       }
-      State::Dragging { id: held } if *held == id => vec![TouchAction::Move {
-        x: position.0,
-        y: position.1,
-      }],
+      State::Dragging { id: held, at, rest, .. } if *held == id => {
+        *at = position;
+        // A finger that travels is not resting.
+        if rest.is_some_and(|(_, start)| distance(start, position) > TAP_SLOP * scale) {
+          *rest = None;
+        }
+        vec![TouchAction::Move {
+          x: position.0,
+          y: position.1,
+        }]
+      }
       State::Scrolling {
         fingers,
         anchor,
@@ -296,10 +319,11 @@ impl TouchPointer {
       State::Pending {
         start, pressed: true, ..
       } => vec![TouchAction::Release { x: start.0, y: start.1 }],
-      State::Pending { start, .. } => {
-        self.tap_release = Some((now + TAP_HIGHLIGHT, start));
-        vec![TouchAction::Press { x: start.0, y: start.1 }]
-      }
+      State::Pending { start, .. } => vec![TouchAction::Tap { x: start.0, y: start.1 }],
+      State::Dragging { taken: true, .. } => vec![TouchAction::CancelPress {
+        x: position.0,
+        y: position.1,
+      }],
       State::Dragging { .. } => vec![TouchAction::Release {
         x: position.0,
         y: position.1,
@@ -346,11 +370,15 @@ impl TouchPointer {
     }
   }
 
-  /// Runs what time brings: the release of a quick tap, the press of a finger that rested, and the next step
-  /// of momentum.
+  /// Runs what time brings: the press and the long press of a finger that rested, and the next step of
+  /// momentum.
   pub(super) fn tick(&mut self, now: Instant) -> Vec<TouchAction> {
-    if self.tap_release.is_some_and(|(due, _)| now >= due) {
-      return self.take_tap_release().into_iter().collect();
+    if let State::Dragging { rest, .. } = &mut self.state
+      && let Some((due, start)) = *rest
+      && now >= due
+    {
+      *rest = None;
+      return vec![TouchAction::LongPress { x: start.0, y: start.1 }];
     }
     if let State::Pending {
       id,
@@ -363,10 +391,17 @@ impl TouchPointer {
       let rested = now.saturating_duration_since(*started_at);
       let press = (!*pressed && rested >= PRESS_DELAY).then_some(TouchAction::Press { x: start.0, y: start.1 });
       *pressed |= press.is_some();
+      let mut actions: Vec<TouchAction> = press.into_iter().collect();
       if rested >= LONG_PRESS {
-        self.state = State::Dragging { id: *id };
+        actions.push(TouchAction::LongPress { x: start.0, y: start.1 });
+        self.state = State::Dragging {
+          id: *id,
+          at: *start,
+          rest: None,
+          taken: false,
+        };
       }
-      return press.into_iter().collect();
+      return actions;
     }
 
     let Some(fling) = self.fling.as_mut() else {
@@ -402,16 +437,38 @@ impl TouchPointer {
         pressed,
         ..
       } => Some(started_at + if pressed { LONG_PRESS } else { PRESS_DELAY }),
+      State::Dragging { rest, .. } => rest.map(|(due, _)| due),
       _ => None,
     };
     let fling = self.fling.as_ref().map(|fling| fling.last_step + FLING_STEP);
-    let tap_release = self.tap_release.map(|(due, _)| due);
-    rest.into_iter().chain(fling).chain(tap_release).min()
+    rest.into_iter().chain(fling).min()
   }
 
-  fn take_tap_release(&mut self) -> Option<TouchAction> {
-    let (_, (x, y)) = self.tap_release.take()?;
-    Some(TouchAction::Release { x, y })
+  /// The fingers became a gesture's: whatever the pointer was doing ends, without a click and without momentum,
+  /// and the fingers are no longer followed.
+  #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+  pub(super) fn abandon(&mut self) -> Vec<TouchAction> {
+    self.fling = None;
+    match std::mem::replace(&mut self.state, State::Idle) {
+      State::Idle
+      | State::Pending {
+        pressed: false,
+        caught: false,
+        ..
+      } => Vec::new(),
+      State::Pending { caught: true, .. } => vec![TouchAction::Settle],
+      State::Pending { start, .. } => vec![TouchAction::CancelPress { x: start.0, y: start.1 }],
+      State::Dragging { at, .. } => vec![TouchAction::CancelPress { x: at.0, y: at.1 }],
+      State::Scrolling { anchor, .. } => vec![scroll(anchor, (0.0, 0.0), ScrollPhase::End)],
+    }
+  }
+
+  /// A handler took the long press the shell was just given: the finger clicks nothing when it lifts.
+  #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+  pub(super) fn long_press_taken(&mut self) {
+    if let State::Dragging { taken, .. } = &mut self.state {
+      *taken = true;
+    }
   }
 
   /// Ends momentum whose last step moved nothing: the content reached its end. Gives the scroll's last event
@@ -445,7 +502,7 @@ impl TouchPointer {
   fn held_id(&self) -> Option<u64> {
     match &self.state {
       State::Idle => None,
-      State::Pending { id, .. } | State::Dragging { id } => Some(*id),
+      State::Pending { id, .. } | State::Dragging { id, .. } => Some(*id),
       State::Scrolling { fingers, .. } => fingers.first().map(|(id, _)| *id),
     }
   }

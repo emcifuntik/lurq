@@ -113,6 +113,8 @@ struct ScrollStateInner {
   /// How far the content is drawn past its ends; see [`ScrollState::set_overscroll`].
   overscroll_x: f32,
   overscroll_y: f32,
+  /// See [`ScrollState::set_scrolls_to_top`].
+  scrolls_to_top: bool,
   pending_scroll_x: Option<PendingScroll>,
   pending_scroll_y: Option<PendingScroll>,
   max_scroll_x: f32,
@@ -169,6 +171,7 @@ impl ScrollState {
         scroll_y: 0.0,
         overscroll_x: 0.0,
         overscroll_y: 0.0,
+        scrolls_to_top: true,
         pending_scroll_x: None,
         pending_scroll_y: None,
         max_scroll_x: 0.0,
@@ -203,6 +206,18 @@ impl ScrollState {
 
   pub fn scroll_x(&self) -> f32 {
     self.inner.lock().unwrap().scroll_x
+  }
+
+  /// Whether a tap on a phone's status bar scrolls this container to its top; it does unless set otherwise.
+  /// The tap scrolls one container: the outermost under the middle of the window that scrolls down, is away
+  /// from its top and takes the tap. A screen with more than one such list turns it off on those the tap is
+  /// not for.
+  pub fn set_scrolls_to_top(&self, scrolls_to_top: bool) {
+    self.inner.lock().unwrap().scrolls_to_top = scrolls_to_top;
+  }
+
+  pub fn scrolls_to_top(&self) -> bool {
+    self.inner.lock().unwrap().scrolls_to_top
   }
 
   /// How far the content is drawn past its ends, along each axis: negative before the start, positive beyond

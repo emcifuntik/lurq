@@ -11,8 +11,9 @@ use crate::{
   animation::{Animation, Transition},
   app::{
     events::{
-      DragEvent, DropEvent, FileDragEvent, FileDropEvent, HistorySwipeEvent, KeyboardEvent, MouseButton,
-      MouseButtonMask, MouseEvent, PasteEvent, ScrollEvent, TextInputEvent,
+      DragEvent, DropEvent, EdgePanEvent, FileDragEvent, FileDropEvent, HistorySwipeEvent, KeyboardEvent,
+      LongPressEvent, MouseButton, MouseButtonMask, MouseEvent, PanEvent, PasteEvent, PinchEvent, RotateEvent,
+      ScrollEvent, SwipeEvent, TapEvent, TextInputEvent, TouchEvent,
     },
     theme::{CaretMode, TypographyStyle},
   },
@@ -212,6 +213,158 @@ where
   F: Fn(HistorySwipeEvent) + Send + Sync + 'static,
 {
   fn into_event_handler(self) -> EventHandler<HistorySwipeEvent> {
+    EventHandler::from_event(self)
+  }
+}
+
+pub trait IntoTouchEventHandler {
+  fn into_event_handler(self) -> EventHandler<TouchEvent>;
+}
+
+impl IntoTouchEventHandler for EventHandler<TouchEvent> {
+  fn into_event_handler(self) -> EventHandler<TouchEvent> {
+    self
+  }
+}
+
+impl<F> IntoTouchEventHandler for F
+where
+  F: Fn(TouchEvent) + Send + Sync + 'static,
+{
+  fn into_event_handler(self) -> EventHandler<TouchEvent> {
+    EventHandler::from_event(self)
+  }
+}
+
+pub trait IntoLongPressEventHandler {
+  fn into_event_handler(self) -> EventHandler<LongPressEvent>;
+}
+
+impl IntoLongPressEventHandler for EventHandler<LongPressEvent> {
+  fn into_event_handler(self) -> EventHandler<LongPressEvent> {
+    self
+  }
+}
+
+impl<F> IntoLongPressEventHandler for F
+where
+  F: Fn(LongPressEvent) + Send + Sync + 'static,
+{
+  fn into_event_handler(self) -> EventHandler<LongPressEvent> {
+    EventHandler::from_event(self)
+  }
+}
+
+pub trait IntoPinchEventHandler {
+  fn into_event_handler(self) -> EventHandler<PinchEvent>;
+}
+
+impl IntoPinchEventHandler for EventHandler<PinchEvent> {
+  fn into_event_handler(self) -> EventHandler<PinchEvent> {
+    self
+  }
+}
+
+impl<F> IntoPinchEventHandler for F
+where
+  F: Fn(PinchEvent) + Send + Sync + 'static,
+{
+  fn into_event_handler(self) -> EventHandler<PinchEvent> {
+    EventHandler::from_event(self)
+  }
+}
+
+pub trait IntoRotateEventHandler {
+  fn into_event_handler(self) -> EventHandler<RotateEvent>;
+}
+
+impl IntoRotateEventHandler for EventHandler<RotateEvent> {
+  fn into_event_handler(self) -> EventHandler<RotateEvent> {
+    self
+  }
+}
+
+impl<F> IntoRotateEventHandler for F
+where
+  F: Fn(RotateEvent) + Send + Sync + 'static,
+{
+  fn into_event_handler(self) -> EventHandler<RotateEvent> {
+    EventHandler::from_event(self)
+  }
+}
+
+pub trait IntoTapEventHandler {
+  fn into_event_handler(self) -> EventHandler<TapEvent>;
+}
+
+impl IntoTapEventHandler for EventHandler<TapEvent> {
+  fn into_event_handler(self) -> EventHandler<TapEvent> {
+    self
+  }
+}
+
+impl<F> IntoTapEventHandler for F
+where
+  F: Fn(TapEvent) + Send + Sync + 'static,
+{
+  fn into_event_handler(self) -> EventHandler<TapEvent> {
+    EventHandler::from_event(self)
+  }
+}
+
+pub trait IntoSwipeEventHandler {
+  fn into_event_handler(self) -> EventHandler<SwipeEvent>;
+}
+
+impl IntoSwipeEventHandler for EventHandler<SwipeEvent> {
+  fn into_event_handler(self) -> EventHandler<SwipeEvent> {
+    self
+  }
+}
+
+impl<F> IntoSwipeEventHandler for F
+where
+  F: Fn(SwipeEvent) + Send + Sync + 'static,
+{
+  fn into_event_handler(self) -> EventHandler<SwipeEvent> {
+    EventHandler::from_event(self)
+  }
+}
+
+pub trait IntoPanEventHandler {
+  fn into_event_handler(self) -> EventHandler<PanEvent>;
+}
+
+impl IntoPanEventHandler for EventHandler<PanEvent> {
+  fn into_event_handler(self) -> EventHandler<PanEvent> {
+    self
+  }
+}
+
+impl<F> IntoPanEventHandler for F
+where
+  F: Fn(PanEvent) + Send + Sync + 'static,
+{
+  fn into_event_handler(self) -> EventHandler<PanEvent> {
+    EventHandler::from_event(self)
+  }
+}
+
+pub trait IntoEdgePanEventHandler {
+  fn into_event_handler(self) -> EventHandler<EdgePanEvent>;
+}
+
+impl IntoEdgePanEventHandler for EventHandler<EdgePanEvent> {
+  fn into_event_handler(self) -> EventHandler<EdgePanEvent> {
+    self
+  }
+}
+
+impl<F> IntoEdgePanEventHandler for F
+where
+  F: Fn(EdgePanEvent) + Send + Sync + 'static,
+{
+  fn into_event_handler(self) -> EventHandler<EdgePanEvent> {
     EventHandler::from_event(self)
   }
 }
@@ -477,6 +630,28 @@ pub(crate) trait NodeUpdate {
   fn off_scroll_reach_bottom(&mut self, f: impl IntoScrollEventHandler);
   fn on_history_swipe(&mut self, f: impl IntoHistorySwipeEventHandler);
   fn off_history_swipe(&mut self, f: impl IntoHistorySwipeEventHandler);
+  fn on_touch_start(&mut self, f: impl IntoTouchEventHandler);
+  fn off_touch_start(&mut self, f: impl IntoTouchEventHandler);
+  fn on_touch_move(&mut self, f: impl IntoTouchEventHandler);
+  fn off_touch_move(&mut self, f: impl IntoTouchEventHandler);
+  fn on_touch_end(&mut self, f: impl IntoTouchEventHandler);
+  fn off_touch_end(&mut self, f: impl IntoTouchEventHandler);
+  fn on_touch_cancel(&mut self, f: impl IntoTouchEventHandler);
+  fn off_touch_cancel(&mut self, f: impl IntoTouchEventHandler);
+  fn on_long_press(&mut self, f: impl IntoLongPressEventHandler);
+  fn off_long_press(&mut self, f: impl IntoLongPressEventHandler);
+  fn on_pinch(&mut self, f: impl IntoPinchEventHandler);
+  fn off_pinch(&mut self, f: impl IntoPinchEventHandler);
+  fn on_rotate(&mut self, f: impl IntoRotateEventHandler);
+  fn off_rotate(&mut self, f: impl IntoRotateEventHandler);
+  fn on_tap(&mut self, f: impl IntoTapEventHandler);
+  fn off_tap(&mut self, f: impl IntoTapEventHandler);
+  fn on_swipe(&mut self, f: impl IntoSwipeEventHandler);
+  fn off_swipe(&mut self, f: impl IntoSwipeEventHandler);
+  fn on_pan(&mut self, f: impl IntoPanEventHandler);
+  fn off_pan(&mut self, f: impl IntoPanEventHandler);
+  fn on_edge_pan(&mut self, f: impl IntoEdgePanEventHandler);
+  fn off_edge_pan(&mut self, f: impl IntoEdgePanEventHandler);
   fn opacity(&mut self, value: f32);
   fn transform(&mut self, t: Transform2D);
   fn transition(&mut self, spec: Transition);
@@ -667,6 +842,17 @@ pub struct EventHandlers {
   pub on_scroll_reach_top: Vec<Callback<ScrollEvent>>,
   pub on_scroll_reach_bottom: Vec<Callback<ScrollEvent>>,
   pub on_history_swipe: Vec<Callback<HistorySwipeEvent>>,
+  pub on_touch_start: Vec<Callback<TouchEvent>>,
+  pub on_touch_move: Vec<Callback<TouchEvent>>,
+  pub on_touch_end: Vec<Callback<TouchEvent>>,
+  pub on_touch_cancel: Vec<Callback<TouchEvent>>,
+  pub on_long_press: Vec<Callback<LongPressEvent>>,
+  pub on_pinch: Vec<Callback<PinchEvent>>,
+  pub on_rotate: Vec<Callback<RotateEvent>>,
+  pub on_tap: Vec<Callback<TapEvent>>,
+  pub on_swipe: Vec<Callback<SwipeEvent>>,
+  pub on_pan: Vec<Callback<PanEvent>>,
+  pub on_edge_pan: Vec<Callback<EdgePanEvent>>,
 }
 
 /// The styles few nodes set, behind one guard: a guard holds a watch handle
@@ -1548,6 +1734,126 @@ impl NodeUpdate for Node {
     self
       .events
       .on_history_swipe
+      .retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_touch_start(&mut self, f: impl IntoTouchEventHandler) {
+    self.events.on_touch_start.push(f.into_event_handler());
+  }
+
+  fn off_touch_start(&mut self, f: impl IntoTouchEventHandler) {
+    let handler = f.into_event_handler();
+    self
+      .events
+      .on_touch_start
+      .retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_touch_move(&mut self, f: impl IntoTouchEventHandler) {
+    self.events.on_touch_move.push(f.into_event_handler());
+  }
+
+  fn off_touch_move(&mut self, f: impl IntoTouchEventHandler) {
+    let handler = f.into_event_handler();
+    self
+      .events
+      .on_touch_move
+      .retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_touch_end(&mut self, f: impl IntoTouchEventHandler) {
+    self.events.on_touch_end.push(f.into_event_handler());
+  }
+
+  fn off_touch_end(&mut self, f: impl IntoTouchEventHandler) {
+    let handler = f.into_event_handler();
+    self
+      .events
+      .on_touch_end
+      .retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_touch_cancel(&mut self, f: impl IntoTouchEventHandler) {
+    self.events.on_touch_cancel.push(f.into_event_handler());
+  }
+
+  fn off_touch_cancel(&mut self, f: impl IntoTouchEventHandler) {
+    let handler = f.into_event_handler();
+    self
+      .events
+      .on_touch_cancel
+      .retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_long_press(&mut self, f: impl IntoLongPressEventHandler) {
+    self.events.on_long_press.push(f.into_event_handler());
+  }
+
+  fn off_long_press(&mut self, f: impl IntoLongPressEventHandler) {
+    let handler = f.into_event_handler();
+    self
+      .events
+      .on_long_press
+      .retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_pinch(&mut self, f: impl IntoPinchEventHandler) {
+    self.events.on_pinch.push(f.into_event_handler());
+  }
+
+  fn off_pinch(&mut self, f: impl IntoPinchEventHandler) {
+    let handler = f.into_event_handler();
+    self.events.on_pinch.retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_rotate(&mut self, f: impl IntoRotateEventHandler) {
+    self.events.on_rotate.push(f.into_event_handler());
+  }
+
+  fn off_rotate(&mut self, f: impl IntoRotateEventHandler) {
+    let handler = f.into_event_handler();
+    self
+      .events
+      .on_rotate
+      .retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_tap(&mut self, f: impl IntoTapEventHandler) {
+    self.events.on_tap.push(f.into_event_handler());
+  }
+
+  fn off_tap(&mut self, f: impl IntoTapEventHandler) {
+    let handler = f.into_event_handler();
+    self.events.on_tap.retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_swipe(&mut self, f: impl IntoSwipeEventHandler) {
+    self.events.on_swipe.push(f.into_event_handler());
+  }
+
+  fn off_swipe(&mut self, f: impl IntoSwipeEventHandler) {
+    let handler = f.into_event_handler();
+    self.events.on_swipe.retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_pan(&mut self, f: impl IntoPanEventHandler) {
+    self.events.on_pan.push(f.into_event_handler());
+  }
+
+  fn off_pan(&mut self, f: impl IntoPanEventHandler) {
+    let handler = f.into_event_handler();
+    self.events.on_pan.retain(|existing| !existing.same_handler(&handler));
+  }
+
+  fn on_edge_pan(&mut self, f: impl IntoEdgePanEventHandler) {
+    self.events.on_edge_pan.push(f.into_event_handler());
+  }
+
+  fn off_edge_pan(&mut self, f: impl IntoEdgePanEventHandler) {
+    let handler = f.into_event_handler();
+    self
+      .events
+      .on_edge_pan
       .retain(|existing| !existing.same_handler(&handler));
   }
 
@@ -2880,6 +3186,128 @@ impl Node {
 
   pub fn off_history_swipe(mut self, f: impl IntoHistorySwipeEventHandler) -> Self {
     NodeUpdate::off_history_swipe(&mut self, f);
+    self
+  }
+
+  /// A finger landed on this element; see [`TouchEvent`]. A handler that calls `prevent_default` takes the finger
+  /// for itself: no mouse events, click or scrolling follow for this touch.
+  pub fn on_touch_start(mut self, f: impl IntoTouchEventHandler) -> Self {
+    NodeUpdate::on_touch_start(&mut self, f);
+    self
+  }
+
+  pub fn off_touch_start(mut self, f: impl IntoTouchEventHandler) -> Self {
+    NodeUpdate::off_touch_start(&mut self, f);
+    self
+  }
+
+  /// A finger that landed on this element moved, wherever it now is; see [`TouchEvent`].
+  pub fn on_touch_move(mut self, f: impl IntoTouchEventHandler) -> Self {
+    NodeUpdate::on_touch_move(&mut self, f);
+    self
+  }
+
+  pub fn off_touch_move(mut self, f: impl IntoTouchEventHandler) -> Self {
+    NodeUpdate::off_touch_move(&mut self, f);
+    self
+  }
+
+  /// A finger that landed on this element lifted; see [`TouchEvent`].
+  pub fn on_touch_end(mut self, f: impl IntoTouchEventHandler) -> Self {
+    NodeUpdate::on_touch_end(&mut self, f);
+    self
+  }
+
+  pub fn off_touch_end(mut self, f: impl IntoTouchEventHandler) -> Self {
+    NodeUpdate::off_touch_end(&mut self, f);
+    self
+  }
+
+  /// The system took away a finger that landed on this element; see [`TouchEvent`].
+  pub fn on_touch_cancel(mut self, f: impl IntoTouchEventHandler) -> Self {
+    NodeUpdate::on_touch_cancel(&mut self, f);
+    self
+  }
+
+  pub fn off_touch_cancel(mut self, f: impl IntoTouchEventHandler) -> Self {
+    NodeUpdate::off_touch_cancel(&mut self, f);
+    self
+  }
+
+  /// A finger rested on this element for half a second; see [`LongPressEvent`].
+  pub fn on_long_press(mut self, f: impl IntoLongPressEventHandler) -> Self {
+    NodeUpdate::on_long_press(&mut self, f);
+    self
+  }
+
+  pub fn off_long_press(mut self, f: impl IntoLongPressEventHandler) -> Self {
+    NodeUpdate::off_long_press(&mut self, f);
+    self
+  }
+
+  /// Two fingers on this element moved apart or together; see [`PinchEvent`].
+  pub fn on_pinch(mut self, f: impl IntoPinchEventHandler) -> Self {
+    NodeUpdate::on_pinch(&mut self, f);
+    self
+  }
+
+  pub fn off_pinch(mut self, f: impl IntoPinchEventHandler) -> Self {
+    NodeUpdate::off_pinch(&mut self, f);
+    self
+  }
+
+  /// Two fingers on this element turned about their middle; see [`RotateEvent`].
+  pub fn on_rotate(mut self, f: impl IntoRotateEventHandler) -> Self {
+    NodeUpdate::on_rotate(&mut self, f);
+    self
+  }
+
+  pub fn off_rotate(mut self, f: impl IntoRotateEventHandler) -> Self {
+    NodeUpdate::off_rotate(&mut self, f);
+    self
+  }
+
+  /// One or more fingers tapped this element; see [`TapEvent`].
+  pub fn on_tap(mut self, f: impl IntoTapEventHandler) -> Self {
+    NodeUpdate::on_tap(&mut self, f);
+    self
+  }
+
+  pub fn off_tap(mut self, f: impl IntoTapEventHandler) -> Self {
+    NodeUpdate::off_tap(&mut self, f);
+    self
+  }
+
+  /// Fingers flicked across this element; see [`SwipeEvent`].
+  pub fn on_swipe(mut self, f: impl IntoSwipeEventHandler) -> Self {
+    NodeUpdate::on_swipe(&mut self, f);
+    self
+  }
+
+  pub fn off_swipe(mut self, f: impl IntoSwipeEventHandler) -> Self {
+    NodeUpdate::off_swipe(&mut self, f);
+    self
+  }
+
+  /// Fingers are travelling over this element; see [`PanEvent`].
+  pub fn on_pan(mut self, f: impl IntoPanEventHandler) -> Self {
+    NodeUpdate::on_pan(&mut self, f);
+    self
+  }
+
+  pub fn off_pan(mut self, f: impl IntoPanEventHandler) -> Self {
+    NodeUpdate::off_pan(&mut self, f);
+    self
+  }
+
+  /// A finger came in from an edge of the window over this element; see [`EdgePanEvent`].
+  pub fn on_edge_pan(mut self, f: impl IntoEdgePanEventHandler) -> Self {
+    NodeUpdate::on_edge_pan(&mut self, f);
+    self
+  }
+
+  pub fn off_edge_pan(mut self, f: impl IntoEdgePanEventHandler) -> Self {
+    NodeUpdate::off_edge_pan(&mut self, f);
     self
   }
 

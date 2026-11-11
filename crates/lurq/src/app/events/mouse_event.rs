@@ -56,6 +56,17 @@ impl std::ops::BitOrAssign for MouseButtonMask {
 use super::EventControl;
 use crate::core::NodeId;
 
+/// What a mouse event came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PointerKind {
+  /// A mouse or a trackpad, and a key that clicks.
+  #[default]
+  Mouse,
+  /// A finger on a touch screen. Its own events are `on_touch_start` and the rest; the mouse events are what it
+  /// stands for as the pointer, and an element that must tell the two apart can.
+  Touch,
+}
+
 #[derive(Debug, Clone)]
 pub struct MouseEvent {
   pub x: f32,
@@ -71,6 +82,8 @@ pub struct MouseEvent {
   /// or Space on a focused button. `button` is `Left` and `x`, `y` are 0, as
   /// for a browser's keyboard click; the modifiers are the key's.
   pub from_keyboard: bool,
+  /// What moved the pointer: a mouse, or the finger that stands for it on a touch screen.
+  pub pointer: PointerKind,
   pub target_id: NodeId,
   pub(crate) control: EventControl,
 }

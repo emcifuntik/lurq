@@ -213,7 +213,8 @@ fn two_taps_a_few_points_apart_are_a_double_click() {
     tree.mouse_up(x, y, MouseButton::Left);
   }
 
-  assert_eq!(*log.lock().unwrap(), ["down", "up", "double", "up"]);
+  // The second tap is a press and a release as well, and clicks nothing: the two are the double click.
+  assert_eq!(*log.lock().unwrap(), ["down", "up", "down", "double", "up"]);
 }
 
 /// A list 100 high with 1000 of content, at scale 1.
@@ -485,4 +486,54 @@ fn a_list_let_go_while_the_finger_still_pulls_goes_on_outward_before_it_springs_
 
   assert!(!tree.touch_tick(now + Duration::from_secs(3)));
   assert_eq!(state.overscroll(), (0.0, 0.0));
+}
+
+#[test]
+fn a_list_that_does_not_scroll_to_top_leaves_the_status_bars_tap_alone() {
+  let (mut tree, _app, state) = list();
+  state.set_scroll(0.0, 400.0);
+  state.set_scrolls_to_top(false);
+
+  assert!(!tree.touch_scroll_to_top(std::time::Instant::now()));
+  assert_eq!(state.scroll_y(), 400.0);
+}
+
+#[test]
+fn a_finger_scrolls_from_a_scroll_indicator_and_drags_a_bar_that_is_always_there() {
+  use crate::layout::scrollbar::ScrollBarStyle;
+
+  let list_with = |style: ScrollBarStyle| {
+    let mut app = App::new();
+    let mut tree = Tree::new();
+    tree.resize(200, 200);
+    tree.set_root(
+      ScrollVertical::new(Spacer::new().width(100.0).height(1000.0))
+        .scrollbar(style)
+        .size(100.0, 100.0),
+    );
+    tree.pass(&mut app, &HeadlessSurface);
+    // Scrolling shows an indicator; then a frame paints it.
+    tree.touch_scroll_begin(50.0, 50.0, 0.0, -10.0);
+    tree.touch_scroll(50.0, 50.0, 0.0, -10.0, ScrollPhase::Scroll, false);
+    tree.pass(&mut app, &HeadlessSurface);
+    tree
+  };
+  // On the bar, at the list's right edge.
+  let mut bar = list_with(ScrollBarStyle {
+    width: 12.0,
+    padding: 0.0,
+    ..ScrollBarStyle::thin()
+  });
+  assert!(!bar.touch_scrolls_at(96.0, 10.0), "a bar is dragged");
+
+  let mut indicator = list_with(ScrollBarStyle {
+    width: 12.0,
+    padding: 0.0,
+    end_inset: None,
+    ..ScrollBarStyle::indicator()
+  });
+  assert!(
+    indicator.touch_scrolls_at(96.0, 10.0),
+    "an indicator is content to a moving finger"
+  );
 }

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use winit::event::TouchPhase;
 
-use super::touch::{LONG_PRESS, PRESS_DELAY, TAP_HIGHLIGHT, TouchAction, TouchPointer};
+use super::touch::{LONG_PRESS, PRESS_DELAY, TouchAction, TouchPointer};
 use crate::app::{events::ScrollPhase, runtime::TouchMomentum};
 
 const SCALE: f64 = 3.0;
@@ -13,6 +13,8 @@ const FINGER: u64 = 7;
 const START: (f64, f64) = (100.0, 400.0);
 const PRESS: TouchAction = TouchAction::Press { x: 100.0, y: 400.0 };
 const RELEASE: TouchAction = TouchAction::Release { x: 100.0, y: 400.0 };
+const TAP: TouchAction = TouchAction::Tap { x: 100.0, y: 400.0 };
+const LONG: TouchAction = TouchAction::LongPress { x: 100.0, y: 400.0 };
 /// The gesture a finger going up from [`START`] starts.
 const TARGET_UP: TouchAction = TouchAction::ScrollTarget {
   x: 100.0,
@@ -82,6 +84,51 @@ fn where_nothing_scrolls_a_finger_is_the_pointer_with_its_button_down() {
 }
 
 #[test]
+fn a_finger_that_rests_where_nothing_scrolls_is_a_long_press_unless_it_travelled() {
+  let start = Instant::now();
+  let event = |pointer: &mut TouchPointer, phase, position, at| {
+    pointer.touch(FINGER, phase, position, at, SCALE, false, |_| false)
+  };
+
+  let mut resting = TouchPointer::default();
+  event(&mut resting, TouchPhase::Started, START, start);
+  assert_eq!(resting.next_deadline(), Some(start + LONG_PRESS));
+  // Within the slop: still resting.
+  event(&mut resting, TouchPhase::Moved, (110.0, 410.0), start + ms(100));
+  assert_eq!(resting.tick(start + LONG_PRESS - ms(1)), []);
+  assert_eq!(resting.tick(start + LONG_PRESS), [LONG]);
+  assert_eq!(resting.tick(start + LONG_PRESS + ms(8)), []);
+  assert_eq!(resting.next_deadline(), None);
+
+  let mut travelling = TouchPointer::default();
+  event(&mut travelling, TouchPhase::Started, START, start);
+  event(&mut travelling, TouchPhase::Moved, (100.0, 300.0), start + ms(100));
+  assert_eq!(travelling.next_deadline(), None);
+  assert_eq!(travelling.tick(start + LONG_PRESS), []);
+}
+
+#[test]
+fn a_long_press_a_handler_took_clicks_nothing() {
+  let start = Instant::now();
+  let event = |pointer: &mut TouchPointer, phase, position, at| {
+    pointer.touch(FINGER, phase, position, at, SCALE, false, |_| false)
+  };
+
+  let mut taken = TouchPointer::default();
+  event(&mut taken, TouchPhase::Started, START, start);
+  taken.tick(start + LONG_PRESS);
+  taken.long_press_taken();
+  let up = event(&mut taken, TouchPhase::Ended, START, start + ms(700));
+  assert_eq!(up, [TouchAction::CancelPress { x: 100.0, y: 400.0 }]);
+
+  let mut left = TouchPointer::default();
+  event(&mut left, TouchPhase::Started, START, start);
+  left.tick(start + LONG_PRESS);
+  let up = event(&mut left, TouchPhase::Ended, START, start + ms(700));
+  assert_eq!(up, [RELEASE]);
+}
+
+#[test]
 fn a_finger_over_a_list_hovers_nothing_and_presses_nothing_at_first() {
   let mut pointer = TouchPointer::default();
   let start = Instant::now();
@@ -95,32 +142,28 @@ fn a_finger_over_a_list_hovers_nothing_and_presses_nothing_at_first() {
 }
 
 #[test]
-fn a_quick_tap_holds_its_press_long_enough_to_show() {
+fn a_quick_tap_is_a_tap_at_once_where_it_landed() {
   let mut pointer = TouchPointer::default();
   let start = Instant::now();
   touch(&mut pointer, TouchPhase::Started, START, start);
 
   let up = touch(&mut pointer, TouchPhase::Ended, (110.0, 420.0), start + ms(60));
-  assert_eq!(up, [PRESS]);
-  assert_eq!(pointer.next_deadline(), Some(start + ms(60) + TAP_HIGHLIGHT));
-  assert_eq!(pointer.tick(start + ms(60) + TAP_HIGHLIGHT - ms(1)), []);
-  assert_eq!(pointer.tick(start + ms(60) + TAP_HIGHLIGHT), [RELEASE]);
+
+  assert_eq!(up, [TAP]);
   assert_eq!(pointer.next_deadline(), None);
 }
 
 #[test]
-fn a_second_tap_that_lands_before_the_first_one_is_released_releases_it_first() {
+fn two_quick_taps_are_two_taps() {
   let mut pointer = TouchPointer::default();
   let start = Instant::now();
   touch(&mut pointer, TouchPhase::Started, START, start);
-  touch(&mut pointer, TouchPhase::Ended, START, start + ms(40));
+  let first = touch(&mut pointer, TouchPhase::Ended, START, start + ms(40));
 
   let down = touch(&mut pointer, TouchPhase::Started, START, start + ms(70));
-  let up = touch(&mut pointer, TouchPhase::Ended, START, start + ms(110));
+  let second = touch(&mut pointer, TouchPhase::Ended, START, start + ms(110));
 
-  assert_eq!(down, [RELEASE]);
-  assert_eq!(up, [PRESS]);
-  assert_eq!(pointer.tick(start + ms(110) + TAP_HIGHLIGHT), [RELEASE]);
+  assert_eq!((first, down, second), (vec![TAP], vec![], vec![TAP]));
 }
 
 #[test]
@@ -182,7 +225,7 @@ fn a_long_press_keeps_the_pointer_from_scrolling() {
   pointer.tick(start + PRESS_DELAY);
 
   assert_eq!(pointer.next_deadline(), Some(start + LONG_PRESS));
-  assert_eq!(pointer.tick(start + LONG_PRESS), []);
+  assert_eq!(pointer.tick(start + LONG_PRESS), [LONG]);
   assert_eq!(pointer.next_deadline(), None);
   let moved = touch(
     &mut pointer,
@@ -207,7 +250,7 @@ fn a_long_press_no_turn_ran_during_still_presses() {
   let start = Instant::now();
   touch(&mut pointer, TouchPhase::Started, START, start);
 
-  assert_eq!(pointer.tick(start + LONG_PRESS + ms(40)), [PRESS]);
+  assert_eq!(pointer.tick(start + LONG_PRESS + ms(40)), [PRESS, LONG]);
   let moved = touch(
     &mut pointer,
     TouchPhase::Moved,
@@ -277,7 +320,7 @@ fn momentum_that_moves_nothing_is_ended_with_the_velocity_it_had() {
   // The next touch is a tap again, not one that catches momentum.
   let now = last_move + ms(50);
   touch(&mut pointer, TouchPhase::Started, START, now);
-  assert_eq!(touch(&mut pointer, TouchPhase::Ended, START, now + ms(30)), [PRESS]);
+  assert_eq!(touch(&mut pointer, TouchPhase::Ended, START, now + ms(30)), [TAP]);
 }
 
 #[test]
@@ -380,7 +423,7 @@ fn a_second_finger_is_ignored_before_a_scroll_starts() {
   let first_up = touch(&mut pointer, TouchPhase::Ended, START, start + ms(40));
 
   assert_eq!((down, moved, up), (vec![], vec![], vec![]));
-  assert_eq!(first_up, [PRESS]);
+  assert_eq!(first_up, [TAP]);
 }
 
 #[test]
@@ -445,4 +488,32 @@ fn the_apps_momentum_decides_how_far_a_flick_goes() {
   assert!(fast > system * 0.15 && fast < system * 0.25, "{system} then {fast}");
   assert!(capped < system * 0.5, "{system} then {capped}");
   assert_eq!(none, 0.0);
+}
+
+#[test]
+fn a_pointer_given_up_to_a_gesture_ends_what_it_was_doing_without_a_click() {
+  let start = Instant::now();
+
+  let mut resting = TouchPointer::default();
+  touch(&mut resting, TouchPhase::Started, START, start);
+  assert_eq!(resting.abandon(), []);
+  assert_eq!(
+    touch(&mut resting, TouchPhase::Ended, START, start + ms(40)),
+    [],
+    "no tap follows"
+  );
+
+  let mut pressing = TouchPointer::default();
+  touch(&mut pressing, TouchPhase::Started, START, start);
+  pressing.tick(start + PRESS_DELAY);
+  assert_eq!(pressing.abandon(), [TouchAction::CancelPress { x: 100.0, y: 400.0 }]);
+
+  let mut scrolling = TouchPointer::default();
+  let (last_move, position) = drag_up(&mut scrolling, start, 40.0, 5);
+  assert_eq!(scrolling.abandon(), [scroll(0.0, 0.0, ScrollPhase::End)]);
+  assert_eq!(
+    touch(&mut scrolling, TouchPhase::Ended, position, last_move + ms(5)),
+    []
+  );
+  assert_eq!(scrolling.next_deadline(), None, "and no momentum");
 }

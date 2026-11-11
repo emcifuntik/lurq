@@ -25,6 +25,11 @@ impl WindowHandle {
   }
 
   /// Queue a vetoable request; unlike `close`, this invokes the handler.
+  /// Plays a tap of the device's haptic engine, where there is one.
+  pub fn haptic(&self, haptic: crate::app::window::Haptic) {
+    self.window.push_command(WindowCommand::Haptic(haptic));
+  }
+
   pub fn request_close(&self) {
     self
       .window

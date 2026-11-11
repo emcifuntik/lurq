@@ -89,6 +89,7 @@ mod overlay_layers;
 mod paste;
 pub use paste::ClipboardReader;
 pub use touch::TouchMomentum;
+pub use touch_pointer::TouchRoute;
 #[cfg(test)]
 mod refresh_layout_tests;
 mod scroll_into_view;
@@ -98,6 +99,9 @@ mod tab_navigation;
 #[cfg(all(test, feature = "markdown"))]
 mod table_copy_tests;
 mod touch;
+mod touch_pointer;
+#[cfg(test)]
+mod touch_pointer_tests;
 #[cfg(test)]
 mod touch_tests;
 
@@ -733,6 +737,8 @@ pub struct Tree {
   /// How far apart, in physical pixels, two presses may land and still be one double click, when a shell set
   /// it; see `set_double_click_distance`.
   double_click_distance: Option<f32>,
+  /// How long after a press the next one is still a double click, when a shell set it.
+  double_click_interval: Option<Duration>,
   click_press: Option<ClickPress>,
   /// A left press that only closed popups (`OutsidePress::Consume`); its
   /// release is swallowed too.
@@ -763,6 +769,7 @@ pub struct Tree {
   touch_scroll_latched: bool,
   touch_scroll: touch::TouchScroll,
   touch_momentum: TouchMomentum,
+  touch_pointer: touch_pointer::TouchPointerState,
   /// Where the sensitive text of the last full render list was painted, for
   /// captures made for inspection (`app::capture_redaction`).
   #[cfg(feature = "screenshot")]
@@ -1130,6 +1137,7 @@ impl Tree {
       click_tracker: ClickTracker::default(),
       text_click_tracker: TextClickTracker::default(),
       double_click_distance: None,
+      double_click_interval: None,
       click_press: None,
       swallowed_press: None,
       suppressed_click: None,
@@ -1153,6 +1161,7 @@ impl Tree {
       touch_scroll_latched: false,
       touch_scroll: touch::TouchScroll::default(),
       touch_momentum: TouchMomentum::default(),
+      touch_pointer: touch_pointer::TouchPointerState::default(),
       #[cfg(feature = "screenshot")]
       capture_redactions: Vec::new(),
       #[cfg(feature = "screenshot")]
@@ -3531,9 +3540,13 @@ impl Tree {
         button,
         &target_ids,
         self.double_click_distance.unwrap_or(DOUBLE_CLICK_DISTANCE),
+        self.double_click_interval.unwrap_or(DOUBLE_CLICK_INTERVAL),
       ) {
         self.click_press = None;
         self.click_tracker.take_pending();
+        // The second press is a press as well: every `on_mouse_up` has its `on_mouse_down`, and what is pressed
+        // shows so. Its release clicks nothing, the two presses being the double click.
+        self.dispatch_mouse(x, y, button, MouseEventKind::Down, modifiers);
         self.dispatch_mouse_with_click_target(
           x,
           y,
@@ -3681,6 +3694,7 @@ impl Tree {
         button,
         click_target_id,
         self.double_click_distance.unwrap_or(DOUBLE_CLICK_DISTANCE),
+        self.double_click_interval.unwrap_or(DOUBLE_CLICK_INTERVAL),
       ) {
         self.click_tracker.take_pending();
         self.dispatch_mouse_with_click_target(
@@ -4082,7 +4096,10 @@ impl Tree {
   }
 
   fn flush_due_pending_click(&mut self, now: Instant) {
-    if self.click_tracker.pending_is_due(now) {
+    if self
+      .click_tracker
+      .pending_is_due(now, self.double_click_interval.unwrap_or(DOUBLE_CLICK_INTERVAL))
+    {
       self.flush_pending_click();
     } else if self.click_tracker.has_pending() {
       self.needs_redraw = true;
@@ -4240,10 +4257,16 @@ impl Tree {
       alt: modifiers.alt,
       meta: modifiers.meta,
       from_keyboard: false,
+      pointer: if self.touch_pointer.down {
+        crate::app::events::PointerKind::Touch
+      } else {
+        crate::app::events::PointerKind::Mouse
+      },
       target_id: NodeId::UNASSIGNED,
       control: EventControl::new(),
     };
     let scale = self.scale_factor();
+    let text_click_interval = self.double_click_interval.unwrap_or(DOUBLE_CLICK_INTERVAL);
     // Text clicks are compared in logical pixels, as the event carries them.
     let text_click_distance = self
       .double_click_distance
@@ -4480,6 +4503,7 @@ impl Tree {
         alt: evt.alt,
         meta: evt.meta,
         from_keyboard: false,
+        pointer: evt.pointer,
         target_id: hits
           .first()
           .map(|(node, _)| node.node_id())
@@ -4722,6 +4746,13 @@ impl Tree {
             } else {
               (track_rect.x, track_rect.width)
             };
+            // A mouse's press brings the thumb under the pointer. A finger's does not, as a slider of the platform's:
+            // the thumb goes with the finger from where it is, wherever on the slider the finger landed.
+            let drag_x = if self.touch_pointer.down {
+              drag_x + lx - (thumb_rect.x + thumb_rect.width * 0.5)
+            } else {
+              drag_x
+            };
             let drag = SliderDrag {
               target_id: node.node_id(),
               binding_id: state.value_id(),
@@ -4750,6 +4781,7 @@ impl Tree {
             button,
             node.node_id(),
             text_click_distance,
+            text_click_interval,
           );
           let padding = self
             .layout_engine
@@ -4779,6 +4811,7 @@ impl Tree {
             button,
             node.node_id(),
             text_click_distance,
+            text_click_interval,
           );
           if !evt.shift && !evt.ctrl {
             clear_selectable_text_selections_except(root, Some(node.node_id()));
@@ -6968,7 +7001,10 @@ impl Tree {
     let mut hover_path = Vec::new();
     for node_id in &self.hover_path {
       if let Some(node) = find_node_by_id(root, *node_id) {
-        set_node_hovered(node, true);
+        // A finger hovers nothing; see `touch_pointer`.
+        if !self.touch_pointer.down {
+          set_node_hovered(node, true);
+        }
         self.cached_render_list = None;
         hover_path.push(*node_id);
       }
@@ -7945,11 +7981,12 @@ impl ClickTracker {
     button: MouseButton,
     target_id: NodeId,
     distance: f32,
+    interval: Duration,
   ) -> bool {
     self.pending_click.is_some_and(|pending| {
       pending.button == button
         && pending.target_id == target_id
-        && now.duration_since(pending.time) <= DOUBLE_CLICK_INTERVAL
+        && now.duration_since(pending.time) <= interval
         && distance_squared(pending.position, position) <= distance * distance
     })
   }
@@ -7961,10 +7998,11 @@ impl ClickTracker {
     button: MouseButton,
     target_ids: &[NodeId],
     distance: f32,
+    interval: Duration,
   ) -> Option<NodeId> {
     let pending = self.pending_click?;
     if pending.button != button
-      || now.duration_since(pending.time) > DOUBLE_CLICK_INTERVAL
+      || now.duration_since(pending.time) > interval
       || distance_squared(pending.position, position) > distance * distance
     {
       return None;
@@ -7976,10 +8014,10 @@ impl ClickTracker {
       .find(|target_id| *target_id == pending.target_id)
   }
 
-  fn pending_is_due(&self, now: Instant) -> bool {
+  fn pending_is_due(&self, now: Instant, interval: Duration) -> bool {
     self
       .pending_click
-      .is_some_and(|pending| now.duration_since(pending.time) > DOUBLE_CLICK_INTERVAL)
+      .is_some_and(|pending| now.duration_since(pending.time) > interval)
   }
 
   /// Holds back a click of the input being delivered now, with its source.
@@ -8052,6 +8090,7 @@ impl MouseModifiers {
       alt: self.alt,
       meta: self.meta,
       from_keyboard: true,
+      pointer: crate::app::events::PointerKind::Mouse,
       target_id,
       control: EventControl::new(),
     }
@@ -8071,13 +8110,14 @@ impl TextClickTracker {
     button: MouseButton,
     target_id: NodeId,
     distance: f32,
+    interval: Duration,
   ) -> u8 {
     let count = self
       .previous
       .filter(|previous| {
         previous.button == button
           && previous.target_id == target_id
-          && now.duration_since(previous.time) <= DOUBLE_CLICK_INTERVAL
+          && now.duration_since(previous.time) <= interval
           && distance_squared(previous.position, position) <= distance * distance
       })
       .map(|previous| (previous.count + 1).min(3))
@@ -8465,6 +8505,7 @@ impl<'t> ElementHandle<'t> {
       alt: false,
       meta: false,
       from_keyboard: false,
+      pointer: crate::app::events::PointerKind::Mouse,
       target_id: self.node_id,
       control: EventControl::new(),
     };

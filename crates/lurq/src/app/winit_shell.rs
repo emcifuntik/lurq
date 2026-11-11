@@ -397,22 +397,26 @@ impl ManagedWindow {
       match action {
         TouchAction::Move { x, y } => {
           self.cursor_pos = (x, y);
-          self.tree.mouse_move(x as f32, y as f32);
+          self.tree.touch_pointer_move(x as f32, y as f32);
         }
         TouchAction::Press { x, y } => {
           self.cursor_pos = (x, y);
-          self.tree.mouse_move(x as f32, y as f32);
-          self.tree.mouse_down(x as f32, y as f32, MouseButton::Left);
+          self.tree.touch_press(x as f32, y as f32);
         }
         TouchAction::Release { x, y } => {
           self.cursor_pos = (x, y);
-          self.tree.mouse_up(x as f32, y as f32, MouseButton::Left);
-          self.tree.mouse_leave_window();
+          self.tree.touch_release(x as f32, y as f32);
         }
-        TouchAction::CancelPress { x, y } => {
-          self.tree.mouse_press_taken_by_os(x as f32, y as f32, MouseButton::Left);
-          self.tree.mouse_leave_window();
+        TouchAction::Tap { x, y } => {
+          self.cursor_pos = (x, y);
+          self.tree.touch_tap(x as f32, y as f32, touch::TAP_HIGHLIGHT);
         }
+        TouchAction::LongPress { x, y } => {
+          if self.tree.touch_long_press(x as f32, y as f32) {
+            self.touch.long_press_taken();
+          }
+        }
+        TouchAction::CancelPress { x, y } => self.tree.touch_cancel_press(x as f32, y as f32),
         TouchAction::Settle => self.tree.touch_scroll_settle(),
         TouchAction::ScrollTarget { x, y, dx, dy } => {
           self.tree.touch_scroll_begin(x as f32, y as f32, dx as f32, dy as f32);
@@ -457,6 +461,7 @@ impl ManagedWindow {
       self
         .tree
         .set_double_click_distance(touch::DOUBLE_TAP_DISTANCE * window.scale_factor() as f32);
+      self.tree.set_double_click_interval(touch::DOUBLE_TAP_INTERVAL);
       self.frame_link = Some(ios::FrameLink::new());
       if let Ok(RawWindowHandle::UiKit(handle)) = window.window_handle().map(|handle| handle.as_raw()) {
         self.status_bar_tap = Some(ios::StatusBarTap::new(handle.ui_view));
@@ -551,6 +556,12 @@ impl ManagedWindow {
             window.set_decorations(decorated);
           }
           self.tree.window().set_decorated(decorated);
+        }
+        WindowCommand::Haptic(haptic) => {
+          #[cfg(target_os = "ios")]
+          ios::play_haptic(haptic);
+          #[cfg(not(target_os = "ios"))]
+          let _ = haptic;
         }
         WindowCommand::SetTitle(title) => {
           if let Some(window) = &self.window {
@@ -999,6 +1010,27 @@ impl ManagedWindow {
       #[cfg(target_os = "ios")]
       WindowEvent::Touch(touch) => {
         let scale = f64::from(self.tree.scale_factor());
+        // The finger's own events come first. One a handler took is the app's, and not the pointer.
+        let phase = match touch.phase {
+          TouchPhase::Started => crate::app::events::TouchPhase::Start,
+          TouchPhase::Moved => crate::app::events::TouchPhase::Move,
+          TouchPhase::Ended => crate::app::events::TouchPhase::End,
+          TouchPhase::Cancelled => crate::app::events::TouchPhase::Cancel,
+        };
+        let force = touch.force.map(|force| force.normalized() as f32);
+        let route = self
+          .tree
+          .touch_event(touch.id, phase, touch.location.x as f32, touch.location.y as f32, force);
+        if route != crate::app::runtime::TouchRoute::Pointer {
+          if route == crate::app::runtime::TouchRoute::Gesture {
+            // Two fingers pinch or rotate: what the first one did as the pointer ends without a click.
+            let actions = self.touch.abandon();
+            self.apply_touch_actions(actions, false);
+          }
+          self.apply_window_commands(event_loop);
+          self.check_redraw();
+          return false;
+        }
         self.touch.set_momentum(self.tree.touch_momentum());
         // A finger that lands on content springing back holds it where it is.
         let springing = touch.phase == TouchPhase::Started && self.tree.touch_scroll_catch();
@@ -1190,6 +1222,12 @@ impl ManagedSecondaryWindow {
             window.set_decorations(decorated);
           }
           tree.window().set_decorated(decorated);
+        }
+        WindowCommand::Haptic(haptic) => {
+          #[cfg(target_os = "ios")]
+          ios::play_haptic(haptic);
+          #[cfg(not(target_os = "ios"))]
+          let _ = haptic;
         }
         WindowCommand::SetTitle(title) => {
           if let Some(window) = &self.window {

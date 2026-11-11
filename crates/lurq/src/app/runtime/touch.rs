@@ -153,6 +153,12 @@ impl Tree {
     self.double_click_distance = Some(distance);
   }
 
+  /// How long after a press the next one is still a double click, or a double or triple click in text. A
+  /// shell sets the platform's; without one it is half a second.
+  pub fn set_double_click_interval(&mut self, interval: Duration) {
+    self.double_click_interval = Some(interval);
+  }
+
   /// Sets how a finger's scroll goes on after the finger lifts, in every list of the window. It takes effect
   /// with the next touch.
   pub fn set_touch_momentum(&mut self, momentum: TouchMomentum) {
@@ -165,8 +171,8 @@ impl Tree {
   }
 
   /// Whether a finger that moves from the point, in physical pixels, scrolls: a scroll container with content
-  /// beyond its viewport is under it, and no control that is dragged instead (a slider, a scrollbar). Anywhere
-  /// else a finger is a pointer with its button down.
+  /// beyond its viewport is under it, and no control that is dragged instead (a slider, a scrollbar that is
+  /// always shown). Anywhere else a finger is a pointer with its button down.
   pub fn touch_scrolls_at(&mut self, x: f32, y: f32) -> bool {
     let scale = self.scale_factor();
     let (lx, ly) = (x / scale, y / scale);
@@ -177,9 +183,15 @@ impl Tree {
     let mut hits = Vec::new();
     hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
     trim_hits_to_scrollbar(&mut hits, lx, ly);
-    let on_scrollbar = hits
-      .first()
-      .is_some_and(|(node, _)| scrollbar_hit_at(node, lx, ly).is_some());
+    // A bar that is always there is dragged at once. A scroll indicator, which comes and goes, is content to
+    // a finger that moves, and is dragged by one that rested on it first, as the platform's.
+    let on_scrollbar = hits.first().is_some_and(|(node, _)| {
+      scrollbar_hit_at(node, lx, ly).is_some()
+        && !node
+          .scrollbar_style(crate::layout::scrollbar::ScrollBarStyle::default())
+          .visible
+          .fades()
+    });
     let on_slider = hits
       .iter()
       .any(|(node, _)| matches!(node.node_kind(), NodeKind::Slider { .. }));
@@ -458,9 +470,9 @@ impl Tree {
     let mut hits = Vec::new();
     hit_test_tree(root, layout, 0.0, 0.0, size.width / 2.0, size.height / 2.0, &mut hits);
     let page = hits.iter().rposition(|(node, _)| {
-      node
-        .scroll_container()
-        .is_some_and(|(state, direction)| !matches!(direction, ScrollDirection::Horizontal) && state.scroll_y() > 0.0)
+      node.scroll_container().is_some_and(|(state, direction)| {
+        !matches!(direction, ScrollDirection::Horizontal) && state.scroll_y() > 0.0 && state.scrolls_to_top()
+      })
     });
     let Some(page) = page else {
       return false;
@@ -489,7 +501,7 @@ impl Tree {
   /// Moves content that is springing back, or on its way to its top, to where it is at `now`. `true` while it
   /// is still on its way: the shell runs another turn for the next step.
   pub fn touch_tick(&mut self, now: Instant) -> bool {
-    let to_top = self.touch_to_top_tick(now);
+    let to_top = self.touch_to_top_tick(now) | self.touch_tap_highlight_tick(now);
     let (Some(taker), Some(spring)) = (&self.touch_scroll.taker, &self.touch_scroll.spring) else {
       return to_top;
     };
@@ -527,7 +539,7 @@ impl Tree {
 
   /// Whether content is springing back or on its way to its top; see [`touch_tick`](Self::touch_tick).
   pub fn touch_animating(&self) -> bool {
-    self.touch_scroll.spring.is_some() || self.touch_scroll.to_top.is_some()
+    self.touch_scroll.spring.is_some() || self.touch_scroll.to_top.is_some() || self.touch_tap_highlight_showing()
   }
 
   /// The taker's content moved: its layout and those around it place it anew, and the frame is drawn.
