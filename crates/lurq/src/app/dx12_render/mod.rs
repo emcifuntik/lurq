@@ -146,11 +146,10 @@ const DX12_ALWAYS_FULL_ATLAS_UPLOAD: bool = true;
 const IMAGE_SRV_FIRST_INDEX: usize = GLYPH_ATLAS_SRV_INDEX + 1;
 const FRAME_UPLOAD_ARENA_BYTES: usize = 32 * 1024 * 1024;
 const DX12_FRAME_WAIT_TIMEOUT_MS: u32 = 32;
-/// Screenshots block the render thread on the copy's fence; they are
-/// rare and user-invoked, so wait longer than the per-frame budget before
-/// dropping the capture.
+/// How long a readback worker waits for a frame capture's copy. Off the
+/// frame's thread, so far above a frame: only a stuck GPU reaches it.
 #[cfg(feature = "screenshot")]
-const DX12_CAPTURE_WAIT_TIMEOUT_MS: u32 = 250;
+const DX12_CAPTURE_WAIT_TIMEOUT_MS: u32 = 5_000;
 const DX12_SLOW_FRAME_THRESHOLD: Duration = Duration::from_millis(12);
 const DX12_SLOW_PHASE_THRESHOLD: Duration = Duration::from_millis(6);
 const DX12_FRAME_NOT_READY: HRESULT = HRESULT(0x800705B4u32 as i32);
@@ -687,6 +686,17 @@ impl RenderEngine for Dx12RenderEngine {
   }
   #[cfg(feature = "perf_profile")]
   fn set_profile_context(&mut self, context: crate::app::profiler::ProfileContext) {
+    // Once per window: this renderer has no GPU timestamp queries yet.
+    if !self
+      .profile_context
+      .as_ref()
+      .is_some_and(|current| current.same_window(&context))
+    {
+      use crate::app::profiler::GpuTimestampAvailability;
+      context.report_gpu_timestamps(GpuTimestampAvailability::unavailable(
+        GpuTimestampAvailability::NATIVE_DX12,
+      ));
+    }
     self.profile_context = Some(context);
   }
   #[cfg(feature = "canvas")]
@@ -911,6 +921,10 @@ struct Dx12State {
   /// Offscreen targets of faded subtrees; created by the first frame that
   /// has one.
   layer_compositor: Option<layers::LayerCompositor>,
+  /// Draw calls `encode_frame` recorded for the render list, layer
+  /// composites included; Canvas draws are not counted.
+  #[cfg(feature = "perf_profile")]
+  draw_calls: usize,
 }
 
 /// A recorded-but-not-yet-read screenshot: the readback buffer the back
@@ -2549,6 +2563,69 @@ fn dx12_gpu_wait_timeout_error(stage: &str, reason: HRESULT) -> Error {
   )
 }
 
+/// On a readback worker: wait for the capture copy's fence, map the readback
+/// buffer and deliver the tight RGBA pixels. A removed device completes every
+/// fence, so the wait ends then too, with the capture failed.
+#[cfg(feature = "screenshot")]
+unsafe fn read_frame_capture(
+  fence: &ID3D12Fence,
+  fence_value: u64,
+  capture: RenderFrameCapture,
+  readback: FrameCaptureReadback,
+) {
+  // Bounded, so a GPU that never finishes the copy fails the capture instead
+  // of keeping this worker and the capture's requester waiting forever.
+  if fence.GetCompletedValue() < fence_value {
+    let event = match CreateEventW(None, false, false, None) {
+      Ok(event) => event,
+      Err(err) => {
+        capture.target.fail(format!("capture fence event failed: {err:?}"));
+        return;
+      }
+    };
+    let waited = fence
+      .SetEventOnCompletion(fence_value, event)
+      .map(|()| WaitForSingleObject(event, DX12_CAPTURE_WAIT_TIMEOUT_MS));
+    let _ = CloseHandle(event);
+    match waited {
+      Err(err) => {
+        capture.target.fail(format!("capture fence wait failed: {err:?}"));
+        return;
+      }
+      Ok(wait) if wait == WAIT_TIMEOUT => {
+        capture.target.fail(format!(
+          "GPU work was still busy after {DX12_CAPTURE_WAIT_TIMEOUT_MS}ms; fence={fence_value}"
+        ));
+        return;
+      }
+      Ok(_) => {}
+    }
+  }
+  let buffer_size = readback.padded_bytes_per_row as usize * capture.height as usize;
+  let read_range = D3D12_RANGE {
+    Begin: 0,
+    End: buffer_size,
+  };
+  let mut mapped: *mut c_void = ptr::null_mut();
+  if let Err(error) = readback.resource.Map(0, Some(&read_range), Some(&mut mapped)) {
+    capture
+      .target
+      .fail(format!("failed to map DX12 frame capture readback buffer: {error:?}"));
+    return;
+  }
+  let data = std::slice::from_raw_parts(mapped.cast::<u8>(), buffer_size);
+  let pixels = capture_rows_to_rgba(
+    data,
+    readback.padded_bytes_per_row as usize,
+    capture.width,
+    capture.height,
+    false,
+  );
+  let written_range = D3D12_RANGE { Begin: 0, End: 0 };
+  readback.resource.Unmap(0, Some(&written_range));
+  finish_capture(pixels, &capture);
+}
+
 fn dx12_frame_not_ready_error(stage: &str, detail: impl std::fmt::Display) -> Error {
   Error::new(DX12_FRAME_NOT_READY, format!("{stage}: {detail}"))
 }
@@ -2722,6 +2799,8 @@ impl Dx12State {
       layer_plan: LayerPlan::default(),
       layer_slots: Vec::new(),
       layer_compositor: None,
+      #[cfg(feature = "perf_profile")]
+      draw_calls: 0,
     };
     state.create_render_targets()?;
     state.frame_index = state.swapchain.GetCurrentBackBufferIndex() as usize;
@@ -2893,6 +2972,8 @@ impl Dx12State {
       glyph_atlas_full_uploads: atlas_stats.full_uploads,
       glyph_atlas_arena_uploads: atlas_stats.arena_uploads,
       glyph_atlas_dedicated_uploads: atlas_stats.dedicated_uploads,
+      #[cfg(feature = "perf_profile")]
+      draw_calls: self.draw_calls,
       encode: _encode_dur,
       submit: _submit_dur,
       present: _present_dur,
@@ -2902,6 +2983,7 @@ impl Dx12State {
   }
 
   unsafe fn encode_frame(&mut self, list: &RenderList) -> Result<(GlyphAtlasUploadStats, std::time::Duration)> {
+    profile_if! { self.draw_calls = 0; }
     let target = self.current_render_target();
     self.transition_resource(
       &target,
@@ -3025,8 +3107,10 @@ impl Dx12State {
     })
   }
 
-  /// Wait for the capture copy's fence, map the readback buffer, and hand the
-  /// tight RGBA pixels to a worker thread for clipping and PNG encoding.
+  /// Hand the capture to a worker thread, which waits for the copy's fence,
+  /// maps the readback buffer and delivers the tight RGBA pixels: the frame
+  /// never waits for the GPU to finish the copy (a profiler recording reads
+  /// frames back several times a second).
   #[cfg(feature = "screenshot")]
   unsafe fn finish_frame_capture(
     &mut self,
@@ -3034,63 +3118,15 @@ impl Dx12State {
     readback: FrameCaptureReadback,
     fence_value: u64,
   ) {
-    if let Err(err) = self.wait_for_capture_fence(fence_value) {
-      capture.target.fail(format!("capture fence wait failed: {err:?}"));
+    if self.device_lost {
+      capture.target.fail("dx12 device lost before frame capture readback");
       // The GPU may still be writing the buffer; keep it alive until this
       // frame slot's fence is waited on again.
       self.retired_capture_readbacks[readback.frame_index].push(readback.resource);
       return;
     }
-
-    let buffer_size = readback.padded_bytes_per_row as usize * capture.height as usize;
-    let read_range = D3D12_RANGE {
-      Begin: 0,
-      End: buffer_size,
-    };
-    let mut mapped: *mut c_void = ptr::null_mut();
-    if let Err(error) = readback.resource.Map(0, Some(&read_range), Some(&mut mapped)) {
-      capture
-        .target
-        .fail(format!("failed to map DX12 frame capture readback buffer: {error:?}"));
-      return;
-    }
-    let data = std::slice::from_raw_parts(mapped.cast::<u8>(), buffer_size);
-    let pixels = capture_rows_to_rgba(
-      data,
-      readback.padded_bytes_per_row as usize,
-      capture.width,
-      capture.height,
-      false,
-    );
-    let written_range = D3D12_RANGE { Begin: 0, End: 0 };
-    readback.resource.Unmap(0, Some(&written_range));
-
-    std::thread::spawn(move || finish_capture(pixels, &capture));
-  }
-
-  #[cfg(feature = "screenshot")]
-  unsafe fn wait_for_capture_fence(&mut self, fence_value: u64) -> Result<()> {
-    if self.device_lost {
-      return Err(dx12_invalid_arg("dx12 device lost before frame capture readback"));
-    }
-    if self.fence.GetCompletedValue() >= fence_value {
-      return Ok(());
-    }
-    if let Err(err) = self.fence.SetEventOnCompletion(fence_value, self.fence_event) {
-      if is_dxgi_device_lost_code(err.code()) {
-        self.device_lost = true;
-      }
-      return Err(err);
-    }
-    let wait = WaitForSingleObject(self.fence_event, DX12_CAPTURE_WAIT_TIMEOUT_MS);
-    if wait == WAIT_TIMEOUT {
-      return Err(dx12_frame_not_ready_error(
-        "wait for dx12 frame capture readback",
-        format_args!("GPU work was still busy after {DX12_CAPTURE_WAIT_TIMEOUT_MS}ms; fence={fence_value}"),
-      ));
-    }
-    debug_assert_eq!(wait, WAIT_OBJECT_0);
-    Ok(())
+    let fence = self.fence.clone();
+    std::thread::spawn(move || unsafe { read_frame_capture(&fence, fence_value, capture, readback) });
   }
 
   unsafe fn upload_frame_bytes(&mut self, data: &[u8], alignment: usize) -> Result<UploadSlice> {
@@ -3350,6 +3386,7 @@ impl Dx12State {
     self
       .command_list
       .DrawIndexedInstanced(QuadVertex::INDICES.len() as u32, instances.len() as u32, 0, 0, 0);
+    profile_if! { self.draw_calls += 1; }
 
     Ok(())
   }
@@ -3420,6 +3457,7 @@ impl Dx12State {
     self
       .command_list
       .DrawIndexedInstanced(QuadVertex::INDICES.len() as u32, instances.len() as u32, 0, 0, 0);
+    profile_if! { self.draw_calls += 1; }
 
     Ok(())
   }
@@ -3746,6 +3784,7 @@ impl Dx12State {
     self
       .command_list
       .DrawIndexedInstanced(QuadVertex::INDICES.len() as u32, 1, 0, 0, 0);
+    profile_if! { self.draw_calls += 1; }
     if uv_keyed_mutex_acquired && let Some((_, Some(mutex))) = native_nv12_mutexes.as_ref() {
       let _ = mutex.ReleaseSync(0);
     }
@@ -3814,6 +3853,7 @@ impl Dx12State {
     self
       .command_list
       .DrawIndexedInstanced(svg.mesh.indices.len() as u32, 1, 0, 0, 0);
+    profile_if! { self.draw_calls += 1; }
     self.command_list.IASetIndexBuffer(Some(&self.quad_buffers.index_view));
 
     Ok(())

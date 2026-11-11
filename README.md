@@ -6,14 +6,14 @@
 
 ```toml
 [dependencies]
-lurq = "0.59.1"
+lurq = "0.60.0"
 ```
 
 There are no default features. Enable the window shell and renderer to run the example below:
 
 ```toml
 [dependencies]
-lurq = { version = "0.59.1", features = ["winit", "wgpu"] }
+lurq = { version = "0.60.0", features = ["winit", "wgpu"] }
 ```
 
 Useful optional features:
@@ -40,7 +40,7 @@ Useful optional features:
 | `devtools` | In-app DevTools window |
 | `mcp` | Embeddable MCP server for AI agents to drive and inspect a running app |
 | `screenshot` | Capture the next fully composed window frame to PNG; enabled automatically by `devtools` |
-| `perf_profile` | Frame timing and memory counters, including `Tree::last_profile` |
+| `perf_profile` | Frame timing and memory counters, including `Tree::last_profile`; enabled automatically by `devtools` |
 
 ## Example
 

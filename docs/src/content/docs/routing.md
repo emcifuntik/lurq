@@ -8,7 +8,7 @@ description: Declarative routes, nested layouts, links, params, guards, and navi
 Requires the `router` feature flag.
 
 ```toml
-lurq = { version = "0.59.1", features = ["router"] }
+lurq = { version = "0.60.0", features = ["router"] }
 ```
 
 The router is an in-process UI router. It does not depend on browser URLs; it owns a reactive path signal and renders the matching route tree inside your `Tree`.
@@ -93,7 +93,7 @@ Nested layouts work the same way: a child layout can render another `Outlet`.
 ## A Stack Of Screens
 
 `StackOutlet` goes where an `Outlet` would, and moves between screens as a phone's apps do. It is added after
-**lurq 0.59.1**. An `Outlet` shows the current route and drops the one before; a `StackOutlet` keeps every
+**lurq 0.60.0**. An `Outlet` shows the current route and drops the one before; a `StackOutlet` keeps every
 entry of the history, from the first to the current one, as a screen of its own:
 
 - a `push` brings the new screen in from the right, over the one before;

@@ -759,6 +759,10 @@ impl ManagedWindow {
         }
       }
       self.frames.settle();
+      #[cfg(feature = "perf_profile")]
+      self
+        .tree
+        .set_profiled_refresh_interval(self.frames.refresh_interval(Some(w), setup_started_at));
       let setup = setup_started_at.elapsed();
       let pass_started_at = Instant::now();
       let report = self.tree.pass(app, w);
@@ -945,6 +949,8 @@ impl ManagedWindow {
   }
 
   fn handle_event(&mut self, app: &mut App, event_loop: &ActiveEventLoop, event: WindowEvent) -> bool {
+    #[cfg(feature = "perf_profile")]
+    stamp_profiled_input(&mut self.tree, &event);
     self.tree.set_app_ref(app);
     self.frames.handle_event(&event);
     if self.file_drag.on_event(&event) {
@@ -1438,6 +1444,8 @@ impl ManagedSecondaryWindow {
       tree.resize(size.width, size.height);
       self.frames.settle();
       let started = Instant::now();
+      #[cfg(feature = "perf_profile")]
+      tree.set_profiled_refresh_interval(self.frames.refresh_interval(Some(w), started));
       let presented = tree.pass(app, w).rendered;
       // See the main window's `present_now`.
       set_window_cursor(w, &mut self.cursor, tree.cursor());
@@ -1478,6 +1486,8 @@ impl ManagedSecondaryWindow {
     event: WindowEvent,
     tree: &mut Tree,
   ) -> bool {
+    #[cfg(feature = "perf_profile")]
+    stamp_profiled_input(tree, &event);
     tree.set_app_ref(app);
     self.frames.handle_event(&event);
     if self.file_drag.on_event(&event) {
@@ -1893,6 +1903,22 @@ impl WinitHandler {
       _ => false,
     }
   }
+}
+
+/// Stamps an input event the tree's dispatch profiles as received now, so its
+/// sample has a queue delay; any other event clears the stamp. winit gives no
+/// OS timestamp, so this is when the shell's handler got the event.
+#[cfg(feature = "perf_profile")]
+fn stamp_profiled_input(tree: &mut Tree, event: &WindowEvent) {
+  let input = matches!(
+    event,
+    WindowEvent::CursorMoved { .. }
+      | WindowEvent::CursorLeft { .. }
+      | WindowEvent::MouseInput { .. }
+      | WindowEvent::KeyboardInput { .. }
+      | WindowEvent::MouseWheel { .. }
+  );
+  tree.stamp_profiled_input(input.then(Instant::now));
 }
 
 fn window_event_name(event: &WindowEvent) -> &'static str {

@@ -59,6 +59,9 @@ struct SignalInner<T: SignalValue> {
   watchers: ObserverList<SignalObserverKind, WatcherFn>,
   #[cfg(feature = "devtools")]
   devtools_subscriber_count: Arc<AtomicUsize>,
+  /// The output of a memo: a detailed recording names its notifications `memo`.
+  #[cfg(feature = "perf_profile")]
+  memo_output: bool,
 }
 
 /// A reactive value.
@@ -112,6 +115,16 @@ impl<T: SignalValue> Clone for Signal<T> {
 
 impl<T: SignalValue> Signal<T> {
   pub fn new(value: T) -> Self {
+    Self::with_role(value, false)
+  }
+
+  /// The output signal of a memo.
+  pub(crate) fn memo_output(value: T) -> Self {
+    Self::with_role(value, true)
+  }
+
+  #[cfg_attr(not(feature = "perf_profile"), allow(unused_variables))]
+  fn with_role(value: T, memo_output: bool) -> Self {
     Self {
       inner: Arc::new(SignalInner {
         id: NEXT_SIGNAL_ID.fetch_add(1, Ordering::Relaxed),
@@ -124,6 +137,8 @@ impl<T: SignalValue> Signal<T> {
         watchers: ObserverList::new(),
         #[cfg(feature = "devtools")]
         devtools_subscriber_count: Arc::new(AtomicUsize::new(0)),
+        #[cfg(feature = "perf_profile")]
+        memo_output,
       }),
     }
   }
@@ -259,9 +274,9 @@ impl<T: SignalValue> Signal<T> {
       let weak = Arc::downgrade(&self.inner);
       let signal_id = self.inner.id;
       let version_read = self.inner.version.load(Ordering::Acquire);
-      tracking::track(
+      tracking::track_entry(tracking::TrackingEntry {
         signal_id,
-        Box::new(move |watcher: Watcher| {
+        subscribe_fn: Box::new(move |watcher: Watcher| {
           if let Some(inner) = weak.upgrade() {
             let id = inner.next_subscriber_id.fetch_add(1, Ordering::Relaxed);
             inner
@@ -279,7 +294,13 @@ impl<T: SignalValue> Signal<T> {
             Box::new(())
           }
         }),
-      );
+        #[cfg(feature = "perf_profile")]
+        source: crate::app::profiler::detail::source_of::<T>(if self.inner.memo_output {
+          crate::app::profiler::RenderTrigger::Memo
+        } else {
+          crate::app::profiler::RenderTrigger::Signal
+        }),
+      });
     }
   }
 

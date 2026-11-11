@@ -5292,6 +5292,19 @@ impl Node {
     Box::new(self.clone_for_reuse())
   }
 
+  /// This node and all its descendants. Iterative, so a deep tree cannot
+  /// overflow the stack.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn subtree_len(&self) -> usize {
+    let mut count = 0;
+    let mut pending = vec![self];
+    while let Some(node) = pending.pop() {
+      count += 1;
+      pending.extend(node.children.iter());
+    }
+    count
+  }
+
   pub(crate) fn estimated_memory_bytes(&self) -> usize {
     std::mem::size_of::<Self>()
       + self.tag_name.len()

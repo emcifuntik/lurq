@@ -618,6 +618,14 @@ impl GlyphEngine {
       .clone()
   }
 
+  /// The shared Canvas text engine, if one was made, without making one.
+  #[cfg(all(feature = "canvas", feature = "perf_profile"))]
+  pub(crate) fn existing_canvas_text_engine(
+    &self,
+  ) -> Option<std::sync::Arc<parking_lot::Mutex<crate::canvas::CanvasTextEngine>>> {
+    self.canvas_text.clone()
+  }
+
   fn clear_text_caches(&mut self) {
     // The next layout binds a replacement to the same canvases. If a GPU
     // renderer ended frames of this engine, it ends the replacement's too.
@@ -1979,6 +1987,12 @@ impl GlyphEngine {
 
   pub(crate) fn atlas(&mut self) -> GlyphAtlas {
     self.atlas_packer.to_atlas()
+  }
+
+  /// RGBA bytes of the glyph atlas's pixels.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn atlas_bytes(&self) -> usize {
+    self.atlas_packer.data.len()
   }
 
   fn get_or_pack_glyph(&mut self, cache_key: GlyphCacheKey) -> Option<PackedGlyph> {

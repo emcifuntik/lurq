@@ -98,6 +98,14 @@ impl FrameSource {
     false
   }
 
+  /// The display's refresh interval, for the profiler; read from the window at most once a second.
+  #[cfg(feature = "perf_profile")]
+  pub(super) fn refresh_interval(&mut self, window: Option<&Window>, now: Instant) -> std::time::Duration {
+    self
+      .pacing
+      .refresh_interval(|| super::frame_pacing::refresh_interval(window), now)
+  }
+
   /// Whether a frame was asked for and has not started.
   pub(super) fn pending(&self) -> bool {
     self.pending

@@ -7,8 +7,8 @@ use super::{
   shared::{McpShared, McpToolOutput, McpToolResult},
 };
 use crate::app::profiler::{
-  BuildAvailability, MAX_ACTIVE_SESSIONS, MAX_ENDED_SESSION_IDS, MAX_SAMPLES_PER_SESSION, MAX_TRACKED_WINDOWS,
-  MAX_WINDOW_ID_BYTES, ProfileError, SessionId, SessionOptions,
+  MAX_ACTIVE_SESSIONS, MAX_ENDED_SESSION_IDS, MAX_SAMPLES_PER_SESSION, MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES,
+  ProfileError, SessionId, SessionOptions,
 };
 
 pub(crate) const TOOL_NAMES: [&str; 3] = ["lurq_profile_start", "lurq_profile_read", "lurq_profile_end"];
@@ -49,7 +49,7 @@ pub(crate) fn execute(shared: &McpShared, builtin: BuiltinTool, args: &Value) ->
   if builtin == BuiltinTool::ProfileRead && args.get("id").is_none() {
     return Ok(McpToolOutput::Json(json!({
       "schema_version":1, "status":if cfg!(feature="perf_profile") {"available"} else {"feature_disabled"},
-      "build":BuildAvailability::default().to_json(), "max_active_sessions":MAX_ACTIVE_SESSIONS,
+      "build":handle.availability().to_json(), "max_active_sessions":MAX_ACTIVE_SESSIONS,
       "max_samples_per_session":MAX_SAMPLES_PER_SESSION, "max_tracked_windows":MAX_TRACKED_WINDOWS,
       "max_window_id_bytes":MAX_WINDOW_ID_BYTES, "requests_redraw":false
     })));
