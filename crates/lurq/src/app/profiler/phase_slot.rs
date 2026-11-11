@@ -19,7 +19,7 @@ use std::{
 use super::model::{MAX_SPANS_PER_PASS, Phase, PhaseSpan};
 
 /// Every phase in declaration order: `PHASES[phase as usize] == phase`.
-const PHASES: [Phase; 24] = [
+pub(super) const PHASES: [Phase; 24] = [
   Phase::PassSetup,
   Phase::PassNotifications,
   Phase::LayoutUpdate,

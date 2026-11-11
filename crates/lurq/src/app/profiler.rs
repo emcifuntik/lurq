@@ -20,11 +20,19 @@ mod canvas_upload_tests;
 mod collector;
 #[cfg(any(feature = "serde", feature = "mcp"))]
 mod export;
+#[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
+mod firefox_export;
+#[cfg(all(test, any(feature = "serde", feature = "mcp", feature = "devtools")))]
+mod firefox_export_tests;
 mod model;
 mod phase_slot;
 #[cfg(all(test, feature = "perf_profile"))]
 mod phase_tests;
 pub(crate) mod producer;
+#[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
+mod recording_file;
+#[cfg(all(test, any(feature = "serde", feature = "mcp", feature = "devtools")))]
+mod recording_file_tests;
 #[cfg(test)]
 mod session_tests;
 
@@ -46,6 +54,11 @@ pub use model::{
   UiUpdateKind, UiUpdateSample, WindowStatus,
 };
 pub use producer::{PhaseGuard, ProfileContext};
+#[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
+pub use {
+  firefox_export::FIREFOX_PROCESSED_PROFILE_VERSION,
+  recording_file::{RECORDING_FILE_FORMAT, RECORDING_FILE_VERSION, RecordingFileError},
+};
 
 #[cfg(feature = "perf_profile")]
 mod observer {

@@ -169,6 +169,21 @@ No frame is forced to obtain a sample. This is an on-demand renderer: an idle in
 
 With the `serde` or `mcp` feature, `SessionStarted::to_json` and `ProfileReport::to_json` provide the same version-1 content-free export used by MCP. Finalized `sample_age_ms` is the age at end; a live read computes age at that read. Applications should retain the source SHA, binary/build command and fixture name beside exported reports.
 
+## Recording files
+
+With `serde`, `mcp` or `devtools`, a `ProfileReport` can also be written to two files. Both are plain functions returning a `String`, with no window or file dialog, so they work without DevTools and on iOS; the DevTools Profiler tab's **Save**, **Load** and **Export for Firefox Profiler** use them.
+
+```rust
+let report = profiling.end(id)?;
+let native = report.to_recording_file();           // lurq's own file, for Load
+let firefox = report.to_firefox_profile();         // for profiler.firefox.com
+let loaded = lurq::app::profiler::ProfileReport::from_recording_file(&native)?;
+```
+
+`to_recording_file` writes the whole report as JSON (`"format": "lurq-recording"`, `"format_version": 1`) and `from_recording_file` reads it back unchanged: every field is kept, durations as whole nanoseconds and times exactly, so a loaded recording shows the same timeline, flame chart and tables and saves to the same file. A file of another format or version, or a value that does not fit its field, is refused with a `RecordingFileError` that names the path to it. Scope labels and backend names in a file must be identifiers like the labels an application may pass (1–64 ASCII letters, digits or `_`); each distinct one is kept for the life of the process, at most 4096. It is not the MCP version-1 export, which does not change.
+
+`to_firefox_profile` writes a [Firefox Profiler](https://profiler.firefox.com) processed profile (`meta.preprocessedProfileVersion` 55, as the `fxprof-processed-profile` 0.8.1 crate writes it); open it there with **Load a profile from file**. It is a tracing profile: each sample marks where the innermost span changes and is weighted by the time to the next one (`weightType` `tracing-ms`), so the call tree, flame graph and stack chart show the spans' real durations, nested as in [the call tree](#call-tree-and-bottom-up). Threads: **UI** holds the passes' phase spans, a marker per pass (`Frame` when it presented, else `Pass`), input dispatch (`Input`) and UI update (`UI update`), and the memory counter (the runtime's cached estimate after each presented pass); **UI scopes** and **Worker** hold the application scopes of those lanes. Spans that overlap on one track, such as passes of two windows or scopes of two workers, go to a further thread of it (`UI 2`, `Worker 2`). Times count from the collector's epoch: the profile's start time is not a calendar time. The file holds only phase and scope names, window ids, times and counts, like the report.
+
 ## Layout trace
 
 To find what a layout pass lays out again, and why, set `LURQ_LAYOUT_TRACE` to a file path in a build with `perf_profile`. Each `LayoutEngine` compute (a pass; the overlay host's second compute in a frame is a pass of its own) appends one tab-separated line per node it lays out without its cache, then a summary line, and flushes, so a windowed build without a console works:

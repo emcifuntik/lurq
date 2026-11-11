@@ -168,6 +168,8 @@ The Profiler tab records on the inspected tree's [profiling session service](../
 
 DevTools' own window is not recorded. Turn on **Include DevTools** before Start to record it too. **Clear** forgets the recording, and ends one still running.
 
+With a recording shown, **Save** writes it to a lurq recording file and **Export for Firefox Profiler** to a profile that [profiler.firefox.com](https://profiler.firefox.com) opens with its call tree, flame graph and frame/input markers. **Load** opens a file Save wrote in place of the recording, with the same timeline, flame chart and tables; a file it cannot read leaves the recording shown and says why in the top bar. Each asks for its file in the system's file dialog; iOS has none, so there the tab has no file buttons and an app can call the [recording file functions](../profiling/#recording-files) itself.
+
 After Stop the tab shows:
 
 - **Recording**: the whole recording in equal slices, each drawn as its longest pass. Press and drag over it, or shift-click to extend from the last press, to select a time range; **Whole recording** selects all of it. A recording of more than 600 passes opens on its last 600.
