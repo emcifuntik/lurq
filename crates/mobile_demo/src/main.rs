@@ -23,9 +23,11 @@ use lurq::{
     ctx::Ctx,
     events::{HistoryDirection, HistorySwipeEvent},
     wgpu_render::WgpuRenderEngine,
+    window::Orientation,
     winit_shell::WinitWindow,
   },
   components::{Column, NavigationBar, NavigationItem, Router, StackOutlet, StackOutletProps},
+  core::Signal,
   node::{Element, color::Color},
   router::{RouterHandle, Routes},
 };
@@ -40,6 +42,13 @@ impl Component for MobileDemo {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
+    let said = app_events();
+    ctx.window().on_app_event(move |event| {
+      said.update(|said| {
+        said.insert(0, format!("{event:?}"));
+        said.truncate(6);
+      });
+    });
     let router = ctx.router(routes());
     // The first entry of the history: the screen at the bottom of the stack, which the others go back to.
     router.replace("/");
@@ -49,6 +58,12 @@ impl Component for MobileDemo {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     Router::mount(ctx, self.router.clone())
   }
+}
+
+/// What the system said of the app, the latest first; the home screen shows it.
+pub(crate) fn app_events() -> Signal<Vec<String>> {
+  static SAID: std::sync::OnceLock<Signal<Vec<String>>> = std::sync::OnceLock::new();
+  SAID.get_or_init(|| Signal::new(Vec::new())).clone()
 }
 
 fn routes() -> Routes {
@@ -139,7 +154,10 @@ fn main() {
     );
   }
   tree.mount_root::<MobileDemo>(&mut app, ());
-  let window = WinitWindow::new(app, tree).with_title("lurq mobile demo");
+  let window = WinitWindow::new(app, tree)
+    .with_title("lurq mobile demo")
+    // Upright or on either side; the home screen shows the way the device is turned.
+    .with_orientations(Orientation::Portrait | Orientation::LandscapeLeft | Orientation::LandscapeRight);
   // A phone's screen on the desktop. On iOS a window with a size is that size, in the corner of the screen;
   // without one it covers the screen.
   #[cfg(not(target_os = "ios"))]

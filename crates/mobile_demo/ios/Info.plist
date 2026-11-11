@@ -24,5 +24,15 @@
 			</array>
 		</dict>
 	</dict>
+	<!-- A link of the app's own, `lurqdemo://anything`, to see that the app hears what it is opened with. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>lurqdemo</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -57,6 +57,13 @@ pub(crate) fn home(ctx: &mut Ctx) -> Element {
   for screen in SCREENS {
     list = list.child(screen_row(ctx, screen));
   }
+  // What the system said of the app: leave it and come back, or open `lurqdemo://anything` in a browser.
+  let said = crate::app_events().get();
+  list = list.child(caption(&if said.is_empty() {
+    "App events: none yet".to_owned()
+  } else {
+    format!("App events, the latest first: {}", said.join(", "))
+  }));
   ScrollVertical::new(list).flex(1.0).background(BG).into()
 }
 
