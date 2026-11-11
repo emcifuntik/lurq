@@ -72,6 +72,9 @@ const BAR_HEIGHT: f32 = 44.0;
 const LARGE_TITLE_SIZE: f32 = 34.0;
 const LARGE_TITLE_HEIGHT: f32 = 52.0;
 const LARGE_TITLE_INSET: f32 = 16.0;
+/// How much larger the large title gets as the content is pulled down, and the pull that takes it there.
+const LARGE_TITLE_GROWTH: f32 = 1.1;
+const LARGE_TITLE_PULL: f32 = 150.0;
 const TITLE_FADE: Duration = Duration::from_millis(200);
 const LOW_BAR_HEIGHT: f32 = 32.0;
 const LOW_WINDOW: f32 = 480.0;
@@ -247,8 +250,10 @@ pub(crate) struct NavigationSlot {
   item: Arc<Mutex<NavigationItem>>,
   /// The outlet reads this in its render, to be rendered again when an item changes.
   changed: Signal<u64>,
-  /// What scrolls the screen's content under a large title.
+  /// What scrolls the screen's content under a large title, and how far a finger has pulled that content
+  /// down past its top, which the large title grows with.
   scroll: ScrollState,
+  pull: Signal<f32>,
   /// The color the bar gives a title.
   title_color: Option<Color>,
 }
@@ -385,6 +390,7 @@ struct LayerBar {
   /// (`after_layout`).
   scroll: ScrollState,
   title_gone: Arc<AtomicBool>,
+  pull: Signal<f32>,
 }
 
 impl Default for LayerBar {
@@ -396,6 +402,7 @@ impl Default for LayerBar {
       short_back: false,
       scroll: ScrollState::new(),
       title_gone: Arc::default(),
+      pull: Signal::new(0.0),
     }
   }
 }
@@ -609,6 +616,7 @@ impl Component for StackOutlet {
             item: layer.bar.item.clone(),
             changed: self.changed.clone(),
             scroll: layer.bar.scroll.clone(),
+            pull: layer.bar.pull.clone(),
             title_color: match &props.bar {
               Some(Bar::Standard(bar)) => Some(bar.title),
               _ => None,
@@ -855,6 +863,11 @@ impl Component for StackOutlet {
     for layer in shown.layers.iter().chain(shown.leaving.iter()) {
       let gone = layer.bar.scroll.scroll_y() > LARGE_TITLE_HEIGHT - 8.0;
       changed |= layer.bar.title_gone.swap(gone, Ordering::AcqRel) != gone;
+      // And how far the content is pulled down past its top: the large title is drawn anew for it.
+      let pull = (-layer.bar.scroll.overscroll().1).max(0.0);
+      if (layer.bar.pull.get_untracked() - pull).abs() > 0.25 {
+        layer.bar.pull.set(pull);
+      }
     }
     if changed {
       self.changed.update(|version| *version += 1);
@@ -1035,23 +1048,11 @@ impl StackOutlet {
     if !item.large_title {
       return ScrollVertical::new(content.into()).with_scroll_state(slot.scroll.clone());
     }
-    let title = Row::new()
-      .width(FILL)
-      .height(LARGE_TITLE_HEIGHT)
-      .align_items(Alignment::Center)
-      .padding_horizontal(LARGE_TITLE_INSET)
-      .child(
-        Text::styled(
-          &item.title,
-          TextStyle {
-            font_size: LARGE_TITLE_SIZE,
-            weight: FontWeight::Bold,
-            color: slot.title_color.unwrap_or(Color::from_hex("#000000")),
-            ..TextStyle::default()
-          },
-        )
-        .nowrap(),
-      );
+    let title = ctx.mount::<LargeTitle>(LargeTitleProps {
+      title: item.title.clone(),
+      color: slot.title_color.unwrap_or(Color::from_hex("#000000")),
+      pull: slot.pull.clone(),
+    });
     ScrollVertical::new(Column::new().width(FILL).child(title).child(content.into()))
       .with_scroll_state(slot.scroll.clone())
   }
@@ -1069,6 +1070,59 @@ impl StackOutlet {
 
   pub fn mount_with(ctx: &mut Ctx, props: StackOutletProps) -> Element {
     ctx.mount::<Self>(props)
+  }
+}
+
+#[derive(Clone)]
+struct LargeTitleProps {
+  title: String,
+  color: Color,
+  pull: Signal<f32>,
+}
+
+impl PartialEq for LargeTitleProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.title == other.title && self.color == other.color && self.pull.id() == other.pull.id()
+  }
+}
+
+#[cfg(feature = "devtools")]
+impl crate::app::component::DevtoolsInspectable for LargeTitleProps {
+  fn write_info(&self, _buffer: &mut Vec<crate::app::component::ComponentInfo>) {}
+}
+
+/// A screen's large title. It grows a little as the content is pulled down past its top, from its leading
+/// edge, as the platform's does: a component of its own, so that only it is rendered for each point pulled.
+struct LargeTitle;
+
+impl Component for LargeTitle {
+  type Props = LargeTitleProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<LargeTitleProps>().clone();
+    let grown = 1.0 + props.pull.get().min(LARGE_TITLE_PULL) / LARGE_TITLE_PULL * (LARGE_TITLE_GROWTH - 1.0);
+    Row::new()
+      .width(FILL)
+      .height(LARGE_TITLE_HEIGHT)
+      .align_items(Alignment::Center)
+      .padding_horizontal(LARGE_TITLE_INSET)
+      .child(
+        Text::styled(
+          &props.title,
+          TextStyle {
+            font_size: LARGE_TITLE_SIZE * grown,
+            weight: FontWeight::Bold,
+            color: props.color,
+            ..TextStyle::default()
+          },
+        )
+        .nowrap()
+        .id("navigation-large-title"),
+      )
   }
 }
 

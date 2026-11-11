@@ -52,8 +52,9 @@ inside its input.
   measured against it.
 - **The bar** is opaque when it has a color: content does not show through it, since the renderer has no
   blur to make the platform's material with. There is no search field in it.
-- **A large title** scrolls away with the content and the bar's title comes in after it; the platform also
-  shrinks the large title into the small one, and stretches it when the content is pulled down.
+- **A large title** scrolls away with the content, the bar's title coming in after it, and grows as the
+  content is pulled down. When a screen is pushed over one with a large title, the platform carries that
+  title into the way back's label; here the two cross-fade.
 - **A way back with no room even for `Back`** keeps the word; the platform leaves the arrow alone.
 - **Sheets:** a screen that comes up from the bottom over the stack, with its detents and the drag that
   puts it away. Not there.

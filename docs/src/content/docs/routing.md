@@ -158,7 +158,8 @@ The way back says the title of the screen under while there is room for it besid
 
 A screen with a large title puts its content in `StackOutlet::large_title_scroll(ctx, content)`, which draws
 the title over the content and scrolls the two as one. While the large title is in view the bar shows no title
-and no color of its own; when the title has scrolled away the bar's title and color come in.
+and no color of its own; when the title has scrolled away the bar's title and color come in. Pulled down
+past its top, the content takes the title with it, and the title grows a little.
 `StackOutlet::screen_scroll(ctx)` gives that list's `ScrollState`.
 
 ```rust

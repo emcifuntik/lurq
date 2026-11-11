@@ -91,6 +91,10 @@ impl Component for Root {
             ctx.navigation_item(NavigationItem::new("Led").leading(Text::new("a control of its own")));
             Text::new("led screen").into()
           })
+          .route("/big", |ctx| {
+            ctx.navigation_item(NavigationItem::new("Gamma").large_title(true));
+            StackOutlet::large_title_scroll(ctx, lurq::components::Spacer::new().width(300.0).height(2000.0)).into()
+          })
           .route("/user/:id", |ctx| {
             let id = ctx.route_params().get("id").unwrap_or("none").to_owned();
             Text::new(&format!("user {id}")).into()
@@ -323,5 +327,34 @@ fn a_spring_goes_from_rest_to_its_end_without_passing_it() {
   assert!(
     moving.evaluate(0.1) > rest.evaluate(0.1),
     "a spring let go at speed is further on"
+  );
+}
+
+/// How wide the large title is drawn.
+fn large_title_width(tree: &mut Tree) -> f32 {
+  tree
+    .find_element(|element| element.id() == Some("navigation-large-title"))
+    .map_or(0.0, |title| title.rect().2)
+}
+
+#[test]
+fn a_large_title_grows_as_the_content_is_pulled_down_and_goes_back() {
+  let (mut tree, router) = setup();
+  router.push("/big");
+  settle(&mut tree);
+  let at_rest = large_title_width(&mut tree);
+  assert!(at_rest > 0.0);
+
+  // A finger on the content pulls it down past its top.
+  tree.touch_scroll_begin(200.0, 400.0, 0.0, 10.0);
+  for _ in 0..12 {
+    tree.touch_scroll(200.0, 400.0, 0.0, 20.0, lurq::app::events::ScrollPhase::Scroll, false);
+  }
+  run_pass(&mut tree);
+  run_pass(&mut tree);
+  let pulled = large_title_width(&mut tree);
+  assert!(
+    pulled > at_rest * 1.02,
+    "the title is larger while pulled: {at_rest} then {pulled}"
   );
 }
