@@ -189,83 +189,8 @@ impl Geometry {
 static MIRROR: Mutex<Option<Mirror>> = Mutex::new(None);
 /// The window's view, which the text input's view is in and outlives it. Asking it to draw wakes the shell.
 static WINDOW_VIEW: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
-/// What UIKit last asked to be shown as selected: its rectangles in the window, the array it gave them in, kept
-/// for it to read back, and whether the tree has yet to hear of them.
-static HIGHLIGHT: Mutex<Highlight> = Mutex::new(Highlight {
-  rects: Vec::new(),
-  array: 0,
-  changed: false,
-});
-
-struct Highlight {
-  rects: Vec<(f64, f64, f64, f64)>,
-  /// A retained `NSArray`, or nothing.
-  array: usize,
-  changed: bool,
-}
-
-/// The view UIKit gives the selection's rectangles to, to be drawn. It draws nothing: the tree paints the
-/// highlight there, under the text, which a view over the window could not. UIKit gives them as a handle is
-/// dragged too, when the selection itself is not yet set.
-fn highlight_class() -> &'static AnyClass {
-  if let Some(class) = AnyClass::get(c"LurqTextSelectionHighlightView") {
-    return class;
-  }
-  extern "C-unwind" fn selection_rects(_this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
-    let array = HIGHLIGHT.lock().unwrap().array as *mut AnyObject;
-    if array.is_null() {
-      let empty: Retained<AnyObject> = unsafe { msg_send![class!(NSArray), array] };
-      return Retained::autorelease_ptr(empty);
-    }
-    array
-  }
-  extern "C-unwind" fn set_selection_rects(this: &AnyObject, _cmd: Sel, array: *mut AnyObject) {
-    let mut rects = Vec::new();
-    let kept = unsafe { Retained::retain(array) };
-    if let Some(array) = &kept {
-      let count: usize = unsafe { msg_send![&**array, count] };
-      for index in 0..count {
-        let rect: Retained<AnyObject> = unsafe { msg_send![&**array, objectAtIndex: index] };
-        let rect: CGRect = unsafe { msg_send![&*rect, rect] };
-        // In the window, wherever UIKit has put this view.
-        let rect: CGRect = unsafe { msg_send![this, convertRect: rect, toView: std::ptr::null::<AnyObject>()] };
-        rects.push((rect.origin.x, rect.origin.y, rect.size.width, rect.size.height));
-      }
-    }
-    let (previous, moved) = {
-      let mut highlight = HIGHLIGHT.lock().unwrap();
-      let moved = highlight.rects != rects;
-      highlight.changed |= moved;
-      highlight.rects = rects;
-      let previous = std::mem::replace(
-        &mut highlight.array,
-        kept.map_or(0, |array| Retained::into_raw(array) as usize),
-      );
-      (previous, moved)
-    };
-    if previous != 0 {
-      drop(unsafe { Retained::from_raw(previous as *mut AnyObject) });
-    }
-    // The shell reads them on its next turn, which nothing else may bring: a handle's touches are UIKit's.
-    let window_view = WINDOW_VIEW.load(Ordering::Acquire);
-    if moved && let Some(window_view) = unsafe { window_view.as_ref() } {
-      let _: () = unsafe { msg_send![window_view, setNeedsDisplay] };
-    }
-  }
-  let mut builder =
-    ClassBuilder::new(c"LurqTextSelectionHighlightView", class!(UIView)).expect("a class name of its own");
-  if let Some(protocol) = objc2::runtime::AnyProtocol::get(c"UITextSelectionHighlightView") {
-    builder.add_protocol(protocol);
-  }
-  unsafe {
-    builder.add_method(sel!(selectionRects), selection_rects as extern "C-unwind" fn(_, _) -> _);
-    builder.add_method(
-      sel!(setSelectionRects:),
-      set_selection_rects as extern "C-unwind" fn(_, _, _),
-    );
-  }
-  builder.register()
-}
+/// The rectangles UIKit last showed the selection as, in the window, as the tree was told them.
+static HIGHLIGHT: Mutex<Vec<(f64, f64, f64, f64)>> = Mutex::new(Vec::new());
 
 /// UIKit's delegate, which is told of changes it did not make. UIKit owns it and clears it.
 static INPUT_DELEGATE: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
@@ -825,6 +750,12 @@ fn selection_rect_class() -> &'static AnyClass {
 }
 
 extern "C-unwind" fn selection_rects_for_range(_this: &AnyObject, _cmd: Sel, range: *mut AnyObject) -> *mut AnyObject {
+  // UIKit is about to show a selection, a handle's as it is dragged too: the shell reads where on its next
+  // turn, which nothing else may bring, a handle's touches being UIKit's.
+  let window_view = WINDOW_VIEW.load(Ordering::Acquire);
+  if let Some(window_view) = unsafe { window_view.as_ref() } {
+    let _: () = unsafe { msg_send![window_view, setNeedsDisplay] };
+  }
   let rects: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
   let rows = ends_of(range).and_then(|(start, end)| {
     with_mirror(None, |mirror| {
@@ -1173,11 +1104,16 @@ impl TextInput {
         Edit::Unmark(text) => tree.ime(ImeEvent::Commit(text)),
       }
     }
-    let shown = {
+    let shown = self.shown_selection();
+    let changed = {
       let mut highlight = HIGHLIGHT.lock().unwrap();
-      std::mem::take(&mut highlight.changed).then(|| highlight.rects.clone())
+      let changed = *highlight != shown;
+      if changed {
+        highlight.clone_from(&shown);
+      }
+      changed
     };
-    if let Some(shown) = shown {
+    if changed {
       tree.set_native_selection_rects(
         shown
           .into_iter()
@@ -1247,6 +1183,7 @@ impl TextInput {
     unsafe {
       match previous {
         None => {
+          let _: () = msg_send![&*self.view, setHidden: false];
           let _: bool = msg_send![&*self.view, becomeFirstResponder];
           self.show_selection(true);
         }
@@ -1268,19 +1205,42 @@ impl TextInput {
     if let Some(display) = self.selection_display() {
       unsafe {
         let _: () = msg_send![&*display, setActivated: shown];
-        // The input paints the selection's highlight itself, under its text; the platform's would lie over it.
+        // The input paints the selection's highlight itself, under its text, where the platform's view says
+        // it is (`shown_selection`); that view would lie over the text, and is not seen. It stays UIKit's
+        // own: with a view of the shell's in its place UIKit showed no menu.
         let highlight: Option<Retained<AnyObject>> = msg_send![&*display, highlightView];
-        let ours = match &highlight {
-          Some(highlight) => msg_send![&**highlight, isKindOfClass: highlight_class()],
-          None => false,
-        };
-        if !ours {
-          let highlight: Retained<AnyObject> = msg_send![highlight_class(), new];
-          let _: () = msg_send![&*highlight, setUserInteractionEnabled: false];
-          let _: () = msg_send![&*display, setHighlightView: &*highlight];
+        if let Some(highlight) = highlight {
+          let _: () = msg_send![&*highlight, setAlpha: 0.0f64];
         }
         let _: () = msg_send![&*display, setNeedsSelectionUpdate];
       }
+    }
+  }
+
+  /// The rectangles UIKit shows the selection as, in the window: the selection's, and a handle's as it is
+  /// dragged, when the selection itself is not yet set.
+  fn shown_selection(&self) -> Vec<(f64, f64, f64, f64)> {
+    let Some(display) = self.selection_display() else {
+      return Vec::new();
+    };
+    unsafe {
+      let highlight: Option<Retained<AnyObject>> = msg_send![&*display, highlightView];
+      let Some(highlight) = highlight else {
+        return Vec::new();
+      };
+      let rects: Option<Retained<AnyObject>> = msg_send![&*highlight, selectionRects];
+      let Some(rects) = rects else {
+        return Vec::new();
+      };
+      let count: usize = msg_send![&*rects, count];
+      (0..count)
+        .map(|index| {
+          let rect: Retained<AnyObject> = msg_send![&*rects, objectAtIndex: index];
+          let rect: CGRect = msg_send![&*rect, rect];
+          let rect: CGRect = msg_send![&*highlight, convertRect: rect, toView: std::ptr::null::<AnyObject>()];
+          (rect.origin.x, rect.origin.y, rect.size.width, rect.size.height)
+        })
+        .collect()
     }
   }
 
@@ -1371,7 +1331,8 @@ impl TextInput {
     unsafe {
       self.show_selection(false);
       let _: () = msg_send![&*self.view, setUserInteractionEnabled: false];
-      let _: () = msg_send![&*self.view, setFrame: no_rect()];
+      // Hidden where it is: moved away, its caret was at times seen on its way out, at the window's corner.
+      let _: () = msg_send![&*self.view, setHidden: true];
       let _: bool = msg_send![&*self.view, resignFirstResponder];
       // When this view gives the keyboard up UIKit hands it to the next view that takes keys, which is
       // winit's, and the keyboard stays. Whoever holds it now lets it go.
