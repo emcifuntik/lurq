@@ -33,11 +33,9 @@ const IDLE_REFRESHES: std::time::Duration = std::time::Duration::from_millis(500
 
 impl FrameSource {
   /// The window was made: what paces its frames starts.
+  #[cfg(target_os = "ios")]
   pub(super) fn attach(&mut self) {
-    #[cfg(target_os = "ios")]
-    {
-      self.link = Some(super::ios::FrameLink::new());
-    }
+    self.link = Some(super::ios::FrameLink::new());
   }
 
   /// Takes what the window's events say about its frames: whether it can be seen, and whether it may now be on

@@ -399,6 +399,8 @@ pub(super) fn play_haptic(haptic: crate::app::window::Haptic) {
 
 /// The scene UIKit connected, retained; null before it does and in an app that has no scenes.
 static SCENE: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
+/// A window of the scene that shows nothing and is asked for the safe area; null until a scene is connected.
+static SAFE_AREA_PROBE: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
 /// winit's window, which lives as long as the app does; null until the shell has made it.
 static SCENE_WINDOW: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -494,6 +496,19 @@ fn show_window_in_scene() {
   let (Some(scene), Some(window)) = (unsafe { scene.as_ref() }, unsafe { window.as_ref() }) else {
     return;
   };
+  if SAFE_AREA_PROBE.load(Ordering::Acquire).is_null() {
+    unsafe {
+      let probe: objc2::rc::Allocated<AnyObject> = msg_send![class!(UIWindow), alloc];
+      let probe: Retained<AnyObject> = msg_send![probe, initWithWindowScene: scene];
+      let controller: Retained<AnyObject> = msg_send![class!(UIViewController), new];
+      let _: () = msg_send![&*probe, setRootViewController: &*controller];
+      let _: () = msg_send![&*probe, setUserInteractionEnabled: false];
+      let _: () = msg_send![&*probe, setAlpha: 0.0f64];
+      let _: () = msg_send![&*probe, setWindowLevel: -1.0f64];
+      let _: () = msg_send![&*probe, setHidden: false];
+      SAFE_AREA_PROBE.store(Retained::into_raw(probe), Ordering::Release);
+    }
+  }
   unsafe {
     let current: Option<Retained<AnyObject>> = msg_send![window, windowScene];
     if current.is_some() {
@@ -502,4 +517,41 @@ fn show_window_in_scene() {
     let _: () = msg_send![window, setWindowScene: scene];
     let _: () = msg_send![window, makeKeyAndVisible];
   }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UIEdgeInsets {
+  top: f64,
+  left: f64,
+  bottom: f64,
+  right: f64,
+}
+
+unsafe impl Encode for UIEdgeInsets {
+  const ENCODING: Encoding = Encoding::Struct(
+    "UIEdgeInsets",
+    &[f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING],
+  );
+}
+
+/// The safe area of the window a view of winit's is in, for the way the device is now held: top, right, bottom
+/// and left, in logical pixels. Measured on an iPhone 17 held on its side, winit's window and its view both
+/// still said 62 at the top and nothing at the sides; a window made in the scene said 0, and 62 at each side.
+pub(super) fn safe_area(view: NonNull<c_void>) -> (f32, f32, f32, f32) {
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  let insets: UIEdgeInsets = unsafe { msg_send![view, safeAreaInsets] };
+  // winit's window was made outside the scene and put into it after, and UIKit does not turn its safe area
+  // with the device. A window made in the scene, unseen, says what it is.
+  let probe = SAFE_AREA_PROBE.load(Ordering::Acquire);
+  let insets = match unsafe { probe.as_ref() } {
+    Some(probe) => unsafe { msg_send![probe, safeAreaInsets] },
+    None => insets,
+  };
+  (
+    insets.top as f32,
+    insets.right as f32,
+    insets.bottom as f32,
+    insets.left as f32,
+  )
 }

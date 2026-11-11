@@ -314,6 +314,12 @@ struct ManagedWindow {
   file_drag: FileDragShell,
   #[cfg(target_os = "ios")]
   touch: touch::TouchPointer,
+  /// The status bar was last asked to be hidden.
+  #[cfg(target_os = "ios")]
+  status_bar_hidden: bool,
+  /// The size the window had at the last frame.
+  #[cfg(target_os = "ios")]
+  presented_size: Option<winit::dpi::PhysicalSize<u32>>,
   #[cfg(target_os = "ios")]
   status_bar_tap: Option<ios::StatusBarTap>,
   /// How much of the window the keyboard covered at the last frame, in logical pixels.
@@ -365,6 +371,10 @@ impl ManagedWindow {
       file_drag: FileDragShell::default(),
       #[cfg(target_os = "ios")]
       touch: touch::TouchPointer::default(),
+      #[cfg(target_os = "ios")]
+      status_bar_hidden: false,
+      #[cfg(target_os = "ios")]
+      presented_size: None,
       #[cfg(target_os = "ios")]
       #[cfg(target_os = "ios")]
       status_bar_tap: None,
@@ -701,6 +711,17 @@ impl ManagedWindow {
       self.tree.resize(size.width, size.height);
       #[cfg(target_os = "ios")]
       {
+        self.presented_size = Some(size);
+        // A phone held on its side shows no status bar, as the platform's apps do not; winit's view controller
+        // would keep it.
+        {
+          use winit::platform::ios::WindowExtIOS;
+          let on_its_side = size.width > size.height;
+          if self.status_bar_hidden != on_its_side {
+            self.status_bar_hidden = on_its_side;
+            w.set_prefers_status_bar_hidden(on_its_side);
+          }
+        }
         let mut safe_area = safe_area_insets(w);
         // What the keyboard covers is not safe either; content padded by the safe area rises above it.
         let logical_height = f64::from(size.height) / w.scale_factor();
@@ -831,6 +852,15 @@ impl ManagedWindow {
       if ios::keyboard_moving() {
         self.tree.request_redraw();
       }
+      // The device was turned: the window takes its new size during the turn, with no event when it has it.
+      // A frame drawn at a size the window had on the way would stay, half of the screen, until something
+      // else asked for one.
+      if let Some(window) = &self.window {
+        let size = surface_size(window);
+        if self.presented_size != Some(size) {
+          self.tree.request_redraw();
+        }
+      }
       if self.status_bar_tap.as_mut().is_some_and(ios::StatusBarTap::take_tapped) {
         self.tree.touch_scroll_to_top(now);
       }
@@ -903,6 +933,9 @@ impl ManagedWindow {
         }
       }
       WindowEvent::Resized(size) => {
+        // On iOS the event's size is the safe area's, and the tree is as large as the screen.
+        #[cfg(target_os = "ios")]
+        let size = self.window.as_ref().map_or(size, surface_size);
         self.tree.resize(size.width, size.height);
         self.sync_window_state();
         // Paint the new size from inside the event: during a live edge drag Windows runs a modal sizing
@@ -2126,23 +2159,18 @@ fn surface_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
   window.inner_size()
 }
 
-/// The safe area's insets in logical pixels, from where winit says the safe area is inside the window.
+/// The safe area's insets in logical pixels, as UIKit has them for the window's view.
 #[cfg(target_os = "ios")]
 fn safe_area_insets(window: &Window) -> crate::app::window::SafeAreaInsets {
-  let (Ok(outer_position), Ok(inner_position)) = (window.outer_position(), window.inner_position()) else {
+  let Ok(RawWindowHandle::UiKit(handle)) = window.window_handle().map(|handle| handle.as_raw()) else {
     return Default::default();
   };
-  let (outer, inner) = (window.outer_size(), window.inner_size());
-  let scale = window.scale_factor() as f32;
-  let left = (inner_position.x - outer_position.x).max(0) as f32;
-  let top = (inner_position.y - outer_position.y).max(0) as f32;
-  let right = (outer.width as f32 - inner.width as f32 - left).max(0.0);
-  let bottom = (outer.height as f32 - inner.height as f32 - top).max(0.0);
+  let (top, right, bottom, left) = ios::safe_area(handle.ui_view);
   crate::app::window::SafeAreaInsets {
-    top: top / scale,
-    right: right / scale,
-    bottom: bottom / scale,
-    left: left / scale,
+    top,
+    right,
+    bottom,
+    left,
   }
 }
 
