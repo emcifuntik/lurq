@@ -851,7 +851,18 @@ impl Component for StackOutlet {
     let front_shows = shows(&front_part).unwrap_or(1.0);
     // The line under the bar comes with the bar's title: over a large title still in view the bar is one
     // with the content.
-    let lined = front_part.as_ref().is_none_or(|part| part.title_shown);
+    let lines = |part: &Option<BarPart>| part.as_ref().map(|part| if part.title_shown { 1.0 } else { 0.0 });
+    let front_lined = lines(&front_part).unwrap_or(1.0);
+    // Between two screens it is between theirs, as far as the front one is out: the bar's color comes and
+    // goes with the screens, and with a finger, and not after them.
+    let lined = front_lined * (1.0 - out) + lines(&back_part).unwrap_or(front_lined) * out;
+    let (line_pace, line_curve) = if moving {
+      (pace, curve)
+    } else if back.is_some() {
+      (Duration::ZERO, curve)
+    } else {
+      (TITLE_FADE, Easing::EASE)
+    };
     let shown_share = front_shows * (1.0 - out) + shows(&back_part).unwrap_or(front_shows) * out;
     let mut items = Stack::new().width(FILL).height(bar_height);
     if let Some(part) = back_part {
@@ -896,12 +907,13 @@ impl Component for StackOutlet {
               .padding_right(safe_area.right)
               // Over a large title still in view the bar has no color of its own: it is one with what is
               // behind the screens.
-              .background(if lined {
-                bar.background
-              } else {
-                Color::new(bar.background.r(), bar.background.g(), bar.background.b(), 0)
-              })
-              .transition(Transition::background_color().duration(TITLE_FADE))
+              .background(Color::new(
+                bar.background.r(),
+                bar.background.g(),
+                bar.background.b(),
+                (f32::from(bar.background.a()) * lined).round() as u8,
+              ))
+              .transition(Transition::background_color().duration(line_pace).easing(line_curve))
               .child(items),
           ),
       )
@@ -910,8 +922,8 @@ impl Component for StackOutlet {
           .width(FILL)
           .height(0.5 * shown_share)
           .background(bar.border)
-          .opacity(if lined { 1.0 } else { 0.0 })
-          .transition(Transition::opacity().duration(TITLE_FADE)),
+          .opacity(lined)
+          .transition(Transition::opacity().duration(line_pace).easing(line_curve)),
       )
       .child(Column::new().width(FILL).flex(1.0).child(screens));
     Stack::new()
