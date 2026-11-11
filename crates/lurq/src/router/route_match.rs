@@ -104,6 +104,11 @@ impl RouteMatch {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct OutletDepth(pub usize);
 
+/// The state of the history entry a screen of a stack is for: `Ctx::route_state` reads it there, and not the
+/// current entry's.
+#[derive(Clone)]
+pub(crate) struct StackState(pub Option<Arc<dyn std::any::Any + Send + Sync>>);
+
 #[derive(Clone)]
 pub(crate) struct RouterMatches(pub Arc<Vec<RouteMatch>>);
 

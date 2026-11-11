@@ -23,16 +23,14 @@ use lurq::{
     ctx::Ctx,
     events::{HistoryDirection, HistorySwipeEvent},
     wgpu_render::WgpuRenderEngine,
-    window::SafeAreaInsets,
     winit_shell::WinitWindow,
   },
-  components::{Column, Outlet, Router, Row, Spacer},
-  layout::{Alignment, layout_kind::Justify, text_style::FontWeight},
+  components::{Column, NavigationBar, NavigationItem, Router, StackOutlet, StackOutletProps},
   node::{Element, color::Color},
   router::{RouterHandle, Routes},
 };
 
-use crate::ui::{BG, BORDER, FILL, HEADER_HEIGHT, PRIMARY, SURFACE, TAP_TARGET, TEXT, text};
+use crate::ui::{BG, BORDER, FILL, PRIMARY, SURFACE, TEXT};
 
 struct MobileDemo {
   router: RouterHandle,
@@ -42,9 +40,10 @@ impl Component for MobileDemo {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
-    Self {
-      router: ctx.router(routes()),
-    }
+    let router = ctx.router(routes());
+    // The first entry of the history: the screen at the bottom of the stack, which the others go back to.
+    router.replace("/");
+    Self { router }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
@@ -55,25 +54,38 @@ impl Component for MobileDemo {
 fn routes() -> Routes {
   Routes::new().layout("/", shell, |routes| {
     routes
-      .route("/", home::home)
-      .route("/touch", |ctx| ctx.mount::<touch::TouchScreen>(()))
-      .route("/gestures", |ctx| ctx.mount::<gestures::GesturesScreen>(()))
-      .route("/inputs", |ctx| ctx.mount::<inputs::InputsScreen>(()))
-      .route("/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
-      .route("/virtual-list", |ctx| ctx.mount::<virtual_list::VirtualListScreen>(()))
-      .fallback(home::home)
+      .route("/", |ctx| screen(ctx, "/", home::home))
+      .route("/touch", |ctx| {
+        screen(ctx, "/touch", |ctx| ctx.mount::<touch::TouchScreen>(()))
+      })
+      .route("/gestures", |ctx| {
+        screen(ctx, "/gestures", |ctx| ctx.mount::<gestures::GesturesScreen>(()))
+      })
+      .route("/inputs", |ctx| {
+        screen(ctx, "/inputs", |ctx| ctx.mount::<inputs::InputsScreen>(()))
+      })
+      .route("/scroll", |ctx| {
+        screen(ctx, "/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
+      })
+      .route("/virtual-list", |ctx| {
+        screen(ctx, "/virtual-list", |ctx| {
+          ctx.mount::<virtual_list::VirtualListScreen>(())
+        })
+      })
+      .fallback(|ctx| screen(ctx, "/", home::home))
   })
 }
 
-/// The header, with the way back, over the screen. Backgrounds reach the edges of the display; what is read
-/// and touched stays inside the safe area, clear of the status bar, the camera housing and the home indicator.
+/// The stack of screens under its bar. A finger in from the left edge takes the top screen back with it; from
+/// the right edge, or a trackpad's swipe, the history moves as the event says.
 fn shell(ctx: &mut Ctx) -> Element {
-  let path = ctx.route_path();
-  let safe_area = ctx.window().safe_area;
   let navigator = ctx.navigator();
+  let bar = NavigationBar::dark()
+    .background(Color::from_hex(SURFACE))
+    .tint(Color::from_hex(PRIMARY))
+    .title(Color::from_hex(TEXT))
+    .border(Color::from_hex(BORDER));
   Column::new()
-    // A finger in from the left edge, or a trackpad's swipe, goes back as the header's arrow does; from the
-    // right edge it goes forward again.
     .on_history_swipe(move |event: HistorySwipeEvent| {
       let Some(navigator) = &navigator else {
         return;
@@ -84,62 +96,28 @@ fn shell(ctx: &mut Ctx) -> Element {
       };
       event.stop_propagation();
     })
-    .child(header(ctx, &path, safe_area))
-    .child(
-      Column::new()
-        .child(Outlet::mount(ctx))
-        .flex(1.0)
-        .width(FILL)
-        .padding_left(safe_area.left)
-        .padding_right(safe_area.right)
-        .padding_bottom(safe_area.bottom),
-    )
+    .child(StackOutlet::mount_with(
+      ctx,
+      StackOutletProps::new().bar(bar).background(Color::from_hex(BG)),
+    ))
     .size(FILL, FILL)
     .background(BG)
     .into()
 }
 
-fn header(ctx: &mut Ctx, path: &str, safe_area: SafeAreaInsets) -> Element {
-  let at_home = !home::SCREENS.iter().any(|screen| screen.path == path);
-  let back: Element = if at_home {
-    Spacer::new().width(TAP_TARGET).into()
-  } else {
-    let navigator = ctx.navigator();
-    Row::new()
-      .id("back")
-      .align_items(Alignment::Center)
-      .justify(Justify::Center)
-      .child(text("‹", 28.0, FontWeight::Normal, PRIMARY))
-      .size(TAP_TARGET, TAP_TARGET)
-      .rounded(8.0)
-      .active(|style| style.background("#273449"))
-      .on_click(move |_| {
-        if let Some(navigator) = &navigator
-          && !navigator.back()
-        {
-          navigator.replace("/");
-        }
-      })
-      .into()
-  };
-
-  Row::new()
-    .align_items(Alignment::Center)
-    .child(back)
-    .child(
-      Row::new()
-        .justify(Justify::Center)
-        .child(text(home::title_of(path), 17.0, FontWeight::Bold, TEXT).nowrap())
-        .flex(1.0),
-    )
-    .child(Spacer::new().width(TAP_TARGET))
-    .height(HEADER_HEIGHT + safe_area.top)
-    .padding_top(safe_area.top)
-    .padding_left(4.0 + safe_area.left)
-    .padding_right(4.0 + safe_area.right)
-    .width(FILL)
-    .background(SURFACE)
-    .border_inside(1.0, Color::from_hex(BORDER))
+/// A screen of the stack: what the bar says over it, and its content inside the safe area. Backgrounds reach
+/// the edges of the display; what is read and touched stays clear of the camera housing and the home
+/// indicator.
+fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) -> Element {
+  let item = NavigationItem::new(home::title_of(path));
+  ctx.navigation_item(if path == "/" { item.back_title("Home") } else { item });
+  let safe_area = ctx.window().safe_area;
+  Column::new()
+    .child(content(ctx))
+    .size(FILL, FILL)
+    .padding_left(safe_area.left)
+    .padding_right(safe_area.right)
+    .padding_bottom(safe_area.bottom)
     .into()
 }
 

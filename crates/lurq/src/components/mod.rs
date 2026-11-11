@@ -29,6 +29,8 @@ mod slider;
 mod slot;
 mod spacer;
 mod stack;
+#[cfg(feature = "router")]
+pub(crate) mod stack_outlet;
 #[cfg(feature = "markdown")]
 pub(crate) mod styled_text;
 #[cfg(feature = "svg")]
@@ -82,6 +84,8 @@ pub use slider::Slider;
 pub use slot::Slot;
 pub use spacer::Spacer;
 pub use stack::Stack;
+#[cfg(feature = "router")]
+pub use stack_outlet::{NavigationBar, NavigationItem, StackOutlet, StackOutletProps};
 #[cfg(feature = "markdown")]
 pub use styled_text::{
   LinkClick, MarkPresence, SelectionStyle, SpanStyle, StyledChange, StyledEdit, StyledSpan, StyledText, TextMark,

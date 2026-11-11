@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 pub use guard::GuardAction;
 pub use handle::RouterHandle;
+pub(crate) use handle::StackEntry;
 pub use navigator::Navigator;
 pub use pattern::Pattern;
 pub use query::Query;

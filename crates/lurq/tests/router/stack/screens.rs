@@ -1,0 +1,226 @@
+//! A `StackOutlet`: the history's entries as screens that stay mounted under the top one.
+
+use std::{
+  sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+  },
+  time::{Duration, Instant},
+};
+
+use lurq::{
+  app::{App, Tree, component::Component, ctx::Ctx, events::TouchPhase},
+  components::{NavigationBar, NavigationItem, Router, StackOutlet, StackOutletProps, Text},
+  node::Element,
+  router::{RouterHandle, Routes},
+};
+
+use crate::support::run_pass;
+
+#[derive(lurq::DevtoolsInspectable)]
+struct SharedRouter(Arc<Mutex<Option<RouterHandle>>>);
+
+impl Clone for SharedRouter {
+  fn clone(&self) -> Self {
+    Self(self.0.clone())
+  }
+}
+
+impl PartialEq for SharedRouter {
+  fn eq(&self, other: &Self) -> bool {
+    Arc::ptr_eq(&self.0, &other.0)
+  }
+}
+
+/// How many times the screen at `/first` was created.
+static FIRST_CREATED: AtomicUsize = AtomicUsize::new(0);
+
+struct First;
+
+impl Component for First {
+  type Props = ();
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    FIRST_CREATED.fetch_add(1, Ordering::Relaxed);
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    ctx.navigation_item(NavigationItem::new("Alpha"));
+    Text::new("first screen")
+  }
+}
+
+struct Root {
+  router: RouterHandle,
+}
+
+impl Component for Root {
+  type Props = SharedRouter;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let router = ctx.router(Routes::new().layout(
+      "/",
+      |ctx| StackOutlet::mount_with(ctx, StackOutletProps::new().bar(NavigationBar::new())),
+      |routes| {
+        routes
+          .route("/first", |ctx| ctx.mount::<First>(()))
+          .route("/second", |ctx| {
+            ctx.navigation_item(NavigationItem::new("Beta"));
+            Text::new("second screen").into()
+          })
+          .route("/held", |ctx| {
+            ctx.navigation_item(NavigationItem::new("Held").back_gesture(false));
+            Text::new("held screen").into()
+          })
+          .route("/user/:id", |ctx| {
+            let id = ctx.route_params().get("id").unwrap_or("none").to_owned();
+            Text::new(&format!("user {id}")).into()
+          })
+      },
+    ));
+    *ctx.props::<Self::Props>().0.lock().unwrap() = Some(router.clone());
+    router.replace("/first");
+    Self { router }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    Router::mount(ctx, self.router.clone())
+  }
+}
+
+fn setup() -> (Tree, RouterHandle) {
+  let router_out = Arc::new(Mutex::new(None));
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(400, 800);
+  tree.mount_root::<Root>(&mut app, SharedRouter(router_out.clone()));
+  run_pass(&mut tree);
+  let router = router_out.lock().unwrap().clone().unwrap();
+  (tree, router)
+}
+
+/// Lets a move of the stack end: its timers fire and the screens are where they go.
+fn settle(tree: &mut Tree) {
+  run_pass(tree);
+  tree.tick_timers_at(Instant::now() + Duration::from_secs(1));
+  run_pass(tree);
+  tree.tick_timers_at(Instant::now() + Duration::from_secs(2));
+  run_pass(tree);
+}
+
+fn shows(tree: &mut Tree, text: &str) -> bool {
+  tree
+    .find_element(|element| element.text_content() == Some(text))
+    .is_some()
+}
+
+#[test]
+fn a_screen_stays_mounted_under_the_one_pushed_over_it() {
+  let (mut tree, router) = setup();
+  let created = FIRST_CREATED.load(Ordering::Relaxed);
+  assert!(shows(&mut tree, "first screen"));
+
+  router.push("/second");
+  settle(&mut tree);
+  assert!(shows(&mut tree, "second screen"));
+  assert!(
+    !shows(&mut tree, "first screen"),
+    "the screen under the top one is not laid out"
+  );
+
+  assert!(router.back());
+  settle(&mut tree);
+  assert!(shows(&mut tree, "first screen"));
+  assert!(!shows(&mut tree, "second screen"), "the screen that went back is gone");
+  assert_eq!(
+    FIRST_CREATED.load(Ordering::Relaxed),
+    created,
+    "the first screen was not made anew"
+  );
+}
+
+#[test]
+fn both_screens_are_shown_while_one_comes_in() {
+  let (mut tree, router) = setup();
+
+  router.push("/second");
+  run_pass(&mut tree);
+  assert!(shows(&mut tree, "second screen"));
+  assert!(shows(&mut tree, "first screen"));
+}
+
+#[test]
+fn the_bar_shows_the_top_screens_title_and_the_way_back_to_the_one_under() {
+  let (mut tree, router) = setup();
+  assert!(shows(&mut tree, "Alpha"));
+  assert!(!shows(&mut tree, "‹"), "nothing to go back to");
+
+  router.push("/second");
+  settle(&mut tree);
+  assert!(shows(&mut tree, "Beta"));
+  assert!(shows(&mut tree, "Alpha"), "the way back says where it goes");
+  assert!(shows(&mut tree, "‹"));
+}
+
+#[test]
+fn a_screen_reads_the_params_of_its_own_entry() {
+  let (mut tree, router) = setup();
+
+  router.push("/user/1");
+  settle(&mut tree);
+  router.push("/user/2");
+  run_pass(&mut tree);
+  assert!(shows(&mut tree, "user 2"));
+  assert!(
+    shows(&mut tree, "user 1"),
+    "the screen under keeps its own params while the next comes in"
+  );
+}
+
+/// A finger lands at the left edge and goes `to` logical pixels across before it lifts.
+fn swipe_from_the_left_edge(tree: &mut Tree, to: f32) {
+  tree.touch_event(1, TouchPhase::Start, 2.0, 300.0, None);
+  for step in 1..=10 {
+    tree.touch_event(1, TouchPhase::Move, 2.0 + to * step as f32 / 10.0, 300.0, None);
+  }
+  std::thread::sleep(Duration::from_millis(150));
+  tree.touch_event(1, TouchPhase::Move, 2.0 + to, 300.0, None);
+  tree.touch_event(1, TouchPhase::End, 2.0 + to, 300.0, None);
+}
+
+#[test]
+fn a_finger_from_the_left_edge_takes_the_top_screen_back() {
+  let (mut tree, router) = setup();
+  router.push("/second");
+  settle(&mut tree);
+
+  swipe_from_the_left_edge(&mut tree, 300.0);
+  settle(&mut tree);
+  assert_eq!(router.path().get_untracked(), "/first");
+  assert!(shows(&mut tree, "first screen"));
+}
+
+#[test]
+fn a_finger_that_lifts_short_of_half_way_leaves_the_screen() {
+  let (mut tree, router) = setup();
+  router.push("/second");
+  settle(&mut tree);
+
+  swipe_from_the_left_edge(&mut tree, 80.0);
+  settle(&mut tree);
+  assert_eq!(router.path().get_untracked(), "/second");
+  assert!(shows(&mut tree, "second screen"));
+  assert!(!shows(&mut tree, "first screen"));
+}
+
+#[test]
+fn a_screen_that_turned_the_gesture_off_is_not_taken_back_by_a_finger() {
+  let (mut tree, router) = setup();
+  router.push("/held");
+  settle(&mut tree);
+
+  swipe_from_the_left_edge(&mut tree, 300.0);
+  settle(&mut tree);
+  assert_eq!(router.path().get_untracked(), "/held");
+}
