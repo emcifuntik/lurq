@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use super::{
+  profiler_analysis::AnalysisProps,
   profiler_capture::{
     self as capture, DetailSection, FRAME_BUDGET_MS, MAX_TIMELINE_PASSES, PhaseRow, ProfilerCapture, TimeRange,
     bucket_of, format_bytes, format_ms, format_span, ms, pass_of,
@@ -288,7 +289,28 @@ fn recording_status_line(recording: &Recording) -> String {
   line
 }
 
-pub(crate) fn profiler_view(state: &ProfilerState, state_signal: Signal<ProfilerState>) -> Element {
+/// The props of the flame chart and tables under the timeline: the capture's
+/// selected range and pass. None while recording or without a capture.
+pub(crate) fn analysis_props(state: &ProfilerState, state_signal: Signal<ProfilerState>) -> Option<AnalysisProps> {
+  if state.recording.is_some() {
+    return None;
+  }
+  let capture = state.capture.clone()?;
+  Some(AnalysisProps {
+    range: state.range.unwrap_or_else(|| capture.default_range()),
+    capture,
+    selected: state.selected,
+    on_select_pass: Some(Arc::new(move |sequence| {
+      if state_signal.with_untracked(|state| state.selected != Some(sequence)) {
+        state_signal.update(|state| state.selected = Some(sequence));
+      }
+    })),
+  })
+}
+
+/// The tab's body; `analysis` is the mounted `ProfilerAnalysis` of
+/// `analysis_props`, drawn under the timeline.
+pub(crate) fn profiler_view(state: &ProfilerState, state_signal: Signal<ProfilerState>, analysis: Element) -> Element {
   if let Some(recording) = &state.recording {
     return message_view(
       &format!("Recording {}", recording_status_line(recording)),
@@ -314,6 +336,7 @@ pub(crate) fn profiler_view(state: &ProfilerState, state_signal: Signal<Profiler
       Column::new()
         .child(overview(&capture, range, state_signal.clone()))
         .child(timeline(&capture, range, state.selected, state_signal))
+        .child(analysis)
         .height(FILL)
         .width(FILL)
         .flex(1.0),
@@ -527,9 +550,8 @@ fn timeline(
         .width(FILL),
     )
     .child(legend())
+    .padding_bottom(8.0)
     .width(FILL)
-    .height(FILL)
-    .flex(1.0)
     .into()
 }
 
@@ -879,7 +901,7 @@ fn format_offset(capture: &ProfilerCapture, at: f64) -> String {
   format!("+{}", format_span(at - capture.started_ms))
 }
 
-fn padding(top: f32, right: f32, bottom: f32, left: f32) -> crate::node::padding::Padding {
+pub(super) fn padding(top: f32, right: f32, bottom: f32, left: f32) -> crate::node::padding::Padding {
   crate::node::padding::Padding {
     top: Dimension::Px(top).into(),
     right: Dimension::Px(right).into(),
@@ -888,11 +910,11 @@ fn padding(top: f32, right: f32, bottom: f32, left: f32) -> crate::node::padding
   }
 }
 
-fn divider() -> Border {
+pub(super) fn divider() -> Border {
   Border::inside(1.0, Color::from_hex(BORDER))
 }
 
-fn mono_text(content: &str, size: f32, weight: FontWeight, color: &str) -> Text {
+pub(super) fn mono_text(content: &str, size: f32, weight: FontWeight, color: &str) -> Text {
   Text::styled(
     content,
     TextStyle {
