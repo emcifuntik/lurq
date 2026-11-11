@@ -1,4 +1,4 @@
-pub use crate::node::node_kind::{KeyboardKind, ReturnKey, TextInputOverflow, TextInputOverflowAnchor};
+pub use crate::node::node_kind::{ContentKind, KeyboardKind, ReturnKey, TextInputOverflow, TextInputOverflowAnchor};
 use crate::{
   app::theme::CaretMode,
   core::Signal,
@@ -191,6 +191,13 @@ impl TextInput {
   /// What the on-screen keyboard's Return key says. The key sends Enter whatever it says.
   pub fn return_key(mut self, return_key: crate::node::node_kind::ReturnKey) -> Self {
     self.update_node(|node| crate::node::NodeUpdate::text_input_return_key(node, return_key));
+    self
+  }
+
+  /// What the input holds, for a platform that fills inputs in: a phone offers the person's email addresses,
+  /// a saved password, a code that just came. See [`ContentKind`] for what an input says without it.
+  pub fn content(mut self, content: ContentKind) -> Self {
+    self.update_node(|node| crate::node::NodeUpdate::text_input_content(node, content));
     self
   }
 

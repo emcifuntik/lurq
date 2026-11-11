@@ -41,6 +41,8 @@ mod history_swipes;
 mod ime;
 #[cfg(target_os = "ios")]
 mod ios;
+#[cfg(target_os = "ios")]
+mod ios_text;
 mod loop_wait;
 #[cfg(test)]
 mod loop_wait_tests;
@@ -316,9 +318,9 @@ struct ManagedWindow {
   /// How much of the window the keyboard covered at the last frame, in logical pixels.
   #[cfg(target_os = "ios")]
   keyboard_overlap: f32,
-  /// The view the keyboard types into; see [`ios`].
+  /// The view the keyboard types into; see [`ios_text`].
   #[cfg(target_os = "ios")]
-  text_input: Option<ios::TextInput>,
+  text_input: Option<ios_text::TextInput>,
   #[cfg(target_os = "ios")]
   keyboard_probe: Option<ios::KeyboardProbe>,
   /// The move of the keyboard during which a finger last landed; see `ios::keyboard_move`.
@@ -485,7 +487,7 @@ impl ManagedWindow {
       self.frame_link = Some(ios::FrameLink::new());
       if let Ok(RawWindowHandle::UiKit(handle)) = window.window_handle().map(|handle| handle.as_raw()) {
         self.status_bar_tap = Some(ios::StatusBarTap::new(handle.ui_view));
-        self.text_input = Some(ios::TextInput::new(handle.ui_view));
+        self.text_input = Some(ios_text::TextInput::new(handle.ui_view));
         self.keyboard_probe = Some(ios::KeyboardProbe::new(handle.ui_view));
       }
     }
@@ -831,15 +833,9 @@ impl ManagedWindow {
         self.tree.touch_scroll_bounce(velocity.0 as f32, velocity.1 as f32, now);
       }
       self.tree.touch_tick(now);
-      // What the keyboard typed goes to the focused input, and the keyboard follows the focus.
+      // What the keyboard did goes to the focused input, and the keyboard follows the focus.
       if let Some(text_input) = &mut self.text_input {
-        for typed in text_input.take_typed() {
-          match typed {
-            ios::Typed::Text(text) => self.tree.keyboard_insert(&text),
-            ios::Typed::DeleteBackward => self.tree.keyboard_delete_backward(),
-          }
-        }
-        text_input.set_traits(self.tree.keyboard_traits());
+        text_input.sync(&mut self.tree);
       }
       // The keyboard is on its way up or down: every frame lays the window out around where it is.
       if ios::keyboard_moving() {

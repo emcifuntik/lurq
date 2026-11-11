@@ -59,6 +59,31 @@ pub enum KeyboardKind {
   Search,
 }
 
+/// What a text input holds, for a platform that fills inputs in from what it knows of the person: a phone
+/// offers their email addresses above the keyboard, a saved password, the code from a message that just came.
+/// Elsewhere it changes nothing.
+///
+/// Without one, an input that asks for an email, a phone or a URL keyboard says it holds that, and a masked
+/// input that it holds a password.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContentKind {
+  /// Whatever the keyboard and the mask say.
+  #[default]
+  Auto,
+  /// Nothing the platform should offer to fill in.
+  None,
+  Name,
+  Email,
+  Username,
+  Password,
+  /// A password being chosen: the platform may suggest a strong one.
+  NewPassword,
+  /// A code sent to the person to prove who they are.
+  OneTimeCode,
+  Phone,
+  Url,
+}
+
 /// What the on-screen keyboard's Return key says, on a platform that labels it. The key sends Enter whatever
 /// it says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

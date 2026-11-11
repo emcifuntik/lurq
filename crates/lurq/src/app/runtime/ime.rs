@@ -51,9 +51,85 @@ pub struct KeyboardTraits {
   pub secure: bool,
   pub kind: crate::node::node_kind::KeyboardKind,
   pub return_key: crate::node::node_kind::ReturnKey,
+  /// What the input holds, for the platform to offer to fill in; never `Auto`.
+  pub content: crate::node::node_kind::ContentKind,
+}
+
+/// The focused text input as a platform's text system sees it: what a phone's keyboard reads to suggest
+/// corrections, and where it puts the caret. Offsets are bytes of `text`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextInputSnapshot {
+  /// The text as displayed, a composition in progress included.
+  pub text: String,
+  /// What is selected, the start first; empty at the caret.
+  pub selection: std::ops::Range<usize>,
+  /// The composition in progress, if any.
+  pub composition: Option<std::ops::Range<usize>>,
+  /// The caret as last painted, in logical pixels from the window's top-left corner.
+  pub caret: Option<ImeCursorArea>,
 }
 
 impl Tree {
+  /// The focused text input's text, selection and caret; `None` when no text input has focus.
+  pub fn text_input_snapshot(&self) -> Option<TextInputSnapshot> {
+    let state = self.focused_text_input_state()?;
+    let composition = state.composition_range();
+    let text = state.composed_text().unwrap_or_else(|| state.value());
+    let selection = match (state.composition_caret(), &composition) {
+      (Some(caret), Some(_)) => caret..caret,
+      _ => {
+        let (caret, anchor) = state.controller_selection();
+        let anchor = anchor.unwrap_or(caret);
+        anchor.min(caret)..anchor.max(caret)
+      }
+    };
+    Some(TextInputSnapshot {
+      text,
+      selection,
+      composition,
+      caret: self.layout_engine.ime_cursor_area(),
+    })
+  }
+
+  /// Replaces a range of the focused text input's value with text, as typing over a selection does: its
+  /// `on_input` handlers run and may refuse the change. The caret ends after the text. An autocorrection is
+  /// this: the word it corrects, replaced. Does nothing when no text input has focus or the range does not
+  /// fall on characters.
+  pub fn text_input_replace(&mut self, range: std::ops::Range<usize>, text: &str) {
+    self.rebuild_if_dirty();
+    let Some(state) = self.focused_text_input_state() else {
+      return;
+    };
+    if !state.controller_select(range.start, range.end) {
+      return;
+    }
+    let event = self.commit_keyboard_event(text);
+    if text.is_empty() {
+      // Nothing to put in the selection's place: it is deleted.
+      if !range.is_empty() {
+        state.backspace(&event);
+      }
+    } else {
+      state.insert(text, &event);
+    }
+    self.needs_redraw = true;
+    self.reset_text_input_caret_blink();
+    self.apply_reactive_updates_after_event();
+  }
+
+  /// Selects a range of the focused text input's value, the caret at its end; an empty range puts the caret.
+  pub fn text_input_select(&mut self, range: std::ops::Range<usize>) {
+    self.rebuild_if_dirty();
+    let Some(state) = self.focused_text_input_state() else {
+      return;
+    };
+    if state.controller_select(range.start, range.end) {
+      self.needs_redraw = true;
+      self.reset_text_input_caret_blink();
+      self.apply_reactive_updates_after_event();
+    }
+  }
+
   /// What the keyboard should be for the focused text input; `None` when no text input has focus, and there is
   /// nothing to type into.
   pub fn keyboard_traits(&self) -> Option<KeyboardTraits> {
@@ -63,6 +139,7 @@ impl Tree {
       secure: state.is_masked(),
       kind,
       return_key,
+      content: state.content(),
     })
   }
 
