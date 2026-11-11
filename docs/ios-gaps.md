@@ -24,7 +24,8 @@ Text inputs type through a view of the shell's own that speaks `UITextInput`
 that speeds up, the caret under the space bar, a secure keyboard for a masked input and the person's email
 addresses over an email input work on a device. So do the platform's caret, the selection's handles, the loupe
 and the menu to copy and paste (`UITextInteraction`); the highlight is painted by the input, under its text,
-where UIKit says the selection is.
+where UIKit says the selection is. A triple tap selects a paragraph, and a long text scrolls
+inside its input.
 
 - **Password AutoFill.** Nothing is offered over a masked input. The system looks for a login and a password
   as two inputs and is shown one view, which every text input shares; and it offers saved passwords only to
@@ -33,12 +34,10 @@ where UIKit says the selection is.
   inputs go together.
 - **Saving a password** after a login: not done, for the same reasons.
 - **A code from a message** (`ContentKind::OneTimeCode`): set, not checked. It needs a real message.
-- **A triple tap** for a paragraph: not checked.
 - **A hardware keyboard:** Cmd shortcuts expect Ctrl; arrows and Tab between inputs are not checked.
 - **Putting the keyboard away.** A tap outside an input leaves it up, and a list set to
   (`ScrollState::set_dismisses_keyboard`) puts it away when a finger starts to scroll it. The platform can also
   have the keyboard follow the finger down as the list is dragged; that is not done.
-- **Several lines:** scrolling inside the input with a finger, and the caret in a long text, are not checked.
 - **Emoji in transformed text** (rotated, scaled) draw nothing: only the plain path draws them through Core
   Text.
 
@@ -46,8 +45,8 @@ where UIKit says the selection is.
 
 `StackOutlet` is a stack of screens with a navigation bar (`docs/src/content/docs/routing.md`).
 
-- **The move** is a curve of 350 ms, not the platform's spring, and a finger that lets go carries no speed
-  into it.
+- **The move** is a spring of 500 ms that starts at the finger's speed; the platform's own spring was not
+  measured against it.
 - **The bar** is opaque and its content does not scroll under it; there is no large title, no search field
   and no material.
 - **A way back with no room even for `Back`** keeps the word; the platform leaves the arrow alone.

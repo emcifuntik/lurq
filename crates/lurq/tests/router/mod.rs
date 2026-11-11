@@ -58,5 +58,6 @@ mod rerender {
 }
 
 mod stack {
+  mod custom_bar;
   mod screens;
 }

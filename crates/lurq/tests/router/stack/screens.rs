@@ -1,14 +1,12 @@
 //! A `StackOutlet`: the history's entries as screens that stay mounted under the top one.
 
 use std::{
-  sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
-  },
+  sync::{Arc, Mutex},
   time::{Duration, Instant},
 };
 
 use lurq::{
+  animation::Easing,
   app::{App, Tree, component::Component, ctx::Ctx, events::TouchPhase},
   components::{NavigationBar, NavigationItem, Router, StackOutlet, StackOutletProps, Text},
   node::Element,
@@ -32,8 +30,10 @@ impl PartialEq for SharedRouter {
   }
 }
 
-/// How many times the screen at `/first` was created.
-static FIRST_CREATED: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+  /// How many times the screen at `/first` was created in this test: each test runs on a thread of its own.
+  static FIRST_CREATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 struct First;
 
@@ -41,7 +41,7 @@ impl Component for First {
   type Props = ();
 
   fn create(_ctx: &mut Ctx) -> Self {
-    FIRST_CREATED.fetch_add(1, Ordering::Relaxed);
+    FIRST_CREATED.with(|created| created.set(created.get() + 1));
     Self
   }
 
@@ -86,6 +86,10 @@ impl Component for Root {
           .route("/pictured", |ctx| {
             ctx.navigation_item(NavigationItem::new("Pictured").title_view(Text::new("a view for a title")));
             Text::new("pictured screen").into()
+          })
+          .route("/led", |ctx| {
+            ctx.navigation_item(NavigationItem::new("Led").leading(Text::new("a control of its own")));
+            Text::new("led screen").into()
           })
           .route("/user/:id", |ctx| {
             let id = ctx.route_params().get("id").unwrap_or("none").to_owned();
@@ -138,7 +142,7 @@ fn has_way_back(tree: &mut Tree) -> bool {
 #[test]
 fn a_screen_stays_mounted_under_the_one_pushed_over_it() {
   let (mut tree, router) = setup();
-  let created = FIRST_CREATED.load(Ordering::Relaxed);
+  let created = FIRST_CREATED.with(std::cell::Cell::get);
   assert!(shows(&mut tree, "first screen"));
 
   router.push("/second");
@@ -154,7 +158,7 @@ fn a_screen_stays_mounted_under_the_one_pushed_over_it() {
   assert!(shows(&mut tree, "first screen"));
   assert!(!shows(&mut tree, "second screen"), "the screen that went back is gone");
   assert_eq!(
-    FIRST_CREATED.load(Ordering::Relaxed),
+    FIRST_CREATED.with(std::cell::Cell::get),
     created,
     "the first screen was not made anew"
   );
@@ -287,4 +291,37 @@ fn a_screen_can_put_a_view_in_the_titles_place() {
 
   assert!(shows(&mut tree, "a view for a title"));
   assert!(!shows(&mut tree, "Pictured"), "the view stands in for the title");
+}
+
+#[test]
+fn a_screen_can_put_a_control_in_the_place_of_the_way_back() {
+  let (mut tree, router) = setup();
+  router.push("/led");
+  settle(&mut tree);
+
+  assert!(shows(&mut tree, "a control of its own"));
+  assert!(!has_way_back(&mut tree));
+}
+
+#[test]
+fn a_spring_goes_from_rest_to_its_end_without_passing_it() {
+  for velocity in [0.0, 2.0, 10.0, 50.0] {
+    let spring = Easing::Spring { velocity };
+    assert_eq!(spring.evaluate(0.0), 0.0);
+    assert_eq!(spring.evaluate(1.0), 1.0);
+    let mut last = 0.0;
+    for step in 1..=100 {
+      let value = spring.evaluate(f64::from(step) / 100.0);
+      assert!(
+        value >= last && value <= 1.0 + 1e-9,
+        "velocity {velocity}: {last} then {value}"
+      );
+      last = value;
+    }
+  }
+  let (rest, moving) = (Easing::Spring { velocity: 0.0 }, Easing::Spring { velocity: 4.0 });
+  assert!(
+    moving.evaluate(0.1) > rest.evaluate(0.1),
+    "a spring let go at speed is further on"
+  );
 }

@@ -147,12 +147,41 @@ A screen says what the bar shows for it by calling `ctx.navigation_item` in its 
 | `new(title)` | The title in the middle of the bar |
 | `back_title(text)` | What the way back says on the screen pushed over this one, in place of the title |
 | `back_gesture(false)` | A finger from the edge does not take this screen back; the bar's way back still does |
+| `leading(element)` | What is at the bar's leading end in place of the way back |
 | `trailing(element)` | What is at the bar's trailing end while this screen is on top |
 | `title_view(element)` | What stands in the middle of the bar in place of the title |
 | `bar_hidden(true)` | No bar over this screen: it reaches the top of the outlet, under the status bar |
 
 The way back says the title of the screen under while there is room for it beside the top screen's title, and
 `Back` when there is not.
+
+For a bar that is the app's own altogether, give the outlet a builder with `StackOutletProps::bar_with`. It
+is called with the state of the stack and returns the bar, which the outlet puts across its top:
+
+```rust
+let bar: NavigationBarBuilder = Arc::new(|state: &NavigationBarState| {
+  Row::new()
+    .padding_top(state.safe_area.top)
+    .height(state.safe_area.top + 52.0)
+    .child(
+      Text::new(&state.top.item.title)
+        // 0 in place, 1 gone: the title fades as its screen goes out, in step with it.
+        .opacity(1.0 - state.out)
+        .transition(Transition::opacity().duration(state.duration).easing(state.easing)),
+    )
+    .into()
+});
+StackOutlet::mount_with(ctx, StackOutletProps::new().bar_with(bar.clone()))
+```
+
+`state.top` is the screen in front and `state.under` the one behind it while they move, each with its
+`NavigationItem` and what the way back from it says. `state.out` is how far out of view the front screen is;
+with a transition of `state.duration` and `state.easing` a part of the bar moves with the screens, and follows
+a finger, for which the duration is zero. Make the builder once, in `create`: a new one at each render renders
+the outlet again.
+
+A screen comes in and goes out on a spring, `Easing::Spring`, and one let go by a finger goes on at the
+finger's speed.
 
 A screen of a stack reads its own entry: `ctx.route_params()` and `ctx.route_state()` give what the screen was
 opened with, whatever was pushed over it since. `ctx.route_path()` is the router's current path on every

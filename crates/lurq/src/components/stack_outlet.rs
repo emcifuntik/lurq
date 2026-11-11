@@ -26,6 +26,7 @@ use crate::{
     component::Component,
     ctx::{Ctx, Timeout},
     events::{EdgePanEvent, GesturePhase, ScreenEdge},
+    window::SafeAreaInsets,
   },
   components::{Column, Row, Stack, Text},
   core::{ElementRef, Signal},
@@ -41,19 +42,14 @@ use crate::{
   },
 };
 
-/// How long a screen takes to come in or go out, and the curve it follows: quick at first, settling slowly.
-const MOVE: Duration = Duration::from_millis(350);
-const CURVE: Easing = Easing::CubicBezier {
-  x1: 0.32,
-  y1: 0.72,
-  x2: 0.0,
-  y2: 1.0,
-};
+/// How long a screen takes to come in or go out. It follows a spring ([`Easing::Spring`]), which starts at the
+/// speed a finger let the screen go with.
+const MOVE: Duration = Duration::from_millis(500);
 /// A frame is painted with the screens where the move starts before they are sent on their way: a transition
 /// goes from what was last painted.
 const BEGIN: Duration = Duration::from_millis(1);
 /// When the screens are taken to have arrived.
-const SETTLE: Duration = Duration::from_millis(400);
+const SETTLE: Duration = Duration::from_millis(550);
 /// How far the screen under gives way, as a share of the width, and how dark it gets.
 const PARALLAX: f32 = 0.3;
 const DIM: f32 = 0.1;
@@ -145,12 +141,13 @@ impl Default for NavigationBar {
 /// [`Ctx::navigation_item`](crate::app::ctx::Ctx::navigation_item).
 #[derive(Clone, Default)]
 pub struct NavigationItem {
-  pub(crate) title: String,
-  pub(crate) back_title: Option<String>,
-  pub(crate) back_gesture: bool,
-  pub(crate) trailing: Option<Element>,
-  pub(crate) title_view: Option<Element>,
-  pub(crate) bar_hidden: bool,
+  pub title: String,
+  pub back_title: Option<String>,
+  pub back_gesture: bool,
+  pub leading: Option<Element>,
+  pub trailing: Option<Element>,
+  pub title_view: Option<Element>,
+  pub bar_hidden: bool,
 }
 
 impl NavigationItem {
@@ -159,6 +156,7 @@ impl NavigationItem {
       title: title.into(),
       back_title: None,
       back_gesture: true,
+      leading: None,
       trailing: None,
       title_view: None,
       bar_hidden: false,
@@ -175,6 +173,13 @@ impl NavigationItem {
   /// with something unsaved turns it off. The bar's way back is not affected.
   pub fn back_gesture(mut self, enabled: bool) -> Self {
     self.back_gesture = enabled;
+    self
+  }
+
+  /// What is at the bar's leading end in place of the way back: a control of the screen's own. It is shown on
+  /// the bottom screen too, which has no way back. Shown as [`trailing`](Self::trailing) is.
+  pub fn leading(mut self, element: impl Into<Element>) -> Self {
+    self.leading = Some(element.into());
     self
   }
 
@@ -203,6 +208,7 @@ impl NavigationItem {
     self.title == other.title
       && self.back_title == other.back_title
       && self.back_gesture == other.back_gesture
+      && self.leading.is_some() == other.leading.is_some()
       && self.trailing.is_some() == other.trailing.is_some()
       && self.title_view.is_some() == other.title_view.is_some()
       && self.bar_hidden == other.bar_hidden
@@ -231,10 +237,69 @@ impl NavigationSlot {
   }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// What a bar of an app's own is drawn from: [`StackOutletProps::bar_with`].
+#[derive(Clone)]
+pub struct NavigationBarState {
+  /// The screen in front: the top one, or the one on its way out.
+  pub top: NavigationBarScreen,
+  /// The screen behind it, while the two move or a finger drags the front one.
+  pub under: Option<NavigationBarScreen>,
+  /// How far out of view the front screen is, from 0, in place, to 1, gone. It is where the screens are going
+  /// when `duration` is not zero, and where they are put when it is: under a finger.
+  pub out: f32,
+  /// How long the screens take to get there, and the curve they follow. Giving a part of the bar a
+  /// transition of this duration and easing moves it with the screens.
+  pub duration: Duration,
+  pub easing: Easing,
+  /// The outlet's width.
+  pub width: f32,
+  pub safe_area: SafeAreaInsets,
+  pub navigator: Navigator,
+}
+
+/// A screen's part in a [`NavigationBarState`].
+#[derive(Clone)]
+pub struct NavigationBarScreen {
+  pub item: NavigationItem,
+  /// What the way back from this screen says: the title of the screen under it, or what that screen gave
+  /// for it. `None` on the bottom screen.
+  pub back_label: Option<String>,
+}
+
+/// Draws a bar from the state of the stack. It is called at each render of the outlet.
+pub type NavigationBarBuilder = Arc<dyn Fn(&NavigationBarState) -> Element + Send + Sync>;
+
+#[derive(Clone)]
+enum Bar {
+  Standard(NavigationBar),
+  Custom(NavigationBarBuilder),
+}
+
+#[derive(Clone, Default)]
 pub struct StackOutletProps {
-  bar: Option<NavigationBar>,
+  bar: Option<Bar>,
   background: Option<Color>,
+}
+
+impl PartialEq for StackOutletProps {
+  fn eq(&self, other: &Self) -> bool {
+    let same_bar = match (&self.bar, &other.bar) {
+      (None, None) => true,
+      (Some(Bar::Standard(a)), Some(Bar::Standard(b))) => a == b,
+      (Some(Bar::Custom(a)), Some(Bar::Custom(b))) => Arc::ptr_eq(a, b),
+      _ => false,
+    };
+    same_bar && self.background == other.background
+  }
+}
+
+impl std::fmt::Debug for StackOutletProps {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("StackOutletProps")
+      .field("bar", &self.bar.is_some())
+      .field("background", &self.background)
+      .finish()
+  }
 }
 
 impl StackOutletProps {
@@ -244,7 +309,16 @@ impl StackOutletProps {
 
   /// Draws a bar over the screens.
   pub fn bar(mut self, bar: NavigationBar) -> Self {
-    self.bar = Some(bar);
+    self.bar = Some(Bar::Standard(bar));
+    self
+  }
+
+  /// Draws a bar of the app's own over the screens: what `builder` returns for the state of the stack, across
+  /// the top of the outlet at the height it takes. The builder keeps its content clear of the status bar by
+  /// the state's safe area, and moves it with the screens by the state's `out`, `duration` and `easing`.
+  /// Make the builder once and keep it: a new one at each render renders the outlet again.
+  pub fn bar_with(mut self, builder: NavigationBarBuilder) -> Self {
+    self.bar = Some(Bar::Custom(builder));
     self
   }
 
@@ -303,6 +377,9 @@ struct Shown {
   width: f32,
   /// A move was set up by the last render and waits for its frame to send the screens on their way.
   begin_due: bool,
+  /// The speed a finger let the front screen go with, towards where it is going, as a share of the way left
+  /// per [`MOVE`]; 0 for a move no finger started.
+  velocity: f64,
 }
 
 pub struct StackOutlet {
@@ -325,6 +402,7 @@ impl Component for StackOutlet {
       motion: Motion::None,
       width: 0.0,
       begin_due: false,
+      velocity: 0.0,
     }));
     let changed = Signal::new(0u64);
     let drag = Signal::new(NO_DRAG);
@@ -345,6 +423,7 @@ impl Component for StackOutlet {
           let mut shown = shown.lock();
           shown.motion = Motion::None;
           shown.leaving = None;
+          shown.velocity = 0.0;
         }
         changed.update(|version| *version += 1);
       }
@@ -405,10 +484,15 @@ impl Component for StackOutlet {
       if popped {
         shown.leaving = top;
         shown.motion = Motion::Leaving { started: false };
+        if drag < 0.0 {
+          // No finger let it go: it sets off from rest.
+          shown.velocity = 0.0;
+        }
       } else {
         old.extend(top);
         if pushed {
           shown.motion = Motion::Entering { started: false };
+          shown.velocity = 0.0;
         }
       }
       shown.layers = entries
@@ -458,8 +542,11 @@ impl Component for StackOutlet {
     // Every node that moves has its transition from its first frame, which is what lets one start from where
     // the node was painted; put where a finger has it, the transition takes no time.
     let pace = if moving { MOVE } else { Duration::ZERO };
-    let slide = Transition::transform().duration(pace).easing(CURVE);
-    let fade = Transition::opacity().duration(pace).easing(CURVE);
+    let curve = Easing::Spring {
+      velocity: shown.velocity,
+    };
+    let slide = Transition::transform().duration(pace).easing(curve);
+    let fade = Transition::opacity().duration(pace).easing(curve);
     let mut screens = Stack::new().size(FILL, FILL).clip();
     for layer in shown.layers.iter().chain(shown.leaving.iter()) {
       let id = Some(layer.entry.id);
@@ -534,6 +621,18 @@ impl Component for StackOutlet {
           }
           GesturePhase::End => {
             let far = event.translation > shown.width * BACK_SHARE || event.velocity > BACK_SPEED;
+            // The speed the screen goes on with: the finger's, towards where the screen is going, over the
+            // way it has left.
+            let (towards, left) = if far {
+              (event.velocity, shown.width - event.translation)
+            } else {
+              (-event.velocity, event.translation)
+            };
+            shown.velocity = if left > 1.0 {
+              f64::from(towards.max(0.0) * MOVE.as_secs_f32() / left)
+            } else {
+              0.0
+            };
             if far {
               // The screen goes on out from where the finger left it: the drag is let go once that has started.
               drop(shown);
@@ -553,20 +652,49 @@ impl Component for StackOutlet {
     let Some(bar) = props.bar else {
       return screens.into();
     };
+    let bar = match bar {
+      Bar::Standard(bar) => bar,
+      Bar::Custom(builder) => {
+        let layers: Vec<&Layer> = shown.layers.iter().chain(shown.leaving.iter()).collect();
+        let screen_of = |id: Option<u64>| {
+          let index = layers.iter().position(|layer| Some(layer.entry.id) == id)?;
+          Some(NavigationBarScreen {
+            item: layers[index].bar.item.lock().clone(),
+            back_label: index
+              .checked_sub(1)
+              .map(|under| back_label_of(&layers[under].bar.item.lock())),
+          })
+        };
+        let Some(top) = screen_of(front) else {
+          return screens.into();
+        };
+        let state = NavigationBarState {
+          top,
+          under: screen_of(back),
+          out,
+          duration: pace,
+          easing: curve,
+          width,
+          safe_area,
+          navigator: navigator.clone(),
+        };
+        drop(shown);
+        return Column::new()
+          .size(FILL, FILL)
+          .child(builder(&state))
+          .child(Column::new().width(FILL).flex(1.0).child(screens))
+          .into();
+      }
+    };
 
     // The bar: the front screen's item, and the back screen's while they move.
     let layers: Vec<&Layer> = shown.layers.iter().chain(shown.leaving.iter()).collect();
     let part_of = |id: Option<u64>| {
       let index = layers.iter().position(|layer| Some(layer.entry.id) == id)?;
       let layer = layers[index];
-      let back_label = index.checked_sub(1).map(|under| {
-        let under = layers[under].bar.item.lock();
-        match under.back_title.clone() {
-          Some(title) => title,
-          None if under.title.is_empty() => BACK.to_owned(),
-          None => under.title.clone(),
-        }
-      });
+      let back_label = index
+        .checked_sub(1)
+        .map(|under| back_label_of(&layers[under].bar.item.lock()));
       Some(BarPart {
         item: layer.bar.item.lock().clone(),
         back_label,
@@ -590,6 +718,7 @@ impl Component for StackOutlet {
         out,
         -(1.0 - out) * width * PARALLAX,
         pace,
+        curve,
         false,
       ));
     }
@@ -601,6 +730,7 @@ impl Component for StackOutlet {
         1.0 - out,
         out * width * 0.5,
         pace,
+        curve,
         true,
       ));
     }
@@ -613,7 +743,7 @@ impl Component for StackOutlet {
           .width(FILL)
           .height((safe_area.top + bar_height) * shown_share)
           .clip()
-          .transition(Transition::height().duration(pace).easing(CURVE))
+          .transition(Transition::height().duration(pace).easing(curve))
           .child(
             Column::new()
               .width(FILL)
@@ -653,6 +783,15 @@ impl Component for StackOutlet {
   }
 }
 
+/// What the way back to a screen says.
+fn back_label_of(under: &NavigationItem) -> String {
+  match &under.back_title {
+    Some(title) => title.clone(),
+    None if under.title.is_empty() => BACK.to_owned(),
+    None => under.title.clone(),
+  }
+}
+
 /// One screen's part of the bar.
 struct BarPart {
   item: NavigationItem,
@@ -672,6 +811,7 @@ fn bar_item(
   opacity: f32,
   shift: f32,
   pace: Duration,
+  curve: Easing,
   front: bool,
 ) -> Element {
   let text = |content: &str, weight: FontWeight, color: Color| {
@@ -697,11 +837,18 @@ fn bar_item(
     .pointer_events_none()
     .child(Row::new().ref_element(part.title.clone()).child(middle))
     .transform(Transform2D::translate(shift, 0.0))
-    .transition(Transition::transform().duration(pace).easing(CURVE));
+    .transition(Transition::transform().duration(pace).easing(curve));
 
   let mut whole = Stack::new().size(FILL, FILL).child(title);
   let mut sides = Row::new().size(FILL, FILL).align_items(Alignment::Center);
-  if let Some(label) = &part.back_label {
+  if let Some(leading) = &part.item.leading {
+    sides = sides.child(
+      Row::new()
+        .align_items(Alignment::Center)
+        .padding_left(8.0)
+        .child(leading.clone()),
+    );
+  } else if let Some(label) = &part.back_label {
     let navigator = navigator.clone();
     let says = if part.short_back { BACK } else { label.as_str() };
     sides = sides.child(
@@ -743,7 +890,7 @@ fn bar_item(
     whole = whole.pointer_events_none();
   }
   whole
-    .transition(Transition::opacity().duration(pace).easing(CURVE))
+    .transition(Transition::opacity().duration(pace).easing(curve))
     .into()
 }
 
