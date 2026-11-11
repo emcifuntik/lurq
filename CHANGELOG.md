@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+Added:
+
+- `MarkdownLinkPresentation::pointer_only()`: a Markdown link only the pointer follows. It is no Tab stop and a press on it leaves the focus where it was, so Enter never reaches it and it never shows its focused look, its focus ring or its tooltip from the keyboard; a click (and a middle click, for an app that takes link activations) follows it, and the pointer over it shows the hovered look and the tooltip as on any link. For an app whose reading text is not part of its Tab order. Links are Tab stops as before unless their presentation asks for it.
+
 ## 0.58.5 — 2026-11-10
 
 Added:

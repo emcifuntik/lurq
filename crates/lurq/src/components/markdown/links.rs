@@ -90,7 +90,8 @@ impl MarkdownRun {
 /// ([`MarkdownProps::link_presentation`](super::MarkdownProps::link_presentation)).
 ///
 /// [`link`](Self::link) shows a link: its words in the link style, a Tab
-/// stop that a click and Enter follow. Every look not set here is the theme's
+/// stop that a click and Enter follow; [`pointer_only`](Self::pointer_only)
+/// leaves it to the pointer. Every look not set here is the theme's
 /// (`ThemeMarkdown::link`, `link_hovered`, `link_focused`, `link_focus_ring`,
 /// `link_radius`). [`text`](Self::text) shows the words as the text around
 /// them: nothing to press, nothing to focus.
@@ -120,6 +121,7 @@ pub struct MarkdownLinkPresentation {
   pub(super) radius: Option<BorderRadius>,
   pub(super) trailing: Vec<MarkdownRun>,
   pub(super) tooltip: Option<Arc<str>>,
+  pub(super) pointer_only: bool,
 }
 
 impl std::fmt::Debug for MarkdownLinkPresentation {
@@ -133,6 +135,7 @@ impl std::fmt::Debug for MarkdownLinkPresentation {
       .field("radius", &self.radius)
       .field("trailing", &self.trailing)
       .field("tooltip", &self.tooltip)
+      .field("pointer_only", &self.pointer_only)
       .finish()
   }
 }
@@ -193,6 +196,17 @@ impl MarkdownLinkPresentation {
   /// keyboard focus. Ignored for [`text`](Self::text).
   pub fn tooltip(mut self, text: impl Into<Arc<str>>) -> Self {
     self.tooltip = Some(text.into());
+    self
+  }
+
+  /// A link only the pointer follows: not a Tab stop, a press on it leaves
+  /// the focus where it was, and so Enter never reaches it and it never shows
+  /// its focused look, its ring or, for the keyboard, its tooltip. A click
+  /// follows it and the pointer over it shows its hovered look and tooltip as
+  /// on any link. For an app whose reading text is not part of its Tab
+  /// order. Ignored for [`text`](Self::text).
+  pub fn pointer_only(mut self) -> Self {
+    self.pointer_only = true;
     self
   }
 
