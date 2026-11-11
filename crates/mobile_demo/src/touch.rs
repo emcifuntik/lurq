@@ -15,11 +15,14 @@ use lurq::{
 };
 
 use crate::ui::{
-  ACCENT, BG, BORDER, FILL, HEADER_HEIGHT, MUTED, PRIMARY, SURFACE, TEXT, button, caption, card, event_log, label,
+  ACCENT, BG, BORDER, FILL, MUTED, PRIMARY, SURFACE, TEXT, button, caption, card, event_log, header_height, label,
   push_log, text,
 };
 
 /// The dot that follows the pointer.
+/// How high the area that shows a touch is, whatever the window: held on its side a phone has little height,
+/// and what is under the area runs off the bottom.
+const PAD_HEIGHT: f32 = 220.0;
 const DOT: f32 = 56.0;
 
 #[derive(Clone, Copy, Default)]
@@ -69,7 +72,7 @@ impl Component for TouchScreen {
     let window = ctx.window();
     // Where this screen starts in the window: events carry the window's coordinates.
     let safe_area = ctx.window().safe_area;
-    let (origin_x, origin_y) = (safe_area.left, safe_area.top + HEADER_HEIGHT);
+    let (origin_x, origin_y) = (safe_area.left, safe_area.top + header_height(window.logical_height()));
     let mut screen = Stack::new().child(
       Column::new()
         .spacing(12.0)
@@ -127,8 +130,8 @@ impl TouchScreen {
       .child(caption(
         "Tap, double tap, rest for a long press, put several fingers down.",
       ))
-      .flex(1.0)
-      .min_height(140.0)
+      .height(PAD_HEIGHT)
+      .flex_shrink(0.0)
       .width(FILL)
       .background(SURFACE)
       .border_inside(1.0, Color::from_hex(BORDER))

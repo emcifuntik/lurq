@@ -21,8 +21,11 @@ pub(crate) const PRIMARY_ACTIVE: &str = "#1d4ed8";
 pub(crate) const ACCENT: &str = "#22c55e";
 
 pub(crate) const FILL: Dimension = Dimension::Pct(100.0);
-/// The header every screen sits under.
-pub(crate) const HEADER_HEIGHT: f32 = 52.0;
+/// How high the navigation bar over every screen is, with the line under it, in a window of a height: lower
+/// when the phone is held on its side.
+pub(crate) fn header_height(window_height: f32) -> f32 {
+  if window_height < 480.0 { 32.5 } else { 44.5 }
+}
 /// The smallest side of something a finger is meant to hit.
 pub(crate) const TAP_TARGET: f32 = 44.0;
 

@@ -109,8 +109,7 @@ fn shell(ctx: &mut Ctx) -> Element {
 /// the edges of the display; what is read and touched stays clear of the camera housing and the home
 /// indicator.
 fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) -> Element {
-  let item = NavigationItem::new(home::title_of(path));
-  ctx.navigation_item(if path == "/" { item.back_title("Home") } else { item });
+  ctx.navigation_item(NavigationItem::new(home::title_of(path)));
   let safe_area = ctx.window().safe_area;
   Column::new()
     .child(content(ctx))
