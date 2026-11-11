@@ -74,7 +74,6 @@ unicode-linebreak = { version = "0.1.5", optional = true }
 unicode-segmentation = "1.12"
 raw-window-handle = "0.6"
 redb = { version = "4.1.0", optional = true }
-rfd = { version = "0.15", optional = true }
 swash = "0.2.10"
 wgpu = { version = "=29.0.3", optional = true }
 winit = { version = "0.30", optional = true }
@@ -120,6 +119,10 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# The DevTools save dialog. `rfd` has no iOS backend and does not compile there.
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+rfd = { version = "0.15", optional = true }
 
 # Unix: `kill(pid, 0)` tells the MCP server which discovery files belong to
 # processes that no longer run.

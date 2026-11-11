@@ -1029,11 +1029,7 @@ fn devtools_save_node_screenshot_callback(
   Arc::new(move |node_path| {
     let screenshot_request = screenshot_request.clone();
     std::thread::spawn(move || {
-      let Some(mut output_path) = rfd::FileDialog::new()
-        .add_filter("PNG image", &["png"])
-        .set_file_name("lurq-node.png")
-        .save_file()
-      else {
+      let Some(mut output_path) = devtools_pick_screenshot_path() else {
         return;
       };
 
@@ -1051,6 +1047,21 @@ fn devtools_save_node_screenshot_callback(
       });
     });
   })
+}
+
+/// Asks where to save a node screenshot. `None` when the dialog is cancelled.
+#[cfg(all(feature = "devtools", not(target_os = "ios")))]
+fn devtools_pick_screenshot_path() -> Option<std::path::PathBuf> {
+  rfd::FileDialog::new()
+    .add_filter("PNG image", &["png"])
+    .set_file_name("lurq-node.png")
+    .save_file()
+}
+
+/// iOS has no save dialog (`rfd` has no backend for it), so a node screenshot is not saved there.
+#[cfg(all(feature = "devtools", target_os = "ios"))]
+fn devtools_pick_screenshot_path() -> Option<std::path::PathBuf> {
+  None
 }
 
 impl Default for Tree {
