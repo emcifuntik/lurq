@@ -262,7 +262,7 @@ mod enabled {
     let mut producer = WindowProfiler::new();
     let handle = producer.handle();
     let id = handle.start(Default::default()).unwrap().id;
-    let input = producer.context.input(InputKind::Pointer);
+    let input = producer.input(InputKind::Pointer);
     let (started, pass) = producer.begin_pass(1);
     producer.finish_pass(
       started,
@@ -676,5 +676,144 @@ mod enabled {
     assert!(ended.recording.unwrap().stopped_at_limit);
     #[cfg(any(feature = "serde", feature = "mcp"))]
     assert_eq!(ended.to_json()["recording"]["stopped_at_limit"], true);
+  }
+
+  fn presented(producer: &mut WindowProfiler, frame_id: u64) {
+    let (started, pass) = producer.begin_pass(frame_id);
+    producer.finish_pass(
+      started,
+      &crate::app::PassReport {
+        required: true,
+        rendered: true,
+        ..Default::default()
+      },
+      "wgpu",
+      None,
+    );
+    drop(pass);
+  }
+
+  #[test]
+  fn late_gpu_results_attach_to_their_frame_in_live_sessions_only() {
+    let mut main = WindowProfiler::new();
+    let mut second = WindowProfiler::new();
+    second.attach(&main, "w1".into(), false);
+    second.set_open(true);
+    let handle = main.handle();
+    let bounded = handle.start(Default::default()).unwrap().id;
+    let recording = handle.start_recording(Default::default()).unwrap().id;
+    for frame in 1..=3 {
+      presented(&mut main, frame);
+      presented(&mut second, frame);
+    }
+    let gpu = GpuTiming {
+      ui: Duration::from_micros(700),
+      canvas: Some(Duration::from_micros(300)),
+    };
+    let ui_only = GpuTiming { canvas: None, ..gpu };
+    // Results arrive frames late and out of order, each for one window's frame.
+    handle.record_gpu("main", 2, gpu);
+    handle.record_gpu("main", 1, ui_only);
+    let ended = handle.end(bounded).unwrap();
+    // Frame 3's result arrives after the bounded session ended: only the
+    // recording gets it, and the ended report stays as it was.
+    handle.record_gpu("main", 3, gpu);
+    // A second result for a frame, or one for a frame no session holds, changes nothing.
+    handle.record_gpu("main", 2, ui_only);
+    handle.record_gpu("main", 99, gpu);
+    let recorded = handle.end(recording).unwrap();
+
+    let find = |report: &ProfileReport, window: &str, frame_id: u64| {
+      report
+        .samples
+        .iter()
+        .find(|sample| sample.window == window && pass_of(sample).frame_id == Some(frame_id))
+        .unwrap()
+        .clone()
+    };
+    let gpu_of = |report: &ProfileReport, window: &str, frame_id: u64| pass_of(&find(report, window, frame_id)).gpu;
+    assert_eq!(gpu_of(&ended, "main", 1), Some(ui_only));
+    assert_eq!(gpu_of(&ended, "main", 2), Some(gpu));
+    assert_eq!(gpu_of(&ended, "main", 3), None);
+    assert_eq!(gpu_of(&ended, "w1", 2), None);
+    assert_eq!(gpu_of(&recorded, "main", 2), Some(gpu));
+    assert_eq!(gpu_of(&recorded, "main", 3), Some(gpu));
+    assert_eq!(gpu_of(&recorded, "w1", 3), None);
+    // Both sessions share the one updated copy of a pass, as they shared the pass.
+    assert!(std::sync::Arc::ptr_eq(
+      &find(&ended, "main", 2),
+      &find(&recorded, "main", 2)
+    ));
+    #[cfg(any(feature = "serde", feature = "mcp"))]
+    {
+      let json = ended.to_json();
+      let index = ended
+        .samples
+        .iter()
+        .position(|sample| sample.window == "main" && pass_of(sample).frame_id == Some(2))
+        .unwrap();
+      let data = &json["samples"][index]["data"];
+      assert!((data["gpu_timing_ms"]["ui"].as_f64().unwrap() - 0.7).abs() < 1e-9);
+      assert!((data["gpu_timing_ms"]["canvas"].as_f64().unwrap() - 0.3).abs() < 1e-9);
+      assert!((data["gpu_timing_ms"]["total"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+      let ui_only_index = ended
+        .samples
+        .iter()
+        .position(|sample| sample.window == "main" && pass_of(sample).frame_id == Some(1))
+        .unwrap();
+      assert!(json["samples"][ui_only_index]["data"]["gpu_timing_ms"]["canvas"].is_null());
+      assert_eq!(json["schema_version"], 1);
+    }
+  }
+
+  #[test]
+  fn gpu_timestamp_availability_comes_from_the_windows_adapters() {
+    let main = WindowProfiler::new();
+    let mut devtools = WindowProfiler::new();
+    devtools.attach(&main, "w1".into(), true);
+    devtools.set_open(true);
+    let handle = main.handle();
+    // Before any renderer reported, the build's own reason.
+    assert_eq!(
+      handle.availability().gpu_timestamps,
+      GpuTimestampAvailability::default()
+    );
+    let unavailable = GpuTimestampAvailability {
+      available: false,
+      reason: Some("the wgpu adapter does not offer timestamp queries"),
+      adapter_backend: Some("gl"),
+    };
+    let available = GpuTimestampAvailability {
+      available: true,
+      reason: None,
+      adapter_backend: Some("vulkan"),
+    };
+    handle.set_gpu_timestamps("main", unavailable);
+    // DevTools' own window counts only for a session that includes it.
+    handle.set_gpu_timestamps("w1", available);
+    assert_eq!(handle.availability().gpu_timestamps, unavailable);
+    let without = handle.start(Default::default()).unwrap();
+    let with = handle
+      .start(SessionOptions {
+        include_devtools: true,
+        ..Default::default()
+      })
+      .unwrap();
+    assert_eq!(without.build.gpu_timestamps, unavailable);
+    assert_eq!(with.build.gpu_timestamps, available);
+    let report = handle.end(with.id).unwrap();
+    assert_eq!(report.build.gpu_timestamps, available);
+    assert_eq!(report.windows[0].gpu_timestamps, Some(unavailable));
+    #[cfg(any(feature = "serde", feature = "mcp"))]
+    {
+      let json = handle.end(without.id).unwrap().to_json();
+      assert_eq!(json["build"]["gpu_timestamps"]["available"], false);
+      assert_eq!(
+        json["build"]["gpu_timestamps"]["reason"],
+        "the wgpu adapter does not offer timestamp queries"
+      );
+      assert_eq!(json["build"]["gpu_timestamps"]["adapter_backend"], "gl");
+      assert_eq!(json["windows"][0]["gpu_timestamps"]["adapter_backend"], "gl");
+    }
   }
 }

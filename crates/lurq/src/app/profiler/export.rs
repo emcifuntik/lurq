@@ -40,8 +40,21 @@ impl BuildAvailability {
       "features": { "perf_profile": self.perf_profile, "canvas": self.canvas, "wgpu": self.wgpu,
         "dx12": self.dx12, "devtools": self.devtools },
       "application_scopes": super::application_export::availability(self.perf_profile),
-      "gpu_timestamps": { "available": false, "reason": "GPU timestamp queries are not instrumented" }
+      "gpu_timestamps": self.gpu_timestamps.to_json()
     })
+  }
+}
+
+impl GpuTimestampAvailability {
+  pub fn to_json(self) -> Value {
+    json!({ "available": self.available, "reason": self.reason, "adapter_backend": self.adapter_backend })
+  }
+}
+
+impl GpuTiming {
+  pub fn to_json(self) -> Value {
+    let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.;
+    json!({ "ui": ms(self.ui), "canvas": self.canvas.map(ms), "total": ms(self.total()) })
   }
 }
 
@@ -88,7 +101,8 @@ impl ProfileReport {
       "boundary_excluded_samples": self.boundary_excluded_samples, "untracked_windows": self.untracked_windows,
       "boundary_policy": "whole_completed_operations; in-flight observations are unfinished and excluded from completed samples",
       "windows": self.windows.iter().map(|window| json!({
-        "id": window.id, "open": window.open, "devtools": window.devtools
+        "id": window.id, "open": window.open, "devtools": window.devtools,
+        "gpu_timestamps": window.gpu_timestamps.map(GpuTimestampAvailability::to_json)
       })).collect::<Vec<_>>(),
       "in_flight": self.in_flight.iter().map(|current| json!({
         "window": current.window, "frame_id": current.frame_id, "phase": current.phase.name(),
@@ -110,7 +124,10 @@ impl ProfileReport {
         "canvas": "CPU processing; recording includes uploads and WGPU submission; tessellation includes mesh cache lookup",
         "canvas_asset_upload_details": "DX12 captured encodes only; four CPU subscopes nested in asset_upload; cache_eviction is outside asset_upload inside Canvas total; cache byte counters are policy charges, not GPU allocation/RSS; WGPU or uncaptured details are null",
         "submit_present": "CPU API wall time, not GPU execution",
-        "fps": "on-demand rendering; sample count/interval is not throughput or FPS"
+        "fps": "on-demand rendering; sample count/interval is not throughput or FPS",
+        "present": "presented_ms is when the backend's present call returned on the CPU, not when the display showed the frame; missed_vsync only inside a continuous run of frames (each wanted within a refresh of the previous present), never across an idle gap",
+        "input_latency": "an input sample starts when the shell's handler received the event (no OS timestamp); queue_delay to its dispatch, input_to_present to the CPU present of the first frame presented after it; no positions, keys or text",
+        "gpu_timing": "WGPU timestamp queries, only while a session is active: ui is the UI encoder from the start of its first render pass to the end of the window pass; canvas sums the Canvas command buffers of the frame, each start to end (null when the frame had none or not all were measured); arrives frames later, matched by window and frame_id; null when it never arrived or the adapter has no timestamp queries (see build.gpu_timestamps)"
       }
     });
     // Additive: a bounded session's export has no such key.
@@ -143,8 +160,8 @@ fn sample_json(sample: &ProfileSample, detailed: bool) -> Value {
             shape_cache_misses, shape_cache_evictions, shape_cache_uncached, shape_cache_stretch_bytes,
             produced_bitmap_bytes)
         })),
-        "frame": pass.frame.as_ref().map(|frame| frame_json(frame, pass.backend)),
-        "gpu_timing_ms": null,
+        "frame": pass.frame.as_ref().map(|frame| frame_json(frame, pass.backend, pass.gpu.is_some())),
+        "gpu_timing_ms": pass.gpu.map(GpuTiming::to_json),
         "spans": pass.spans.iter().filter(|span| detailed || span.component.is_none()).map(|span| {
           let mut value = json!({
             "phase": span.phase.name(), "depth": span.depth,
@@ -155,7 +172,18 @@ fn sample_json(sample: &ProfileSample, detailed: bool) -> Value {
           }
           value
         }).collect::<Vec<_>>(),
-        "dropped_spans": pass.dropped_spans
+        "dropped_spans": pass.dropped_spans,
+        "reasons": pass.reasons.names().collect::<Vec<_>>(),
+        "present": pass.present.map(|present| json!({
+          "presented_ms": present.presented_ms,
+          "interval_ms": present.interval.map(ms),
+          "refresh_interval_ms": present.refresh_interval.map(ms),
+          "continuous": present.continuous,
+          "missed_vsync": present.missed_vsync(),
+          "missed_vsyncs": present.missed_vsyncs
+        })),
+        // Additive within schema_version 1; null for a pass without counters.
+        "counters": pass.counters.map(counters_json)
       });
       if detailed {
         data["component_layouts"] = pass
@@ -180,7 +208,14 @@ fn sample_json(sample: &ProfileSample, detailed: bool) -> Value {
     SampleData::InputDispatch(input) => json!({
       "kind": "input_dispatch", "frame_id": input.frame_id, "rendered": false,
       "category": input.kind.name(), "cpu_timings_ms": timings!(input; total),
-      "inclusive_in_pass": input.frame_id.is_some()
+      "inclusive_in_pass": input.frame_id.is_some(),
+      "interaction_id": input.interaction_id,
+      "presented_frame_id": input.presented_frame_id,
+      "latency_ms": {
+        "queue_delay": ms(input.queue_delay),
+        "dispatch": ms(input.total),
+        "input_to_present": input.input_to_present.map(ms)
+      }
     }),
   };
   json!({ "sequence": sample.sequence, "window": sample.window, "started_ms": sample.started_ms,
@@ -196,7 +231,27 @@ fn cause_json(cause: &RenderCause) -> Value {
     "via": cause.via.as_ref().map(source_json) })
 }
 
-fn frame_json(frame: &FrameProfile, backend: &str) -> Value {
+fn ms(duration: std::time::Duration) -> f64 {
+  duration.as_secs_f64() * 1000.
+}
+
+fn counters_json(counters: PassCounters) -> Value {
+  let allocations = counters.allocations;
+  json!({
+    "nodes": counters.nodes, "memory_bytes": counters.memory_bytes,
+    "caches": counts!(counters.caches; glyph_atlas_bytes, text_cache_bytes, canvas_text_cache_bytes,
+      canvas_asset_cache_bytes),
+    "allocations": {
+      "available": allocations.is_some(),
+      "scope": "the pass thread from pass start until its counters are taken; live_bytes is process-wide",
+      "allocations": allocations.map(|a| a.allocations), "frees": allocations.map(|a| a.frees),
+      "allocated_bytes": allocations.map(|a| a.allocated_bytes), "freed_bytes": allocations.map(|a| a.freed_bytes),
+      "live_bytes": allocations.map(|a| a.live_bytes)
+    }
+  })
+}
+
+fn frame_json(frame: &FrameProfile, backend: &str, gpu_execution: bool) -> Value {
   let render = frame.render;
   let text = frame.glyph_engine;
   let upload_details_available = cfg!(all(
@@ -218,16 +273,19 @@ fn frame_json(frame: &FrameProfile, backend: &str) -> Value {
         "canvas_asset_upload_details": upload_details_available,
         "canvas_buffer_upload": "WGPU vertex/globals; DX12 vertex only (constants remain inside recording)",
         "ui_buffer_image_upload": "WGPU separate; DX12 included in encode without independent sub-timers",
-        "gpu_execution": false
+        "gpu_execution": gpu_execution
       },
       "cpu_timings_ms": frame.render_profile_available.then(|| timings!(render; total, init, acquire, globals_upload, atlas_upload,
         buffer_upload, image_upload, encode, submit, present)),
+      // Render-list draws; Canvas draws are counted by canvas.counts.batches.
+      "draw_calls": frame.render_profile_available.then_some(render.draw_calls),
       "glyph_atlas": counts!(render; glyph_atlas_upload_bytes, glyph_atlas_upload_rects,
         glyph_atlas_full_uploads, glyph_atlas_arena_uploads, glyph_atlas_dedicated_uploads),
       "canvas": {
         "cpu_timings_ms": timings!(render.canvas; total, tessellation, asset_upload, buffer_upload, recording, submit),
         "counts": counts!(render.canvas; batches, command_groups, vertices, tiles, uploaded_asset_bytes,
-          asset_cache_budget_bytes, asset_cache_stretch_bytes, asset_cache_uncached, asset_cache_uncached_bytes),
+          asset_cache_budget_bytes, asset_cache_bytes, asset_cache_stretch_bytes, asset_cache_uncached,
+          asset_cache_uncached_bytes),
         "asset_upload_details": render.canvas.asset_upload_details
           .filter(|_| upload_details_available)
           .map(CanvasAssetUploadProfile::to_json)

@@ -25,7 +25,7 @@ use super::{
 };
 
 /// Every phase in declaration order: `PHASES[phase as usize] == phase`.
-const PHASES: [Phase; 24] = [
+pub(super) const PHASES: [Phase; 24] = [
   Phase::PassSetup,
   Phase::PassNotifications,
   Phase::LayoutUpdate,

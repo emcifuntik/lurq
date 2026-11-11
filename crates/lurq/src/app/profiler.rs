@@ -18,16 +18,30 @@ pub(crate) mod canvas_text;
 #[cfg(test)]
 mod canvas_upload_tests;
 mod collector;
+#[cfg(all(test, feature = "perf_profile"))]
+mod counter_tests;
+#[cfg(feature = "counting_allocator")]
+mod counting_allocator;
 pub(crate) mod detail;
 #[cfg(all(test, feature = "perf_profile"))]
 mod detail_tests;
 #[cfg(any(feature = "serde", feature = "mcp"))]
 mod export;
+#[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
+mod firefox_export;
+#[cfg(all(test, any(feature = "serde", feature = "mcp", feature = "devtools")))]
+mod firefox_export_tests;
+#[cfg(all(test, feature = "perf_profile"))]
+mod latency_tests;
 mod model;
 mod phase_slot;
 #[cfg(all(test, feature = "perf_profile"))]
 mod phase_tests;
 pub(crate) mod producer;
+#[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
+mod recording_file;
+#[cfg(all(test, any(feature = "serde", feature = "mcp", feature = "devtools")))]
+mod recording_file_tests;
 #[cfg(test)]
 mod session_tests;
 
@@ -41,15 +55,62 @@ pub use application_model::{
   MAX_APPLICATION_LIVE_SCOPES, MAX_APPLICATION_SCOPES_PER_SESSION,
 };
 pub use collector::ProfilingHandle;
+#[cfg(feature = "counting_allocator")]
+pub use counting_allocator::CountingAllocator;
 pub use model::{
-  BuildAvailability, CanvasTextProfile, ComponentLayouts, DEFAULT_RECORDING_MAX_BYTES, InFlightObservation,
-  InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS, MAX_COMPONENT_SPANS_PER_PASS, MAX_ENDED_SESSION_IDS,
-  MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS, MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassSample, Phase, PhaseSpan,
+  BuildAvailability, CacheSizes, CanvasTextProfile, ComponentLayouts, DEFAULT_RECORDING_MAX_BYTES,
+  GpuTimestampAvailability, GpuTiming, InFlightObservation, InputDispatchSample, InputKind, MAX_ACTIVE_SESSIONS,
+  MAX_COMPONENT_SPANS_PER_PASS, MAX_ENDED_SESSION_IDS, MAX_PENDING_INPUTS, MAX_SAMPLES_PER_SESSION, MAX_SPANS_PER_PASS,
+  MAX_TRACKED_WINDOWS, MAX_WINDOW_ID_BYTES, PassAllocations, PassCounters, PassSample, Phase, PhaseSpan, PresentTiming,
   ProfileError, ProfileReport, ProfileSample, RecordingOptions, RecordingStatus, RenderCause, RenderSource,
   RenderTrigger, SampleData, SessionId, SessionOptions, SessionStarted, SessionStatus, UiUpdateKind, UiUpdateSample,
   WindowStatus,
 };
 pub use producer::{PhaseGuard, ProfileContext};
+#[cfg(any(feature = "serde", feature = "mcp", feature = "devtools"))]
+pub use {
+  firefox_export::FIREFOX_PROCESSED_PROFILE_VERSION,
+  recording_file::{RECORDING_FILE_FORMAT, RECORDING_FILE_VERSION, RecordingFileError},
+};
+
+/// A thread's allocation counts since it started, and live bytes then.
+#[cfg(feature = "perf_profile")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AllocationSnapshot {
+  pub allocations: u64,
+  pub frees: u64,
+  pub allocated_bytes: u64,
+  pub freed_bytes: u64,
+  pub live_bytes: u64,
+}
+
+#[cfg(feature = "perf_profile")]
+impl AllocationSnapshot {
+  /// What the thread did from `earlier` to `self`, with live bytes at `self`.
+  pub(crate) fn since(self, earlier: Self) -> PassAllocations {
+    PassAllocations {
+      allocations: self.allocations.wrapping_sub(earlier.allocations),
+      frees: self.frees.wrapping_sub(earlier.frees),
+      allocated_bytes: self.allocated_bytes.wrapping_sub(earlier.allocated_bytes),
+      freed_bytes: self.freed_bytes.wrapping_sub(earlier.freed_bytes),
+      live_bytes: self.live_bytes,
+    }
+  }
+}
+
+/// The calling thread's allocation counts, or None when no `CountingAllocator`
+/// is installed or lurq was built without its feature.
+#[cfg(feature = "perf_profile")]
+pub(crate) fn allocation_snapshot() -> Option<AllocationSnapshot> {
+  #[cfg(feature = "counting_allocator")]
+  {
+    counting_allocator::snapshot()
+  }
+  #[cfg(not(feature = "counting_allocator"))]
+  {
+    None
+  }
+}
 
 #[cfg(feature = "perf_profile")]
 mod observer {

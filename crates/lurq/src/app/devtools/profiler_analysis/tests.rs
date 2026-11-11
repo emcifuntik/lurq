@@ -68,6 +68,10 @@ pub(crate) fn layered_pass(sequence: u64, start_ms: f64, duration_ms: f64, comma
       frame: None,
       spans,
       dropped_spans: 0,
+      reasons: Default::default(),
+      present: None,
+      counters: None,
+      gpu: None,
       component_layouts: Vec::new(),
     }),
   })
@@ -111,6 +115,7 @@ pub(crate) fn capture_of(
     size_bytes: 0,
     stopped_at_limit: false,
     boundary_excluded: 0,
+    gpu_timestamps: Default::default(),
   }
 }
 

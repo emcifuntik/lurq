@@ -36,6 +36,9 @@ pub(super) struct State {
   pub(super) windows: HashMap<String, WindowState>,
   #[cfg(feature = "perf_profile")]
   pub(super) application: ApplicationState,
+  /// The id of the next dispatched input (`InputDispatchSample::interaction_id`).
+  #[cfg(feature = "perf_profile")]
+  next_interaction: u64,
   untracked_windows: u64,
 }
 
@@ -80,6 +83,80 @@ impl Session {
   fn detailed(&self) -> bool {
     matches!(&self.samples, Samples::Recording(recording) if recording.detailed)
   }
+
+  /// Keeps `sample`, of `bytes`, unless it began before the session. True
+  /// when a recording stopped at its limit instead.
+  fn take(&mut self, sample: &Arc<ProfileSample>, bytes: u64, started: Instant, completed: Instant) -> bool {
+    if started < self.started {
+      self.excluded += 1;
+      return false;
+    }
+    match &mut self.samples {
+      Samples::Bounded(samples) => {
+        if samples.len() == self.options.max_samples {
+          samples.pop_front();
+          self.dropped += 1;
+        }
+        samples.push_back(sample.clone());
+      }
+      Samples::Recording(recording) => {
+        if recording.size_bytes.saturating_add(bytes) > recording.max_bytes {
+          recording.stopped_at_limit = Some(completed);
+          return true;
+        }
+        if recording
+          .chunks
+          .last()
+          .is_none_or(|chunk| chunk.len() == RECORDING_CHUNK)
+        {
+          recording.chunks.push(Vec::with_capacity(RECORDING_CHUNK));
+        }
+        recording.chunks.last_mut().unwrap().push(sample.clone());
+        recording.size_bytes += bytes;
+      }
+    }
+    self.completed += 1;
+    false
+  }
+}
+
+/// An input a window dispatched, before the frame that presents it.
+#[cfg(feature = "perf_profile")]
+pub(crate) struct DispatchedInput {
+  pub(crate) kind: InputKind,
+  /// The pass the dispatch nested in, if any.
+  pub(crate) frame_id: Option<u64>,
+  /// When the shell received the event; the dispatch start when unstamped.
+  pub(crate) received: Instant,
+  pub(crate) dispatch_started: Instant,
+  pub(crate) dispatch: std::time::Duration,
+}
+
+#[cfg(feature = "perf_profile")]
+pub(super) struct PendingInput {
+  interaction_id: u64,
+  input: DispatchedInput,
+}
+
+#[cfg(feature = "perf_profile")]
+impl PendingInput {
+  /// The input's sample, starting when it was received, as presented by
+  /// `presented` (a frame id and its present).
+  fn sample(&self, presented: Option<(u64, Instant)>) -> (Instant, SampleData) {
+    let input = &self.input;
+    (
+      input.received,
+      SampleData::InputDispatch(InputDispatchSample {
+        frame_id: input.frame_id,
+        kind: input.kind,
+        total: input.dispatch,
+        interaction_id: self.interaction_id,
+        queue_delay: input.dispatch_started.saturating_duration_since(input.received),
+        presented_frame_id: presented.map(|(frame_id, _)| frame_id),
+        input_to_present: presented.map(|(_, at)| at.saturating_duration_since(input.received)),
+      }),
+    )
+  }
 }
 
 pub(super) struct WindowState {
@@ -88,6 +165,9 @@ pub(super) struct WindowState {
   pub(super) scope_identity: Arc<str>,
   /// Shared with the window's producer, which publishes phases without this lock.
   phase: Arc<PhaseSlot>,
+  /// Inputs dispatched since the window's last presented frame, oldest first.
+  #[cfg(feature = "perf_profile")]
+  pending_inputs: VecDeque<PendingInput>,
 }
 
 impl Default for ProfilingHandle {
@@ -113,6 +193,8 @@ impl ProfilingHandle {
           untracked_windows: 0,
           #[cfg(feature = "perf_profile")]
           application: ApplicationState::default(),
+          #[cfg(feature = "perf_profile")]
+          next_interaction: 1,
         }),
       }),
     }
@@ -194,9 +276,16 @@ impl ProfilingHandle {
       id,
       started_ms: self.millis(started),
       max_samples: 0,
-      build: BuildAvailability::default(),
+      build: build_availability(&state, options.include_devtools),
       recording_max_bytes: None,
     })
+  }
+
+  /// What this build can measure, GPU time as the renderers of the tracked
+  /// windows (DevTools' own left out) reported it for their adapters.
+  pub fn availability(&self) -> BuildAvailability {
+    let state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    build_availability(&state, false)
   }
 
   /// Returns immutable owned data without waiting for an event-loop pass.
@@ -233,9 +322,13 @@ impl ProfilingHandle {
   }
 
   /// Finalizes only this session. Later producer completions cannot change it.
+  /// Inputs still waiting for a frame end in it presented by none.
   pub fn end(&self, id: SessionId) -> Result<ProfileReport, ProfileError> {
     let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
-    let session = state.sessions.remove(&id).ok_or_else(|| missing(&state, id))?;
+    #[cfg_attr(not(feature = "perf_profile"), allow(unused_mut))]
+    let mut session = state.sessions.remove(&id).ok_or_else(|| missing(&state, id))?;
+    #[cfg(feature = "perf_profile")]
+    self.end_pending_inputs(&mut state, &mut session);
     let report = self.report(&state, id, &session, Instant::now(), true);
     state.ended.push_back(id);
     while state.ended.len() > MAX_ENDED_SESSION_IDS {
@@ -298,7 +391,7 @@ impl ProfilingHandle {
       started_ms: self.millis(session.started),
       ended_ms: finalized.then(|| self.millis(now)),
       observed_ms: self.millis(now),
-      build: BuildAvailability::default(),
+      build: build_availability(state, session.options.include_devtools),
       max_samples,
       completed_samples: session.completed,
       dropped_samples: session.dropped,
@@ -358,10 +451,13 @@ impl ProfilingHandle {
           id: id.into(),
           open: true,
           devtools,
+          gpu_timestamps: None,
         },
         phase: phase.clone(),
         #[cfg(feature = "perf_profile")]
         scope_identity: id.into(),
+        #[cfg(feature = "perf_profile")]
+        pending_inputs: VecDeque::new(),
       },
     );
     // A producer still holding the replaced slot can no longer be observed.
@@ -376,6 +472,19 @@ impl ProfilingHandle {
     #[cfg(feature = "perf_profile")]
     if !open {
       state.abandon_application(Some(id));
+      // A closing window presents nothing more: its inputs still waiting
+      // for a frame end presented by none, while it is still open to record.
+      let pending = state
+        .windows
+        .get_mut(id)
+        .map(|window| std::mem::take(&mut window.pending_inputs))
+        .unwrap_or_default();
+      if self.inner.active.load(Ordering::Acquire) {
+        for input in &pending {
+          let (started, data) = input.sample(None);
+          self.record_locked(&mut state, id, started, data);
+        }
+      }
     }
     let closed = state.closed;
     if let Some(window) = state.windows.get_mut(id) {
@@ -399,6 +508,10 @@ impl ProfilingHandle {
       return;
     }
     let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    self.record_locked(&mut state, window, started, data);
+  }
+
+  fn record_locked(&self, state: &mut State, window: &str, started: Instant, data: SampleData) {
     let Some(metadata) = state.windows.get(window) else {
       return;
     };
@@ -407,54 +520,179 @@ impl ProfilingHandle {
     }
     let devtools = metadata.status.devtools;
     let completed = Instant::now();
-    let sequence = state.next_sequence;
-    state.next_sequence = state.next_sequence.saturating_add(1);
-    let sample = Arc::new(ProfileSample {
-      sequence,
-      window: window.into(),
-      started_ms: self.millis(started),
-      completed_ms: self.millis(completed),
-      data,
-    });
+    let sample = self.sample(state, window, started, completed, data);
     let bytes = retained_bytes(&sample);
     let mut stopped = false;
     for session in state.sessions.values_mut() {
       if (devtools && !session.options.include_devtools) || !session.receiving() {
         continue;
       }
-      if started < session.started {
-        session.excluded += 1;
-        continue;
-      }
-      match &mut session.samples {
-        Samples::Bounded(samples) => {
-          if samples.len() == session.options.max_samples {
-            samples.pop_front();
-            session.dropped += 1;
-          }
-          samples.push_back(sample.clone());
-        }
-        Samples::Recording(recording) => {
-          if recording.size_bytes.saturating_add(bytes) > recording.max_bytes {
-            recording.stopped_at_limit = Some(completed);
-            stopped = true;
-            continue;
-          }
-          if recording
-            .chunks
-            .last()
-            .is_none_or(|chunk| chunk.len() == RECORDING_CHUNK)
-          {
-            recording.chunks.push(Vec::with_capacity(RECORDING_CHUNK));
-          }
-          recording.chunks.last_mut().unwrap().push(sample.clone());
-          recording.size_bytes += bytes;
-        }
-      }
-      session.completed += 1;
+      stopped |= session.take(&sample, bytes, started, completed);
     }
     if stopped {
-      self.update_active(&state);
+      self.update_active(state);
+    }
+  }
+
+  fn sample(
+    &self,
+    state: &mut State,
+    window: &str,
+    started: Instant,
+    completed: Instant,
+    data: SampleData,
+  ) -> Arc<ProfileSample> {
+    let sequence = state.next_sequence;
+    state.next_sequence = state.next_sequence.saturating_add(1);
+    Arc::new(ProfileSample {
+      sequence,
+      window: window.into(),
+      started_ms: self.millis(started),
+      completed_ms: self.millis(completed),
+      data,
+    })
+  }
+
+  /// Takes an input `window` dispatched. One that asked for no frame is
+  /// recorded at once, presented by none; the others wait in the window for
+  /// its next presented frame (`inputs_presented`).
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn input_dispatched(&self, window: &str, input: DispatchedInput, wants_frame: bool) {
+    if !self.inner.active.load(Ordering::Acquire) {
+      return;
+    }
+    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    let interaction_id = state.next_interaction;
+    let Some(metadata) = state.windows.get_mut(window) else {
+      return;
+    };
+    if !metadata.status.open {
+      return;
+    }
+    let input = PendingInput { interaction_id, input };
+    let ended = if !wants_frame {
+      Some(input)
+    } else {
+      let oldest = (metadata.pending_inputs.len() >= MAX_PENDING_INPUTS)
+        .then(|| metadata.pending_inputs.pop_front())
+        .flatten();
+      metadata.pending_inputs.push_back(input);
+      oldest
+    };
+    state.next_interaction = state.next_interaction.saturating_add(1);
+    if let Some(ended) = ended {
+      let (started, data) = ended.sample(None);
+      self.record_locked(&mut state, window, started, data);
+    }
+  }
+
+  /// Records the inputs `window` dispatched since its last presented frame,
+  /// as presented by `presented` (its frame id and when its present returned);
+  /// None ends them presented by none.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn inputs_presented(&self, window: &str, presented: Option<(u64, Instant)>) {
+    if !self.inner.active.load(Ordering::Acquire) {
+      return;
+    }
+    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    let Some(metadata) = state.windows.get_mut(window) else {
+      return;
+    };
+    if metadata.pending_inputs.is_empty() {
+      return;
+    }
+    let mut pending = std::mem::take(&mut metadata.pending_inputs);
+    for input in pending.drain(..) {
+      let (started, data) = input.sample(presented);
+      self.record_locked(&mut state, window, started, data);
+    }
+    // Keeps the queue's allocation for the next frame's inputs.
+    if let Some(metadata) = state.windows.get_mut(window) {
+      metadata.pending_inputs = pending;
+    }
+  }
+
+  /// Ends the inputs still waiting for a frame in the session `end` took out,
+  /// presented by none; forgets them once no session takes samples.
+  #[cfg(feature = "perf_profile")]
+  fn end_pending_inputs(&self, state: &mut State, session: &mut Session) {
+    let completed = Instant::now();
+    let mut ended = Vec::new();
+    for window in state.windows.values() {
+      if !window.status.open || (window.status.devtools && !session.options.include_devtools) {
+        continue;
+      }
+      for input in &window.pending_inputs {
+        let (started, data) = input.sample(None);
+        ended.push((window.status.id.clone(), started, data));
+      }
+    }
+    for (window, started, data) in ended {
+      if !session.receiving() {
+        break;
+      }
+      let sample = self.sample(state, &window, started, completed, data);
+      session.take(&sample, retained_bytes(&sample), started, completed);
+    }
+    if !state.sessions.values().any(Session::receiving) {
+      for window in state.windows.values_mut() {
+        window.pending_inputs.clear();
+      }
+    }
+  }
+
+  /// Keeps what `window`'s renderer reported about GPU timestamps on its adapter.
+  #[cfg_attr(
+    not(all(
+      feature = "perf_profile",
+      any(feature = "wgpu", all(feature = "dx12", target_os = "windows"))
+    )),
+    allow(dead_code)
+  )]
+  pub(crate) fn set_gpu_timestamps(&self, window: &str, availability: GpuTimestampAvailability) {
+    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(window) = state.windows.get_mut(window) {
+      window.status.gpu_timestamps = Some(availability);
+    }
+  }
+
+  /// Attaches GPU time that arrived late to `window`'s pass of `frame_id` in
+  /// every live session that still holds it. Ended sessions' reports keep the
+  /// samples they had: a pass is replaced by an updated copy, never changed.
+  #[cfg_attr(not(all(feature = "wgpu", feature = "perf_profile")), allow(dead_code))]
+  pub(crate) fn record_gpu(&self, window: &str, frame_id: u64, gpu: GpuTiming) {
+    let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    // One updated copy, shared like the pass by every session holding it.
+    let mut updated: Option<(Arc<ProfileSample>, Arc<ProfileSample>)> = None;
+    for session in state.sessions.values_mut() {
+      let awaits = |sample: &&mut Arc<ProfileSample>| awaits_gpu(sample, window, frame_id);
+      let found = match &mut session.samples {
+        Samples::Bounded(samples) => samples.iter_mut().rev().take(GPU_MATCH_WINDOW).find(awaits),
+        Samples::Recording(recording) => recording
+          .chunks
+          .iter_mut()
+          .rev()
+          .flat_map(|chunk| chunk.iter_mut().rev())
+          .take(GPU_MATCH_WINDOW)
+          .find(awaits),
+      };
+      let Some(slot) = found else {
+        continue;
+      };
+      let fresh = match &updated {
+        Some((old, fresh)) if Arc::ptr_eq(old, slot) => fresh.clone(),
+        _ => {
+          let mut copy = ProfileSample::clone(slot);
+          if let SampleData::Pass(pass) = &mut copy.data {
+            pass.gpu = Some(gpu);
+          }
+          let fresh = Arc::new(copy);
+          updated = Some((slot.clone(), fresh.clone()));
+          fresh
+        }
+      };
+      // The copy is no larger than the pass the recording already counted.
+      *slot = fresh;
     }
   }
 
@@ -480,6 +718,39 @@ impl Drop for Inner {
         detail::recording_ended();
       }
     }
+  }
+}
+
+/// Newest samples of a session searched for the pass a GPU result belongs to;
+/// a result later than this many samples is dropped, its pass left without.
+const GPU_MATCH_WINDOW: usize = 512;
+
+fn awaits_gpu(sample: &ProfileSample, window: &str, frame_id: u64) -> bool {
+  sample.window == window
+    && matches!(&sample.data, SampleData::Pass(pass) if pass.frame_id == Some(frame_id) && pass.gpu.is_none())
+}
+
+/// Build availability with GPU timestamps from the windows a session sees:
+/// available when any of their adapters measures, otherwise the reason of the
+/// first window (by id) that reported one, otherwise the build's own.
+fn build_availability(state: &State, include_devtools: bool) -> BuildAvailability {
+  let reported = || {
+    state
+      .windows
+      .values()
+      .map(|window| &window.status)
+      .filter(|status| include_devtools || !status.devtools)
+      .filter_map(|status| Some((status.id.as_str(), status.gpu_timestamps?)))
+  };
+  let gpu_timestamps = reported()
+    .filter(|(_, gpu)| gpu.available)
+    .min_by(|a, b| a.0.cmp(b.0))
+    .or_else(|| reported().min_by(|a, b| a.0.cmp(b.0)))
+    .map(|(_, gpu)| gpu)
+    .unwrap_or_default();
+  BuildAvailability {
+    gpu_timestamps,
+    ..BuildAvailability::default()
   }
 }
 

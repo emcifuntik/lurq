@@ -5,8 +5,8 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use crate::app::profiler::{
-  ApplicationScopeSample, PassSample, ProfileReport, ProfileSample, RenderCause, RenderSource, SampleData,
-  UiUpdateSample, span_name,
+  ApplicationScopeSample, GpuTimestampAvailability, InputDispatchSample, PassSample, ProfileReport, ProfileSample,
+  RenderCause, RenderSource, SampleData, UiUpdateSample, span_name,
 };
 
 /// One 60 Hz refresh: the timeline draws its budget line here and colours the
@@ -58,6 +58,8 @@ pub(crate) struct ProfilerCapture {
   pub stopped_at_limit: bool,
   /// Operations that began before Start, left out of the recording.
   pub boundary_excluded: u64,
+  /// Whether the recorded windows' adapters measured GPU time, and why not.
+  pub gpu_timestamps: GpuTimestampAvailability,
 }
 
 impl ProfilerCapture {
@@ -95,6 +97,16 @@ impl ProfilerCapture {
       size_bytes: report.recording.map_or(0, |recording| recording.size_bytes),
       stopped_at_limit: report.recording.is_some_and(|recording| recording.stopped_at_limit),
       boundary_excluded: report.boundary_excluded_samples,
+      gpu_timestamps: report.build.gpu_timestamps,
+    }
+  }
+
+  /// Why a presented pass has no GPU time: its adapter does not measure, or
+  /// its result never arrived.
+  pub(crate) fn gpu_missing_reason(&self) -> &'static str {
+    match self.gpu_timestamps.reason {
+      Some(reason) if !self.gpu_timestamps.available => reason,
+      _ => "its GPU result never arrived",
     }
   }
 
@@ -228,6 +240,109 @@ pub(crate) fn pass_of(sample: &ProfileSample) -> Option<&PassSample> {
   }
 }
 
+pub(crate) fn input_of(sample: &ProfileSample) -> Option<&InputDispatchSample> {
+  match &sample.data {
+    SampleData::InputDispatch(input) => Some(input),
+    SampleData::Pass(_) | SampleData::UiUpdate(_) => None,
+  }
+}
+
+/// The pass presented a frame that missed a vsync inside a run of frames.
+pub(crate) fn missed_vsync(sample: &ProfileSample) -> bool {
+  pass_of(sample)
+    .and_then(|pass| pass.present)
+    .is_some_and(|present| present.missed_vsync())
+}
+
+/// Why the pass ran, comma separated; "-" for no reason recorded.
+pub(crate) fn reasons_text(pass: &PassSample) -> String {
+  let names: Vec<_> = pass.reasons.names().collect();
+  if names.is_empty() {
+    "-".to_owned()
+  } else {
+    names.join(", ")
+  }
+}
+
+/// The inputs received in one part of the input lane.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct InputBucket {
+  pub inputs: usize,
+  /// The longest input-to-present latency among them; None when no frame
+  /// presented any of them.
+  pub max_latency_ms: Option<f64>,
+}
+
+impl ProfilerCapture {
+  /// `buckets` equal parts of `range`, each with the inputs received in it.
+  pub(crate) fn input_buckets(&self, range: TimeRange, buckets: usize) -> Vec<InputBucket> {
+    let mut parts = vec![InputBucket::default(); buckets];
+    if buckets == 0 {
+      return parts;
+    }
+    for sample in self.markers_in(range) {
+      let Some(input) = input_of(sample) else {
+        continue;
+      };
+      let part = &mut parts[bucket_of(range, sample.started_ms, buckets)];
+      part.inputs += 1;
+      if let Some(latency) = input.input_to_present.map(ms) {
+        part.max_latency_ms = Some(part.max_latency_ms.map_or(latency, |max| max.max(latency)));
+      }
+    }
+    parts
+  }
+
+  /// `buckets` equal parts of `range`, true where a pass that missed a vsync
+  /// starts, and how many such passes there are.
+  pub(crate) fn missed_vsync_buckets(&self, range: TimeRange, buckets: usize) -> (Vec<bool>, usize) {
+    let mut parts = vec![false; buckets];
+    let mut count = 0;
+    for sample in self.passes_in(range).iter().filter(|sample| missed_vsync(sample)) {
+      if buckets > 0 {
+        parts[bucket_of(range, sample.started_ms, buckets)] = true;
+      }
+      count += 1;
+    }
+    (parts, count)
+  }
+
+  /// The inputs frame `frame_id` of `window` presented, in dispatch order.
+  pub(crate) fn inputs_presented_by(&self, window: &str, frame_id: u64) -> Vec<&InputDispatchSample> {
+    let mut inputs: Vec<_> = self
+      .markers
+      .iter()
+      .filter(|sample| sample.window == window)
+      .filter_map(|sample| input_of(sample))
+      .filter(|input| input.presented_frame_id == Some(frame_id))
+      .collect();
+    inputs.sort_by_key(|input| input.interaction_id);
+    inputs
+  }
+}
+
+/// One row per input a frame presented: its interaction id, queue delay,
+/// dispatch and input-to-present latency.
+pub(crate) fn input_detail(inputs: &[&InputDispatchSample]) -> Option<DetailSection> {
+  (!inputs.is_empty()).then(|| {
+    section(
+      "INPUT",
+      inputs.iter().map(|input| {
+        (
+          input.kind.name(),
+          format!(
+            "#{} queue {} · dispatch {} · present {}",
+            input.interaction_id,
+            format_duration(input.queue_delay),
+            format_duration(input.total),
+            input.input_to_present.map_or_else(|| "-".to_owned(), format_duration)
+          ),
+        )
+      }),
+    )
+  })
+}
+
 pub(crate) fn ms(duration: Duration) -> f64 {
   duration.as_secs_f64() * 1000.0
 }
@@ -261,6 +376,91 @@ pub(crate) fn fps(passes: &[Arc<ProfileSample>]) -> Option<f64> {
     })
     .max_by_key(|(count, _)| *count)
     .map(|(_, fps)| fps)
+}
+
+/// A counter track under the frame timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Counter {
+  Fps,
+  Nodes,
+  DrawCalls,
+  Memory,
+  Allocations,
+}
+
+impl Counter {
+  pub(crate) const ALL: [Self; 5] = [Self::Fps, Self::Nodes, Self::DrawCalls, Self::Memory, Self::Allocations];
+
+  pub(crate) fn label(self) -> &'static str {
+    match self {
+      Self::Fps => "fps",
+      Self::Nodes => "nodes",
+      Self::DrawCalls => "draw calls",
+      Self::Memory => "memory",
+      Self::Allocations => "allocs",
+    }
+  }
+
+  pub(crate) fn format(self, value: f64) -> String {
+    match self {
+      Self::Memory => format_bytes(value as u64),
+      Self::Fps | Self::Nodes | Self::DrawCalls | Self::Allocations => format!("{value:.0}"),
+    }
+  }
+}
+
+/// One pass's value on a counter track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CounterPoint {
+  pub sequence: u64,
+  pub started_ms: f64,
+  pub value: f64,
+}
+
+/// `counter`'s value for each of `passes` that has one, in their order. None
+/// when none of them can have it: no pass carries counters (or, for draw
+/// calls, a render profile; for allocations, a `CountingAllocator`'s counts).
+/// A pass's FPS is that of the interval since the previous presented frame of
+/// its window, up to `IDLE_GAP_MS`.
+pub(crate) fn counter_points(counter: Counter, passes: &[Arc<ProfileSample>]) -> Option<Vec<CounterPoint>> {
+  let mut available = counter == Counter::Fps;
+  let mut last_presented: BTreeMap<&str, f64> = BTreeMap::new();
+  let mut points = Vec::new();
+  for sample in passes {
+    let Some(pass) = pass_of(sample) else {
+      continue;
+    };
+    let value = match counter {
+      Counter::Fps if pass.rendered => {
+        let previous = last_presented.insert(sample.window.as_str(), sample.completed_ms);
+        previous
+          .map(|previous| sample.completed_ms - previous)
+          .filter(|interval| *interval > 0.0 && *interval <= IDLE_GAP_MS)
+          .map(|interval| 1000.0 / interval)
+      }
+      Counter::Fps => None,
+      Counter::Nodes => pass.counters.map(|counters| counters.nodes as f64),
+      Counter::Memory => pass.counters.map(|counters| counters.memory_bytes as f64),
+      Counter::DrawCalls => pass
+        .frame
+        .as_ref()
+        .filter(|frame| frame.render_profile_available)
+        .map(|frame| frame.render.draw_calls as f64),
+      Counter::Allocations => pass
+        .counters
+        .and_then(|counters| counters.allocations)
+        .map(|allocations| allocations.allocations as f64),
+    };
+    if let Some(value) = value {
+      available = true;
+      points.push(CounterPoint {
+        sequence: sample.sequence,
+        started_ms: sample.started_ms,
+        value,
+      });
+    }
+  }
+  available.then_some(points)
 }
 
 /// One phase span of a pass, placed on the pass's own time axis.
@@ -364,6 +564,7 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
     ),
     ("backend", pass.backend.to_owned()),
     ("spans", pass.spans.len().to_string()),
+    ("reasons", reasons_text(pass)),
   ];
   let mut sections = vec![section(
     "PASS",
@@ -375,6 +576,48 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
         canvas_recording, canvas_preparation),
       ),
   )];
+
+  if let Some(gpu) = pass.gpu {
+    sections.push(section(
+      "GPU",
+      [
+        ("ui", format_duration(gpu.ui)),
+        ("canvas", gpu.canvas.map_or_else(|| "-".to_owned(), format_duration)),
+        ("total", format_duration(gpu.total())),
+      ],
+    ));
+  }
+
+  if let Some(present) = &pass.present {
+    let optional = |value: Option<Duration>| value.map_or_else(|| "-".to_owned(), format_duration);
+    sections.push(section(
+      "PRESENT",
+      [
+        ("presented_ms", format_ms(present.presented_ms)),
+        ("interval", optional(present.interval)),
+        ("refresh_interval", optional(present.refresh_interval)),
+      ]
+      .into_iter()
+      .chain(count_rows!(present; continuous, missed_vsyncs)),
+    ));
+  }
+
+  if let Some(counters) = pass.counters {
+    let allocations = counters.allocations.map_or_else(
+      || vec![("allocations", "unavailable".to_owned())],
+      |allocations| count_rows!(allocations; allocations, frees, allocated_bytes, freed_bytes, live_bytes).to_vec(),
+    );
+    sections.push(section(
+      "COUNTERS",
+      count_rows!(counters; nodes, memory_bytes)
+        .into_iter()
+        .chain(
+          count_rows!(counters.caches; glyph_atlas_bytes, text_cache_bytes, canvas_text_cache_bytes,
+          canvas_asset_cache_bytes),
+        )
+        .chain(allocations),
+    ));
+  }
 
   if let Some(text) = &pass.canvas_text {
     sections.push(section(
@@ -422,7 +665,7 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
       encode, submit, present)
     .into_iter()
     .chain(
-      count_rows!(render; glyph_atlas_upload_bytes, glyph_atlas_upload_rects, glyph_atlas_full_uploads,
+      count_rows!(render; draw_calls, glyph_atlas_upload_bytes, glyph_atlas_upload_rects, glyph_atlas_full_uploads,
       glyph_atlas_arena_uploads, glyph_atlas_dedicated_uploads),
     ),
   ));
@@ -434,7 +677,8 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
       .into_iter()
       .chain(
         count_rows!(canvas; batches, command_groups, vertices, tiles, uploaded_asset_bytes,
-        asset_cache_budget_bytes, asset_cache_stretch_bytes, asset_cache_uncached, asset_cache_uncached_bytes),
+        asset_cache_budget_bytes, asset_cache_bytes, asset_cache_stretch_bytes, asset_cache_uncached,
+        asset_cache_uncached_bytes),
       ),
   ));
 

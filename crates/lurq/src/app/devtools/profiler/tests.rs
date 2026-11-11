@@ -3,7 +3,10 @@ use std::{sync::Arc, time::Duration};
 use super::*;
 use crate::app::{
   devtools::profiler_capture::{IDLE_GAP_MS, causes_section, fps, pass_detail, phase_rows},
-  profiler::{FrameProfile, PassSample, Phase, PhaseSpan, ProfileSample, SampleData, producer::WindowProfiler},
+  profiler::{
+    FrameProfile, GpuTimestampAvailability, GpuTiming, PassAllocations, PassCounters, PassSample, Phase, PhaseSpan,
+    ProfileSample, SampleData, producer::WindowProfiler,
+  },
 };
 
 /// A pass of `producer` that a session records, presented with a frame profile.
@@ -205,6 +208,108 @@ fn a_detailed_recording_shows_components_and_render_causes_in_frame_details() {
   }
 }
 
+/// What the tab draws of a capture: its passes, markers and scopes by sequence
+/// and time, and the call tree of its whole range on every track.
+fn drawn(capture: &ProfilerCapture) -> impl PartialEq + std::fmt::Debug + use<> {
+  use crate::app::profiler::{SpanTrack, forest_of};
+  let times = |samples: &[Arc<ProfileSample>]| {
+    samples
+      .iter()
+      .map(|sample| {
+        (
+          sample.sequence,
+          sample.window.clone(),
+          sample.started_ms,
+          sample.completed_ms,
+        )
+      })
+      .collect::<Vec<_>>()
+  };
+  let whole = capture.whole();
+  let forest = forest_of(capture.passes_in(whole), capture.scopes_in(whole));
+  (
+    (
+      whole,
+      capture.default_range(),
+      capture.size_bytes,
+      capture.boundary_excluded,
+    ),
+    times(&capture.passes),
+    times(&capture.markers),
+    capture
+      .scopes
+      .iter()
+      .map(|scope| (scope.scope.label, scope.scope.started_ms, scope.wall))
+      .collect::<Vec<_>>(),
+    SpanTrack::ALL.map(|track| forest.call_tree(track)),
+    capture
+      .passes
+      .iter()
+      .map(|sample| phase_rows(pass_of(sample).unwrap()))
+      .collect::<Vec<_>>(),
+  )
+}
+
+#[test]
+fn a_saved_recording_loads_back_into_the_same_timeline_and_call_tree() {
+  use crate::{
+    app::{App, Tree},
+    components::{Column, Text},
+  };
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.set_root(Column::new().child(Text::new("Profiler fixture")));
+  let mut state = ProfilerState::default();
+  assert!(state.start(&tree.profiling_handle()));
+  for _ in 0..3 {
+    tree.pass_headless(&mut app);
+  }
+  state.stop();
+  let saved = state
+    .report
+    .as_ref()
+    .expect("Stop keeps the report")
+    .to_recording_file();
+
+  let mut loaded = ProfilerState::default();
+  loaded.load(ProfileReport::from_recording_file(&saved).map_err(|error| error.to_string()));
+  assert!(loaded.error.is_none());
+  assert_eq!(drawn(&capture_of(&loaded)), drawn(&capture_of(&state)));
+  assert_eq!(capture_of(&loaded).passes.len(), 3);
+  assert_eq!(loaded.range, state.range);
+  assert_eq!(loaded.selected, state.selected);
+  // Saved again, the loaded recording is the same file.
+  assert_eq!(loaded.report.as_ref().unwrap().to_recording_file(), saved);
+  // The tab draws it, with the file actions.
+  tab_tree(Signal::new(loaded.clone()), 1440, 860);
+
+  // A file that cannot be read leaves the capture shown and says why.
+  loaded.load(Err("Load failed: not a lurq recording".to_owned()));
+  assert_eq!(drawn(&capture_of(&loaded)), drawn(&capture_of(&state)));
+  assert_eq!(loaded.error.as_deref(), Some("Load failed: not a lurq recording"));
+  tab_tree(Signal::new(loaded.clone()), 1440, 860);
+  // A file picked while a recording runs is not loaded, and the top bar says so.
+  assert!(loaded.start(&tree.profiling_handle()));
+  loaded.load(ProfileReport::from_recording_file(&saved).map_err(|error| error.to_string()));
+  assert!(loaded.capture.is_none());
+  assert!(loaded.recording());
+  assert_eq!(loaded.error.as_deref(), Some(LOAD_WHILE_RECORDING));
+  let (_app, recording_tab) = tab_tree(Signal::new(loaded.clone()), 1440, 860);
+  assert!(has_text(&recording_tab, LOAD_WHILE_RECORDING));
+  // Stop shows its own capture, without the message.
+  loaded.stop();
+  assert!(loaded.error.is_none());
+  assert!(loaded.capture.is_some());
+}
+
+/// Some element of the tree shows `text`.
+fn has_text(tree: &crate::app::Tree, text: &str) -> bool {
+  fn find(element: crate::node::ElementRef<'_>, text: &str) -> bool {
+    element.text_content() == Some(text) || element.children().iter().any(|child| find(child, text))
+  }
+  tree.root().is_some_and(|root| find(root, text))
+}
+
 #[test]
 fn clear_ends_a_running_recording() {
   let main = WindowProfiler::new();
@@ -240,6 +345,10 @@ fn sample(sequence: u64, window: &str, started_ms: f64, total_ms: f64, rendered:
       frame: rendered.then(FrameProfile::default),
       spans: Vec::new(),
       dropped_spans: 0,
+      reasons: crate::app::PassReasons::default(),
+      present: None,
+      counters: None,
+      gpu: None,
       component_layouts: Vec::new(),
     }),
   })
@@ -256,7 +365,17 @@ fn capture(passes: Vec<Arc<ProfileSample>>, ended_ms: f64) -> ProfilerCapture {
     size_bytes: 0,
     stopped_at_limit: false,
     boundary_excluded: 0,
+    gpu_timestamps: GpuTimestampAvailability::default(),
   }
+}
+
+/// `sample` with `gpu` as its GPU time.
+fn with_gpu(sample: Arc<ProfileSample>, gpu: GpuTiming) -> Arc<ProfileSample> {
+  let mut sample = (*sample).clone();
+  if let SampleData::Pass(pass) = &mut sample.data {
+    pass.gpu = Some(gpu);
+  }
+  Arc::new(sample)
 }
 
 #[test]
@@ -445,11 +564,16 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
     components::Column,
   };
   const WIDTH: f32 = 1068.0;
-  // A pass and an input dispatch half way through the range, and a pass at
-  // its end.
+  // A pass with GPU time and an input dispatch half way through the range,
+  // and a pass at its end whose GPU result never arrived; the second pass has
+  // twice the nodes of the first.
+  let gpu = GpuTiming {
+    ui: Duration::from_millis(4),
+    canvas: Some(Duration::from_millis(2)),
+  };
   let passes = vec![
-    sample(1, "main", 500.0, 30.0, true),
-    sample(2, "main", 1000.0, 30.0, true),
+    with_gpu(with_nodes(sample(1, "main", 500.0, 30.0, true), 10), gpu),
+    with_nodes(sample(2, "main", 1000.0, 30.0, true), 20),
   ];
   let mut capture = capture(passes.clone(), 1000.0);
   capture.markers = vec![Arc::new(ProfileSample {
@@ -461,12 +585,16 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
       frame_id: None,
       kind: crate::app::profiler::InputKind::Pointer,
       total: Duration::from_millis(1),
+      interaction_id: 1,
+      queue_delay: Duration::ZERO,
+      presented_frame_id: None,
+      input_to_present: None,
     }),
   })];
   let range = capture.whole();
   let mut app = App::new();
   let mut tree = Tree::new();
-  tree.resize(WIDTH as u32, 400);
+  tree.resize(WIDTH as u32, 500);
   tree.set_root(
     Column::new()
       .child(timeline_tracks(
@@ -476,23 +604,104 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
         None,
         Signal::new(ProfilerState::default()),
       ))
-      .size(WIDTH, 400.0),
+      .size(WIDTH, 500.0),
   );
   tree.pass_headless(&mut app);
 
-  // Rows: chart, input lane, ui update lane, axis; each a track then its label.
+  // Rows: chart, missed vsync lane, GPU track, the counter tracks (fps,
+  // nodes, draw calls, memory, allocs), input lane, ui update lane, axis; each
+  // a track then its label.
   let half_bar = bounds_at(&mut tree, &[0, 0, 0, 1, 1]);
   let end_bar = bounds_at(&mut tree, &[0, 0, 0, 2, 1]);
-  let half_marker = bounds_at(&mut tree, &[0, 1, 0, 1]);
-  let half_tick = bounds_at(&mut tree, &[0, 3, 0, 2]);
-  let last_part = bounds_at(&mut tree, &[0, 3, 0, 3]);
+  let half_gpu_bar = bounds_at(&mut tree, &[0, 2, 0, 0, 1]);
+  let half_nodes = bounds_at(&mut tree, &[0, 4, 0, 0, 1]);
+  let end_nodes = bounds_at(&mut tree, &[0, 4, 0, 1, 1]);
+  let half_marker = bounds_at(&mut tree, &[0, 8, 0, 1]);
+  let half_tick = bounds_at(&mut tree, &[0, 10, 0, 2]);
+  let last_part = bounds_at(&mut tree, &[0, 10, 0, 3]);
   let close = |a: f32, b: f32, what: &str| assert!((a - b).abs() < 0.5, "{what}: {a} vs {b}");
   let scale = WIDTH - LANE_GAP - LANE_LABEL_WIDTH - BAR_WIDTH;
   close(half_bar.x, scale * 0.5, "bar at half the range");
+  close(half_gpu_bar.x, half_bar.x, "GPU bar at the pass's time");
+  // 6 ms of GPU time on a scale of one frame budget.
+  close(
+    half_gpu_bar.height,
+    (6.0 / FRAME_BUDGET_MS) as f32 * GPU_TRACK_HEIGHT,
+    "GPU bar height",
+  );
+  close(half_nodes.x, half_bar.x, "counter bar at the pass bar's time");
+  close(end_nodes.x, end_bar.x, "last counter bar at the last pass bar");
+  close(
+    half_nodes.height * 2.0,
+    end_nodes.height,
+    "counter bars scaled by value",
+  );
+  close(end_nodes.height, COUNTER_HEIGHT, "the highest value fills the track");
   close(half_marker.x, half_bar.x, "marker at the bar's time");
   close(half_tick.x, half_bar.x, "tick at the bar's time");
   close(end_bar.x, scale, "bar at the range's end");
   close(last_part.x + last_part.width, end_bar.x, "axis end at the last bar");
+}
+
+fn with_nodes(sample: Arc<ProfileSample>, nodes: usize) -> Arc<ProfileSample> {
+  let mut sample = (*sample).clone();
+  if let SampleData::Pass(pass) = &mut sample.data {
+    pass.counters = Some(PassCounters {
+      nodes,
+      ..PassCounters::default()
+    });
+  }
+  Arc::new(sample)
+}
+
+#[test]
+fn counter_tracks_take_values_per_pass_and_mark_missing_allocations_unavailable() {
+  // Presented every 20 ms, then after an idle gap.
+  let passes = vec![
+    with_nodes(sample(1, "main", 0.0, 2.0, true), 5),
+    with_nodes(sample(2, "main", 20.0, 2.0, true), 6),
+    with_nodes(sample(3, "main", 40.0, 2.0, false), 7),
+    with_nodes(sample(4, "main", 40.0 + IDLE_GAP_MS * 2.0, 2.0, true), 8),
+  ];
+  let values = |counter| {
+    capture::counter_points(counter, &passes).map(|points| {
+      points
+        .iter()
+        .map(|point| (point.sequence, point.value))
+        .collect::<Vec<_>>()
+    })
+  };
+  // FPS of the interval since the window's previous presented frame.
+  assert_eq!(values(Counter::Fps), Some(vec![(2, 50.0)]));
+  assert_eq!(
+    values(Counter::Nodes),
+    Some(vec![(1, 5.0), (2, 6.0), (3, 7.0), (4, 8.0)])
+  );
+  // Memory comes with the same counters; no pass has allocation counts.
+  assert_eq!(values(Counter::Memory).map(|points| points.len()), Some(4));
+  assert_eq!(values(Counter::Allocations), None);
+
+  let mut counted = (*passes[0]).clone();
+  if let SampleData::Pass(pass) = &mut counted.data {
+    pass.counters.as_mut().unwrap().allocations = Some(PassAllocations {
+      allocations: 12,
+      ..PassAllocations::default()
+    });
+  }
+  assert_eq!(
+    capture::counter_points(Counter::Allocations, &[Arc::new(counted)]).map(|points| points[0].value),
+    Some(12.0)
+  );
+  // Passes recorded without counters have none to show.
+  assert_eq!(
+    capture::counter_points(Counter::Nodes, &[sample(1, "main", 0.0, 2.0, true)]),
+    None
+  );
+  // The sidebar lists a pass's counters, allocations marked unavailable.
+  let detail = pass_detail(&passes[0], pass_of(&passes[0]).unwrap());
+  let counters = detail.iter().find(|section| section.title == "COUNTERS").unwrap();
+  assert!(counters.rows.contains(&("nodes", "5".to_owned())));
+  assert!(counters.rows.contains(&("allocations", "unavailable".to_owned())));
 }
 
 /// The Profiler tab as DevTools draws it, the analysis mounted under the
@@ -554,6 +763,42 @@ fn tab_tree(state: Signal<ProfilerState>, width: u32, height: u32) -> (crate::ap
   tree.pass_headless(&mut app);
   tree.pass_headless(&mut app);
   (app, tree)
+}
+
+#[test]
+fn the_gpu_track_says_why_no_gpu_time_was_measured() {
+  use crate::{
+    app::{App, Tree},
+    components::Column,
+  };
+  let passes = vec![sample(1, "main", 500.0, 30.0, true)];
+  let mut capture = capture(passes.clone(), 1000.0);
+  capture.gpu_timestamps = GpuTimestampAvailability::unavailable(GpuTimestampAvailability::NATIVE_DX12);
+  assert_eq!(capture.gpu_missing_reason(), GpuTimestampAvailability::NATIVE_DX12);
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(800, 300);
+  tree.set_root(
+    Column::new()
+      .child(gpu_track(&capture, &passes, capture.whole()))
+      .size(800.0, 300.0),
+  );
+  tree.pass_headless(&mut app);
+  let note = tree
+    .find_element(|element: crate::node::ElementRef<'_>| {
+      element
+        .text_content()
+        .is_some_and(|text| text.contains(GpuTimestampAvailability::NATIVE_DX12))
+    })
+    .is_some();
+  assert!(note, "the track names the reason");
+  // On an adapter that measures, a pass without GPU time is one whose result never arrived.
+  capture.gpu_timestamps = GpuTimestampAvailability {
+    available: true,
+    reason: None,
+    adapter_backend: Some("vulkan"),
+  };
+  assert_eq!(capture.gpu_missing_reason(), "its GPU result never arrived");
 }
 
 #[test]
@@ -775,4 +1020,141 @@ fn pass_detail_shows_the_whole_frame_profile() {
   assert_eq!(row("COUNTS", "quad_count").as_deref(), Some("0"));
   assert_eq!(row("TEXT", "shape_text").as_deref(), Some("0.00ms"));
   assert_eq!(row("MEMORY", "total_bytes").as_deref(), Some("0"));
+}
+
+#[test]
+fn pass_detail_shows_gpu_time_once_it_arrived() {
+  let measured = with_gpu(
+    sample(1, "main", 0.0, 4.0, true),
+    GpuTiming {
+      ui: Duration::from_micros(1500),
+      canvas: None,
+    },
+  );
+  let detail = pass_detail(&measured, pass_of(&measured).unwrap());
+  assert_eq!(detail[1].title, "GPU");
+  assert_eq!(
+    detail[1].rows,
+    vec![
+      ("ui", "1.50ms".to_owned()),
+      ("canvas", "-".to_owned()),
+      ("total", "1.50ms".to_owned())
+    ]
+  );
+}
+
+/// `sample` presented with `missed_vsyncs`, run by a redraw request.
+fn with_present(sample: Arc<ProfileSample>, missed_vsyncs: u32) -> Arc<ProfileSample> {
+  let mut sample = (*sample).clone();
+  if let SampleData::Pass(pass) = &mut sample.data {
+    pass.reasons.redraw_requested = true;
+    pass.present = Some(crate::app::profiler::PresentTiming {
+      presented_ms: sample.completed_ms,
+      interval: Some(Duration::from_millis(16 * (u64::from(missed_vsyncs) + 1))),
+      refresh_interval: Some(Duration::from_millis(16)),
+      continuous: true,
+      missed_vsyncs,
+    });
+  }
+  Arc::new(sample)
+}
+
+/// An input received at `started_ms`, presented by `frame` `latency_ms` later.
+fn input_marker(sequence: u64, started_ms: f64, frame: Option<(u64, f64)>) -> Arc<ProfileSample> {
+  Arc::new(ProfileSample {
+    sequence,
+    window: "main".into(),
+    started_ms,
+    completed_ms: started_ms + 1.0,
+    data: SampleData::InputDispatch(crate::app::profiler::InputDispatchSample {
+      frame_id: None,
+      kind: crate::app::profiler::InputKind::Pointer,
+      total: Duration::from_micros(500),
+      interaction_id: sequence,
+      queue_delay: Duration::from_micros(250),
+      presented_frame_id: frame.map(|(frame_id, _)| frame_id),
+      input_to_present: frame.map(|(_, latency_ms)| Duration::from_secs_f64(latency_ms / 1000.0)),
+    }),
+  })
+}
+
+#[test]
+fn missed_frames_and_input_latencies_fill_their_lanes_and_the_frame_details() {
+  // Frame 2 missed two vsyncs; frame 1 made its refresh.
+  let passes = vec![
+    with_present(sample(1, "main", 100.0, 4.0, true), 0),
+    with_present(sample(2, "main", 600.0, 40.0, true), 2),
+  ];
+  let mut capture = capture(passes, 1000.0);
+  // Two inputs frame 2 presented, and one no frame presented.
+  capture.markers = vec![
+    input_marker(10, 550.0, Some((2, 90.0))),
+    input_marker(11, 560.0, Some((2, 80.0))),
+    input_marker(12, 900.0, None),
+  ];
+  let range = capture.whole();
+
+  let (missed, count) = capture.missed_vsync_buckets(range, 10);
+  assert_eq!(count, 1);
+  let marked: Vec<_> = missed
+    .iter()
+    .enumerate()
+    .filter_map(|(bucket, missed)| missed.then_some(bucket))
+    .collect();
+  assert_eq!(marked, vec![6], "only the bucket where frame 2 starts");
+  let inputs = capture.input_buckets(range, 10);
+  assert_eq!(inputs[5].inputs, 2);
+  assert!((inputs[5].max_latency_ms.unwrap() - 90.0).abs() < 1e-6);
+  assert_eq!(inputs[9].inputs, 1);
+  assert_eq!(inputs[9].max_latency_ms, None);
+  assert_eq!(inputs.iter().map(|bucket| bucket.inputs).sum::<usize>(), 3);
+
+  let presented = capture.inputs_presented_by("main", 2);
+  assert_eq!(
+    presented.iter().map(|input| input.interaction_id).collect::<Vec<_>>(),
+    vec![10, 11]
+  );
+  assert!(capture.inputs_presented_by("main", 1).is_empty());
+  let detail = capture::input_detail(&presented).unwrap();
+  assert_eq!(detail.title, "INPUT");
+  assert_eq!(
+    detail.rows[0],
+    (
+      "pointer",
+      "#10 queue 0.25ms · dispatch 0.50ms · present 90.00ms".to_owned()
+    )
+  );
+  assert!(capture::input_detail(&[]).is_none());
+
+  let late = &capture.passes[1];
+  let sections = pass_detail(late, pass_of(late).unwrap());
+  assert_eq!(sections[1].title, "PRESENT");
+  let row = |title: &str, label: &str| {
+    sections
+      .iter()
+      .find(|section| section.title == title)
+      .and_then(|section| section.rows.iter().find(|(name, _)| *name == label))
+      .map(|(_, value)| value.clone())
+  };
+  assert_eq!(row("PASS", "reasons").as_deref(), Some("redraw_requested"));
+  assert_eq!(row("PRESENT", "missed_vsyncs").as_deref(), Some("2"));
+  assert_eq!(row("PRESENT", "continuous").as_deref(), Some("true"));
+  assert_eq!(row("PRESENT", "interval").as_deref(), Some("48.00ms"));
+
+  // The tab lays out with the late frame selected.
+  let state = ProfilerState {
+    capture: Some(Arc::new(capture)),
+    range: Some(range),
+    selected: Some(2),
+    ..ProfilerState::default()
+  };
+  let mut app = crate::app::App::new();
+  let mut tree = crate::app::Tree::new();
+  tree.resize(1440, 860);
+  tree.set_root(
+    Column::new()
+      .child(profiler_view(&state, Signal::new(state.clone()), Element::default()))
+      .size(1440.0, 860.0),
+  );
+  tree.pass_headless(&mut app);
 }
