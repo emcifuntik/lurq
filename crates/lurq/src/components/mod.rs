@@ -86,8 +86,8 @@ pub use spacer::Spacer;
 pub use stack::Stack;
 #[cfg(feature = "router")]
 pub use stack_outlet::{
-  NavigationBar, NavigationBarBuilder, NavigationBarScreen, NavigationBarState, NavigationItem, StackOutlet,
-  StackOutletProps,
+  NavigationBar, NavigationBarBuilder, NavigationBarScreen, NavigationBarState, NavigationItem, StackMotion,
+  StackOutlet, StackOutletProps,
 };
 #[cfg(feature = "markdown")]
 pub use styled_text::{

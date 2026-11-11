@@ -52,10 +52,10 @@ inside its input.
   measured against it.
 - **The bar** is opaque when it has a color: content does not show through it, since the renderer has no
   blur to make the platform's material with. There is no search field in it.
-- **A large title** scrolls away with the content, the bar's title coming in after it, grows as the content
-  is pulled down, and is carried into the way back's label when a screen is pushed over it. How much it grows
-  and the path it takes were set by eye, not measured against the platform.
-- **A way back with no room even for `Back`** keeps the word; the platform leaves the arrow alone.
+- **How things move** in the stack (the spring's length, how far a large title grows and the way it takes to
+  a way back) was set by eye and not measured against the platform; `StackMotion` changes the numbers.
+- **A long press on the way back** shows no list of the screens under.
+- **No search field, no toolbar at the bottom, no prompt over the title.**
 - **Sheets:** a screen that comes up from the bottom over the stack, with its detents and the drag that
   puts it away. Not there.
 - **Tabs:** a tab bar with a stack of screens for each tab. Not there.

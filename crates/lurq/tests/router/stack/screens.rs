@@ -51,6 +51,27 @@ impl Component for First {
   }
 }
 
+thread_local! {
+  /// What the screen at `/saving` puts at the bar's end.
+  static SAVED: lurq::core::Signal<bool> = lurq::core::Signal::new(false);
+}
+
+struct Saving;
+
+impl Component for Saving {
+  type Props = ();
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let saved = SAVED.with(|saved| saved.get());
+    ctx.navigation_item(NavigationItem::new("Saving").trailing(Text::new(if saved { "saved" } else { "save" })));
+    Text::new("saving screen")
+  }
+}
+
 struct Root {
   router: RouterHandle,
 }
@@ -95,6 +116,7 @@ impl Component for Root {
             ctx.navigation_item(NavigationItem::new("Gamma").large_title(true));
             StackOutlet::large_title_scroll(ctx, lurq::components::Spacer::new().width(300.0).height(2000.0)).into()
           })
+          .route("/saving", |ctx| ctx.mount::<Saving>(()))
           .route("/user/:id", |ctx| {
             let id = ctx.route_params().get("id").unwrap_or("none").to_owned();
             Text::new(&format!("user {id}")).into()
@@ -357,4 +379,33 @@ fn a_large_title_grows_as_the_content_is_pulled_down_and_goes_back() {
     pulled > at_rest * 1.02,
     "the title is larger while pulled: {at_rest} then {pulled}"
   );
+}
+
+#[test]
+fn what_a_screen_puts_in_the_bar_is_shown_as_the_screen_last_gave_it() {
+  let (mut tree, router) = setup();
+  router.push("/saving");
+  settle(&mut tree);
+  assert!(shows(&mut tree, "save"));
+
+  SAVED.with(|saved| saved.set(true));
+  run_pass(&mut tree);
+  run_pass(&mut tree);
+  assert!(shows(&mut tree, "saved"), "the bar follows the screen's render");
+  assert!(!shows(&mut tree, "save"));
+}
+
+#[test]
+fn a_window_too_low_for_it_has_no_large_title() {
+  let (mut tree, router) = setup();
+  router.push("/big");
+  settle(&mut tree);
+  assert!(large_title_width(&mut tree) > 0.0);
+
+  // A phone turned on its side.
+  tree.resize(800, 400);
+  run_pass(&mut tree);
+  run_pass(&mut tree);
+  assert_eq!(large_title_width(&mut tree), 0.0, "the title is in the bar alone");
+  assert!(shows(&mut tree, "Gamma"));
 }

@@ -153,8 +153,6 @@ A screen says what the bar shows for it by calling `ctx.navigation_item` in its 
 | `bar_hidden(true)` | No bar over this screen: it reaches the top of the outlet, under the status bar |
 | `large_title(true)` | The title large at the top of the content, scrolling away with it |
 
-The way back says the title of the screen under while there is room for it beside the top screen's title, and
-`Back` when there is not.
 
 A screen with a large title puts its content in `StackOutlet::large_title_scroll(ctx, content)`, which draws
 the title over the content and scrolls the two as one. While the large title is in view the bar shows no title
@@ -200,6 +198,32 @@ finger's speed.
 A screen of a stack reads its own entry: `ctx.route_params()` and `ctx.route_state()` give what the screen was
 opened with, whatever was pushed over it since. `ctx.route_path()` is the router's current path on every
 screen.
+
+How the screens and the bar move is `StackMotion`, given with `StackOutletProps::motion`. Its defaults were
+set by eye beside the platform's:
+
+```rust
+StackOutletProps::new().motion(StackMotion {
+  duration: Duration::from_millis(400),
+  ..StackMotion::default()
+})
+```
+
+| `StackMotion` | Default | |
+|---------------|---------|--|
+| `duration` | 500 ms | How long a screen takes to come in or go out, on a spring |
+| `parallax` | 0.3 | How far the screen under gives way, as a share of the width |
+| `dim` | 0.1 | How dark the screen under gets |
+| `back_share` | 0.5 | How far across a finger takes the top screen for it to go back |
+| `back_speed` | 500 | The speed of the finger that takes it back from anywhere, in logical pixels a second |
+| `title_fade` | 200 ms | How long the bar's title and color take to come and go under a large title |
+| `large_title_growth` | 1.1 | How much larger a large title gets when pulled down |
+| `large_title_pull` | 150 | The pull, in logical pixels, that takes it there |
+
+In the bar, a title too long for it ends in an ellipsis; the way back says `Back` when the title of the screen
+under has no room, and is its arrow alone when `Back` has none. A window lower than 480 logical pixels, a phone
+on its side, has no large titles: the title is in the bar. What a screen gives as `leading`, `trailing` or
+`title_view` is shown as the screen last rendered it.
 
 `StackOutletProps::background` paints behind each screen; a screen with no background of its own shows the
 one under it through while it moves.

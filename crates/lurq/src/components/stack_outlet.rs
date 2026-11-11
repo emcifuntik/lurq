@@ -35,7 +35,7 @@ use crate::{
     events::{EdgePanEvent, GesturePhase, ScreenEdge},
     window::SafeAreaInsets,
   },
-  components::{Column, Row, ScrollVertical, Stack, Text},
+  components::{Column, Row, ScrollVertical, Stack, Text, TextOverflow},
   core::{ElementRef, Signal},
   layout::{
     Alignment,
@@ -49,21 +49,51 @@ use crate::{
   },
 };
 
-/// How long a screen takes to come in or go out. It follows a spring ([`Easing::Spring`]), which starts at the
-/// speed a finger let the screen go with.
-const MOVE: Duration = Duration::from_millis(500);
+/// How a [`StackOutlet`]'s screens and bar move. The values it starts with were set by eye beside the
+/// platform's, not measured against it; an app that knows better gives its own with
+/// [`StackOutletProps::motion`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StackMotion {
+  /// How long a screen takes to come in or go out. It follows a spring ([`Easing::Spring`]), which starts at
+  /// the speed a finger let the screen go with. Taken when the outlet is made.
+  pub duration: Duration,
+  /// How far the screen under gives way while one is over it, as a share of the width.
+  pub parallax: f32,
+  /// How dark the screen under gets, from 0 to 1.
+  pub dim: f32,
+  /// How far across a finger from the edge takes the top screen for it to go back when lifted, as a share of
+  /// the width.
+  pub back_share: f32,
+  /// The speed of the finger that takes the screen back from anywhere, in logical pixels a second.
+  pub back_speed: f32,
+  /// How long the bar's title and color take to come and go as a large title scrolls out of view and back.
+  pub title_fade: Duration,
+  /// How much larger a large title gets as its content is pulled down: 1.1 is a tenth larger.
+  pub large_title_growth: f32,
+  /// The pull, in logical pixels, that takes it there.
+  pub large_title_pull: f32,
+}
+
+impl Default for StackMotion {
+  fn default() -> Self {
+    Self {
+      duration: Duration::from_millis(500),
+      parallax: 0.3,
+      dim: 0.1,
+      back_share: 0.5,
+      back_speed: 500.0,
+      title_fade: Duration::from_millis(200),
+      large_title_growth: 1.1,
+      large_title_pull: 150.0,
+    }
+  }
+}
+
 /// A frame is painted with the screens where the move starts before they are sent on their way: a transition
 /// goes from what was last painted.
 const BEGIN: Duration = Duration::from_millis(1);
-/// When the screens are taken to have arrived.
-const SETTLE: Duration = Duration::from_millis(550);
-/// How far the screen under gives way, as a share of the width, and how dark it gets.
-const PARALLAX: f32 = 0.3;
-const DIM: f32 = 0.1;
-/// How far across a finger from the edge takes the screen for it to go back when lifted, as a share of the
-/// width, and the speed that takes it back from anywhere, in logical pixels per second.
-const BACK_SHARE: f32 = 0.5;
-const BACK_SPEED: f32 = 500.0;
+/// How long after a move's duration the screens are taken to have arrived.
+const SETTLE_AFTER: Duration = Duration::from_millis(50);
 /// No finger is dragging the top screen.
 const NO_DRAG: f32 = -1.0;
 /// The bar's height, and its height in a window too low for that: a phone held on its side.
@@ -74,10 +104,6 @@ const LARGE_TITLE_HEIGHT: f32 = 52.0;
 const LARGE_TITLE_INSET: f32 = 16.0;
 /// How large the bar's text is beside a large title.
 const SMALL_TITLE_SHARE: f32 = 17.0 / LARGE_TITLE_SIZE;
-/// How much larger the large title gets as the content is pulled down, and the pull that takes it there.
-const LARGE_TITLE_GROWTH: f32 = 1.1;
-const LARGE_TITLE_PULL: f32 = 150.0;
-const TITLE_FADE: Duration = Duration::from_millis(200);
 const LOW_BAR_HEIGHT: f32 = 32.0;
 const LOW_WINDOW: f32 = 480.0;
 /// What the way back says when the title of the screen under has no room, or there is none.
@@ -94,6 +120,8 @@ const CHEVRON_POINT_SIZE: f32 = 17.0;
 /// title.
 const BACK_LEADING: f32 = 9.0 + CHEVRON_WIDTH + BACK_SPACING;
 const BACK_GAP: f32 = 8.0;
+/// About how wide [`BACK`] is in the bar's text.
+const BACK_WIDTH: f32 = 40.0;
 const FILL: Dimension = Dimension::Pct(100.0);
 
 /// The bar a [`StackOutlet`] draws over its screens, and its colors. The bar is as high as a phone's, 44
@@ -259,6 +287,8 @@ pub(crate) struct NavigationSlot {
   /// See [`LayerBar`].
   large: ElementRef,
   flying: Signal<bool>,
+  /// How much a large title grows, and over what pull ([`StackMotion`]).
+  growth: (f32, f32),
   /// The color the bar gives a title.
   title_color: Option<Color>,
 }
@@ -267,7 +297,10 @@ impl NavigationSlot {
   pub(crate) fn set(&self, item: NavigationItem) {
     let same = {
       let mut current = self.item.lock();
-      let same = current.same_as(&item);
+      // An element the screen gave cannot be told from the one it gave before: the bar is drawn anew for
+      // every render of a screen that gives one, to show it as it now is.
+      let same =
+        current.same_as(&item) && item.leading.is_none() && item.trailing.is_none() && item.title_view.is_none();
       *current = item;
       same
     };
@@ -319,6 +352,7 @@ enum Bar {
 pub struct StackOutletProps {
   bar: Option<Bar>,
   background: Option<Color>,
+  motion: StackMotion,
 }
 
 impl PartialEq for StackOutletProps {
@@ -329,7 +363,7 @@ impl PartialEq for StackOutletProps {
       (Some(Bar::Custom(a)), Some(Bar::Custom(b))) => Arc::ptr_eq(a, b),
       _ => false,
     };
-    same_bar && self.background == other.background
+    same_bar && self.background == other.background && self.motion == other.motion
   }
 }
 
@@ -362,6 +396,12 @@ impl StackOutletProps {
     self
   }
 
+  /// How the screens and the bar move, in place of [`StackMotion::default`].
+  pub fn motion(mut self, motion: StackMotion) -> Self {
+    self.motion = motion;
+    self
+  }
+
   /// What is behind each screen. A screen that paints no background of its own shows the one under it
   /// through while it moves.
   pub fn background(mut self, color: Color) -> Self {
@@ -389,8 +429,8 @@ struct LayerBar {
   /// says whether the label has room beside the title (`after_layout`).
   title: ElementRef,
   back_probe: ElementRef,
-  /// The label does not fit, and the way back says only that it goes back.
-  short_back: bool,
+  /// How much of the way back's label there is room for.
+  label_fit: LabelFit,
   /// What scrolls the screen's content under a large title, and whether that title has scrolled out of view
   /// (`after_layout`).
   scroll: ScrollState,
@@ -410,7 +450,7 @@ impl Default for LayerBar {
       item: Arc::default(),
       title: ElementRef::default(),
       back_probe: ElementRef::default(),
-      short_back: false,
+      label_fit: LabelFit::Whole,
       scroll: ScrollState::new(),
       title_gone: Arc::default(),
       pull: Signal::new(0.0),
@@ -446,7 +486,7 @@ struct Shown {
   /// A move was set up by the last render and waits for its frame to send the screens on their way.
   begin_due: bool,
   /// The speed a finger let the front screen go with, towards where it is going, as a share of the way left
-  /// per [`MOVE`]; 0 for a move no finger started.
+  /// per the move's duration; 0 for a move no finger started.
   velocity: f64,
 }
 
@@ -486,7 +526,8 @@ impl Component for StackOutlet {
         changed.update(|version| *version += 1);
       }
     });
-    let settle = ctx.create_timeout(SETTLE, {
+    let duration = ctx.props::<StackOutletProps>().motion.duration;
+    let settle = ctx.create_timeout(duration + SETTLE_AFTER, {
       let (shown, changed) = (shown.clone(), changed.clone());
       move || {
         {
@@ -510,6 +551,7 @@ impl Component for StackOutlet {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<StackOutletProps>().clone();
+    let motion = props.motion;
     let depth = ctx.use_context::<OutletDepth>().unwrap_or(OutletDepth(0)).0 + 1;
     let Some(navigator) = ctx.use_context::<Navigator>() else {
       return ctx.children().first().cloned().unwrap_or_else(Element::new);
@@ -535,11 +577,9 @@ impl Component for StackOutlet {
 
     let window = ctx.window();
     let (width, safe_area) = (window.logical_width(), window.safe_area);
-    let bar_height = if window.logical_height() < LOW_WINDOW {
-      LOW_BAR_HEIGHT
-    } else {
-      BAR_HEIGHT
-    };
+    // A window too low for it has no large titles, as a phone on its side has none.
+    let low = window.logical_height() < LOW_WINDOW;
+    let bar_height = if low { LOW_BAR_HEIGHT } else { BAR_HEIGHT };
 
     let mut shown = self.shown.lock();
     shown.width = width;
@@ -612,7 +652,7 @@ impl Component for StackOutlet {
 
     // Every node that moves has its transition from its first frame, which is what lets one start from where
     // the node was painted; put where a finger has it, the transition takes no time.
-    let pace = if moving { MOVE } else { Duration::ZERO };
+    let pace = if moving { motion.duration } else { Duration::ZERO };
     let curve = Easing::Spring {
       velocity: shown.velocity,
     };
@@ -636,6 +676,7 @@ impl Component for StackOutlet {
             pull: layer.bar.pull.clone(),
             large: layer.bar.large.clone(),
             flying: layer.bar.flying.clone(),
+            growth: (motion.large_title_growth, motion.large_title_pull),
             title_color: match &props.bar {
               Some(Bar::Standard(bar)) => Some(bar.title),
               _ => None,
@@ -649,7 +690,7 @@ impl Component for StackOutlet {
       let offset = if id == front {
         out * width
       } else if id == back {
-        -PARALLAX * width * (1.0 - out)
+        -motion.parallax * width * (1.0 - out)
       } else {
         0.0
       };
@@ -665,7 +706,7 @@ impl Component for StackOutlet {
         let shade = Row::new()
           .size(FILL, FILL)
           .background(Color::from_hex("#000000"))
-          .opacity(DIM * (1.0 - out))
+          .opacity(motion.dim * (1.0 - out))
           .pointer_events_none();
         holder = holder.child(shade.transition(fade.clone()));
       }
@@ -699,7 +740,7 @@ impl Component for StackOutlet {
             drag.set(event.translation.max(0.0));
           }
           GesturePhase::End => {
-            let far = event.translation > shown.width * BACK_SHARE || event.velocity > BACK_SPEED;
+            let far = event.translation > shown.width * motion.back_share || event.velocity > motion.back_speed;
             // The speed the screen goes on with: the finger's, towards where the screen is going, over the
             // way it has left.
             let (towards, left) = if far {
@@ -708,7 +749,7 @@ impl Component for StackOutlet {
               (-event.velocity, event.translation)
             };
             shown.velocity = if left > 1.0 {
-              f64::from(towards.max(0.0) * MOVE.as_secs_f32() / left)
+              f64::from(towards.max(0.0) * motion.duration.as_secs_f32() / left)
             } else {
               0.0
             };
@@ -776,14 +817,17 @@ impl Component for StackOutlet {
         .map(|under| back_label_of(&layers[under].bar.item.lock()));
       // Taken and let go here: a lock taken inside the struct below would be held to its end.
       let item = layer.bar.item.lock().clone();
-      let title_shown = !item.large_title || layer.bar.title_gone.load(Ordering::Acquire);
+      let title_shown = !item.large_title || low || layer.bar.title_gone.load(Ordering::Acquire);
       Some(BarPart {
         item,
         back_label,
-        short_back: layer.bar.short_back,
+        label_fit: layer.bar.label_fit,
         title: layer.bar.title.clone(),
         back_probe: layer.bar.back_probe.clone(),
         title_shown,
+        title_fade: motion.title_fade,
+        // The bar less, at each side, the least a way back takes: its arrow and the word for it.
+        title_room: (width - safe_area.left - safe_area.right - 2.0 * (BACK_LEADING + BACK_WIDTH + BACK_GAP)).max(0.0),
         label: layer.bar.label.clone(),
         label_hidden: false,
       })
@@ -796,6 +840,7 @@ impl Component for StackOutlet {
     let flight = match (layer_of(back), layer_of(front), &back_part, &front_part) {
       (Some(under), Some(over), Some(under_part), Some(over_part))
         if under_part.item.large_title
+          && !low
           && !under.bar.title_gone.load(Ordering::Acquire)
           && !under_part.item.bar_hidden
           && !over_part.item.bar_hidden
@@ -820,10 +865,10 @@ impl Component for StackOutlet {
         };
         (large.2 > 0.0 && large.3 > 0.0).then(|| Flight {
           title: under_part.item.title.clone(),
-          says: if over_part.short_back {
-            BACK.to_owned()
-          } else {
-            over_part.back_label.clone().unwrap_or_default()
+          says: match over_part.label_fit {
+            LabelFit::Whole => over_part.back_label.clone().unwrap_or_default(),
+            LabelFit::Short => BACK.to_owned(),
+            LabelFit::Arrow => String::new(),
           },
           large: (large.0 - origin.0, large.1 - origin.1, large.2, large.3),
           label: (label.0 - origin.0, label.1 - origin.1, label.2, label.3),
@@ -861,7 +906,7 @@ impl Component for StackOutlet {
     } else if back.is_some() {
       (Duration::ZERO, curve)
     } else {
-      (TITLE_FADE, Easing::EASE)
+      (motion.title_fade, Easing::EASE)
     };
     let shown_share = front_shows * (1.0 - out) + shows(&back_part).unwrap_or(front_shows) * out;
     let mut items = Stack::new().width(FILL).height(bar_height);
@@ -871,7 +916,7 @@ impl Component for StackOutlet {
         &navigator,
         part,
         out,
-        -(1.0 - out) * width * PARALLAX,
+        -(1.0 - out) * width * motion.parallax,
         pace,
         curve,
         false,
@@ -949,8 +994,14 @@ impl Component for StackOutlet {
         continue;
       }
       let room = (width - layer.bar.title.width()) / 2.0 - BACK_LEADING - BACK_GAP;
-      let short = layer.bar.back_probe.width() > room;
-      changed |= std::mem::replace(&mut layer.bar.short_back, short) != short;
+      let fit = if layer.bar.back_probe.width() <= room {
+        LabelFit::Whole
+      } else if BACK_WIDTH <= room {
+        LabelFit::Short
+      } else {
+        LabelFit::Arrow
+      };
+      changed |= std::mem::replace(&mut layer.bar.label_fit, fit) != fit;
     }
     // Whether each large title has scrolled out of view, all but its last few points: the bar's own title
     // comes in then. Looked at after every layout, which every scroll ends in, however it was scrolled.
@@ -967,6 +1018,17 @@ impl Component for StackOutlet {
       self.changed.update(|version| *version += 1);
     }
   }
+}
+
+/// How much of a way back's label the bar has room for, beside the title.
+#[derive(Clone, Copy, PartialEq)]
+enum LabelFit {
+  /// The title of the screen under.
+  Whole,
+  /// The word for going back.
+  Short,
+  /// Neither: the arrow alone.
+  Arrow,
 }
 
 /// What the way back to a screen says.
@@ -1047,11 +1109,14 @@ struct BarPart {
   item: NavigationItem,
   /// What the way back says when there is room; `None` on the screen at the bottom, which has none.
   back_label: Option<String>,
-  short_back: bool,
+  label_fit: LabelFit,
   title: ElementRef,
   back_probe: ElementRef,
   /// The title is in the bar: always, but for a large title that is still in view in the content.
   title_shown: bool,
+  title_fade: Duration,
+  /// The most room the title has: what it does not fit in, it gives up with an ellipsis.
+  title_room: f32,
   /// The way back's label as it is laid out, and whether it is left out of view: while the outlet carries
   /// the title of the screen under to it or away.
   label: ElementRef,
@@ -1084,7 +1149,10 @@ fn bar_item(
   };
   let middle: Element = match &part.item.title_view {
     Some(view) => view.clone(),
-    None => text(&part.item.title, FontWeight::SemiBold, bar.title).into(),
+    None => text(&part.item.title, FontWeight::SemiBold, bar.title)
+      .max_width(part.title_room)
+      .text_overflow(TextOverflow::Elipsis)
+      .into(),
   };
   let title = Row::new()
     .size(FILL, FILL)
@@ -1096,7 +1164,7 @@ fn bar_item(
         .ref_element(part.title.clone())
         .child(middle)
         .opacity(if part.title_shown { 1.0 } else { 0.0 })
-        .transition(Transition::opacity().duration(TITLE_FADE)),
+        .transition(Transition::opacity().duration(part.title_fade)),
     )
     .transform(Transform2D::translate(shift, 0.0))
     .transition(Transition::transform().duration(pace).easing(curve));
@@ -1112,7 +1180,11 @@ fn bar_item(
     );
   } else if let Some(label) = &part.back_label {
     let navigator = navigator.clone();
-    let says = if part.short_back { BACK } else { label.as_str() };
+    let says = match part.label_fit {
+      LabelFit::Whole => label.as_str(),
+      LabelFit::Short => BACK,
+      LabelFit::Arrow => "",
+    };
     sides = sides.child(
       Row::new()
         .id("navigation-back")
@@ -1211,7 +1283,8 @@ impl StackOutlet {
       return ScrollVertical::new(content.into());
     };
     let item = slot.item.lock().clone();
-    if !item.large_title {
+    // A window too low for it, a phone on its side, has the title in the bar alone.
+    if !item.large_title || ctx.window().logical_height() < LOW_WINDOW {
       return ScrollVertical::new(content.into()).with_scroll_state(slot.scroll.clone());
     }
     let title = ctx.mount::<LargeTitle>(LargeTitleProps {
@@ -1220,6 +1293,7 @@ impl StackOutlet {
       pull: slot.pull.clone(),
       large: slot.large.clone(),
       flying: slot.flying.clone(),
+      growth: slot.growth,
     });
     ScrollVertical::new(Column::new().width(FILL).child(title).child(content.into()))
       .with_scroll_state(slot.scroll.clone())
@@ -1248,11 +1322,15 @@ struct LargeTitleProps {
   pull: Signal<f32>,
   large: ElementRef,
   flying: Signal<bool>,
+  growth: (f32, f32),
 }
 
 impl PartialEq for LargeTitleProps {
   fn eq(&self, other: &Self) -> bool {
-    self.title == other.title && self.color == other.color && self.pull.id() == other.pull.id()
+    self.title == other.title
+      && self.color == other.color
+      && self.pull.id() == other.pull.id()
+      && self.growth == other.growth
   }
 }
 
@@ -1274,7 +1352,12 @@ impl Component for LargeTitle {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<LargeTitleProps>().clone();
-    let grown = 1.0 + props.pull.get().min(LARGE_TITLE_PULL) / LARGE_TITLE_PULL * (LARGE_TITLE_GROWTH - 1.0);
+    let (growth, pull) = props.growth;
+    let grown = if pull > 0.0 {
+      1.0 + props.pull.get().min(pull) / pull * (growth - 1.0)
+    } else {
+      1.0
+    };
     Row::new()
       .width(FILL)
       .height(LARGE_TITLE_HEIGHT)
