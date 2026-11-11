@@ -155,6 +155,8 @@ A screen says what the bar shows for it by calling `ctx.navigation_item` in its 
 | `prompt(text)` | A line of small text over the title, for which the bar grows |
 | `toolbar(element)` | A row of the screen's controls across the bottom of the outlet, in the bar's color |
 | `search(NavigationSearch)` | A search field at the top of the content, under the title |
+| `large_title_view(element)` | A title of the screen's own in the large title's place |
+| `search_view(element)` | A search field of the screen's own in the search field's place |
 
 
 A screen with a large title puts its content in `StackOutlet::large_title_scroll(ctx, content)`, which draws
@@ -185,6 +187,16 @@ ctx.navigation_item(
 StackOutlet::large_title_scroll(ctx, messages_matching(&self.sought.get()))
 ```
 
+A screen that draws its own title or its own field gives them with `large_title_view` and `search_view`:
+`large_title_scroll` puts them where the outlet's would be, and they scroll away the same way. A field of the
+screen's own says when it is searched in, for the bar and the title to give it their place:
+
+```rust
+if let Some(searching) = StackOutlet::searching(ctx) {
+  searching.set(self.field_focused.get() || !self.sought.get().is_empty());
+}
+```
+
 A screen with a toolbar ends above it: the toolbar stands over the home indicator's room, so the screen has no
 bottom of the safe area to keep clear of.
 
@@ -208,7 +220,9 @@ StackOutlet::mount_with(ctx, StackOutletProps::new().bar_with(bar.clone()))
 ```
 
 `state.top` is the screen in front and `state.under` the one behind it while they move, each with its
-`NavigationItem` and what the way back from it says. `state.out` is how far out of view the front screen is;
+`NavigationItem`, what the way back from it says, whether its large title is still in view and whether it is
+searching. `state.under_titles` names every screen under the top one, the nearest first, and `state.low` says
+the window is too low for large titles. `state.out` is how far out of view the front screen is;
 with a transition of `state.duration` and `state.easing` a part of the bar moves with the screens, and follows
 a finger, for which the duration is zero. Make the builder once, in `create`: a new one at each render renders
 the outlet again.

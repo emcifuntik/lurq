@@ -37,7 +37,11 @@ impl Component for Root {
   fn create(ctx: &mut Ctx) -> Self {
     let bar: NavigationBarBuilder = Arc::new(|state| {
       let back = state.top.back_label.clone().unwrap_or_else(|| "nowhere".to_owned());
-      Text::new(&format!("bar: {} from {back}", state.top.item.title)).into()
+      Text::new(&format!(
+        "bar: {} from {back}; under {:?}; large in view {}; searching {}",
+        state.top.item.title, state.under_titles, state.top.large_title_in_view, state.top.searching
+      ))
+      .into()
     });
     let shell_bar = bar.clone();
     let router = ctx.router(Routes::new().layout(
@@ -52,6 +56,18 @@ impl Component for Root {
           .route("/second", |ctx| {
             ctx.navigation_item(NavigationItem::new("Beta"));
             Text::new("second screen").into()
+          })
+          .route("/own", |ctx| {
+            ctx.navigation_item(
+              NavigationItem::new("Own")
+                .large_title_view(Text::new("a title of the screen's own"))
+                .search_view(Text::new("a field of the screen's own")),
+            );
+            // The screen's own field says when it is searched in.
+            if let Some(searching) = StackOutlet::searching(ctx) {
+              searching.set(true);
+            }
+            StackOutlet::large_title_scroll(ctx, Text::new("own screen")).into()
           })
       },
     ));
@@ -80,7 +96,10 @@ fn a_bar_of_the_apps_own_is_drawn_from_the_stacks_state() {
       .find_element(|element| element.text_content() == Some(text))
       .is_some()
   };
-  assert!(shows(&mut tree, "bar: Alpha from nowhere"));
+  assert!(shows(
+    &mut tree,
+    "bar: Alpha from nowhere; under []; large in view false; searching false"
+  ));
 
   router.push("/second");
   run_pass(&mut tree);
@@ -88,8 +107,25 @@ fn a_bar_of_the_apps_own_is_drawn_from_the_stacks_state() {
   run_pass(&mut tree);
   tree.tick_timers_at(std::time::Instant::now() + std::time::Duration::from_secs(2));
   run_pass(&mut tree);
-  assert!(shows(&mut tree, "bar: Beta from Alpha"));
+  assert!(shows(
+    &mut tree,
+    "bar: Beta from Alpha; under [\"Alpha\"]; large in view false; searching false"
+  ));
   assert!(shows(&mut tree, "second screen"));
+
+  // A screen with a title and a search field of its own, which says it is searching.
+  router.push("/own");
+  for ahead in [3, 4, 5] {
+    run_pass(&mut tree);
+    tree.tick_timers_at(std::time::Instant::now() + std::time::Duration::from_secs(ahead));
+  }
+  run_pass(&mut tree);
+  assert!(shows(&mut tree, "a title of the screen's own"));
+  assert!(shows(&mut tree, "a field of the screen's own"));
+  assert!(shows(
+    &mut tree,
+    "bar: Own from Beta; under [\"Beta\", \"Alpha\"]; large in view true; searching true"
+  ));
 }
 
 struct Styled {

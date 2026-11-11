@@ -254,6 +254,8 @@ pub struct NavigationItem {
   pub prompt: Option<String>,
   pub toolbar: Option<Element>,
   pub search: Option<NavigationSearch>,
+  pub large_title_view: Option<Element>,
+  pub search_view: Option<Element>,
 }
 
 /// A search field at the top of a screen's content, under its title: [`NavigationItem::search`]. It scrolls
@@ -307,6 +309,8 @@ impl NavigationItem {
       prompt: None,
       toolbar: None,
       search: None,
+      large_title_view: None,
+      search_view: None,
     }
   }
 
@@ -380,6 +384,33 @@ impl NavigationItem {
     self
   }
 
+  /// What [`StackOutlet::large_title_scroll`] draws in the large title's place: a title of the screen's own
+  /// making, which scrolls away with the content as the outlet's does. It is not carried to a way back when
+  /// a screen is pushed over this one. Asks for a large title too.
+  pub fn large_title_view(mut self, element: impl Into<Element>) -> Self {
+    self.large_title_view = Some(element.into());
+    self.large_title = true;
+    self
+  }
+
+  /// What [`StackOutlet::large_title_scroll`] draws in the search field's place: a field of the screen's own.
+  /// It says when it is searched in with [`StackOutlet::searching`], for the bar and a large title to give
+  /// it their place.
+  pub fn search_view(mut self, element: impl Into<Element>) -> Self {
+    self.search_view = Some(element.into());
+    self
+  }
+
+  /// Whether the item holds an element of the screen's, which cannot be told from the one it held before.
+  fn has_elements(&self) -> bool {
+    self.leading.is_some()
+      || self.trailing.is_some()
+      || self.title_view.is_some()
+      || self.toolbar.is_some()
+      || self.large_title_view.is_some()
+      || self.search_view.is_some()
+  }
+
   fn same_as(&self, other: &Self) -> bool {
     self.title == other.title
       && self.back_title == other.back_title
@@ -391,6 +422,8 @@ impl NavigationItem {
       && self.large_title == other.large_title
       && self.prompt == other.prompt
       && self.toolbar.is_some() == other.toolbar.is_some()
+      && self.large_title_view.is_some() == other.large_title_view.is_some()
+      && self.search_view.is_some() == other.search_view.is_some()
       && self.search.as_ref().map(NavigationSearch::key) == other.search.as_ref().map(NavigationSearch::key)
   }
 }
@@ -422,11 +455,7 @@ impl NavigationSlot {
       let mut current = self.item.lock();
       // An element the screen gave cannot be told from the one it gave before: the bar is drawn anew for
       // every render of a screen that gives one, to show it as it now is.
-      let same = current.same_as(&item)
-        && item.leading.is_none()
-        && item.trailing.is_none()
-        && item.title_view.is_none()
-        && item.toolbar.is_none();
+      let same = current.same_as(&item) && !item.has_elements();
       *current = item;
       same
     };
@@ -454,6 +483,12 @@ pub struct NavigationBarState {
   pub width: f32,
   pub safe_area: SafeAreaInsets,
   pub navigator: Navigator,
+  /// What the way back says on each screen under the top one, the nearest first: what the outlet's own bar
+  /// lists on a long press. `navigator.back_by(n)` goes to the n-th of them.
+  pub under_titles: Vec<String>,
+  /// The window is too low for large titles, as a phone held on its side is; the outlet's own bar is lower
+  /// then too.
+  pub low: bool,
 }
 
 /// A screen's part in a [`NavigationBarState`].
@@ -463,6 +498,12 @@ pub struct NavigationBarScreen {
   /// What the way back from this screen says: the title of the screen under it, or what that screen gave
   /// for it. `None` on the bottom screen.
   pub back_label: Option<String>,
+  /// The screen's large title is in view in its content: the outlet's own bar shows no title then, and no
+  /// color of its own.
+  pub large_title_in_view: bool,
+  /// The screen is searching: its search field is typed into or holds text. The outlet's own bar gives its
+  /// place to the field then.
+  pub searching: bool,
 }
 
 /// Draws a bar from the state of the stack. It is called at each render of the outlet.
@@ -923,8 +964,12 @@ impl Component for StackOutlet {
         let layers: Vec<&Layer> = shown.layers.iter().chain(shown.leaving.iter()).collect();
         let screen_of = |id: Option<u64>| {
           let index = layers.iter().position(|layer| Some(layer.entry.id) == id)?;
+          let layer = layers[index];
+          let item = layer.bar.item.lock().clone();
           Some(NavigationBarScreen {
-            item: layers[index].bar.item.lock().clone(),
+            large_title_in_view: item.large_title && !low && !layer.bar.title_gone.load(Ordering::Acquire),
+            searching: layer.bar.searching.get(),
+            item,
             back_label: index
               .checked_sub(1)
               .map(|under| back_label_of(&layers[under].bar.item.lock(), &style.back)),
@@ -942,6 +987,14 @@ impl Component for StackOutlet {
           width,
           safe_area,
           navigator: navigator.clone(),
+          under_titles: shown
+            .layers
+            .iter()
+            .rev()
+            .skip(1)
+            .map(|layer| back_label_of(&layer.bar.item.lock(), &style.back))
+            .collect(),
+          low,
         };
         drop(shown);
         return Column::new()
@@ -995,6 +1048,7 @@ impl Component for StackOutlet {
     let flight = match (layer_of(back), layer_of(front), &back_part, &front_part) {
       (Some(under), Some(over), Some(under_part), Some(over_part))
         if under_part.item.large_title
+          && under_part.item.large_title_view.is_none()
           && !low
           && !under.bar.title_gone.load(Ordering::Acquire)
           && !under_part.item.bar_hidden
@@ -1637,10 +1691,21 @@ impl StackOutlet {
     let item = slot.item.lock().clone();
     let style = slot.style.clone();
     // While the search field is typed into, it stands where the bar was and there is no large title.
-    let searching = item.search.is_some() && slot.searching.get();
+    let searching = (item.search.is_some() || item.search_view.is_some()) && slot.searching.get();
     let mut over = Column::new().width(FILL);
     // A window too low for it, a phone on its side, has the title in the bar alone.
-    if item.large_title && ctx.window().logical_height() >= style.low_window {
+    let tall = ctx.window().logical_height() >= style.low_window;
+    if let (Some(view), true) = (&item.large_title_view, item.large_title && tall) {
+      // The screen's own title, in the same place and with no height while the screen searches.
+      over = over.child(
+        Row::new()
+          .width(FILL)
+          .ref_element(slot.large.clone())
+          .height(if searching { Dimension::Px(0.0) } else { Dimension::Auto })
+          .clip()
+          .child(view.clone()),
+      );
+    } else if item.large_title && tall {
       // Still there while the screen searches, with no height: taken out, the field under it would be
       // another element, and the one being typed into would be gone.
       over = over.child(ctx.mount_keyed::<LargeTitle>(
@@ -1656,7 +1721,9 @@ impl StackOutlet {
         },
       ));
     }
-    if let Some(search) = &item.search {
+    if let Some(view) = &item.search_view {
+      over = over.child(Row::new().width(FILL).child(view.clone()));
+    } else if let Some(search) = &item.search {
       over = over.child(ctx.mount_keyed::<SearchField>(
         "navigation-search",
         SearchFieldProps {
@@ -1667,6 +1734,13 @@ impl StackOutlet {
       ));
     }
     ScrollVertical::new(over.child(content.into())).with_scroll_state(slot.scroll.clone())
+  }
+
+  /// Whether this screen is searching, to read and to set; `None` outside a stack. The outlet's own search
+  /// field sets it. A field of the screen's own ([`NavigationItem::search_view`]) sets it itself, when it is
+  /// given the focus and when its search is cancelled.
+  pub fn searching(ctx: &mut Ctx) -> Option<Signal<bool>> {
+    ctx.use_context::<NavigationSlot>().map(|slot| slot.searching)
   }
 
   /// The state of the list [`large_title_scroll`](Self::large_title_scroll) makes for this screen, to set it
