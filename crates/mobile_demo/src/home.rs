@@ -23,6 +23,11 @@ pub(crate) const SCREENS: &[Screen] = &[
     checks: "Tap, double tap, long press, drag, a slider under the finger",
   },
   Screen {
+    path: "/gestures",
+    title: "Gestures",
+    checks: "Pinch and rotate, taps of several fingers, swipes, pans. Back: a finger in from the left edge",
+  },
+  Screen {
     path: "/scroll",
     title: "Scroll",
     checks: "Momentum, nested and horizontal scrolling, taps while it moves",

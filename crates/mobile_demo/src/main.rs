@@ -8,6 +8,7 @@
 //! `ios/MobileDemo.xcodeproj` wraps it in an app bundle for a simulator or a phone: its only build phase runs
 //! `ios/build-rust.sh`, which builds this binary with cargo, and Xcode signs the result.
 
+mod gestures;
 mod home;
 mod scroll;
 mod touch;
@@ -15,7 +16,12 @@ mod ui;
 
 use lurq::{
   app::{
-    App, Tree, component::Component, ctx::Ctx, wgpu_render::WgpuRenderEngine, window::SafeAreaInsets,
+    App, Tree,
+    component::Component,
+    ctx::Ctx,
+    events::{HistoryDirection, HistorySwipeEvent},
+    wgpu_render::WgpuRenderEngine,
+    window::SafeAreaInsets,
     winit_shell::WinitWindow,
   },
   components::{Column, Outlet, Router, Row, Spacer},
@@ -49,6 +55,7 @@ fn routes() -> Routes {
     routes
       .route("/", home::home)
       .route("/touch", |ctx| ctx.mount::<touch::TouchScreen>(()))
+      .route("/gestures", |ctx| ctx.mount::<gestures::GesturesScreen>(()))
       .route("/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
       .fallback(home::home)
   })
@@ -59,7 +66,20 @@ fn routes() -> Routes {
 fn shell(ctx: &mut Ctx) -> Element {
   let path = ctx.route_path();
   let safe_area = ctx.window().safe_area;
+  let navigator = ctx.navigator();
   Column::new()
+    // A finger in from the left edge, or a trackpad's swipe, goes back as the header's arrow does; from the
+    // right edge it goes forward again.
+    .on_history_swipe(move |event: HistorySwipeEvent| {
+      let Some(navigator) = &navigator else {
+        return;
+      };
+      match event.direction {
+        HistoryDirection::Back => navigator.back(),
+        HistoryDirection::Forward => navigator.forward(),
+      };
+      event.stop_propagation();
+    })
     .child(header(ctx, &path, safe_area))
     .child(
       Column::new()

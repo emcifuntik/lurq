@@ -2,7 +2,12 @@
 //! finger is dragged instead of scrolling the screen.
 
 use lurq::{
-  app::{component::Component, ctx::Ctx, events::MouseEvent},
+  app::{
+    component::Component,
+    ctx::Ctx,
+    events::{LongPressEvent, MouseEvent, TouchEvent},
+    window::{Haptic, WindowHandle},
+  },
   components::{Column, Rect, Row, Slider, Spacer, Stack},
   core::Signal,
   layout::{Alignment, layout_kind::Justify, text_style::FontWeight},
@@ -32,6 +37,10 @@ struct Counts {
   clicks: u32,
   double_clicks: u32,
   moves: u32,
+  long_presses: u32,
+  /// The fingers on the pad now, and the most there were at once.
+  fingers: u32,
+  most_fingers: u32,
 }
 
 pub(crate) struct TouchScreen {
@@ -57,6 +66,7 @@ impl Component for TouchScreen {
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let pointer = self.pointer.get();
+    let window = ctx.window();
     // Where this screen starts in the window: events carry the window's coordinates.
     let safe_area = ctx.window().safe_area;
     let (origin_x, origin_y) = (safe_area.left, safe_area.top + HEADER_HEIGHT);
@@ -64,9 +74,9 @@ impl Component for TouchScreen {
       Column::new()
         .spacing(12.0)
         .padding(16.0)
-        .child(self.pad(pointer))
+        .child(self.pad(pointer, window.clone()))
         .child(self.counters())
-        .child(self.controls())
+        .child(self.controls(window))
         .child(event_log(&self.log))
         .size(FILL, FILL),
     );
@@ -86,7 +96,7 @@ impl Component for TouchScreen {
 }
 
 impl TouchScreen {
-  fn pad(&self, pointer: Pointer) -> Element {
+  fn pad(&self, pointer: Pointer, window: WindowHandle) -> Element {
     let status = if pointer.inside {
       format!(
         "x {:.0}  y {:.0}  {}",
@@ -104,13 +114,19 @@ impl TouchScreen {
     let (counts_double, log_double) = (self.counts.clone(), self.log.clone());
     let (pointer_enter, log_enter) = (self.pointer.clone(), self.log.clone());
     let (pointer_leave, log_leave) = (self.pointer.clone(), self.log.clone());
+    let (counts_long, log_long) = (self.counts.clone(), self.log.clone());
+    let (counts_touch_start, log_touch_start) = (self.counts.clone(), self.log.clone());
+    let (counts_touch_end, log_touch_end) = (self.counts.clone(), self.log.clone());
+    let (counts_touch_cancel, log_touch_cancel) = (self.counts.clone(), self.log.clone());
 
     Column::new()
       .align_items(Alignment::Center)
       .justify(Justify::Center)
       .spacing(6.0)
       .child(text(&status, 17.0, FontWeight::Bold, TEXT).nowrap())
-      .child(caption("A tap clicks. A long press holds the button down."))
+      .child(caption(
+        "Tap, double tap, rest for a long press, put several fingers down.",
+      ))
       .flex(1.0)
       .min_height(140.0)
       .width(FILL)
@@ -154,6 +170,29 @@ impl TouchScreen {
         pointer_leave.update(|pointer| (pointer.inside, pointer.pressed) = (false, false));
         push_log(&log_leave, "leave".to_owned());
       })
+      .on_long_press(move |event: LongPressEvent| {
+        window.haptic(Haptic::Medium);
+        counts_long.update(|counts| counts.long_presses += 1);
+        push_log(&log_long, format!("long press {:.0}, {:.0}", event.x, event.y));
+      })
+      .on_touch_start(move |event: TouchEvent| {
+        counts_touch_start.update(|counts| {
+          counts.fingers += 1;
+          counts.most_fingers = counts.most_fingers.max(counts.fingers);
+        });
+        push_log(
+          &log_touch_start,
+          format!("touch start #{:x} {:.0}, {:.0}", event.id & 0xfff, event.x, event.y),
+        );
+      })
+      .on_touch_end(move |event: TouchEvent| {
+        counts_touch_end.update(|counts| counts.fingers = counts.fingers.saturating_sub(1));
+        push_log(&log_touch_end, format!("touch end #{:x}", event.id & 0xfff));
+      })
+      .on_touch_cancel(move |event: TouchEvent| {
+        counts_touch_cancel.update(|counts| counts.fingers = counts.fingers.saturating_sub(1));
+        push_log(&log_touch_cancel, format!("touch cancel #{:x}", event.id & 0xfff));
+      })
       .into()
   }
 
@@ -173,13 +212,14 @@ impl TouchScreen {
         .child(cell("up", counts.ups))
         .child(cell("click", counts.clicks))
         .child(cell("double", counts.double_clicks))
-        .child(cell("move", counts.moves))
+        .child(cell("long", counts.long_presses))
+        .child(cell("fingers", counts.most_fingers))
         .width(FILL),
     )
     .into()
   }
 
-  fn controls(&self) -> Element {
+  fn controls(&self, window: WindowHandle) -> Element {
     let taps = self.button_taps.clone();
     card(
       Column::new()
@@ -203,7 +243,10 @@ impl TouchScreen {
           Row::new()
             .align_items(Alignment::Center)
             .spacing(12.0)
-            .child(button("Tap me", move || taps.update(|taps| *taps += 1)))
+            .child(button("Tap me", move || {
+              window.haptic(Haptic::Light);
+              taps.update(|taps| *taps += 1);
+            }))
             .child(label(&format!("tapped {} times", self.button_taps.get()))),
         )
         .width(FILL),
