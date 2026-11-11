@@ -2,6 +2,9 @@ pub use crate::app::profile_types::{
   CanvasAssetUploadProfile, CanvasProfile, FrameProfile, GlyphEngineProfile, RenderProfile, RuntimeMemoryProfile,
 };
 
+mod aggregate;
+#[cfg(test)]
+mod aggregate_tests;
 mod application;
 #[cfg(any(feature = "serde", feature = "mcp"))]
 mod application_export;
@@ -25,6 +28,9 @@ pub(crate) mod producer;
 #[cfg(test)]
 mod session_tests;
 
+pub use aggregate::{
+  CallNode, CallSort, CallTree, ForestSpan, PASS_SPAN_NAME, SpanForest, SpanTrack, forest_of, ms_to_ns,
+};
 pub use application::{ApplicationScope, ApplicationScopeParent};
 pub use application_model::{
   ApplicationInFlight, ApplicationLane, ApplicationRefusals, ApplicationScopeId, ApplicationScopeInfo,
