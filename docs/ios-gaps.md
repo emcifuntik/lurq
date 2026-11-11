@@ -14,9 +14,8 @@ makes the scene's delegate and puts winit's window into the scene. The app has t
 could say so in code. Going to the background and back, and the lock screen, were tried on a device.
 
 - **One scene.** A second window of the app, on an iPad or an outer display, is not there.
-- **What the app is opened with:** a link of the app's own scheme was seen to bring the app forward in a
-  simulator, where the system's "Open in" question could not be answered, so `AppEvent::OpenUrl` itself was
-  not seen. A universal link and a shortcut: not checked.
+- **What the app is opened with:** a link of the app's own scheme reaches it (`AppEvent::OpenUrl`), tried on a
+  device. A universal link and a home screen shortcut: not checked.
 
 ## Text input
 
