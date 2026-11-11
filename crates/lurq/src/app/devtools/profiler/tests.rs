@@ -3,7 +3,10 @@ use std::{sync::Arc, time::Duration};
 use super::*;
 use crate::app::{
   devtools::profiler_capture::{IDLE_GAP_MS, fps, pass_detail, phase_rows},
-  profiler::{FrameProfile, PassSample, Phase, PhaseSpan, ProfileSample, SampleData, producer::WindowProfiler},
+  profiler::{
+    FrameProfile, PassAllocations, PassCounters, PassSample, Phase, PhaseSpan, ProfileSample, SampleData,
+    producer::WindowProfiler,
+  },
 };
 
 /// A pass of `producer` that a session records, presented with a frame profile.
@@ -162,6 +165,7 @@ fn sample(sequence: u64, window: &str, started_ms: f64, total_ms: f64, rendered:
       frame: rendered.then(FrameProfile::default),
       spans: Vec::new(),
       dropped_spans: 0,
+      counters: None,
     }),
   })
 }
@@ -365,10 +369,10 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
   };
   const WIDTH: f32 = 1068.0;
   // A pass and an input dispatch half way through the range, and a pass at
-  // its end.
+  // its end; the second pass has twice the nodes of the first.
   let passes = vec![
-    sample(1, "main", 500.0, 30.0, true),
-    sample(2, "main", 1000.0, 30.0, true),
+    with_nodes(sample(1, "main", 500.0, 30.0, true), 10),
+    with_nodes(sample(2, "main", 1000.0, 30.0, true), 20),
   ];
   let mut capture = capture(passes.clone(), 1000.0);
   capture.markers = vec![Arc::new(ProfileSample {
@@ -385,7 +389,7 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
   let range = capture.whole();
   let mut app = App::new();
   let mut tree = Tree::new();
-  tree.resize(WIDTH as u32, 400);
+  tree.resize(WIDTH as u32, 500);
   tree.set_root(
     Column::new()
       .child(timeline_tracks(
@@ -395,23 +399,95 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
         None,
         Signal::new(ProfilerState::default()),
       ))
-      .size(WIDTH, 400.0),
+      .size(WIDTH, 500.0),
   );
   tree.pass_headless(&mut app);
 
-  // Rows: chart, input lane, ui update lane, axis; each a track then its label.
+  // Rows: chart, the counter tracks (fps, nodes, draw calls, memory, allocs),
+  // input lane, ui update lane, axis; each a track then its label.
   let half_bar = bounds_at(&mut tree, &[0, 0, 0, 1, 1]);
   let end_bar = bounds_at(&mut tree, &[0, 0, 0, 2, 1]);
-  let half_marker = bounds_at(&mut tree, &[0, 1, 0, 1]);
-  let half_tick = bounds_at(&mut tree, &[0, 3, 0, 2]);
-  let last_part = bounds_at(&mut tree, &[0, 3, 0, 3]);
+  let half_nodes = bounds_at(&mut tree, &[0, 2, 0, 0, 1]);
+  let end_nodes = bounds_at(&mut tree, &[0, 2, 0, 1, 1]);
+  let half_marker = bounds_at(&mut tree, &[0, 6, 0, 1]);
+  let half_tick = bounds_at(&mut tree, &[0, 8, 0, 2]);
+  let last_part = bounds_at(&mut tree, &[0, 8, 0, 3]);
   let close = |a: f32, b: f32, what: &str| assert!((a - b).abs() < 0.5, "{what}: {a} vs {b}");
   let scale = WIDTH - LANE_GAP - LANE_LABEL_WIDTH - BAR_WIDTH;
   close(half_bar.x, scale * 0.5, "bar at half the range");
+  close(half_nodes.x, half_bar.x, "counter bar at the pass bar's time");
+  close(end_nodes.x, end_bar.x, "last counter bar at the last pass bar");
+  close(
+    half_nodes.height * 2.0,
+    end_nodes.height,
+    "counter bars scaled by value",
+  );
+  close(end_nodes.height, COUNTER_HEIGHT, "the highest value fills the track");
   close(half_marker.x, half_bar.x, "marker at the bar's time");
   close(half_tick.x, half_bar.x, "tick at the bar's time");
   close(end_bar.x, scale, "bar at the range's end");
   close(last_part.x + last_part.width, end_bar.x, "axis end at the last bar");
+}
+
+fn with_nodes(sample: Arc<ProfileSample>, nodes: usize) -> Arc<ProfileSample> {
+  let mut sample = (*sample).clone();
+  if let SampleData::Pass(pass) = &mut sample.data {
+    pass.counters = Some(PassCounters {
+      nodes,
+      ..PassCounters::default()
+    });
+  }
+  Arc::new(sample)
+}
+
+#[test]
+fn counter_tracks_take_values_per_pass_and_mark_missing_allocations_unavailable() {
+  // Presented every 20 ms, then after an idle gap.
+  let passes = vec![
+    with_nodes(sample(1, "main", 0.0, 2.0, true), 5),
+    with_nodes(sample(2, "main", 20.0, 2.0, true), 6),
+    with_nodes(sample(3, "main", 40.0, 2.0, false), 7),
+    with_nodes(sample(4, "main", 40.0 + IDLE_GAP_MS * 2.0, 2.0, true), 8),
+  ];
+  let values = |counter| {
+    capture::counter_points(counter, &passes).map(|points| {
+      points
+        .iter()
+        .map(|point| (point.sequence, point.value))
+        .collect::<Vec<_>>()
+    })
+  };
+  // FPS of the interval since the window's previous presented frame.
+  assert_eq!(values(Counter::Fps), Some(vec![(2, 50.0)]));
+  assert_eq!(
+    values(Counter::Nodes),
+    Some(vec![(1, 5.0), (2, 6.0), (3, 7.0), (4, 8.0)])
+  );
+  // Memory comes with the same counters; no pass has allocation counts.
+  assert_eq!(values(Counter::Memory).map(|points| points.len()), Some(4));
+  assert_eq!(values(Counter::Allocations), None);
+
+  let mut counted = (*passes[0]).clone();
+  if let SampleData::Pass(pass) = &mut counted.data {
+    pass.counters.as_mut().unwrap().allocations = Some(PassAllocations {
+      allocations: 12,
+      ..PassAllocations::default()
+    });
+  }
+  assert_eq!(
+    capture::counter_points(Counter::Allocations, &[Arc::new(counted)]).map(|points| points[0].value),
+    Some(12.0)
+  );
+  // Passes recorded without counters have none to show.
+  assert_eq!(
+    capture::counter_points(Counter::Nodes, &[sample(1, "main", 0.0, 2.0, true)]),
+    None
+  );
+  // The sidebar lists a pass's counters, allocations marked unavailable.
+  let detail = pass_detail(&passes[0], pass_of(&passes[0]).unwrap());
+  let counters = detail.iter().find(|section| section.title == "COUNTERS").unwrap();
+  assert!(counters.rows.contains(&("nodes", "5".to_owned())));
+  assert!(counters.rows.contains(&("allocations", "unavailable".to_owned())));
 }
 
 #[test]
