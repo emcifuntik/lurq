@@ -39,10 +39,16 @@ mod frame_pacing;
 mod frame_pacing_tests;
 mod history_swipes;
 mod ime;
+#[cfg(target_os = "ios")]
+mod ios;
 mod loop_wait;
 #[cfg(test)]
 mod loop_wait_tests;
 mod native_resize;
+#[cfg(any(target_os = "ios", test))]
+mod touch;
+#[cfg(test)]
+mod touch_tests;
 
 use file_drag::FileDragShell;
 use frame_pacing::{FramePacing, PresentedFrame, refresh_interval};
@@ -300,6 +306,13 @@ struct ManagedWindow {
   last_interaction_present: Instant,
   ime: ime::ImeSync,
   file_drag: FileDragShell,
+  #[cfg(target_os = "ios")]
+  touch: touch::TouchPointer,
+  /// The display's refreshes, which frames are presented at; made with the window.
+  #[cfg(target_os = "ios")]
+  frame_link: Option<ios::FrameLink>,
+  #[cfg(target_os = "ios")]
+  status_bar_tap: Option<ios::StatusBarTap>,
 }
 
 impl ManagedWindow {
@@ -337,6 +350,12 @@ impl ManagedWindow {
       last_interaction_present: Instant::now(),
       ime: ime::ImeSync::default(),
       file_drag: FileDragShell::default(),
+      #[cfg(target_os = "ios")]
+      touch: touch::TouchPointer::default(),
+      #[cfg(target_os = "ios")]
+      frame_link: None,
+      #[cfg(target_os = "ios")]
+      status_bar_tap: None,
     }
   }
 
@@ -353,6 +372,62 @@ impl ManagedWindow {
   /// When the pointer is next read for a file drag over the window.
   fn next_file_drag_poll(&self) -> Option<Instant> {
     self.file_drag.next_poll()
+  }
+
+  /// When a finger on the window next needs the loop: to press after resting, or for a step of momentum.
+  fn next_touch_deadline(&self) -> Option<Instant> {
+    #[cfg(target_os = "ios")]
+    return self
+      .touch
+      .next_deadline()
+      .into_iter()
+      .chain(self.tree.touch_animating().then(|| Instant::now() + touch::SPRING_STEP))
+      .min();
+    #[cfg(not(target_os = "ios"))]
+    None
+  }
+
+  /// Gives the tree what a touch came to; see [`touch`]. `false` when the actions scrolled and the last scroll
+  /// moved nothing.
+  #[cfg(target_os = "ios")]
+  fn apply_touch_actions(&mut self, actions: Vec<touch::TouchAction>, momentum: bool) -> bool {
+    use touch::TouchAction;
+    let mut moved = true;
+    for action in actions {
+      match action {
+        TouchAction::Move { x, y } => {
+          self.cursor_pos = (x, y);
+          self.tree.mouse_move(x as f32, y as f32);
+        }
+        TouchAction::Press { x, y } => {
+          self.cursor_pos = (x, y);
+          self.tree.mouse_move(x as f32, y as f32);
+          self.tree.mouse_down(x as f32, y as f32, MouseButton::Left);
+        }
+        TouchAction::Release { x, y } => {
+          self.cursor_pos = (x, y);
+          self.tree.mouse_up(x as f32, y as f32, MouseButton::Left);
+          self.tree.mouse_leave_window();
+        }
+        TouchAction::CancelPress { x, y } => {
+          self.tree.mouse_press_taken_by_os(x as f32, y as f32, MouseButton::Left);
+          self.tree.mouse_leave_window();
+        }
+        TouchAction::Settle => self.tree.touch_scroll_settle(),
+        TouchAction::ScrollTarget { x, y, dx, dy } => {
+          self.tree.touch_scroll_begin(x as f32, y as f32, dx as f32, dy as f32);
+        }
+        TouchAction::Scroll { x, y, dx, dy, phase } => {
+          let scrolled = self
+            .tree
+            .touch_scroll(x as f32, y as f32, dx as f32, dy as f32, phase, momentum);
+          if matches!(phase, ScrollPhase::Scroll) {
+            moved = scrolled;
+          }
+        }
+      }
+    }
+    moved
   }
 
   fn create_window(&mut self, event_loop: &ActiveEventLoop, app: &mut App) {
@@ -374,9 +449,19 @@ impl ManagedWindow {
       set_corner_radius(&window, radius);
       self.tree.window().set_corner_radius(radius);
     }
-    let size = window.inner_size();
+    let size = surface_size(&window);
     self.tree.set_scale_factor(window.scale_factor() as f32);
     self.tree.resize(size.width, size.height);
+    #[cfg(target_os = "ios")]
+    {
+      self
+        .tree
+        .set_double_click_distance(touch::DOUBLE_TAP_DISTANCE * window.scale_factor() as f32);
+      self.frame_link = Some(ios::FrameLink::new());
+      if let Ok(RawWindowHandle::UiKit(handle)) = window.window_handle().map(|handle| handle.as_raw()) {
+        self.status_bar_tap = Some(ios::StatusBarTap::new(handle.ui_view));
+      }
+    }
     if let Ok(position) = window.outer_position() {
       self.tree.set_window_position(position.x, position.y);
       self.notify_position_changed(position.x, position.y);
@@ -401,7 +486,7 @@ impl ManagedWindow {
       return false;
     };
 
-    let size = window.inner_size();
+    let size = surface_size(window);
     let minimized = window.is_minimized();
     let maximized = window.is_maximized();
     let full_screen = window.fullscreen().is_some();
@@ -565,17 +650,44 @@ impl ManagedWindow {
     }
     if let Some(w) = &self.window {
       self.redraw_pending = true;
+      // On iOS the frame is presented at the display's next refresh, from `about_to_wait`; see [`ios`].
+      #[cfg(target_os = "ios")]
+      if let Some(link) = &mut self.frame_link {
+        link.set_running(true);
+        return;
+      }
       w.request_redraw();
     }
+  }
+
+  /// Whether the display refreshed and a frame is wanted for it. Stops the refreshes once none is.
+  fn take_frame_due(&mut self) -> bool {
+    #[cfg(target_os = "ios")]
+    if let Some(link) = &mut self.frame_link {
+      let wanted = self.redraw_pending || self.tree.needs_redraw();
+      if !wanted {
+        link.set_running(false);
+      }
+      return wanted && link.take_due();
+    }
+    false
   }
 
   fn present_now(&mut self, app: &mut App, request_followup_redraw: bool) -> bool {
     if let Some(w) = &self.window {
       let started_at = Instant::now();
       let setup_started_at = Instant::now();
-      let size = w.inner_size();
+      let size = surface_size(w);
       self.tree.set_scale_factor(w.scale_factor() as f32);
       self.tree.resize(size.width, size.height);
+      #[cfg(target_os = "ios")]
+      {
+        let safe_area = safe_area_insets(w);
+        self.tree.window().set_safe_area(safe_area);
+        if let Some(status_bar_tap) = &mut self.status_bar_tap {
+          status_bar_tap.set_height(f64::from(safe_area.top));
+        }
+      }
       self.redraw_pending = false;
       let setup = setup_started_at.elapsed();
       let pass_started_at = Instant::now();
@@ -659,6 +771,20 @@ impl ManagedWindow {
     }
     self.tree.tick_timers();
     self.tree.tick_futures();
+    #[cfg(target_os = "ios")]
+    {
+      let actions = self.touch.tick(now);
+      if !self.apply_touch_actions(actions, true)
+        && let Some((end, velocity)) = self.touch.end_fling()
+      {
+        self.apply_touch_actions(vec![end], true);
+        self.tree.touch_scroll_bounce(velocity.0 as f32, velocity.1 as f32, now);
+      }
+      self.tree.touch_tick(now);
+      if self.status_bar_tap.as_mut().is_some_and(ios::StatusBarTap::take_tapped) {
+        self.tree.touch_scroll_to_top(now);
+      }
+    }
     self
       .file_drag
       .flush(&mut self.tree, self.window.as_ref(), self.cursor_pos);
@@ -692,7 +818,7 @@ impl ManagedWindow {
     let (Some(window), Some(callback)) = (&self.window, &mut self.on_size_changed) else {
       return;
     };
-    let size = window.inner_size();
+    let size = surface_size(window);
     let scale = self.tree.window().info().scale_factor.max(f32::EPSILON);
     let logical = (
       ((size.width as f32) / scale).round().max(1.0) as u32,
@@ -718,8 +844,12 @@ impl ManagedWindow {
       }
       WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
         self.tree.set_scale_factor(scale_factor as f32);
+        #[cfg(target_os = "ios")]
+        self
+          .tree
+          .set_double_click_distance(touch::DOUBLE_TAP_DISTANCE * scale_factor as f32);
         if let Some(w) = &self.window {
-          let size = w.inner_size();
+          let size = surface_size(w);
           self.tree.resize(size.width, size.height);
           self.request_redraw();
         }
@@ -732,7 +862,7 @@ impl ManagedWindow {
         // queue is idle, and DWM stretches the previous frame until a new one is presented.
         // Only for the current size: size events queued while winit was busy arrive back to back, and
         // painting each stale one would replay the whole drag.
-        let current = self.window.as_ref().is_some_and(|w| w.inner_size() == size);
+        let current = self.window.as_ref().is_some_and(|w| surface_size(w) == size);
         if current && size.width > 0 && size.height > 0 && self.present_now(app, false) {
           self.apply_window_commands(event_loop);
           return true;
@@ -866,6 +996,38 @@ impl ManagedWindow {
         self.apply_cursor();
         self.check_redraw();
       }
+      #[cfg(target_os = "ios")]
+      WindowEvent::Touch(touch) => {
+        let scale = f64::from(self.tree.scale_factor());
+        self.touch.set_momentum(self.tree.touch_momentum());
+        // A finger that lands on content springing back holds it where it is.
+        let springing = touch.phase == TouchPhase::Started && self.tree.touch_scroll_catch();
+        let tree = &mut self.tree;
+        let actions = self.touch.touch(
+          touch.id,
+          touch.phase,
+          (touch.location.x, touch.location.y),
+          Instant::now(),
+          scale,
+          springing,
+          |(x, y)| tree.touch_scrolls_at(x as f32, y as f32),
+        );
+        self.apply_touch_actions(actions, false);
+      }
+      // UIKit draws a view from `drawRect:`, which is where winit sends this event from, and drops a
+      // `setNeedsDisplay` made inside it: a redraw the pass asks for (a second layout pass, an animation's next
+      // frame) would wait for an event that never comes, and with `redraw_pending` set nothing would ask again.
+      // The loop takes another turn instead, and asks from there.
+      #[cfg(target_os = "ios")]
+      WindowEvent::RedrawRequested => {
+        let presented = self.present_now(app, false);
+        self.apply_window_commands(event_loop);
+        if self.tree.needs_redraw() {
+          event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+        }
+        return presented;
+      }
+      #[cfg(not(target_os = "ios"))]
       WindowEvent::RedrawRequested => {
         let presented = self.present_now(app, true);
         self.apply_window_commands(event_loop);
@@ -1748,7 +1910,8 @@ impl ApplicationHandler for WinitHandler {
     let continuous_check = stage_started_at.elapsed();
     let mut present = Duration::ZERO;
     let mut post_present = Duration::ZERO;
-    if main_has_continuous_video || main_has_interactive_drag {
+    let main_frame_due = self.main.take_frame_due();
+    if main_has_continuous_video || main_has_interactive_drag || main_frame_due {
       let stage_started_at = Instant::now();
       let presented = self.main.present_now(&mut self.app, false);
       present = stage_started_at.elapsed();
@@ -1826,7 +1989,11 @@ impl ApplicationHandler for WinitHandler {
       .filter_map(ManagedSecondaryWindow::next_file_drag_poll)
       .chain(self.main.next_file_drag_poll())
       .min();
-    let next_timer = trees().filter_map(Tree::next_timer_at).chain(next_file_drag_poll).min();
+    let next_timer = trees()
+      .filter_map(Tree::next_timer_at)
+      .chain(next_file_drag_poll)
+      .chain(self.main.next_touch_deadline())
+      .min();
 
     let wait = LoopWait::of(
       LoopNeeds {
@@ -1872,6 +2039,37 @@ impl ApplicationHandler for WinitHandler {
         control_flow
       );
     }
+  }
+}
+
+/// The size the tree is laid out and drawn at. On iOS that is the whole window, which covers the screen: winit's
+/// `inner_size` is the safe area there, smaller than the view the surface fills, and a frame of that size was
+/// stretched over the screen. The app keeps its content inside the safe area with
+/// [`WindowInfo::safe_area`](crate::app::window::WindowInfo::safe_area).
+fn surface_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
+  #[cfg(target_os = "ios")]
+  return window.outer_size();
+  #[cfg(not(target_os = "ios"))]
+  window.inner_size()
+}
+
+/// The safe area's insets in logical pixels, from where winit says the safe area is inside the window.
+#[cfg(target_os = "ios")]
+fn safe_area_insets(window: &Window) -> crate::app::window::SafeAreaInsets {
+  let (Ok(outer_position), Ok(inner_position)) = (window.outer_position(), window.inner_position()) else {
+    return Default::default();
+  };
+  let (outer, inner) = (window.outer_size(), window.inner_size());
+  let scale = window.scale_factor() as f32;
+  let left = (inner_position.x - outer_position.x).max(0) as f32;
+  let top = (inner_position.y - outer_position.y).max(0) as f32;
+  let right = (outer.width as f32 - inner.width as f32 - left).max(0.0);
+  let bottom = (outer.height as f32 - inner.height as f32 - top).max(0.0);
+  crate::app::window::SafeAreaInsets {
+    top: top / scale,
+    right: right / scale,
+    bottom: bottom / scale,
+    left: left / scale,
   }
 }
 

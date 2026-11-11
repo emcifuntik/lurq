@@ -21,6 +21,22 @@ pub struct WindowInfo {
   pub is_full_screen: bool,
   pub is_decorated: bool,
   pub is_focused: bool,
+  /// The edges of the window the system draws over or cuts off; see [`SafeAreaInsets`].
+  pub safe_area: SafeAreaInsets,
+}
+
+/// How far in from each edge of the window content stays clear of what the device and the system put there: a
+/// phone's status bar, camera housing, home indicator and rounded corners. In logical pixels, and zero on a
+/// desktop.
+///
+/// The window covers the whole screen, so a background reaches its edges; content that must be read or
+/// touched is padded by these.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SafeAreaInsets {
+  pub top: f32,
+  pub right: f32,
+  pub bottom: f32,
+  pub left: f32,
 }
 
 impl WindowInfo {
@@ -291,6 +307,7 @@ impl Window {
           is_full_screen: false,
           is_decorated: true,
           is_focused: true,
+          safe_area: SafeAreaInsets::default(),
         },
         corner_radius: WindowCornerRadius::Default,
         border_color: WindowBorderColor::Default,
@@ -559,6 +576,19 @@ impl Window {
         return;
       }
       inner.info.is_decorated = decorated;
+      Self::bump_version(&mut inner)
+    };
+    self.version_signal.set(version);
+  }
+
+  /// Sets the insets a shell read from the platform. Public for tests and for shells outside the crate.
+  pub fn set_safe_area(&self, safe_area: SafeAreaInsets) {
+    let version = {
+      let mut inner = self.inner.write().unwrap();
+      if inner.info.safe_area == safe_area {
+        return;
+      }
+      inner.info.safe_area = safe_area;
       Self::bump_version(&mut inner)
     };
     self.version_signal.set(version);

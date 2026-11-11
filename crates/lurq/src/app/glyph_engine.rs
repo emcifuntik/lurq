@@ -3455,7 +3455,15 @@ fn load_platform_fonts(font_system: &mut FontSystem) {
     }
   }
 
-  #[cfg(not(target_os = "windows"))]
+  // fontdb knows the font directories of macOS, not of iOS. A simulator runs on the host, where the runtime's
+  // files are under `IPHONE_SIMULATOR_ROOT`.
+  #[cfg(target_os = "ios")]
+  {
+    let root = std::env::var_os("IPHONE_SIMULATOR_ROOT").map_or_else(|| "/".into(), std::path::PathBuf::from);
+    font_system.db_mut().load_fonts_dir(root.join("System/Library/Fonts"));
+  }
+
+  #[cfg(not(any(target_os = "windows", target_os = "ios")))]
   {
     let _ = font_system;
   }

@@ -88,6 +88,7 @@ mod outside_press;
 mod overlay_layers;
 mod paste;
 pub use paste::ClipboardReader;
+pub use touch::TouchMomentum;
 #[cfg(test)]
 mod refresh_layout_tests;
 mod scroll_into_view;
@@ -96,6 +97,9 @@ mod selected_text_lines;
 mod tab_navigation;
 #[cfg(all(test, feature = "markdown"))]
 mod table_copy_tests;
+mod touch;
+#[cfg(test)]
+mod touch_tests;
 
 use overlay_layers::{HiddenDismiss, OverlayLayers};
 use selected_text_lines::{SelectedTextFragment, join_selected_text};
@@ -726,6 +730,9 @@ pub struct Tree {
   cursor: CursorIcon,
   click_tracker: ClickTracker,
   text_click_tracker: TextClickTracker,
+  /// How far apart, in physical pixels, two presses may land and still be one double click, when a shell set
+  /// it; see `set_double_click_distance`.
+  double_click_distance: Option<f32>,
   click_press: Option<ClickPress>,
   /// A left press that only closed popups (`OutsidePress::Consume`); its
   /// release is swallowed too.
@@ -750,6 +757,12 @@ pub struct Tree {
   pending_screenshot: Option<PendingScreenshot>,
   /// Recognizes trackpad swipes between pages in the scroll gestures.
   history_swipes: history_swipe::HistorySwipes,
+  /// What a finger's scroll gesture scrolls; see `touch_scroll_begin`.
+  touch_scroll_targets: Vec<NodeId>,
+  /// The scroll being delivered is a finger's, and goes to `touch_scroll_targets`.
+  touch_scroll_latched: bool,
+  touch_scroll: touch::TouchScroll,
+  touch_momentum: TouchMomentum,
   /// Where the sensitive text of the last full render list was painted, for
   /// captures made for inspection (`app::capture_redaction`).
   #[cfg(feature = "screenshot")]
@@ -1116,6 +1129,7 @@ impl Tree {
       cursor: CursorIcon::Default,
       click_tracker: ClickTracker::default(),
       text_click_tracker: TextClickTracker::default(),
+      double_click_distance: None,
       click_press: None,
       swallowed_press: None,
       suppressed_click: None,
@@ -1135,6 +1149,10 @@ impl Tree {
       #[cfg(feature = "screenshot")]
       pending_screenshot: None,
       history_swipes: history_swipe::HistorySwipes::default(),
+      touch_scroll_targets: Vec::new(),
+      touch_scroll_latched: false,
+      touch_scroll: touch::TouchScroll::default(),
+      touch_momentum: TouchMomentum::default(),
       #[cfg(feature = "screenshot")]
       capture_redactions: Vec::new(),
       #[cfg(feature = "screenshot")]
@@ -3507,10 +3525,13 @@ impl Tree {
 
     if button == MouseButton::Left {
       let now = Instant::now();
-      if let Some(click_target_id) = self
-        .click_tracker
-        .pending_match_for_targets(now, position, button, &target_ids)
-      {
+      if let Some(click_target_id) = self.click_tracker.pending_match_for_targets(
+        now,
+        position,
+        button,
+        &target_ids,
+        self.double_click_distance.unwrap_or(DOUBLE_CLICK_DISTANCE),
+      ) {
         self.click_press = None;
         self.click_tracker.take_pending();
         self.dispatch_mouse_with_click_target(
@@ -3654,10 +3675,13 @@ impl Tree {
     if button == MouseButton::Left
       && let ClickDispatchTarget::Node(click_target_id) = click_target
     {
-      if self
-        .click_tracker
-        .pending_matches(now, position, button, click_target_id)
-      {
+      if self.click_tracker.pending_matches(
+        now,
+        position,
+        button,
+        click_target_id,
+        self.double_click_distance.unwrap_or(DOUBLE_CLICK_DISTANCE),
+      ) {
         self.click_tracker.take_pending();
         self.dispatch_mouse_with_click_target(
           x,
@@ -4220,6 +4244,10 @@ impl Tree {
       control: EventControl::new(),
     };
     let scale = self.scale_factor();
+    // Text clicks are compared in logical pixels, as the event carries them.
+    let text_click_distance = self
+      .double_click_distance
+      .map_or(DOUBLE_CLICK_DISTANCE, |distance| distance / scale);
     let lx = evt.x / scale;
     let ly = evt.y / scale;
     evt.x = lx;
@@ -4716,9 +4744,13 @@ impl Tree {
         .find(|(node, _)| matches!(node.node_kind(), NodeKind::TextInput { .. }))
       {
         if let NodeKind::TextInput { state, .. } = node.node_kind() {
-          let text_click_count = self
-            .text_click_tracker
-            .record(Instant::now(), (evt.x, evt.y), button, node.node_id());
+          let text_click_count = self.text_click_tracker.record(
+            Instant::now(),
+            (evt.x, evt.y),
+            button,
+            node.node_id(),
+            text_click_distance,
+          );
           let padding = self
             .layout_engine
             .resolved_padding_for_size(node, Size::new(rect.width, rect.height));
@@ -4741,9 +4773,13 @@ impl Tree {
         }
       } else if let Some((node, rect)) = hits.iter().find(|(node, _)| is_selectable_text_node(node)) {
         if let Some((state, value)) = selectable_text_state_and_value(node) {
-          let text_click_count = self
-            .text_click_tracker
-            .record(Instant::now(), (evt.x, evt.y), button, node.node_id());
+          let text_click_count = self.text_click_tracker.record(
+            Instant::now(),
+            (evt.x, evt.y),
+            button,
+            node.node_id(),
+            text_click_distance,
+          );
           if !evt.shift && !evt.ctrl {
             clear_selectable_text_selections_except(root, Some(node.node_id()));
           }
@@ -5413,7 +5449,24 @@ impl Tree {
       None => return false,
     };
     let mut hits = Vec::new();
-    hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+    if self.touch_scroll_latched {
+      // A finger scrolls what it landed on for the whole gesture, whatever the content it moved has since
+      // brought under the point.
+      hits.extend(self.touch_scroll_targets.iter().filter_map(|target| {
+        let rect = HitRect {
+          x: 0.0,
+          y: 0.0,
+          width: 0.0,
+          height: 0.0,
+          local_x: 0.0,
+          local_y: 0.0,
+          transform: Transform2D::IDENTITY,
+        };
+        Some((find_node_by_id(root, *target)?, rect))
+      }));
+    } else {
+      hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+    }
     let scroll_delta_can_be_consumed =
       scroll_delta_can_be_consumed_by_hits(&hits, evt.delta_x, evt.delta_y, gesture_dy);
     // When the delta targets a scroll container that cannot move (edge-clamped
@@ -7885,12 +7938,19 @@ impl ClickTracker {
     self.pending_click.is_some()
   }
 
-  fn pending_matches(&self, now: Instant, position: (f32, f32), button: MouseButton, target_id: NodeId) -> bool {
+  fn pending_matches(
+    &self,
+    now: Instant,
+    position: (f32, f32),
+    button: MouseButton,
+    target_id: NodeId,
+    distance: f32,
+  ) -> bool {
     self.pending_click.is_some_and(|pending| {
       pending.button == button
         && pending.target_id == target_id
         && now.duration_since(pending.time) <= DOUBLE_CLICK_INTERVAL
-        && distance_squared(pending.position, position) <= DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
+        && distance_squared(pending.position, position) <= distance * distance
     })
   }
 
@@ -7900,11 +7960,12 @@ impl ClickTracker {
     position: (f32, f32),
     button: MouseButton,
     target_ids: &[NodeId],
+    distance: f32,
   ) -> Option<NodeId> {
     let pending = self.pending_click?;
     if pending.button != button
       || now.duration_since(pending.time) > DOUBLE_CLICK_INTERVAL
-      || distance_squared(pending.position, position) > DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
+      || distance_squared(pending.position, position) > distance * distance
     {
       return None;
     }
@@ -8003,14 +8064,21 @@ struct TextClickTracker {
 }
 
 impl TextClickTracker {
-  fn record(&mut self, now: Instant, position: (f32, f32), button: MouseButton, target_id: NodeId) -> u8 {
+  fn record(
+    &mut self,
+    now: Instant,
+    position: (f32, f32),
+    button: MouseButton,
+    target_id: NodeId,
+    distance: f32,
+  ) -> u8 {
     let count = self
       .previous
       .filter(|previous| {
         previous.button == button
           && previous.target_id == target_id
           && now.duration_since(previous.time) <= DOUBLE_CLICK_INTERVAL
-          && distance_squared(previous.position, position) <= DOUBLE_CLICK_DISTANCE * DOUBLE_CLICK_DISTANCE
+          && distance_squared(previous.position, position) <= distance * distance
       })
       .map(|previous| (previous.count + 1).min(3))
       .unwrap_or(1);

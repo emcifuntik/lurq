@@ -2231,8 +2231,7 @@ impl LayoutEngine {
         result.size.height,
       );
       if let Some(child) = result.children.first_mut() {
-        child.offset.x = -state.scroll_x();
-        child.offset.y = -state.scroll_y();
+        child.offset = state.content_offset();
       }
     }
   }
@@ -3601,7 +3600,7 @@ impl LayoutEngine {
       return LayoutResult {
         size,
         children: vec![ChildLayout {
-          offset: Offset::new(-state.scroll_x(), -state.scroll_y()),
+          offset: state.content_offset(),
           result: child_result.into(),
         }]
         .into(),
@@ -3648,7 +3647,7 @@ impl LayoutEngine {
     LayoutResult {
       size,
       children: vec![ChildLayout {
-        offset: Offset::new(-state.scroll_x(), -state.scroll_y()),
+        offset: state.content_offset(),
         result: child_result.into(),
       }]
       .into(),

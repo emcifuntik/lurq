@@ -77,6 +77,16 @@ pub enum ScrollBarVisibility {
   /// takes no pointer, like [`Self::Never`]; shown, it is an [`Self::Auto`]
   /// bar.
   OnHover,
+  /// A phone's scroll indicator: an [`Self::OnHover`] bar that the pointer does not show, only content that
+  /// scrolls and a thumb that is dragged. A finger that rests on a list shows nothing.
+  WhileScrolling,
+}
+
+impl ScrollBarVisibility {
+  /// Whether the bar comes and goes by itself: shown, it is an [`Self::Auto`] bar.
+  pub(crate) fn fades(self) -> bool {
+    matches!(self, Self::OnHover | Self::WhileScrolling)
+  }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,7 +97,35 @@ pub enum ScrollBarPlacement {
 }
 
 impl Default for ScrollBarStyle {
+  /// A desktop's bar; on iOS, [`Self::indicator`], the bar a list of the platform has.
   fn default() -> Self {
+    if cfg!(target_os = "ios") {
+      return Self::indicator();
+    }
+    Self::bar()
+  }
+}
+
+impl ScrollBarStyle {
+  /// A phone's scroll indicator: a thin rounded bar over the content, clear of the corners, that shows while
+  /// the content scrolls and fades out after. Grey, to show over light content and dark.
+  pub fn indicator() -> Self {
+    Self {
+      width: 3.0,
+      min_thumb_length: 36.0,
+      thumb_color: Color::new(128, 128, 128, 170),
+      thumb_radius: 1.5,
+      track_radius: 1.5,
+      padding: 3.0,
+      end_inset: Some(6.0),
+      visible: ScrollBarVisibility::WhileScrolling,
+      fade_delay: Duration::from_millis(350),
+      fade_duration: Duration::from_millis(250),
+      ..Self::bar()
+    }
+  }
+
+  fn bar() -> Self {
     Self {
       width: DEFAULT_SCROLLBAR_WIDTH,
       min_thumb_length: DEFAULT_SCROLLBAR_MIN_THUMB_LENGTH,
@@ -346,7 +384,11 @@ pub fn compute_vertical_scrollbar(
 ) -> Option<ScrollBarGeometry> {
   match style.visible {
     ScrollBarVisibility::Never => return None,
-    ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover if content_height <= viewport_height => return None,
+    ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover | ScrollBarVisibility::WhileScrolling
+      if content_height <= viewport_height =>
+    {
+      return None;
+    }
     _ => {}
   }
 
@@ -384,7 +426,11 @@ pub fn compute_horizontal_scrollbar(
 ) -> Option<ScrollBarGeometry> {
   match style.visible {
     ScrollBarVisibility::Never => return None,
-    ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover if content_width <= viewport_width => return None,
+    ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover | ScrollBarVisibility::WhileScrolling
+      if content_width <= viewport_width =>
+    {
+      return None;
+    }
     _ => {}
   }
 
