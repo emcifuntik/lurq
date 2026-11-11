@@ -5,12 +5,17 @@ to the work on `feat/ios-touch`; an entry goes when its gap is closed.
 
 "Not checked" means nobody has run it on a device, not that it is known to be broken.
 
-## Blocks a real app
+## Scenes
 
-- **UIScene.** winit starts the app without a scene delegate, which UIKit traps on in an app linked against the
-  iOS 27 SDK. `crates/mobile_demo/ios/build-rust.sh` marks the binary as built with the iOS 26 SDK so that it
-  starts. That is a way round, not a fix: the system may drop the old path, and an app marked so is unlikely
-  to pass App Store review. winit has no scenes in 0.30.13 nor in 0.31.0-beta.4.
+An app starts in a scene of UIKit's (`UIWindowScene`), which an app built with the iOS 27 SDK must: the shell
+makes the scene's delegate and puts winit's window into the scene. The app has to name that delegate in its
+`Info.plist`, as `crates/mobile_demo/ios/Info.plist` does (`UIApplicationSceneManifest`, with
+`UISceneDelegateClassName` set to `LurqSceneDelegate`); winit starts the app with no delegate of its own that
+could say so in code. Going to the background and back, and the lock screen, were tried on a device.
+
+- **One scene.** A second window of the app, on an iPad or an outer display, is not there.
+- **What the scene tells its delegate** (active, background, what it was opened with: a link, a shortcut) is
+  not passed on; winit hears the app's own notifications, which UIKit still sends.
 
 ## Text input
 
@@ -56,8 +61,6 @@ where UIKit says the selection is.
 
 ## The platform
 
-- **Going to the background and coming back:** not checked. What happens to the window, the surface and the
-  app's state is not known.
 - **The screen turning:** not checked.
 - **Light and dark appearance, Dynamic Type, VoiceOver:** not done.
 - **Features of lurq other than touch and text** have not been run on iOS: `resources` (the network; `ring`

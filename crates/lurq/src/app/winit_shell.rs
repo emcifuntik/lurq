@@ -224,6 +224,9 @@ impl WinitWindow {
   }
 
   pub fn run(self) {
+    // UIKit makes the scene's delegate when the loop starts the app.
+    #[cfg(target_os = "ios")]
+    ios::register_scene_delegate();
     let mut event_loop_builder = EventLoop::builder();
     #[cfg(target_os = "macos")]
     if self.start_without_focus {
@@ -486,6 +489,7 @@ impl ManagedWindow {
       ios::watch_keyboard();
       self.frame_link = Some(ios::FrameLink::new());
       if let Ok(RawWindowHandle::UiKit(handle)) = window.window_handle().map(|handle| handle.as_raw()) {
+        ios::join_scene(handle.ui_view);
         self.status_bar_tap = Some(ios::StatusBarTap::new(handle.ui_view));
         self.text_input = Some(ios_text::TextInput::new(handle.ui_view));
         // The platform draws the focused input's caret and selection; see `ios_text`.

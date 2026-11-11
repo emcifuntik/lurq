@@ -17,13 +17,20 @@
 //! empty scroll view across the top of the window, as high as the status bar, stands in ([`StatusBarTap`]),
 //! declines to scroll, and the shell scrolls its own content instead. Touches in that band go to it and not
 //! to the app, whose content the safe area keeps out of there.
+//!
+//! **Scenes.** UIKit gives an app its windows through scenes, and traps at launch in an app linked against the
+//! iOS 27 SDK that has not taken them up. winit starts the app with no delegate and makes its window outside any
+//! scene. So the scene's delegate is a class of the shell's ([`register_scene_delegate`]), which an app names in
+//! its `Info.plist` (`UIApplicationSceneManifest`, `UISceneDelegateClassName` = `LurqSceneDelegate`), and the
+//! shell puts winit's window into the scene UIKit connects ([`join_scene`]). An app whose `Info.plist` names no
+//! scene runs as before, where UIKit still lets it.
 
 use std::{
   ffi::c_void,
   ptr::NonNull,
   sync::{
     Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicPtr, Ordering},
   },
 };
 
@@ -387,5 +394,112 @@ pub(super) fn play_haptic(haptic: crate::app::window::Haptic) {
         let _: () = msg_send![&*generator, notificationOccurred: kind];
       }
     }
+  }
+}
+
+/// The scene UIKit connected, retained; null before it does and in an app that has no scenes.
+static SCENE: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
+/// winit's window, which lives as long as the app does; null until the shell has made it.
+static SCENE_WINDOW: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Makes the class UIKit creates as the scene's delegate, by the name an app's `Info.plist` gives:
+/// `LurqSceneDelegate`. To be called before the event loop runs, which is when UIKit starts the app.
+pub(super) fn register_scene_delegate() {
+  if AnyClass::get(c"LurqSceneDelegate").is_some() {
+    return;
+  }
+  extern "C-unwind" fn will_connect(
+    _this: &AnyObject,
+    _cmd: Sel,
+    scene: *mut AnyObject,
+    _session: *mut AnyObject,
+    _options: *mut AnyObject,
+  ) {
+    let Some(scene) = (unsafe { Retained::retain(scene) }) else {
+      return;
+    };
+    let is_window_scene: bool = unsafe { msg_send![&*scene, isKindOfClass: class!(UIWindowScene)] };
+    if !is_window_scene {
+      return;
+    }
+    let previous = SCENE.swap(Retained::into_raw(scene), Ordering::AcqRel);
+    if !previous.is_null() {
+      drop(unsafe { Retained::from_raw(previous) });
+    }
+    show_window_in_scene();
+  }
+  extern "C-unwind" fn did_disconnect(_this: &AnyObject, _cmd: Sel, scene: *mut AnyObject) {
+    if SCENE
+      .compare_exchange(scene, std::ptr::null_mut(), Ordering::AcqRel, Ordering::Acquire)
+      .is_ok()
+    {
+      drop(unsafe { Retained::from_raw(scene) });
+    }
+  }
+  extern "C-unwind" fn window(_this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
+    SCENE_WINDOW.load(Ordering::Acquire)
+  }
+  /// The window is winit's to make.
+  extern "C-unwind" fn set_window(_this: &AnyObject, _cmd: Sel, _window: *mut AnyObject) {}
+
+  let mut builder = ClassBuilder::new(c"LurqSceneDelegate", class!(UIResponder)).expect("a class name of its own");
+  if let Some(protocol) = objc2::runtime::AnyProtocol::get(c"UIWindowSceneDelegate") {
+    builder.add_protocol(protocol);
+  }
+  unsafe {
+    builder.add_method(
+      sel!(scene:willConnectToSession:options:),
+      will_connect as extern "C-unwind" fn(_, _, _, _, _),
+    );
+    builder.add_method(
+      sel!(sceneDidDisconnect:),
+      did_disconnect as extern "C-unwind" fn(_, _, _),
+    );
+    builder.add_method(sel!(window), window as extern "C-unwind" fn(_, _) -> _);
+    builder.add_method(sel!(setWindow:), set_window as extern "C-unwind" fn(_, _, _));
+  }
+  builder.register();
+}
+
+/// Puts the window of a view of winit's into the app's scene, now or when UIKit connects one. A window outside
+/// a scene is not shown in an app that has scenes.
+pub(super) fn join_scene(view: NonNull<c_void>) {
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  let window: Option<Retained<AnyObject>> = unsafe { msg_send![view, window] };
+  let Some(window) = window else {
+    return;
+  };
+  SCENE_WINDOW.store(Retained::as_ptr(&window).cast_mut(), Ordering::Release);
+  if SCENE.load(Ordering::Acquire).is_null() {
+    // Connected before the shell's delegate could hear of it, or by a delegate that is not the shell's.
+    let scene = unsafe {
+      let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
+      let scenes: Retained<AnyObject> = msg_send![&*app, connectedScenes];
+      let scenes: Retained<AnyObject> = msg_send![&*scenes, allObjects];
+      let count: usize = msg_send![&*scenes, count];
+      (0..count)
+        .map(|index| -> Retained<AnyObject> { msg_send![&*scenes, objectAtIndex: index] })
+        .find(|scene| msg_send![&**scene, isKindOfClass: class!(UIWindowScene)])
+    };
+    if let Some(scene) = scene {
+      SCENE.store(Retained::into_raw(scene), Ordering::Release);
+    }
+  }
+  show_window_in_scene();
+}
+
+/// Gives winit's window to the scene, once there are both and the window has none.
+fn show_window_in_scene() {
+  let (scene, window) = (SCENE.load(Ordering::Acquire), SCENE_WINDOW.load(Ordering::Acquire));
+  let (Some(scene), Some(window)) = (unsafe { scene.as_ref() }, unsafe { window.as_ref() }) else {
+    return;
+  };
+  unsafe {
+    let current: Option<Retained<AnyObject>> = msg_send![window, windowScene];
+    if current.is_some() {
+      return;
+    }
+    let _: () = msg_send![window, setWindowScene: scene];
+    let _: () = msg_send![window, makeKeyAndVisible];
   }
 }
