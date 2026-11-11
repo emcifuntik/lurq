@@ -2051,6 +2051,7 @@ impl Tree {
       on_save_node_screenshot: Some(devtools_save_node_screenshot_callback(
         self.devtools_state.screenshot_request.clone(),
       )),
+      profiling: Some(self.profiling_handle()),
     }
   }
 

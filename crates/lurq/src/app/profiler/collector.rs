@@ -193,6 +193,31 @@ impl ProfilingHandle {
     Ok(self.report(&state, id, session, Instant::now(), false))
   }
 
+  /// A live session's progress, without copying its samples as `read` does.
+  pub fn status(&self, id: SessionId) -> Result<SessionStatus, ProfileError> {
+    let state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+    let session = state.sessions.get(&id).ok_or_else(|| missing(&state, id))?;
+    Ok(SessionStatus {
+      id,
+      started_ms: self.millis(session.started),
+      observed_ms: self.millis(Instant::now()),
+      completed_samples: session.completed,
+      recording: self.recording_status(session),
+    })
+  }
+
+  fn recording_status(&self, session: &Session) -> Option<RecordingStatus> {
+    match &session.samples {
+      Samples::Bounded(_) => None,
+      Samples::Recording(recording) => Some(RecordingStatus {
+        max_bytes: recording.max_bytes,
+        size_bytes: recording.size_bytes,
+        stopped_at_limit: recording.stopped_at_limit.is_some(),
+        stopped_ms: recording.stopped_at_limit.map(|stopped| self.millis(stopped)),
+      }),
+    }
+  }
+
   /// Finalizes only this session. Later producer completions cannot change it.
   pub fn end(&self, id: SessionId) -> Result<ProfileReport, ProfileError> {
     let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -239,19 +264,11 @@ impl ProfilingHandle {
       })
       .collect();
     in_flight.sort_by(|a, b| a.window.cmp(&b.window));
-    let (max_samples, samples, recording) = match &session.samples {
-      Samples::Bounded(samples) => (session.options.max_samples, samples.iter().cloned().collect(), None),
-      Samples::Recording(recording) => (
-        0,
-        recording.chunks.iter().flatten().cloned().collect(),
-        Some(RecordingStatus {
-          max_bytes: recording.max_bytes,
-          size_bytes: recording.size_bytes,
-          stopped_at_limit: recording.stopped_at_limit.is_some(),
-          stopped_ms: recording.stopped_at_limit.map(|stopped| self.millis(stopped)),
-        }),
-      ),
+    let (max_samples, samples) = match &session.samples {
+      Samples::Bounded(samples) => (session.options.max_samples, samples.iter().cloned().collect()),
+      Samples::Recording(recording) => (0, recording.chunks.iter().flatten().cloned().collect()),
     };
+    let recording = self.recording_status(session);
     ProfileReport {
       id,
       finalized,

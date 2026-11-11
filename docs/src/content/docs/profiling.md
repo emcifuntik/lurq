@@ -5,7 +5,7 @@ description: Shared bounded CPU profiling sessions, overlapping captures and sta
 
 # Profiling sessions
 
-Profiling is a toolkit service, shared by the embedded MCP server and in-process consumers. It does not require DevTools and does not collect component properties, text, input values, document paths, window titles or tokens. The existing DevTools inspector UI remains separate; a future profiling UI can consume this same session API and model.
+Profiling is a toolkit service, shared by the embedded MCP server and in-process consumers. It does not require DevTools and does not collect component properties, text, input values, document paths, window titles or tokens. The DevTools [Profiler tab](../devtools/#profiler) is one of its consumers: its Start/Stop runs a recording session (below) on the inspected tree's handle.
 
 Enable `perf_profile` to instrument timings; `devtools` enables it too (see [Overhead](#overhead) for what it costs a pass). MCP profiling tools are available with `mcp`; without `perf_profile`, availability reports `feature_disabled` and starting a session errors. Starting, reading and ending sessions never request redraw, layout, synthetic input or an event-loop roundtrip.
 
@@ -47,10 +47,13 @@ use lurq::app::profiler::RecordingOptions;
 
 let profiling = tree.profiling_handle();
 let id = profiling.start_recording(RecordingOptions::default())?.id;
-// While it runs, a UI can show how much it holds:
-let size = profiling.read(id)?.recording.unwrap().size_bytes;
+// While it runs, a UI can show how long it ran and how much it holds:
+let status = profiling.status(id)?;
+let (ran_ms, size) = (status.observed_ms - status.started_ms, status.recording.unwrap().size_bytes);
 let report = profiling.end(id)?; // Every sample since the start.
 ```
+
+`status(id)` returns a live session's `SessionStatus` (`started_ms`, `observed_ms`, `completed_samples` and, for a recording, its `RecordingStatus`) without copying its samples as `read` does, so a status line can poll it.
 
 A recording keeps every sample from its start to its `end`, in chunks of 4096 samples, so a long recording never moves what it holds and never drops a sample. `ProfileReport::recording` (None for a bounded session) reports `size_bytes`, an estimate of the memory its samples hold (the samples with their spans and the session's pointers to them; a sample shared with another session is counted in each), and its ceiling `max_bytes`, 1 GiB by default (`DEFAULT_RECORDING_MAX_BYTES`). When the next sample would pass the ceiling, the recording stops by itself: it keeps what it has, records nothing more, and reports `stopped_at_limit = true` with `stopped_ms`, instead of silently dropping samples. It stays readable until `end`. A recording counts against the eight concurrent sessions like any other, follows the same start/end boundary policy and window/DevTools rules, and its application scopes keep the per-session bound of 128. `max_samples` is 0 in its report (null in JSON), `max_bytes` of 0 is refused with `ProfileError::InvalidByteLimit`, and its JSON export adds a `recording` object (`max_bytes`, `size_bytes`, `stopped_at_limit`, `stopped_ms`); `SessionStarted` carries `recording_max_bytes`.
 

@@ -62,6 +62,18 @@ pub struct RecordingStatus {
   pub stopped_ms: Option<f64>,
 }
 
+/// A live session's progress without its samples (`ProfilingHandle::status`),
+/// cheap enough to read on every redraw of a recording's status line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SessionStatus {
+  pub id: SessionId,
+  pub started_ms: f64,
+  pub observed_ms: f64,
+  pub completed_samples: u64,
+  /// Some for a recording session.
+  pub recording: Option<RecordingStatus>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileError {
   FeatureDisabled,

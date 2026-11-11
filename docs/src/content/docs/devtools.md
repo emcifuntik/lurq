@@ -33,7 +33,7 @@ The current DevTools UI has three primary tabs:
 | Tab | Shows |
 | --- | --- |
 | Components | Retained component/element tree, selected node details, props, signals, contexts, effects, shape/style rows, and optional overlay. Author-supplied `id`/`class` attributes appear first in each tree row and in the Attributes section, like browser devtools. |
-| Profiler | Captured render commits, frame timings, render causes, signal changes, memo recomputes, layout status, and perf overlay stats. |
+| Profiler | A recording of every pass of the inspected windows between Start and Stop: a frame timeline with input and UI-update markers, FPS, and each frame's phases and full frame profile. |
 | Signals | Signal list, value, owner component, subscriber count, dependency graph, and change history. |
 
 ## Component Search
@@ -160,22 +160,28 @@ The main tree exposes this through internal tree methods such as debug overlay s
 lurq = { version = "0.58.5", features = ["winit", "wgpu", "devtools"] }
 ```
 
-The profiler tab uses frame snapshots from the tree. A commit records:
+The Profiler tab records on the inspected tree's [profiling session service](../profiling/), the one `Tree::profiling_handle()` returns:
 
-- commit index,
-- duration,
-- number of rendered components/nodes,
-- signal count,
-- whether layout recalculated,
-- human-readable timestamp,
-- render triggers such as signal changes and memo recomputes,
-- perf overlay timings when available.
+1. **Start recording** starts a [recording session](../profiling/#two-session-modes) on it. Nothing is recorded before you press it, and the tab copies nothing while DevTools renders.
+2. While it runs, the top bar shows how long it has run, the memory its samples hold and how many it took, reread four times a second. A recording keeps every sample; at its 1 GiB ceiling it stops taking more and says so.
+3. **Stop recording** ends the session. The recording holds every pass of the inspected windows (the main window and its other secondary windows) that began after Start and finished before Stop, each as its own frame: none is skipped, merged with an identical one, or capped to a fixed count. Passes already running at Start are left out and counted.
+
+DevTools' own window is not recorded. Turn on **Include DevTools** before Start to record it too. **Clear** forgets the recording, and ends one still running.
+
+After Stop the tab shows:
+
+- **Recording**: the whole recording in equal slices, each drawn as its longest pass. Press and drag over it, or shift-click to extend from the last press, to select a time range; **Whole recording** selects all of it. A recording of more than 600 passes opens on its last 600.
+- **Frames**: the selected range on a time axis. Each pass is a bar at its start time, as tall as its duration, against a line at the 16.7 ms frame budget (one 60 Hz refresh): green within the budget, yellow over it, red over twice it, faded when the pass presented no frame. Two lanes below mark where input dispatches and UI updates (root rebuilds and subtree refreshes) began. A range with more than 600 passes asks for a narrower one instead of drawing them.
+- **FPS**: from the intervals between frames presented in the range, for the window that presented most. Intervals over 250 ms are the app idling and are left out, so FPS is blank (`–`) when the app was idle, and does not drop because the app paused between bursts.
+- **Frame details** for the selected bar (the slowest pass of the range until you click one): its start, duration and window; its phases from the recorded spans, nested by depth and placed on the pass's own time axis; and everything its sample holds: the pass timings and flags, Canvas text work, and its frame profile's timings, counts, render, Canvas, Canvas asset upload, text and memory figures.
+
+The recording holds only phase names, times and counts: no text, prop or signal values, input values or paths. The Signals tab records signal changes.
 
 `Tree::last_profile()` returns the latest low-level frame profile for custom tooling. In a build with neither `devtools` nor `perf_profile` it holds default values.
 
 Profiling costs a DevTools build something on every pass, even with no session open: the pass timers run and each coarse phase is published so a session started during a slow pass can see it. Measured with `cargo bench -p lurq --bench profiler_idle` (Windows, release, headless pass): a pass over 40 unchanged rows takes about 0.31–0.34 µs without `perf_profile` and 0.52–0.61 µs with it and no session, so about 0.2 µs more per pass; an open session adds about 0.15–0.2 µs more. A pass that rebuilds a component and lays out the rows again takes 20–28 µs in every configuration, where the profiler's share is within the run-to-run noise. See [profiling](../profiling/#overhead) for details.
 
-The shared [profiling session service](../profiling/) also exposes independent bounded captures through `Tree::profiling_handle()` and MCP's `lurq_profile_start`/`lurq_profile_read`/`lurq_profile_end`. It records completed operations and unfinished current-phase observations without UI roundtrips. This is the common model/collector for a future DevTools profiling view; the current commit/signal inspector UI does not yet consume that service. GPU timestamp metrics remain unavailable.
+The same service also gives independent bounded captures through `Tree::profiling_handle()` and MCP's `lurq_profile_start`/`lurq_profile_read`/`lurq_profile_end`, which run alongside a DevTools recording. GPU timestamp metrics remain unavailable.
 
 ## Perf Overlay
 

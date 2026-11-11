@@ -2,6 +2,7 @@ mod inspector;
 #[cfg(feature = "persistent_storage")]
 mod persistent_storage_panel;
 mod profiler;
+mod profiler_capture;
 mod signals;
 mod snapshot;
 mod style;
@@ -17,7 +18,11 @@ pub use snapshot::{DevToolsNode, DevToolsSnapshot, FrameProfileSnapshot};
 
 pub use self::snapshot::DevToolsSnapshot as Snapshot;
 use crate::{
-  app::{component::Component, ctx::Ctx},
+  app::{
+    component::Component,
+    ctx::{Ctx, Interval},
+    profiler::ProfilingHandle,
+  },
   components::{Column, Row},
   core::{NodeId, Signal, Store},
   layout::layout_kind::ScrollState,
@@ -56,6 +61,9 @@ pub struct DevToolsProps {
   pub on_selected_path: Option<DevToolsPathCallback>,
   #[devtools_ignore]
   pub on_save_node_screenshot: Option<DevToolsPathCallback>,
+  /// The inspected tree's profiling handle, which the Profiler tab records on.
+  #[devtools_ignore]
+  pub profiling: Option<ProfilingHandle>,
 }
 
 pub struct DevTools {
@@ -66,10 +74,9 @@ pub struct DevTools {
   show_inspected_overlay: Signal<bool>,
   pick_inspected: Signal<bool>,
   active_tab: Signal<DevToolsTab>,
-  profiler_recording: Signal<bool>,
-  profiler_commits: Signal<Vec<profiler::ProfilerCommitSnapshot>>,
-  profiler_selected_commit: Signal<usize>,
-  profiler_last_recorded_signature: Signal<u64>,
+  profiler: Signal<profiler::ProfilerState>,
+  /// Rereads a running recording's status; runs only while one does.
+  profiler_status_ticker: Interval,
   signals_recording: Store<signals::SignalsRecordingState>,
   selected_signal: Signal<Option<String>>,
   #[cfg(feature = "persistent_storage")]
@@ -212,6 +219,11 @@ impl Component for DevTools {
   type Props = DevToolsProps;
 
   fn create(ctx: &mut Ctx) -> Self {
+    let profiler = ctx.signal(profiler::ProfilerState::default());
+    let profiler_status_ticker = ctx.create_interval(profiler::STATUS_INTERVAL, {
+      let profiler = profiler.clone();
+      move || profiler.update(profiler::ProfilerState::refresh_status)
+    });
     Self {
       selected_path: ctx.signal(Vec::new()),
       collapsed_nodes: ctx.signal(Vec::new()),
@@ -220,10 +232,8 @@ impl Component for DevTools {
       show_inspected_overlay: ctx.signal(true),
       pick_inspected: ctx.signal(false),
       active_tab: ctx.signal(DevToolsTab::Components),
-      profiler_recording: ctx.signal(false),
-      profiler_commits: ctx.signal(Vec::new()),
-      profiler_selected_commit: ctx.signal(0),
-      profiler_last_recorded_signature: ctx.signal(profiler::EMPTY_FRAME_SIGNATURE),
+      profiler,
+      profiler_status_ticker,
       signals_recording: ctx.store(signals::SignalsRecordingState::default()),
       selected_signal: ctx.signal(None),
       #[cfg(feature = "persistent_storage")]
@@ -231,6 +241,12 @@ impl Component for DevTools {
       tree: DevToolsTree::new(),
       last_picked_revision: AtomicU64::new(0),
     }
+  }
+
+  fn on_unmounted(&self) {
+    // A recording left running would keep counting against the session limit.
+    self.profiler_status_ticker.stop();
+    self.profiler.update(profiler::ProfilerState::clear);
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
@@ -244,19 +260,18 @@ impl Component for DevTools {
     let mut pick_inspected = self.pick_inspected.get();
     let active_tab = self.active_tab.get();
     let component_search = self.component_search.get();
-    let profiler_recording = self.profiler_recording.get();
+    let profiler_state = self.profiler.get();
+    let profiler_actions = if active_tab == DevToolsTab::Profiler {
+      profiler::profiler_actions(
+        &profiler_state,
+        self.profiler.clone(),
+        props.profiling.clone(),
+        self.profiler_status_ticker.clone(),
+      )
+    } else {
+      Element::new()
+    };
 
-    if profiler_recording {
-      profiler::record_frame(
-        &snapshot,
-        &self.profiler_commits,
-        &self.profiler_selected_commit,
-        &self.profiler_last_recorded_signature,
-      );
-    }
-
-    let profiler_commits = self.profiler_commits.get();
-    let profiler_selected_commit = self.profiler_selected_commit.get();
     let mut signals_recording = self.signals_recording.get();
     if signals_recording.recording() {
       signals::record_signal_changes(&snapshot, &self.signals_recording);
@@ -301,11 +316,7 @@ impl Component for DevTools {
         props.on_save_node_screenshot.clone(),
         active_tab,
         self.active_tab.clone(),
-        profiler_recording,
-        self.profiler_recording.clone(),
-        self.profiler_commits.clone(),
-        self.profiler_selected_commit.clone(),
-        self.profiler_last_recorded_signature.clone(),
+        profiler_actions,
         signals_recording.recording(),
         self.signals_recording.clone(),
       ))
@@ -325,13 +336,7 @@ impl Component for DevTools {
           props.on_debug_overlay_path.clone(),
           props.on_selected_path.clone(),
         ),
-        DevToolsTab::Profiler => profiler::profiler_view(
-          &snapshot,
-          &profiler_commits,
-          profiler_selected_commit,
-          self.profiler_selected_commit.clone(),
-          profiler_recording,
-        ),
+        DevToolsTab::Profiler => profiler::profiler_view(&profiler_state, self.profiler.clone()),
         DevToolsTab::Signals => signals::signals_view(
           &snapshot,
           selected_signal,
