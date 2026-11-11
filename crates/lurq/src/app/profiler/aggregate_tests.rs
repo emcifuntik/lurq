@@ -37,6 +37,7 @@ fn pass(sequence: u64, total_ms: u64, spans: Vec<PhaseSpan>) -> Arc<ProfileSampl
       frame: None,
       spans,
       dropped_spans: 0,
+      counters: None,
       gpu: None,
     }),
   })

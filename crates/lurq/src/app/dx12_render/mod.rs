@@ -922,6 +922,10 @@ struct Dx12State {
   /// Offscreen targets of faded subtrees; created by the first frame that
   /// has one.
   layer_compositor: Option<layers::LayerCompositor>,
+  /// Draw calls `encode_frame` recorded for the render list, layer
+  /// composites included; Canvas draws are not counted.
+  #[cfg(feature = "perf_profile")]
+  draw_calls: usize,
 }
 
 /// A recorded-but-not-yet-read screenshot: the readback buffer the back
@@ -2733,6 +2737,8 @@ impl Dx12State {
       layer_plan: LayerPlan::default(),
       layer_slots: Vec::new(),
       layer_compositor: None,
+      #[cfg(feature = "perf_profile")]
+      draw_calls: 0,
     };
     state.create_render_targets()?;
     state.frame_index = state.swapchain.GetCurrentBackBufferIndex() as usize;
@@ -2904,6 +2910,8 @@ impl Dx12State {
       glyph_atlas_full_uploads: atlas_stats.full_uploads,
       glyph_atlas_arena_uploads: atlas_stats.arena_uploads,
       glyph_atlas_dedicated_uploads: atlas_stats.dedicated_uploads,
+      #[cfg(feature = "perf_profile")]
+      draw_calls: self.draw_calls,
       encode: _encode_dur,
       submit: _submit_dur,
       present: _present_dur,
@@ -2913,6 +2921,7 @@ impl Dx12State {
   }
 
   unsafe fn encode_frame(&mut self, list: &RenderList) -> Result<(GlyphAtlasUploadStats, std::time::Duration)> {
+    profile_if! { self.draw_calls = 0; }
     let target = self.current_render_target();
     self.transition_resource(
       &target,
@@ -3361,6 +3370,7 @@ impl Dx12State {
     self
       .command_list
       .DrawIndexedInstanced(QuadVertex::INDICES.len() as u32, instances.len() as u32, 0, 0, 0);
+    profile_if! { self.draw_calls += 1; }
 
     Ok(())
   }
@@ -3431,6 +3441,7 @@ impl Dx12State {
     self
       .command_list
       .DrawIndexedInstanced(QuadVertex::INDICES.len() as u32, instances.len() as u32, 0, 0, 0);
+    profile_if! { self.draw_calls += 1; }
 
     Ok(())
   }
@@ -3757,6 +3768,7 @@ impl Dx12State {
     self
       .command_list
       .DrawIndexedInstanced(QuadVertex::INDICES.len() as u32, 1, 0, 0, 0);
+    profile_if! { self.draw_calls += 1; }
     if uv_keyed_mutex_acquired && let Some((_, Some(mutex))) = native_nv12_mutexes.as_ref() {
       let _ = mutex.ReleaseSync(0);
     }
@@ -3825,6 +3837,7 @@ impl Dx12State {
     self
       .command_list
       .DrawIndexedInstanced(svg.mesh.indices.len() as u32, 1, 0, 0, 0);
+    profile_if! { self.draw_calls += 1; }
     self.command_list.IASetIndexBuffer(Some(&self.quad_buffers.index_view));
 
     Ok(())

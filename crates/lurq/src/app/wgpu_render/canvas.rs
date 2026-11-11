@@ -259,6 +259,7 @@ impl Renderer {
     let _frame = self.assets.finish_encode(frame_ends, drop);
     profile_if! {
       self.profile.asset_cache_budget_bytes = self.assets.budget();
+      self.profile.asset_cache_bytes = self.assets.bytes();
       self.profile.asset_cache_stretch_bytes = _frame.stretch_bytes;
       self.profile.asset_cache_uncached = _frame.uncached;
       self.profile.asset_cache_uncached_bytes = _frame.uncached_bytes;

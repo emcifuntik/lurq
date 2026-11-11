@@ -66,6 +66,44 @@ Spans are written without the collector lock and without allocating: each window
 ### Call tree and bottom-up
 
 `SpanForest` turns the samples of a report into span trees, as plain data with no UI: `forest_of(samples, application_scopes)` makes one tree per pass, its root named `pass` lasting the pass's `total`, and one per root application scope, nested by `parent_id`, on the track of its lane (`SpanTrack::Frames` or `SpanTrack::Application(lane)`). A span is trimmed to its parent and to the end of its earlier sibling, as phases entered on another thread can overlap, and its `self_ns` is its duration less its children's, so the self times of a tree add up to its root. `call_tree(track)` merges the spans by their names' path from the root, with total, self time and count per row; `bottom_up(track)` gives a row per name with its self time and its total, a span inside another of its name counting its total once, and under it its callers outward. On the frames track both totals are the pass time of the passes given. The DevTools Profiler tab draws its flame chart and tables from it; the JSON export and MCP do not change.
+## Counters
+
+A pass that begins while a session takes samples also records `PassSample::counters`, a `PassCounters` taken when the pass ends (None for a pass begun with no session):
+
+| Field | Meaning |
+| --- | --- |
+| `nodes` | Nodes of the window's live tree. |
+| `memory_bytes` | The runtime memory estimate (`RuntimeMemoryProfile::total_bytes`) computed for this pass, not the cached once-per-second value of `FrameProfile::memory`. |
+| `caches.glyph_atlas_bytes` | RGBA bytes of the shared glyph atlas (its CPU copy; each window's renderer holds a GPU texture of the same size). |
+| `caches.text_cache_bytes` | The UI GlyphEngine's estimate of its text caches and buffers. |
+| `caches.canvas_text_cache_bytes` | Charged bytes of the shared Canvas text engine's shape cache; 0 before any Canvas drew text. |
+| `caches.canvas_asset_cache_bytes` | Charged bytes of the textures this window's renderer keeps for Canvas images and text, as of its last presented frame (also `render.canvas.asset_cache_bytes` of each frame). |
+| `allocations` | What the pass thread allocated during the pass, or None when no `CountingAllocator` is installed (below): `allocations`, `frees`, `allocated_bytes`, `freed_bytes`, and `live_bytes`, the bytes every thread has allocated and not freed at the end of the pass. |
+
+The counts of a presented frame stay in its `FrameProfile`: `quad_count`, `rect_count`, `glyph_count`, `render.canvas.batches`, and the new `render.draw_calls`, the draw calls the WGPU and DX12 backends recorded for the window's render list (quads, glyph runs, images, SVGs and opacity-layer composites; Canvas draws are counted by `render.canvas.batches`). A custom backend reports 0 unless it sets it.
+
+Counters cost nothing without `perf_profile` and nothing on a pass begun with no session. A captured pass reads its allocation counts first, then walks the tree once to count nodes and once more, with the text caches, for the memory estimate, so the allocations it reports are the pass's own. On the `static` scene of `profiler_idle` (below) that walk made a session pass about 1–4 µs slower (1.9–3.8 µs without it, 4.8–8.0 µs with it, in interleaved runs of one noisy session); it grows with the tree and the text caches. JSON adds `counters` (`nodes`, `memory_bytes`, `caches`, and `allocations` with `available` and nulls when unavailable) to each pass sample, `render.draw_calls` and `render.canvas.counts.asset_cache_bytes` to each frame; the version-1 fields are unchanged. Counters hold only counts and sizes.
+
+### Counting allocations
+
+A library cannot install a global allocator, so lurq ships `CountingAllocator`, a wrapper the application installs. Enable lurq's `counting_allocator` feature (it enables `perf_profile`) and add one line to the application's binary crate:
+
+```rust
+#[global_allocator]
+static ALLOCATOR: lurq::app::profiler::CountingAllocator = lurq::app::profiler::CountingAllocator::system();
+```
+
+`CountingAllocator::new(inner)` wraps another allocator instead of the system one. Each thread counts its allocations, frees and bytes in thread-locals, and a pass reports those of the thread that ran it, so work on other threads is not attributed to it; live bytes are relaxed atomics spread over 16 cache lines, read by summing them. A `realloc` counts as one allocation of the new size and one free of the old. The wrapper takes no lock, allocates nothing and does no I/O. Without it, `allocations` is None in every pass and the DevTools allocation track says unavailable, never zero. `cargo run -p lurq --example counting_allocator --features counting_allocator` prints the counters of a few headless passes.
+
+`cargo bench -p lurq --bench counting_allocator --features counting_allocator` measures what it adds, calling the system allocator and the wrapper directly in the same run. On a Windows development machine, release build (timings vary between runs by up to 3x; compare columns of one run):
+
+| Benchmark | System | `CountingAllocator` |
+| --- | --- | --- |
+| 64-byte allocation and free, one thread | 37.9 ns | 41.5 ns |
+| the same on four threads at once (per round) | 42.0 ns | 44.6 ns |
+| `Vec<u64>` grown to 1024 items by doubling, then freed (11 calls) | 753 ns | 846 ns |
+
+So the wrapper adds about 3–8 ns to an allocation or free, with no contention between threads. With a single shared live-bytes atomic, the four-thread case had measured 222 ns against 455 ns, which is why live bytes are sharded.
 
 ## Coverage and units
 
@@ -94,7 +132,7 @@ Toolkit stage timings are **CPU wall-clock milliseconds**; application scopes ar
 
 Do not sum inclusive or nested scopes. A UI update may already be in pass/layout time; commit is in UI update; Canvas recording includes upload/submission; DX12 Canvas is in render encode. Existing `FrameProfile::gpu_submit` is retained for compatibility but means CPU time for Canvas preparation plus the render call. JSON states this explicitly.
 
-Memory counters retain the existing cached estimate, sampled at most once per second. They are not an allocation trace or an exact live heap measurement. Zero counters can mean no work for that completed operation; disabled/missing frame data and unsupported stage coverage are reported separately. A custom renderer that provides no `last_profile` reports `render.profile_available=false` and null render CPU timings; Canvas coverage requires an instrumented built-in backend.
+The frame's memory counters (`FrameProfile::memory`) retain the existing cached estimate, sampled at most once per second; `counters.memory_bytes` is the same estimate taken for each captured pass. Neither is an allocation trace or an exact live heap measurement; installed, `CountingAllocator` reports the heap the process actually allocated. Zero counters can mean no work for that completed operation; disabled/missing frame data and unsupported stage coverage are reported separately. A custom renderer that provides no `last_profile` reports `render.profile_available=false` and null render CPU timings; Canvas coverage requires an instrumented built-in backend.
 
 `canvas_text` is present on captured passes with the Canvas feature, independently of successful rendering; otherwise it is null. Byte counts are the newly produced final RGBA data length on misses, not total allocation, cache residency, transient glyph pixmaps or upload traffic. Measure calls can shape and produce bitmaps, and scale/color are part of the existing cache key; instrumentation does not change that behavior. A thread-local stack scope attributes synchronous work to its current window/pass, restores an outer pass after nested windows, and never resets the shared text engine. Calls made outside a pass are deliberately unattributed. A pass begun without an active session skips detailed Canvas text capture; a later mid-pass session excludes that crossing pass by the existing whole-operation boundary policy.
 
@@ -161,7 +199,7 @@ GPU timestamps cost nothing without an active session: the WGPU renderer request
 | `static`: 40 unchanged rows, layout served from cache | 0.31–0.34 µs | 0.52–0.61 µs | 0.66–0.84 µs |
 | `signal_change`: one of 40 row components refreshed, then laid out | 20–28 µs | 20–23 µs | 21–26 µs |
 
-So compiled-in profiling costs a pass about 0.2 µs with no session (the pass timers, a few clock reads and one slot write per phase entry and exit) and about 0.15–0.2 µs more with an active session (recording the sample). On a pass with real work the difference is below the run-to-run noise. Before phases were published without the mutex, the same `static` pass measured 0.68 µs `idle` and 0.90 µs `session` in runs interleaved with 0.59–0.61 µs and 0.82–0.84 µs for the slot.
+So compiled-in profiling costs a pass about 0.2 µs with no session (the pass timers, a few clock reads and one slot write per phase entry and exit) and about 0.15–0.2 µs more with an active session (recording the sample). On a pass with real work the difference is below the run-to-run noise. Before phases were published without the mutex, the same `static` pass measured 0.68 µs `idle` and 0.90 µs `session` in runs interleaved with 0.59–0.61 µs and 0.82–0.84 µs for the slot. The `session` column predates per-pass [counters](#counters), which a session pass now also gathers; the `off` and `idle` columns are unchanged by them.
 
 Canvas text uses one active-session check at the pass boundary and a fixed numeric thread-local accumulator: no per-glyph clocks, collector locks, text/key payloads or allocations for profiling. Shape stages add coarse clocks only for captured passes. An unfinished text call remains visible through its enclosing coarse phase (such as `component_after_layout`); incomplete text-stage totals are never published as completed pass metrics.
 
