@@ -4,7 +4,8 @@
 //! frame waits for the vblank after the previous present, as `get_current_texture` does, then takes its render
 //! cost. These tests run on the wall clock, so their bounds leave room for a busy machine; the cadence rule itself
 //! is also checked on a virtual clock, which no scheduling noise reaches, and so is how long input and timers wait
-//! while frames are paced ([`VirtualShell`]).
+//! while frames are paced ([`VirtualShell`]). Nothing on the virtual clock may read the wall clock: a timer takes its
+//! first tick from it when it starts, so those tests place the loop's clock from that tick ([`Clock::start_at`]).
 
 use std::{
   collections::VecDeque,
@@ -40,6 +41,8 @@ use crate::{
 const REFRESH: Duration = Duration::from_nanos(16_666_667);
 const TURN: KeyframesId = KeyframesId::new(41);
 const SPINNER: (f32, f32) = (20.0, 20.0);
+/// How many vblanks of a 0.6 s wall-clock run may go without a frame because the machine held the loop back.
+const MACHINE_SKIPS: u128 = 2;
 
 struct TestSurface;
 
@@ -108,7 +111,7 @@ impl RenderEngine for VsyncEngine {
     if let Some(previous) = display.last_present {
       sleep_until(display.vblank_after(previous));
     }
-    std::thread::sleep(display.render_cost);
+    sleep_until(Instant::now() + display.render_cost);
     let presented = Instant::now();
     display.last_present = Some(presented);
     let vblank = display.vblank_index(presented);
@@ -123,10 +126,17 @@ impl RenderEngine for VsyncEngine {
   }
 }
 
+/// Sleeps until `at` as an event loop waits for a deadline: on time. A plain `thread::sleep` is not: macOS lets a
+/// sleep run over by up to half its length (12.5 ms asked, 18.75 ms slept), more than the quarter of a refresh a
+/// loop's wake may be late by and still come back to a frame per vblank after it missed one. Sleeping half of what
+/// is left, again and again, keeps each overrun inside the time left.
 fn sleep_until(at: Instant) {
-  let now = Instant::now();
-  if at > now {
-    std::thread::sleep(at - now);
+  loop {
+    let now = Instant::now();
+    if now >= at {
+      return;
+    }
+    std::thread::sleep((at - now) / 2);
   }
 }
 
@@ -397,13 +407,21 @@ impl Clock {
     let mut now = self.0.lock().expect("one thread");
     *now = (*now).max(at);
   }
+
+  /// Sets the time the loop starts at, before it runs. A timer started on the wall clock has its first tick at a
+  /// wall-clock time: a test starts its clock a chosen time before that tick, or the time the machine took to
+  /// mount the component would decide when the timer fires between two vblanks.
+  fn start_at(&self, at: Instant) {
+    *self.0.lock().expect("one thread") = at;
+  }
 }
 
-/// When each click reached the spinner's handler, on the loop's clock.
+/// When each click reached the spinner's handler, on the loop's clock, and how the spinner turns.
 #[derive(Clone)]
 struct ClickLog {
   at: Arc<Mutex<Vec<Instant>>>,
   clock: Clock,
+  easing: Easing,
 }
 
 impl PartialEq for ClickLog {
@@ -440,17 +458,23 @@ impl Component for ClickableSpinner {
     Row::new().child(
       Rect::new(40.0, 40.0)
         .background("#2563eb")
-        .animation(Animation::new(TURN).duration_ms(1000).easing(steps(12)).infinite())
+        .animation(
+          Animation::new(TURN)
+            .duration_ms(1000)
+            .easing(clicks.easing.clone())
+            .infinite(),
+        )
         .on_click(move |_| clicks.at.lock().expect("one thread").push(clicks.clock.now())),
     )
   }
 }
 
 /// The 60 Hz FIFO swapchain of [`VsyncEngine`] on a virtual clock: a present waits for the vblank after the
-/// previous one by moving the clock there.
+/// previous one by moving the clock there, then takes its render cost the same way.
 struct VirtualVsyncEngine {
   clock: Clock,
   epoch: Instant,
+  render_cost: Duration,
   /// When each frame was presented.
   presents: Arc<Mutex<Vec<Instant>>>,
 }
@@ -466,9 +490,27 @@ impl RenderEngine for VirtualVsyncEngine {
         .clock
         .advance_to(self.epoch + REFRESH * u32::try_from(vblanks).expect("a test runs for less than two years"));
     }
+    self.clock.advance_to(self.clock.now() + self.render_cost);
     presents.push(self.clock.now());
     true
   }
+}
+
+/// What asked for a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AskedBy {
+  /// The pacing rule, for the timeline's next change.
+  Pacing,
+  /// A click or a timer, which draws at once.
+  Event,
+}
+
+/// An event that waited while a present waited for its vblank.
+#[derive(Clone, Copy, Debug)]
+struct Held {
+  waited: Duration,
+  /// What asked for the frame it waited behind; `None` when no frame was presented in the turn before.
+  behind: Option<AskedBy>,
 }
 
 /// The loop of [`Shell`] on a virtual clock, which moves only when the loop sleeps or a present waits for its
@@ -483,10 +525,18 @@ struct VirtualShell {
   timer_lateness: Vec<Duration>,
   /// When each due timer fired.
   timer_fired: Vec<Instant>,
+  /// What asked for the frame the last turn presented.
+  presented_for: Option<AskedBy>,
+  /// The clicks and timers that did not run when they were due.
+  held: Vec<Held>,
 }
 
 impl VirtualShell {
-  fn new(mut tree: Tree, clock: Clock) -> Self {
+  fn new(tree: Tree, clock: Clock) -> Self {
+    Self::with_render_cost(tree, clock, Duration::ZERO)
+  }
+
+  fn with_render_cost(mut tree: Tree, clock: Clock, render_cost: Duration) -> Self {
     let presents = Arc::new(Mutex::new(Vec::new()));
     let engine = (clock.clone(), clock.now(), presents.clone());
     tree.resize(200, 100);
@@ -494,6 +544,7 @@ impl VirtualShell {
       Box::new(VirtualVsyncEngine {
         clock: engine.0.clone(),
         epoch: engine.1,
+        render_cost,
         presents: engine.2.clone(),
       })
     });
@@ -507,6 +558,8 @@ impl VirtualShell {
       clicks: VecDeque::new(),
       timer_lateness: Vec::new(),
       timer_fired: Vec::new(),
+      presented_for: None,
+      held: Vec::new(),
     }
   }
 
@@ -525,22 +578,32 @@ impl VirtualShell {
   fn turn(&mut self, end: Instant) {
     let now = self.clock.now();
     self.tree.set_animation_clock(Some(now));
-    while self.clicks.front().is_some_and(|at| *at <= now) {
+    // The clock moved past a due event only while the last turn's present waited.
+    let behind = self.presented_for.take();
+    while let Some(sent) = self.clicks.front().copied().filter(|at| *at <= now) {
       self.clicks.pop_front();
       self.tree.mouse_down(SPINNER.0, SPINNER.1, MouseButton::Left);
       self.tree.mouse_up(SPINNER.0, SPINNER.1, MouseButton::Left);
+      self.note_wait(now - sent, behind);
     }
     let timer_due = self.tree.next_timer_at().filter(|due| *due <= now);
     self.tree.tick_timers_at(now);
     if let Some(due) = timer_due {
       self.timer_lateness.push(now - due);
       self.timer_fired.push(now);
+      self.note_wait(now - due, behind);
     }
     self.tree.tick_futures();
+    let asked_by = if self.tree.needs_redraw() {
+      AskedBy::Event
+    } else {
+      AskedBy::Pacing
+    };
     self.pacing.request_frame(&mut self.tree, || REFRESH, now);
     self.tree.tick_scheduled_redraw(now);
     if self.tree.needs_redraw() {
       if self.tree.pass(&mut self.app, &TestSurface).rendered {
+        self.presented_for = Some(asked_by);
         let presented = self.presents.lock().expect("one thread").last().copied().unwrap_or(now);
         self.pacing.presented(PresentedFrame {
           started: now,
@@ -563,17 +626,34 @@ impl VirtualShell {
     let wake = self.clicks.front().map_or(wake, |click| wake.min(*click));
     self.clock.advance_to(wake);
   }
+
+  fn note_wait(&mut self, waited: Duration, behind: Option<AskedBy>) {
+    if !waited.is_zero() {
+      self.held.push(Held { waited, behind });
+    }
+  }
 }
 
-/// How long each event waited while [`ClickableSpinner`] turned for 600 ms: a click every 37 ms, and its interval.
+/// How long each event waited while [`ClickableSpinner`] turned for 600 ms: its interval, and a click every 37 ms
+/// when the run has clicks.
 struct SpinnerRun {
   click_latency: Vec<Duration>,
   timer_lateness: Vec<Duration>,
+  /// The clicks and ticks that waited, and behind which frame, from the loop's start.
+  held: Vec<Held>,
   /// Frames presented while the clicks came.
   presents: usize,
 }
 
-fn click_a_turning_spinner() -> SpinnerRun {
+/// Turns a spinner of twelve steps a second and clicks it.
+fn click_a_turning_spinner(first_tick: Duration) -> SpinnerRun {
+  run_a_spinner(steps(12), first_tick, 12)
+}
+
+/// Runs the loop with the interval's first tick `first_tick` after the loop's start. The spinner's first frame is
+/// presented at the start, which is also a vblank, so `first_tick` is where the 25 ms ticks fall between the
+/// vblanks, the spinner's frames and the clicks.
+fn run_a_spinner(easing: Easing, first_tick: Duration, click_count: u32) -> SpinnerRun {
   let clock = Clock::new();
   let mut app = App::new();
   let mut tree = Tree::new();
@@ -581,13 +661,17 @@ fn click_a_turning_spinner() -> SpinnerRun {
   let log = ClickLog {
     at: Arc::default(),
     clock: clock.clone(),
+    easing,
   };
   tree.mount_root::<ClickableSpinner>(&mut app, log.clone());
+  clock.start_at(tree.next_timer_at().expect("the interval runs") - first_tick);
   let mut shell = VirtualShell::new(tree, clock.clone());
   shell.run_for(Duration::from_millis(100));
 
   let first_click = clock.now() + Duration::from_millis(7);
-  let clicks: Vec<Instant> = (0..12).map(|i| first_click + Duration::from_millis(37) * i).collect();
+  let clicks: Vec<Instant> = (0..click_count)
+    .map(|i| first_click + Duration::from_millis(37) * i)
+    .collect();
   shell.clicks = clicks.iter().copied().collect();
   shell.timer_lateness.clear();
   let presents_before = shell.presents.lock().expect("one thread").len();
@@ -608,29 +692,85 @@ fn click_a_turning_spinner() -> SpinnerRun {
   SpinnerRun {
     click_latency,
     timer_lateness,
+    held: shell.held.clone(),
     presents: shell.presents.lock().expect("one thread").len() - presents_before,
   }
 }
 
+/// Where the 25 ms ticks fall between the vblanks decides which of them meet a waiting present, so the tests of
+/// how long an event waits run every phase: the first tick from 0.5 ms to 25 ms after the start.
+fn first_ticks() -> impl Iterator<Item = Duration> {
+  (500..=25_000).step_by(500).map(Duration::from_micros)
+}
+
 #[test]
-fn input_and_timers_are_handled_at_once_while_a_spinner_turns() {
-  let SpinnerRun {
-    click_latency,
-    timer_lateness,
-    ..
-  } = click_a_turning_spinner();
-  // The loop sleeps between frames and wakes for an event when it is due. An event that comes while a present waits
-  // for its vblank waits with it, and the pacing rule bounds that wait: a paced frame is asked for half a refresh
-  // after the last present, so its present waits half a refresh at most, and a frame a click asks for waits no
-  // longer. A loop that waited in the swapchain between frames, asking for each frame right after the last present,
-  // would hold events back for up to a whole refresh.
-  let longest = |latencies: &[Duration]| latencies.iter().copied().max().unwrap_or_default();
+fn a_timer_waits_half_a_refresh_at_most_behind_the_paced_frames_of_a_continuous_spinner() {
+  // The loop sleeps between frames and wakes for a timer when it is due, so a timer waits only when it is due
+  // while a present waits for its vblank. A paced frame is asked for half a refresh after the last present, so its
+  // present waits half a refresh at most, and so does the timer. A loop that waited in the swapchain between
+  // frames, asking for each frame right after the last present, would hold timers back for up to a whole refresh.
   let bound = REFRESH / 2 + Duration::from_micros(1);
+  let mut longest = Duration::ZERO;
+  for first_tick in first_ticks() {
+    let SpinnerRun {
+      timer_lateness, held, ..
+    } = run_a_spinner(Easing::Linear, first_tick, 0);
+    for tick in &held {
+      assert!(
+        tick.behind == Some(AskedBy::Pacing) && tick.waited <= bound,
+        "with the first tick {first_tick:?} after the start, a tick waits only behind a paced frame, and half a \
+         refresh at most: {tick:?}
+  timer lateness {timer_lateness:?}"
+      );
+      longest = longest.max(tick.waited);
+    }
+  }
   assert!(
-    longest(&click_latency) <= bound && longest(&timer_lateness) <= bound,
-    "clicks are handled and timers fire within half a refresh of when they are due:
+    longest > REFRESH / 4,
+    "some phase has a tick come early in a present's wait, or the bound was not tested: the longest wait was \
+     {longest:?}"
+  );
+}
+
+#[test]
+fn an_event_waits_a_whole_refresh_at_most_behind_the_frame_a_click_asked_for() {
+  // A frame a click asks for is not paced: it is drawn at once. When the click comes right after a present, its
+  // own present waits for the next vblank, up to a whole refresh away, and the events that come meanwhile wait
+  // with it: the half refresh of a paced frame does not bound them. With the first tick 5.5 ms after the start, a
+  // step of the spinner is presented at 250.1 ms, just after a vblank; the click at 255 ms draws a frame whose
+  // present waits for the vblank at 266.7 ms, and the tick due at 255.5 ms fires 11.2 ms late.
+  let paced_bound = REFRESH / 2 + Duration::from_micros(1);
+  let click_bound = REFRESH + Duration::from_micros(1);
+  let mut longest_behind_a_click = Duration::ZERO;
+  for first_tick in first_ticks() {
+    let SpinnerRun {
+      click_latency,
+      timer_lateness,
+      held,
+      ..
+    } = click_a_turning_spinner(first_tick);
+    for event in &held {
+      let bound = match event.behind {
+        Some(AskedBy::Pacing) => paced_bound,
+        Some(AskedBy::Event) => click_bound,
+        None => Duration::ZERO,
+      };
+      assert!(
+        event.waited <= bound,
+        "with the first tick {first_tick:?} after the start, an event waits a whole refresh at most behind a \
+         click's frame, half of one behind a paced frame, and for nothing else: {event:?}
   click latency {click_latency:?}
   timer lateness {timer_lateness:?}"
+      );
+      if event.behind == Some(AskedBy::Event) {
+        longest_behind_a_click = longest_behind_a_click.max(event.waited);
+      }
+    }
+  }
+  assert!(
+    longest_behind_a_click > paced_bound,
+    "some phase has a tick wait more than half a refresh behind a click's frame; if frames that input asks for \
+     are now paced too, bound them by half a refresh here: the longest wait was {longest_behind_a_click:?}"
   );
 }
 
@@ -640,7 +780,8 @@ fn an_interval_that_changes_nothing_presents_no_frames_so_most_events_wait_for_n
     click_latency,
     timer_lateness,
     presents,
-  } = click_a_turning_spinner();
+    ..
+  } = click_a_turning_spinner(Duration::from_millis(25));
   // In 600 ms the spinner draws about 7 steps and each click one frame; the interval's 24 ticks draw nothing.
   assert!(
     presents <= 7 + 1 + click_latency.len(),
@@ -751,24 +892,57 @@ fn an_interval_that_changes_what_is_shown_presents_each_change_when_it_fires() {
 }
 
 #[test]
-fn a_continuous_spinner_presents_at_every_vblank_whatever_its_render_cost() {
+fn a_continuous_spinner_holds_the_displays_rate_on_the_wall_clock_whatever_its_render_cost() {
   for cost_ms in 0..=3 {
     let mut shell = Shell::new(spinner(Easing::Linear));
     shell.set_render_cost(Duration::from_millis(cost_ms));
     shell.run_for(Duration::from_millis(600));
 
+    // That every vblank shows a new frame is checked on a virtual clock, where it holds exactly. Here the machine
+    // may hold the loop back, and a frame that starts more than half a refresh late misses its vblank: a few
+    // vblanks may go without a frame, but not one in six, as when frames are paced a whole refresh after the last
+    // present and 3 ms of work pushes every sixth past its vblank, and not every other one.
     // The first frame comes when the run starts, off the vblank grid; the cadence counts from the second.
     let vblanks = shell.vblanks();
     let skipped = skipped_vblanks(&vblanks[1..]);
-    assert_eq!(
-      skipped,
-      0,
-      "with {cost_ms} ms of render work, every vblank shows a new frame: {} presents, {skipped} vblanks without one",
+    assert!(
+      skipped <= MACHINE_SKIPS,
+      "with {cost_ms} ms of render work, about every vblank shows a new frame: {} presents, {skipped} vblanks \
+       without one",
       vblanks.len()
     );
     assert!(
-      (34..=39).contains(&vblanks.len()),
+      (30..=39).contains(&vblanks.len()),
       "60 presents a second: {} in 0.6 s with {cost_ms} ms of work",
+      vblanks.len()
+    );
+  }
+}
+
+#[test]
+fn on_a_virtual_clock_the_loop_presents_a_continuous_spinner_at_every_vblank_whatever_its_render_cost() {
+  for cost_us in (0..=8000).step_by(500) {
+    let cost = Duration::from_micros(cost_us);
+    let clock = Clock::new();
+    let epoch = clock.now();
+    let mut shell = VirtualShell::with_render_cost(spinner(Easing::Linear), clock, cost);
+    shell.run_for(Duration::from_millis(600));
+
+    let vblanks: Vec<u128> = shell
+      .presents
+      .lock()
+      .expect("one thread")
+      .iter()
+      .map(|present| vblank_index(epoch, REFRESH, *present))
+      .collect();
+    assert_eq!(
+      skipped_vblanks(&vblanks),
+      0,
+      "with {cost:?} of render work, every vblank shows a new frame: {vblanks:?}"
+    );
+    assert!(
+      (36..=37).contains(&vblanks.len()),
+      "a frame per vblank for 0.6 s: {} presents with {cost:?} of work",
       vblanks.len()
     );
   }
