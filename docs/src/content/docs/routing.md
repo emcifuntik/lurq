@@ -220,6 +220,32 @@ A screen of a stack reads its own entry: `ctx.route_params()` and `ctx.route_sta
 opened with, whatever was pushed over it since. `ctx.route_path()` is the router's current path on every
 screen.
 
+Everything the bar is drawn with is a field of `NavigationBar`, set over the defaults, which are the
+platform's sizes:
+
+```rust
+NavigationBar {
+  back: "Назад".to_owned(), // the word for going back, in the app's language
+  back_menu: false,          // no list of the screens under on a long press
+  height: 50.0,
+  ..NavigationBar::dark()
+}
+```
+
+| `NavigationBar` | Default | |
+|-----------------|---------|--|
+| `background`, `tint`, `title`, `border` | light, or `dark()` | The bar's colors |
+| `height`, `low_height`, `low_window` | 44, 32, 480 | The bar's height, and its height in a window lower than `low_window` |
+| `title_size`, `title_weight` | 17, semibold | The title in the bar |
+| `text_size` | 17 | The way back, a search field, the list of the screens under |
+| `large_title_size`, `large_title_weight`, `large_title_height` | 34, bold, 52 | A large title |
+| `inset` | 16 | How far a large title and a search field stand in from the sides |
+| `back` | `Back` | What the way back says when the title under has no room, or there is none |
+| `back_menu`, `back_menu_width` | on, 250 | The list a long press on the way back opens |
+| `prompt_size`, `prompt_height` | 13, 22 | A prompt over the title |
+| `toolbar_height` | 44 | A screen's toolbar |
+| `search_height`, `search_background`, `search_placeholder` | 36, from `title` | A search field |
+
 How the screens and the bar move is `StackMotion`, given with `StackOutletProps::motion`. Its defaults were
 set by eye beside the platform's:
 

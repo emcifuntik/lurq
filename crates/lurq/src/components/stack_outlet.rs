@@ -96,18 +96,6 @@ const BEGIN: Duration = Duration::from_millis(1);
 const SETTLE_AFTER: Duration = Duration::from_millis(50);
 /// No finger is dragging the top screen.
 const NO_DRAG: f32 = -1.0;
-/// The bar's height, and its height in a window too low for that: a phone held on its side.
-const BAR_HEIGHT: f32 = 44.0;
-/// A large title: its size, the space around it, and how long the bar's own title takes to come and go.
-const LARGE_TITLE_SIZE: f32 = 34.0;
-const LARGE_TITLE_HEIGHT: f32 = 52.0;
-const LARGE_TITLE_INSET: f32 = 16.0;
-/// How large the bar's text is beside a large title.
-const SMALL_TITLE_SHARE: f32 = 17.0 / LARGE_TITLE_SIZE;
-const LOW_BAR_HEIGHT: f32 = 32.0;
-const LOW_WINDOW: f32 = 480.0;
-/// What the way back says when the title of the screen under has no room, or there is none.
-const BACK: &str = "Back";
 /// The way back's arrow, its stroke, and the space between it and the label.
 const CHEVRON_WIDTH: f32 = 11.0;
 const CHEVRON_HEIGHT: f32 = 20.0;
@@ -120,24 +108,16 @@ const CHEVRON_POINT_SIZE: f32 = 17.0;
 /// title.
 const BACK_LEADING: f32 = 9.0 + CHEVRON_WIDTH + BACK_SPACING;
 const BACK_GAP: f32 = 8.0;
-/// The list of the screens under: how wide it is, how long it takes to come and go, how dark what is behind it
-/// gets, and for how long after it opens a tap beside it is taken for the lift of the finger that opened it.
-const BACK_MENU_WIDTH: f32 = 250.0;
 const MENU_MOVE: Duration = Duration::from_millis(250);
 const MENU_DIM: f32 = 0.2;
 const MENU_OPENING: Duration = Duration::from_millis(400);
-/// A screen's toolbar and the prompt over a title: how high each is.
-const TOOLBAR_HEIGHT: f32 = 44.0;
-/// How high a screen's search field is.
-const SEARCH_HEIGHT: f32 = 36.0;
-const PROMPT_HEIGHT: f32 = 22.0;
-/// About how wide [`BACK`] is in the bar's text.
+/// About how wide the word for going back is in the bar's text, until it is laid out.
 const BACK_WIDTH: f32 = 40.0;
 const FILL: Dimension = Dimension::Pct(100.0);
 
 /// The bar a [`StackOutlet`] draws over its screens, and its colors. The bar is as high as a phone's, 44
 /// logical pixels under the safe area's top.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NavigationBar {
   pub background: Color,
   /// The way back, and what a screen puts at the bar's trailing end by default.
@@ -145,16 +125,66 @@ pub struct NavigationBar {
   pub title: Color,
   /// The line under the bar.
   pub border: Color,
+  /// How high the bar is, and how high in a window lower than `low_window`: a phone held on its side, which
+  /// has no large titles either.
+  pub height: f32,
+  pub low_height: f32,
+  pub low_window: f32,
+  /// The title in the bar.
+  pub title_size: f32,
+  pub title_weight: FontWeight,
+  /// The bar's other text: the way back, a search field, the list of the screens under.
+  pub text_size: f32,
+  /// A large title: its text, the room it takes, and how far it and a search field stand in from the sides.
+  pub large_title_size: f32,
+  pub large_title_weight: FontWeight,
+  pub large_title_height: f32,
+  pub inset: f32,
+  /// What the way back says when the title of the screen under has no room, or there is none: the word for
+  /// going back, in the app's language.
+  pub back: String,
+  /// Whether a long press on the way back lists the screens under, and how wide the list is.
+  pub back_menu: bool,
+  pub back_menu_width: f32,
+  /// A prompt over the title: its text and the room it takes.
+  pub prompt_size: f32,
+  pub prompt_height: f32,
+  /// How high a screen's toolbar is.
+  pub toolbar_height: f32,
+  /// A search field: how high it is, and its color and its placeholder's, in place of ones made from
+  /// `title`.
+  pub search_height: f32,
+  pub search_background: Option<Color>,
+  pub search_placeholder: Option<Color>,
 }
 
 impl NavigationBar {
-  /// A light bar.
+  /// A light bar, sized as the platform's.
   pub fn new() -> Self {
     Self {
       background: Color::from_hex("#f9f9f9"),
       tint: Color::from_hex("#007aff"),
       title: Color::from_hex("#000000"),
       border: Color::from_hex("#c6c6c8"),
+      height: 44.0,
+      low_height: 32.0,
+      low_window: 480.0,
+      title_size: 17.0,
+      title_weight: FontWeight::SemiBold,
+      text_size: 17.0,
+      large_title_size: 34.0,
+      large_title_weight: FontWeight::Bold,
+      large_title_height: 52.0,
+      inset: 16.0,
+      back: "Back".to_owned(),
+      back_menu: true,
+      back_menu_width: 250.0,
+      prompt_size: 13.0,
+      prompt_height: 22.0,
+      toolbar_height: 44.0,
+      search_height: 36.0,
+      search_background: None,
+      search_placeholder: None,
     }
   }
 
@@ -165,6 +195,7 @@ impl NavigationBar {
       tint: Color::from_hex("#0a84ff"),
       title: Color::from_hex("#ffffff"),
       border: Color::from_hex("#38383a"),
+      ..Self::new()
     }
   }
 
@@ -185,6 +216,18 @@ impl NavigationBar {
 
   pub fn border(mut self, color: Color) -> Self {
     self.border = color;
+    self
+  }
+
+  /// The word for going back; see the field.
+  pub fn back(mut self, word: impl Into<String>) -> Self {
+    self.back = word.into();
+    self
+  }
+
+  /// Whether a long press on the way back lists the screens under.
+  pub fn back_menu(mut self, enabled: bool) -> Self {
+    self.back_menu = enabled;
     self
   }
 }
@@ -367,9 +410,8 @@ pub(crate) struct NavigationSlot {
   flying: Signal<bool>,
   /// How much a large title grows, and over what pull ([`StackMotion`]).
   growth: (f32, f32),
-  /// The color the bar gives a title, and its tint.
-  title_color: Option<Color>,
-  tint: Option<Color>,
+  /// The bar's colors and sizes: the outlet's, or a plain bar's where the outlet has none of its own.
+  style: Arc<NavigationBar>,
   /// The screen's search field has the focus.
   searching: Signal<bool>,
 }
@@ -575,6 +617,8 @@ struct Shown {
   width: f32,
   /// A move was set up by the last render and waits for its frame to send the screens on their way.
   begin_due: bool,
+  /// How high a large title is, as the outlet's bar last had it.
+  large_title_height: f32,
   /// The speed a finger let the front screen go with, towards where it is going, as a share of the way left
   /// per the move's duration; 0 for a move no finger started.
   velocity: f64,
@@ -604,6 +648,7 @@ impl Component for StackOutlet {
       motion: Motion::None,
       width: 0.0,
       begin_due: false,
+      large_title_height: 0.0,
       velocity: 0.0,
     }));
     let changed = Signal::new(0u64);
@@ -675,11 +720,16 @@ impl Component for StackOutlet {
     let window = ctx.window();
     let (width, safe_area) = (window.logical_width(), window.safe_area);
     // A window too low for it has no large titles, as a phone on its side has none.
-    let low = window.logical_height() < LOW_WINDOW;
-    let bar_height = if low { LOW_BAR_HEIGHT } else { BAR_HEIGHT };
+    let style = Arc::new(match &props.bar {
+      Some(Bar::Standard(bar)) => bar.clone(),
+      _ => NavigationBar::new(),
+    });
+    let low = window.logical_height() < style.low_window;
+    let bar_height = if low { style.low_height } else { style.height };
 
     let mut shown = self.shown.lock();
     shown.width = width;
+    shown.large_title_height = style.large_title_height;
     let before: Vec<u64> = shown.layers.iter().map(|layer| layer.entry.id).collect();
     let after: Vec<u64> = entries.iter().map(|(entry, _)| entry.id).collect();
     if before != after {
@@ -774,14 +824,7 @@ impl Component for StackOutlet {
             large: layer.bar.large.clone(),
             flying: layer.bar.flying.clone(),
             growth: (motion.large_title_growth, motion.large_title_pull),
-            title_color: match &props.bar {
-              Some(Bar::Standard(bar)) => Some(bar.title),
-              _ => None,
-            },
-            tint: match &props.bar {
-              Some(Bar::Standard(bar)) => Some(bar.tint),
-              _ => None,
-            },
+            style: style.clone(),
             searching: layer.bar.searching.clone(),
           },
         },
@@ -884,7 +927,7 @@ impl Component for StackOutlet {
             item: layers[index].bar.item.lock().clone(),
             back_label: index
               .checked_sub(1)
-              .map(|under| back_label_of(&layers[under].bar.item.lock())),
+              .map(|under| back_label_of(&layers[under].bar.item.lock(), &style.back)),
           })
         };
         let Some(top) = screen_of(front) else {
@@ -916,7 +959,7 @@ impl Component for StackOutlet {
       let layer = layers[index];
       let back_label = index
         .checked_sub(1)
-        .map(|under| back_label_of(&layers[under].bar.item.lock()));
+        .map(|under| back_label_of(&layers[under].bar.item.lock(), &style.back));
       // Taken and let go here: a lock taken inside the struct below would be held to its end.
       let item = layer.bar.item.lock().clone();
       let title_shown = !item.large_title || low || layer.bar.title_gone.load(Ordering::Acquire);
@@ -943,7 +986,7 @@ impl Component for StackOutlet {
       .iter()
       .rev()
       .skip(1)
-      .map(|layer| back_label_of(&layer.bar.item.lock()))
+      .map(|layer| back_label_of(&layer.bar.item.lock(), &style.back))
       .collect();
 
     // A large title in view on the screen behind goes to the front screen's way back as that screen comes
@@ -971,15 +1014,15 @@ impl Component for StackOutlet {
           (
             large.0,
             large.1,
-            large.2 * SMALL_TITLE_SHARE,
-            large.3 * SMALL_TITLE_SHARE,
+            large.2 * bar.text_size / bar.large_title_size,
+            large.3 * bar.text_size / bar.large_title_size,
           )
         };
         (large.2 > 0.0 && large.3 > 0.0).then(|| Flight {
           title: under_part.item.title.clone(),
           says: match over_part.label_fit {
             LabelFit::Whole => over_part.back_label.clone().unwrap_or_default(),
-            LabelFit::Short => BACK.to_owned(),
+            LabelFit::Short => bar.back.clone(),
             LabelFit::Arrow => String::new(),
           },
           large: (large.0 - origin.0, large.1 - origin.1, large.2, large.3),
@@ -1040,14 +1083,14 @@ impl Component for StackOutlet {
       let tools = part.as_ref()?.item.toolbar.clone()?;
       let row = Row::new()
         .width(FILL)
-        .height(TOOLBAR_HEIGHT)
+        .height(bar.toolbar_height)
         .align_items(Alignment::Center)
         .padding_horizontal(16.0)
         .child(tools);
       let row = if front { row } else { row.pointer_events_none() };
       Some(fade(opacity)(row))
     };
-    let mut tools = Stack::new().width(FILL).height(TOOLBAR_HEIGHT);
+    let mut tools = Stack::new().width(FILL).height(bar.toolbar_height);
     for tool in [
       toolbar_of(&back_part, out, false),
       toolbar_of(&front_part, 1.0 - out, true),
@@ -1058,7 +1101,7 @@ impl Component for StackOutlet {
       tools = tools.child(tool);
     }
 
-    let items_height = bar_height + PROMPT_HEIGHT * prompt_share;
+    let items_height = bar_height + bar.prompt_height * prompt_share;
     let mut items = Stack::new()
       .width(FILL)
       .height(items_height)
@@ -1132,7 +1175,7 @@ impl Component for StackOutlet {
       .child(
         Column::new()
           .width(FILL)
-          .height((TOOLBAR_HEIGHT + safe_area.bottom + 0.5) * toolbar_share)
+          .height((bar.toolbar_height + safe_area.bottom + 0.5) * toolbar_share)
           .clip()
           .transition(Transition::height().duration(line_pace).easing(line_curve))
           .background(bar.background)
@@ -1150,7 +1193,7 @@ impl Component for StackOutlet {
       .ref_element(self.origin.clone())
       .child(content)
       .child(overlay);
-    if !menu_titles.is_empty() {
+    if bar.back_menu && !menu_titles.is_empty() {
       // The list of the screens under, over everything: a tap on a screen's name goes back to it, and a tap
       // anywhere else puts the list away. It is always there, unseen and untouched while closed, so that it
       // comes and goes with a move of its own.
@@ -1158,7 +1201,7 @@ impl Component for StackOutlet {
         .duration(MENU_MOVE)
         .easing(Easing::Spring { velocity: 0.0 });
       let mut list = Column::new()
-        .width(BACK_MENU_WIDTH)
+        .width(bar.back_menu_width)
         .background(bar.background)
         .border_inside(0.5, bar.border)
         .rounded(13.0)
@@ -1176,14 +1219,14 @@ impl Component for StackOutlet {
         list = list.child(
           Row::new()
             .width(FILL)
-            .height(BAR_HEIGHT)
+            .height(bar.height)
             .align_items(Alignment::Center)
-            .padding_horizontal(16.0)
+            .padding_horizontal(bar.inset)
             .child(
               Text::styled(
                 title,
                 TextStyle {
-                  font_size: 17.0,
+                  font_size: bar.text_size,
                   color: bar.title,
                   ..TextStyle::default()
                 },
@@ -1226,7 +1269,7 @@ impl Component for StackOutlet {
     }
     // Whether each way back has room for its label beside the title, now that both are laid out. The title
     // is in the middle of the bar, so the label has half of what the title leaves.
-    let width = shown.width;
+    let (width, large_title_height) = (shown.width, shown.large_title_height);
     let shown = &mut *shown;
     let mut changed = false;
     for layer in shown.layers.iter_mut().chain(shown.leaving.iter_mut()) {
@@ -1251,7 +1294,7 @@ impl Component for StackOutlet {
     // Whether each large title has scrolled out of view, all but its last few points: the bar's own title
     // comes in then. Looked at after every layout, which every scroll ends in, however it was scrolled.
     for layer in shown.layers.iter().chain(shown.leaving.iter()) {
-      let gone = layer.bar.scroll.scroll_y() > LARGE_TITLE_HEIGHT - 8.0;
+      let gone = layer.bar.scroll.scroll_y() > large_title_height - 8.0;
       changed |= layer.bar.title_gone.swap(gone, Ordering::AcqRel) != gone;
       // And how far the content is pulled down past its top: the large title is drawn anew for it.
       let pull = (-layer.bar.scroll.overscroll().1).max(0.0);
@@ -1277,10 +1320,10 @@ enum LabelFit {
 }
 
 /// What the way back to a screen says.
-fn back_label_of(under: &NavigationItem) -> String {
+fn back_label_of(under: &NavigationItem, back: &str) -> String {
   match &under.back_title {
     Some(title) => title.clone(),
-    None if under.title.is_empty() => BACK.to_owned(),
+    None if under.title.is_empty() => back.to_owned(),
     None => under.title.clone(),
   }
 }
@@ -1333,13 +1376,13 @@ impl Flight {
     let ratio = if self.large.3 > 0.0 && self.label.3 > 0.0 {
       self.label.3 / self.large.3
     } else {
-      SMALL_TITLE_SHARE
+      bar.text_size / bar.large_title_size
     };
     overlay
       .child(part(
         &self.title,
-        LARGE_TITLE_SIZE,
-        FontWeight::Bold,
+        bar.large_title_size,
+        bar.large_title_weight,
         bar.title,
         (self.large.2, self.large.3),
         between(ratio, 1.0),
@@ -1347,7 +1390,7 @@ impl Flight {
       ))
       .child(part(
         &self.says,
-        17.0,
+        bar.text_size,
         FontWeight::Normal,
         bar.tint,
         (self.label.2, self.label.3),
@@ -1397,7 +1440,11 @@ fn bar_item(
     Text::styled(
       content,
       TextStyle {
-        font_size: 17.0,
+        font_size: if weight == bar.title_weight {
+          bar.title_size
+        } else {
+          bar.text_size
+        },
         weight,
         color,
         ..TextStyle::default()
@@ -1407,7 +1454,7 @@ fn bar_item(
   };
   let middle: Element = match &part.item.title_view {
     Some(view) => view.clone(),
-    None => text(&part.item.title, FontWeight::SemiBold, bar.title)
+    None => text(&part.item.title, bar.title_weight, bar.title)
       .max_width(part.title_room)
       .text_overflow(TextOverflow::Elipsis)
       .into(),
@@ -1440,7 +1487,7 @@ fn bar_item(
     let navigator = navigator.clone();
     let says = match part.label_fit {
       LabelFit::Whole => label.as_str(),
-      LabelFit::Short => BACK,
+      LabelFit::Short => bar.back.as_str(),
       LabelFit::Arrow => "",
     };
     sides = sides.child(
@@ -1468,9 +1515,12 @@ fn bar_item(
         })
         .on_long_press({
           let menu = menu.clone();
+          let enabled = bar.back_menu;
           move |_: LongPressEvent| {
-            *menu.opened_at.lock() = Some(Instant::now());
-            menu.open.set(true);
+            if enabled {
+              *menu.opened_at.lock() = Some(Instant::now());
+              menu.open.set(true);
+            }
           }
         }),
     );
@@ -1479,7 +1529,7 @@ fn bar_item(
       Row::new().opacity(0.0).pointer_events_none().child(
         Row::new()
           .ref_element(part.short_probe.clone())
-          .child(text(BACK, FontWeight::Normal, bar.tint)),
+          .child(text(&bar.back, FontWeight::Normal, bar.tint)),
       ),
     );
     whole =
@@ -1508,7 +1558,7 @@ fn bar_item(
     whole = whole.child(
       Row::new()
         .width(FILL)
-        .height(PROMPT_HEIGHT)
+        .height(bar.prompt_height)
         .align_items(Alignment::End)
         .justify(Justify::Center)
         .pointer_events_none()
@@ -1516,7 +1566,7 @@ fn bar_item(
           Text::styled(
             prompt,
             TextStyle {
-              font_size: 13.0,
+              font_size: bar.prompt_size,
               color: bar.title,
               ..TextStyle::default()
             },
@@ -1585,19 +1635,19 @@ impl StackOutlet {
       return ScrollVertical::new(content.into());
     };
     let item = slot.item.lock().clone();
-    let color = slot.title_color.unwrap_or(Color::from_hex("#000000"));
+    let style = slot.style.clone();
     // While the search field is typed into, it stands where the bar was and there is no large title.
     let searching = item.search.is_some() && slot.searching.get();
     let mut over = Column::new().width(FILL);
     // A window too low for it, a phone on its side, has the title in the bar alone.
-    if item.large_title && ctx.window().logical_height() >= LOW_WINDOW {
+    if item.large_title && ctx.window().logical_height() >= style.low_window {
       // Still there while the screen searches, with no height: taken out, the field under it would be
       // another element, and the one being typed into would be gone.
       over = over.child(ctx.mount_keyed::<LargeTitle>(
         "navigation-large-title",
         LargeTitleProps {
           title: item.title.clone(),
-          color,
+          style: style.clone(),
           pull: slot.pull.clone(),
           large: slot.large.clone(),
           flying: slot.flying.clone(),
@@ -1611,8 +1661,7 @@ impl StackOutlet {
         "navigation-search",
         SearchFieldProps {
           search: search.clone(),
-          color,
-          tint: slot.tint.unwrap_or(Color::from_hex("#007aff")),
+          style: style.clone(),
           searching: slot.searching.clone(),
         },
       ));
@@ -1639,17 +1688,13 @@ impl StackOutlet {
 #[derive(Clone)]
 struct SearchFieldProps {
   search: NavigationSearch,
-  color: Color,
-  tint: Color,
+  style: Arc<NavigationBar>,
   searching: Signal<bool>,
 }
 
 impl PartialEq for SearchFieldProps {
   fn eq(&self, other: &Self) -> bool {
-    self.search.key() == other.search.key()
-      && self.color == other.color
-      && self.tint == other.tint
-      && self.searching.id() == other.searching.id()
+    self.search.key() == other.search.key() && self.style == other.style && self.searching.id() == other.searching.id()
   }
 }
 
@@ -1691,27 +1736,32 @@ impl Component for SearchField {
     if std::mem::replace(&mut *self.acted.lock(), cancelled) != cancelled {
       ctx.blur();
     }
-    let faint = |alpha: u8| Color::new(props.color.r(), props.color.g(), props.color.b(), alpha);
+    let bar = &props.style;
+    let faint = |alpha: u8| Color::new(bar.title.r(), bar.title.g(), bar.title.b(), alpha);
+    let (ground, placeholder) = (
+      bar.search_background.unwrap_or(faint(30)),
+      bar.search_placeholder.unwrap_or(faint(150)),
+    );
     let style = |color: Color| TextStyle {
-      font_size: 17.0,
+      font_size: bar.text_size,
       color,
       ..TextStyle::default()
     };
     let (focused, blurred) = (self.focused.clone(), self.focused.clone());
     let field = Row::new()
       .flex(1.0)
-      .height(SEARCH_HEIGHT)
+      .height(bar.search_height)
       .align_items(Alignment::Center)
       .padding_horizontal(8.0)
       .spacing(6.0)
       .rounded(10.0)
-      .background(faint(30))
-      .child(magnifier(faint(150)))
+      .background(ground)
+      .child(magnifier(placeholder))
       .child(
         TextInput::new(props.search.text.clone())
           .placeholder(&props.search.placeholder)
-          .placeholder_style(style(faint(150)))
-          .text_style(style(props.color))
+          .placeholder_style(style(placeholder))
+          .text_style(style(bar.title))
           .single_line()
           .keyboard(KeyboardKind::Search)
           .return_key(ReturnKey::Search)
@@ -1723,7 +1773,7 @@ impl Component for SearchField {
       .id("navigation-search")
       .width(FILL)
       .align_items(Alignment::Center)
-      .padding_horizontal(LARGE_TITLE_INSET)
+      .padding_horizontal(bar.inset)
       .padding_top(if searching { 8.0 } else { 0.0 })
       .padding_bottom(8.0)
       .spacing(12.0)
@@ -1733,9 +1783,9 @@ impl Component for SearchField {
       row = row.child(
         Row::new()
           .id("navigation-search-cancel")
-          .height(SEARCH_HEIGHT)
+          .height(bar.search_height)
           .align_items(Alignment::Center)
-          .child(Text::styled(&props.search.cancel, style(props.tint)).nowrap())
+          .child(Text::styled(&props.search.cancel, style(bar.tint)).nowrap())
           .on_click(move |_| {
             text.set(String::new());
             cancelled.update(|count| *count += 1);
@@ -1781,7 +1831,7 @@ fn magnifier(color: Color) -> Element {
 #[derive(Clone)]
 struct LargeTitleProps {
   title: String,
-  color: Color,
+  style: Arc<NavigationBar>,
   pull: Signal<f32>,
   large: ElementRef,
   flying: Signal<bool>,
@@ -1793,7 +1843,7 @@ struct LargeTitleProps {
 impl PartialEq for LargeTitleProps {
   fn eq(&self, other: &Self) -> bool {
     self.title == other.title
-      && self.color == other.color
+      && self.style == other.style
       && self.pull.id() == other.pull.id()
       && self.growth == other.growth
       && self.folded == other.folded
@@ -1826,17 +1876,21 @@ impl Component for LargeTitle {
     };
     Row::new()
       .width(FILL)
-      .height(if props.folded { 0.0 } else { LARGE_TITLE_HEIGHT })
+      .height(if props.folded {
+        0.0
+      } else {
+        props.style.large_title_height
+      })
       .clip()
       .align_items(Alignment::Center)
-      .padding_horizontal(LARGE_TITLE_INSET)
+      .padding_horizontal(props.style.inset)
       .child(
         Text::styled(
           &props.title,
           TextStyle {
-            font_size: LARGE_TITLE_SIZE * grown,
-            weight: FontWeight::Bold,
-            color: props.color,
+            font_size: props.style.large_title_size * grown,
+            weight: props.style.large_title_weight,
+            color: props.style.title,
             ..TextStyle::default()
           },
         )
