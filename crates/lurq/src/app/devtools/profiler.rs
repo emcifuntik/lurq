@@ -6,8 +6,8 @@ use super::{
     bucket_of, format_bytes, format_ms, format_span, ms, pass_of,
   },
   style::{
-    BLUE, BORDER, FILL, MUTED, PINK, PRIMARY, SELECTED, SIGNAL_GREEN, SURFACE, SURFACE_2, TEXT, YELLOW, empty_state,
-    text, toolbar_button,
+    BLUE, BORDER, FILL, MUTED, ORANGE, PINK, PRIMARY, SELECTED, SIGNAL_GREEN, SURFACE, SURFACE_2, TEXT, YELLOW,
+    empty_state, text, toolbar_button,
   },
 };
 use crate::{
@@ -34,6 +34,8 @@ const OVERVIEW_BUCKETS: usize = 120;
 const MARKER_BUCKETS: usize = 240;
 const OVERVIEW_HEIGHT: f32 = 36.0;
 const CHART_HEIGHT: f32 = 120.0;
+/// The GPU track's height; its scale is one frame budget or its longest bar.
+const GPU_TRACK_HEIGHT: f32 = 32.0;
 const BAR_WIDTH: f32 = 3.0;
 /// Right of each timeline track, between it and its label.
 const LANE_GAP: f32 = 8.0;
@@ -533,10 +535,10 @@ fn timeline(
     .into()
 }
 
-/// The pass chart, the marker lanes and the axis, one row each. Each row's
-/// track takes the width the label column leaves, and its time scale is that
-/// width less `BAR_WIDTH` (so a bar at the range's end stays inside): a time is
-/// at the same x in every row.
+/// The pass chart, the GPU track, the marker lanes and the axis, one row each.
+/// Each row's track takes the width the label column leaves, and its time
+/// scale is that width less `BAR_WIDTH` (so a bar at the range's end stays
+/// inside): a time is at the same x in every row.
 fn timeline_tracks(
   capture: &ProfilerCapture,
   passes: &[Arc<ProfileSample>],
@@ -547,6 +549,7 @@ fn timeline_tracks(
   Column::new()
     .spacing(4.0)
     .child(pass_chart(passes, range, selected, state_signal))
+    .child(gpu_track(capture, passes, range))
     .child(marker_lane(capture, range, "input", BLUE, |data| {
       matches!(data, SampleData::InputDispatch(_))
     }))
@@ -567,6 +570,51 @@ fn track_row(track: impl Into<Element>, label: Column) -> Element {
     .child(label.width(LANE_LABEL_WIDTH))
     .width(FILL)
     .into()
+}
+
+/// The GPU time of each pass that has one (UI and Canvas passes, from wgpu
+/// timestamp queries), a bar at the pass's start; or why none was measured.
+fn gpu_track(capture: &ProfilerCapture, passes: &[Arc<ProfileSample>], range: TimeRange) -> Element {
+  let measured: Vec<_> = passes
+    .iter()
+    .filter_map(|sample| Some((sample.started_ms, pass_of(sample)?.gpu?)))
+    .collect();
+  let scale = measured
+    .iter()
+    .map(|(_, gpu)| ms(gpu.total()))
+    .fold(FRAME_BUDGET_MS, f64::max);
+  let mut track = Stack::new().flex(1.0).height(GPU_TRACK_HEIGHT).background(SURFACE_2);
+  if measured.is_empty() {
+    let note = if capture.gpu_timestamps.available {
+      "No GPU results arrived for these passes".to_owned()
+    } else {
+      format!("GPU time not measured: {}", capture.gpu_missing_reason())
+    };
+    track = track.child(
+      Row::new()
+        .align_items(Alignment::Center)
+        .child(mono_text(&note, 9.0, FontWeight::Normal, MUTED))
+        .padding_horizontal(6.0)
+        .width(FILL)
+        .height(FILL),
+    );
+  }
+  for (started_ms, gpu) in &measured {
+    let bar = Row::new()
+      .width(BAR_WIDTH)
+      .height(((ms(gpu.total()) / scale) as f32 * GPU_TRACK_HEIGHT).max(2.0))
+      .background(ORANGE);
+    track = track.child(placed(range.fraction(*started_ms) as f32, bar, Alignment::End));
+  }
+  track_row(
+    track,
+    Column::new().child(mono_text(
+      &format!("gpu {}/{}", measured.len(), passes.len()),
+      9.0,
+      FontWeight::Normal,
+      ORANGE,
+    )),
+  )
 }
 
 fn pass_chart(
@@ -729,6 +777,7 @@ fn legend() -> Element {
     .child(swatch(YELLOW, "over budget"))
     .child(swatch(RED, "over twice the budget"))
     .child(swatch(PRIMARY, "selected"))
+    .child(swatch(ORANGE, "GPU time"))
     .child(text(
       "faded: not presented · click a bar to inspect it",
       10.0,
@@ -746,9 +795,13 @@ fn frame_sidebar(capture: &ProfilerCapture, selected: Option<&ProfileSample>) ->
     None => body = body.child(empty_state("Select a frame in the timeline")),
     Some((sample, pass)) => {
       let total_ms = ms(pass.total);
+      let gpu = pass
+        .gpu
+        .map_or_else(|| "–".to_owned(), |gpu| format_ms(ms(gpu.total())));
       let summary = [
         ("Start", format_offset(capture, sample.started_ms), TEXT),
         ("Duration", format_ms(total_ms), duration_color(total_ms)),
+        ("GPU", gpu, ORANGE),
         ("Presented", if pass.rendered { "yes" } else { "no" }.to_owned(), TEXT),
         ("Window", sample.window.clone(), MUTED),
       ];
@@ -759,6 +812,14 @@ fn frame_sidebar(capture: &ProfilerCapture, selected: Option<&ProfileSample>) ->
         .border_bottom(divider());
       for (label, value, color) in summary {
         section = section.child(detail_row(label, &value, color));
+      }
+      if pass.rendered && pass.gpu.is_none() {
+        section = section.child(text(
+          &format!("No GPU time: {}", capture.gpu_missing_reason()),
+          10.0,
+          FontWeight::Normal,
+          MUTED,
+        ));
       }
       body = body
         .child(section)

@@ -40,8 +40,21 @@ impl BuildAvailability {
       "features": { "perf_profile": self.perf_profile, "canvas": self.canvas, "wgpu": self.wgpu,
         "dx12": self.dx12, "devtools": self.devtools },
       "application_scopes": super::application_export::availability(self.perf_profile),
-      "gpu_timestamps": { "available": false, "reason": "GPU timestamp queries are not instrumented" }
+      "gpu_timestamps": self.gpu_timestamps.to_json()
     })
+  }
+}
+
+impl GpuTimestampAvailability {
+  pub fn to_json(self) -> Value {
+    json!({ "available": self.available, "reason": self.reason, "adapter_backend": self.adapter_backend })
+  }
+}
+
+impl GpuTiming {
+  pub fn to_json(self) -> Value {
+    let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.;
+    json!({ "ui": ms(self.ui), "canvas": self.canvas.map(ms), "total": ms(self.total()) })
   }
 }
 
@@ -87,7 +100,8 @@ impl ProfileReport {
       "boundary_excluded_samples": self.boundary_excluded_samples, "untracked_windows": self.untracked_windows,
       "boundary_policy": "whole_completed_operations; in-flight observations are unfinished and excluded from completed samples",
       "windows": self.windows.iter().map(|window| json!({
-        "id": window.id, "open": window.open, "devtools": window.devtools
+        "id": window.id, "open": window.open, "devtools": window.devtools,
+        "gpu_timestamps": window.gpu_timestamps.map(GpuTimestampAvailability::to_json)
       })).collect::<Vec<_>>(),
       "in_flight": self.in_flight.iter().map(|current| json!({
         "window": current.window, "frame_id": current.frame_id, "phase": current.phase.name(),
@@ -109,6 +123,7 @@ impl ProfileReport {
         "canvas": "CPU processing; recording includes uploads and WGPU submission; tessellation includes mesh cache lookup",
         "canvas_asset_upload_details": "DX12 captured encodes only; four CPU subscopes nested in asset_upload; cache_eviction is outside asset_upload inside Canvas total; cache byte counters are policy charges, not GPU allocation/RSS; WGPU or uncaptured details are null",
         "submit_present": "CPU API wall time, not GPU execution",
+        "gpu_timing": "WGPU timestamp queries, only while a session is active: ui is the UI encoder from the start of its first render pass to the end of the window pass; canvas sums the Canvas command buffers of the frame, each start to end (null when the frame had none or not all were measured); arrives frames later, matched by window and frame_id; null when it never arrived or the adapter has no timestamp queries (see build.gpu_timestamps)",
         "fps": "on-demand rendering; sample count/interval is not throughput or FPS"
       }
     });
@@ -137,8 +152,8 @@ fn sample_json(sample: &ProfileSample) -> Value {
           shape_cache_misses, shape_cache_evictions, shape_cache_uncached, shape_cache_stretch_bytes,
           produced_bitmap_bytes)
       })),
-      "frame": pass.frame.as_ref().map(|frame| frame_json(frame, pass.backend)),
-      "gpu_timing_ms": null,
+      "frame": pass.frame.as_ref().map(|frame| frame_json(frame, pass.backend, pass.gpu.is_some())),
+      "gpu_timing_ms": pass.gpu.map(GpuTiming::to_json),
       "spans": pass.spans.iter().map(|span| json!({
         "phase": span.phase.name(), "depth": span.depth,
         "start_ms": span.start_ns as f64 / 1e6, "end_ms": span.end_ns as f64 / 1e6
@@ -160,7 +175,7 @@ fn sample_json(sample: &ProfileSample) -> Value {
     "completed_ms": sample.completed_ms, "data": data })
 }
 
-fn frame_json(frame: &FrameProfile, backend: &str) -> Value {
+fn frame_json(frame: &FrameProfile, backend: &str, gpu_execution: bool) -> Value {
   let render = frame.render;
   let text = frame.glyph_engine;
   let upload_details_available = cfg!(all(
@@ -182,7 +197,7 @@ fn frame_json(frame: &FrameProfile, backend: &str) -> Value {
         "canvas_asset_upload_details": upload_details_available,
         "canvas_buffer_upload": "WGPU vertex/globals; DX12 vertex only (constants remain inside recording)",
         "ui_buffer_image_upload": "WGPU separate; DX12 included in encode without independent sub-timers",
-        "gpu_execution": false
+        "gpu_execution": gpu_execution
       },
       "cpu_timings_ms": frame.render_profile_available.then(|| timings!(render; total, init, acquire, globals_upload, atlas_upload,
         buffer_upload, image_upload, encode, submit, present)),

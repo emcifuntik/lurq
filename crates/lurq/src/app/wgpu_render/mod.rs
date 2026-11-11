@@ -1,6 +1,8 @@
 #[cfg(feature = "canvas")]
 mod canvas;
 mod extension;
+#[cfg(feature = "perf_profile")]
+mod gpu_timing;
 mod layers;
 #[cfg(test)]
 mod quad_tests;
@@ -365,6 +367,9 @@ pub struct WgpuRenderEngine {
   last_profile: RenderProfile,
   #[cfg(feature = "perf_profile")]
   profile_context: Option<crate::app::profiler::ProfileContext>,
+  /// GPU time of frames rendered while a profiling session is active.
+  #[cfg(feature = "perf_profile")]
+  gpu_timer: gpu_timing::GpuTimer,
   quad_bind_group: Option<wgpu::BindGroup>,
   glyph_bind_group: Option<wgpu::BindGroup>,
   vertex_buffer: Option<wgpu::Buffer>,
@@ -468,6 +473,8 @@ impl WgpuRenderEngine {
       last_profile: RenderProfile::default(),
       #[cfg(feature = "perf_profile")]
       profile_context: None,
+      #[cfg(feature = "perf_profile")]
+      gpu_timer: gpu_timing::GpuTimer::new(),
       quad_bind_group: None,
       glyph_bind_group: None,
       vertex_buffer: None,
@@ -645,6 +652,8 @@ impl WgpuRenderEngine {
     {
       self.canvas_renderer = None;
     }
+    #[cfg(feature = "perf_profile")]
+    self.gpu_timer.release();
     self.queue = None;
     self.device = None;
     self.adapter = None;
@@ -743,7 +752,13 @@ impl WgpuRenderEngine {
     )
     .expect("no suitable GPU adapter found");
 
-    let required_features = adapter.features() & self.optional_device_features;
+    #[cfg_attr(not(feature = "perf_profile"), allow(unused_mut))]
+    let mut required_features = adapter.features() & self.optional_device_features;
+    // Measures GPU time while a profiling session is active.
+    #[cfg(feature = "perf_profile")]
+    {
+      required_features |= gpu_timing::GpuTimer::requested_features(&adapter);
+    }
     let required_limits = self
       .optional_device_limits
       .clone()
@@ -1179,6 +1194,8 @@ impl WgpuRenderEngine {
       usage: wgpu::BufferUsages::INDEX,
     });
 
+    #[cfg(feature = "perf_profile")]
+    self.gpu_timer.configure(&adapter, &device, &queue);
     self.adapter = Some(adapter);
     self.device = Some(device);
     self.queue = Some(queue);
@@ -1364,6 +1381,11 @@ impl RenderEngine for WgpuRenderEngine {
     let _init_dur = profile_elapsed!(_init_start);
     #[cfg(feature = "perf_profile")]
     drop(_init_phase);
+    // Queries only while a session is active; otherwise this does no GPU work.
+    #[cfg(feature = "perf_profile")]
+    self
+      .gpu_timer
+      .begin_frame(self.device.as_ref().unwrap(), self.profile_context.as_ref());
     self.prepare_frame_extensions(list);
     #[cfg(feature = "perf_profile")]
     let mut _canvas_profile = crate::app::profile_types::CanvasProfile::default();
@@ -1378,10 +1400,12 @@ impl RenderEngine for WgpuRenderEngine {
       #[cfg(feature = "perf_profile")]
       {
         renderer.profile_context = self.profile_context.clone();
+        renderer.gpu_marks = self.gpu_timer.canvas_marks();
       }
       renderer.process(device, queue, &self.canvases);
       #[cfg(feature = "perf_profile")]
       {
+        self.gpu_timer.canvas_done(renderer.gpu_marks.take());
         _canvas_profile = renderer.profile;
         _canvas_profile.total = profile_elapsed!(_canvas_start);
       }
@@ -1853,6 +1877,8 @@ impl RenderEngine for WgpuRenderEngine {
     }
 
     let mut encoder = device.create_command_encoder(&Default::default());
+    #[cfg(feature = "perf_profile")]
+    let target_count = layer_plan.targets().len();
     for (target_index, target) in layer_plan.targets().iter().enumerate() {
       let layer_slot = self.scratch_layer_slots.get(target_index).copied().flatten();
       let (space, target_view, clear) = match (target.layer, layer_slot, self.layer_compositor.as_ref()) {
@@ -1882,6 +1908,11 @@ impl RenderEngine for WgpuRenderEngine {
             store: wgpu::StoreOp::Store,
           },
         })],
+        // The UI's GPU time: the first pass's start to the window pass's end.
+        #[cfg(feature = "perf_profile")]
+        timestamp_writes: self
+          .gpu_timer
+          .ui_pass_writes(target_index == 0, target_index + 1 == target_count),
         ..Default::default()
       });
 
@@ -2421,6 +2452,9 @@ impl RenderEngine for WgpuRenderEngine {
       .take()
       .and_then(|capture| encode_wgpu_frame_capture(device, &mut encoder, output.texture(), config.format, capture));
 
+    #[cfg(feature = "perf_profile")]
+    self.gpu_timer.resolve(&mut encoder);
+
     let _submit_start = profile_scope!();
     #[cfg(feature = "perf_profile")]
     let _submit_phase = self
@@ -2431,6 +2465,8 @@ impl RenderEngine for WgpuRenderEngine {
     let _submit_dur = profile_elapsed!(_submit_start);
     #[cfg(feature = "perf_profile")]
     drop(_submit_phase);
+    #[cfg(feature = "perf_profile")]
+    self.gpu_timer.submitted();
 
     #[cfg(feature = "screenshot")]
     if let Some(frame_capture) = frame_capture {

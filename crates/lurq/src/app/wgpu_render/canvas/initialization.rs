@@ -150,6 +150,8 @@ impl Renderer {
       profile: Default::default(),
       #[cfg(feature = "perf_profile")]
       profile_context: None,
+      #[cfg(feature = "perf_profile")]
+      gpu_marks: None,
       meshes: MeshCache::default(),
       surfaces: HashMap::new(),
       fronts: HashMap::new(),

@@ -3,7 +3,10 @@ use std::{sync::Arc, time::Duration};
 use super::*;
 use crate::app::{
   devtools::profiler_capture::{IDLE_GAP_MS, fps, pass_detail, phase_rows},
-  profiler::{FrameProfile, PassSample, Phase, PhaseSpan, ProfileSample, SampleData, producer::WindowProfiler},
+  profiler::{
+    FrameProfile, GpuTimestampAvailability, GpuTiming, PassSample, Phase, PhaseSpan, ProfileSample, SampleData,
+    producer::WindowProfiler,
+  },
 };
 
 /// A pass of `producer` that a session records, presented with a frame profile.
@@ -162,6 +165,7 @@ fn sample(sequence: u64, window: &str, started_ms: f64, total_ms: f64, rendered:
       frame: rendered.then(FrameProfile::default),
       spans: Vec::new(),
       dropped_spans: 0,
+      gpu: None,
     }),
   })
 }
@@ -175,7 +179,17 @@ fn capture(passes: Vec<Arc<ProfileSample>>, ended_ms: f64) -> ProfilerCapture {
     size_bytes: 0,
     stopped_at_limit: false,
     boundary_excluded: 0,
+    gpu_timestamps: GpuTimestampAvailability::default(),
   }
+}
+
+/// `sample` with `gpu` as its GPU time.
+fn with_gpu(sample: Arc<ProfileSample>, gpu: GpuTiming) -> Arc<ProfileSample> {
+  let mut sample = (*sample).clone();
+  if let SampleData::Pass(pass) = &mut sample.data {
+    pass.gpu = Some(gpu);
+  }
+  Arc::new(sample)
 }
 
 #[test]
@@ -364,10 +378,14 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
     components::Column,
   };
   const WIDTH: f32 = 1068.0;
-  // A pass and an input dispatch half way through the range, and a pass at
-  // its end.
+  // A pass with GPU time and an input dispatch half way through the range,
+  // and a pass at its end whose GPU result never arrived.
+  let gpu = GpuTiming {
+    ui: Duration::from_millis(4),
+    canvas: Some(Duration::from_millis(2)),
+  };
   let passes = vec![
-    sample(1, "main", 500.0, 30.0, true),
+    with_gpu(sample(1, "main", 500.0, 30.0, true), gpu),
     sample(2, "main", 1000.0, 30.0, true),
   ];
   let mut capture = capture(passes.clone(), 1000.0);
@@ -399,19 +417,64 @@ fn bars_markers_and_axis_ticks_share_one_time_scale() {
   );
   tree.pass_headless(&mut app);
 
-  // Rows: chart, input lane, ui update lane, axis; each a track then its label.
+  // Rows: chart, GPU track, input lane, ui update lane, axis; each a track
+  // then its label.
   let half_bar = bounds_at(&mut tree, &[0, 0, 0, 1, 1]);
   let end_bar = bounds_at(&mut tree, &[0, 0, 0, 2, 1]);
-  let half_marker = bounds_at(&mut tree, &[0, 1, 0, 1]);
-  let half_tick = bounds_at(&mut tree, &[0, 3, 0, 2]);
-  let last_part = bounds_at(&mut tree, &[0, 3, 0, 3]);
+  let half_gpu_bar = bounds_at(&mut tree, &[0, 1, 0, 0, 1]);
+  let half_marker = bounds_at(&mut tree, &[0, 2, 0, 1]);
+  let half_tick = bounds_at(&mut tree, &[0, 4, 0, 2]);
+  let last_part = bounds_at(&mut tree, &[0, 4, 0, 3]);
   let close = |a: f32, b: f32, what: &str| assert!((a - b).abs() < 0.5, "{what}: {a} vs {b}");
   let scale = WIDTH - LANE_GAP - LANE_LABEL_WIDTH - BAR_WIDTH;
   close(half_bar.x, scale * 0.5, "bar at half the range");
+  close(half_gpu_bar.x, half_bar.x, "GPU bar at the pass's time");
+  // 6 ms of GPU time on a scale of one frame budget.
+  close(
+    half_gpu_bar.height,
+    (6.0 / FRAME_BUDGET_MS) as f32 * GPU_TRACK_HEIGHT,
+    "GPU bar height",
+  );
   close(half_marker.x, half_bar.x, "marker at the bar's time");
   close(half_tick.x, half_bar.x, "tick at the bar's time");
   close(end_bar.x, scale, "bar at the range's end");
   close(last_part.x + last_part.width, end_bar.x, "axis end at the last bar");
+}
+
+#[test]
+fn the_gpu_track_says_why_no_gpu_time_was_measured() {
+  use crate::{
+    app::{App, Tree},
+    components::Column,
+  };
+  let passes = vec![sample(1, "main", 500.0, 30.0, true)];
+  let mut capture = capture(passes.clone(), 1000.0);
+  capture.gpu_timestamps = GpuTimestampAvailability::unavailable(GpuTimestampAvailability::NATIVE_DX12);
+  assert_eq!(capture.gpu_missing_reason(), GpuTimestampAvailability::NATIVE_DX12);
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(800, 300);
+  tree.set_root(
+    Column::new()
+      .child(gpu_track(&capture, &passes, capture.whole()))
+      .size(800.0, 300.0),
+  );
+  tree.pass_headless(&mut app);
+  let note = tree
+    .find_element(|element: crate::node::ElementRef<'_>| {
+      element
+        .text_content()
+        .is_some_and(|text| text.contains(GpuTimestampAvailability::NATIVE_DX12))
+    })
+    .is_some();
+  assert!(note, "the track names the reason");
+  // On an adapter that measures, a pass without GPU time is one whose result never arrived.
+  capture.gpu_timestamps = GpuTimestampAvailability {
+    available: true,
+    reason: None,
+    adapter_backend: Some("vulkan"),
+  };
+  assert_eq!(capture.gpu_missing_reason(), "its GPU result never arrived");
 }
 
 #[test]
@@ -537,4 +600,25 @@ fn pass_detail_shows_the_whole_frame_profile() {
   assert_eq!(row("COUNTS", "quad_count").as_deref(), Some("0"));
   assert_eq!(row("TEXT", "shape_text").as_deref(), Some("0.00ms"));
   assert_eq!(row("MEMORY", "total_bytes").as_deref(), Some("0"));
+}
+
+#[test]
+fn pass_detail_shows_gpu_time_once_it_arrived() {
+  let measured = with_gpu(
+    sample(1, "main", 0.0, 4.0, true),
+    GpuTiming {
+      ui: Duration::from_micros(1500),
+      canvas: None,
+    },
+  );
+  let detail = pass_detail(&measured, pass_of(&measured).unwrap());
+  assert_eq!(detail[1].title, "GPU");
+  assert_eq!(
+    detail[1].rows,
+    vec![
+      ("ui", "1.50ms".to_owned()),
+      ("canvas", "-".to_owned()),
+      ("total", "1.50ms".to_owned())
+    ]
+  );
 }
