@@ -36,6 +36,9 @@ resources = ["dep:ureq"]
 screenshot = ["dep:image"]
 devtools = ["screenshot", "dep:rfd", "perf_profile"]
 perf_profile = []
+# `lurq::app::profiler::CountingAllocator`, a global allocator wrapper the
+# application installs so profiling sessions report allocations per frame.
+counting_allocator = ["perf_profile"]
 router = []
 # Embeddable MCP server: lets an AI agent drive and inspect a running lurq app
 # (screenshot, read the element tree, click/type, navigate). Off by default;
@@ -152,6 +155,10 @@ windows = { version = "0.62.2", features = ["Win32_Graphics_Gdi"] }
 name = "resources_tests"
 required-features = ["resources"]
 
+[[test]]
+name = "counting_allocator"
+required-features = ["counting_allocator"]
+
 [[example]]
 name = "dx12_capture_check"
 required-features = ["screenshot", "dx12"]
@@ -200,6 +207,10 @@ required-features = ["winit", "dx12", "perf_profile"]
 name = "dx12_glyph_atlas_probe"
 required-features = ["screenshot", "dx12", "perf_profile"]
 
+[[example]]
+name = "counting_allocator"
+required-features = ["counting_allocator"]
+
 [[bench]]
 name = "layout"
 harness = false
@@ -226,6 +237,11 @@ harness = false
 [[bench]]
 name = "profiler_idle"
 harness = false
+
+[[bench]]
+name = "counting_allocator"
+harness = false
+required-features = ["counting_allocator"]
 
 
 [[bench]]

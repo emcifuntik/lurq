@@ -168,6 +168,12 @@ pub(crate) struct WindowProfiler {
   presented_at: Option<Instant>,
   refresh: Option<Duration>,
   presents: PresentTracker,
+  /// A session took samples when the pass began.
+  captured: bool,
+  /// The pass thread's allocation counts when a captured pass began.
+  #[cfg(feature = "perf_profile")]
+  allocations_start: Option<super::AllocationSnapshot>,
+  counters: Option<PassCounters>,
 }
 
 impl WindowProfiler {
@@ -195,6 +201,10 @@ impl WindowProfiler {
       presented_at: None,
       refresh: None,
       presents: PresentTracker::default(),
+      captured: false,
+      #[cfg(feature = "perf_profile")]
+      allocations_start: None,
+      counters: None,
     }
   }
 
@@ -295,12 +305,41 @@ impl WindowProfiler {
     self.canvas_recording = Duration::ZERO;
     self.canvas_preparation = Duration::ZERO;
     self.context.frame_id = Some(frame_id);
+    self.captured = self.context.handle.inner.active.load(Ordering::Acquire);
+    self.counters = None;
     if let Some(slot) = &self.context.phase {
-      slot.begin_spans(self.context.handle.inner.active.load(Ordering::Acquire));
+      slot.begin_spans(self.captured);
     }
     let guard = self.context.phase(Phase::PassSetup);
     self.pass_entry = guard.entered;
+    #[cfg(feature = "perf_profile")]
+    {
+      self.allocations_start = if self.captured {
+        super::allocation_snapshot()
+      } else {
+        None
+      };
+    }
     (Instant::now(), guard)
+  }
+
+  /// A session took samples when the pass began: the runtime then gathers
+  /// the pass's counters (`set_counters`).
+  pub(crate) fn captured(&self) -> bool {
+    self.captured
+  }
+
+  /// The pass thread's allocations since `begin_pass`. Read it before
+  /// gathering the other counters, whose own allocations are not the pass's.
+  #[cfg(feature = "perf_profile")]
+  pub(crate) fn pass_allocations(&self) -> Option<PassAllocations> {
+    let start = self.allocations_start?;
+    Some(super::allocation_snapshot()?.since(start))
+  }
+
+  /// Counters the next `finish_pass` records with the pass.
+  pub(crate) fn set_counters(&mut self, counters: PassCounters) {
+    self.counters = Some(counters);
   }
 
   pub(crate) fn layout(&mut self, duration: Duration) {
@@ -384,9 +423,11 @@ impl WindowProfiler {
           dropped_spans,
           reasons: report.reasons,
           present,
+          counters: self.counters,
         }),
       );
     }
+    self.counters = None;
     // The inputs since the last present are presented by this frame; a pass
     // that had nothing to do ends them presented by none, and the run of
     // frames with them. A required pass that could not render keeps them.

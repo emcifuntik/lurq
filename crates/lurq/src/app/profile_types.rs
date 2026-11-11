@@ -119,6 +119,10 @@ pub struct RenderProfile {
   pub glyph_atlas_arena_uploads: usize,
   /// New dedicated upload resources allocated for glyph-atlas updates.
   pub glyph_atlas_dedicated_uploads: usize,
+  /// Draw calls recorded for the window's render list (quads, glyph runs,
+  /// images, SVGs and opacity-layer composites). Canvas draws are not
+  /// included; `canvas.batches` counts those.
+  pub draw_calls: usize,
   pub buffer_upload: Duration,
   pub image_upload: Duration,
   pub encode: Duration,
@@ -151,6 +155,8 @@ pub struct CanvasProfile {
   pub uploaded_asset_bytes: usize,
   /// The renderer's Canvas asset budget (`CanvasAssetBudget`) in bytes.
   pub asset_cache_budget_bytes: usize,
+  /// Charged bytes of the textures the asset cache keeps after the encode.
+  pub asset_cache_bytes: usize,
   /// The most the asset cache was charged above its budget during the encode;
   /// above zero, the textures of the current and previous frame need more.
   pub asset_cache_stretch_bytes: usize,

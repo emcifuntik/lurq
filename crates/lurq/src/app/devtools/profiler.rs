@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Duration};
 use super::{
   profiler_analysis::AnalysisProps,
   profiler_capture::{
-    self as capture, DetailSection, FRAME_BUDGET_MS, MAX_TIMELINE_PASSES, PhaseRow, ProfilerCapture, TimeRange,
-    bucket_of, format_bytes, format_ms, format_span, ms, pass_of,
+    self as capture, Counter, DetailSection, FRAME_BUDGET_MS, MAX_TIMELINE_PASSES, PhaseRow, ProfilerCapture,
+    TimeRange, bucket_of, format_bytes, format_ms, format_span, ms, pass_of,
   },
   style::{
     BLUE, BORDER, FILL, MUTED, PINK, PRIMARY, SELECTED, SIGNAL_GREEN, SURFACE, SURFACE_2, TEXT, YELLOW, empty_state,
@@ -35,6 +35,8 @@ const OVERVIEW_BUCKETS: usize = 120;
 const MARKER_BUCKETS: usize = 240;
 const OVERVIEW_HEIGHT: f32 = 36.0;
 const CHART_HEIGHT: f32 = 120.0;
+/// Height of each counter track under the pass chart.
+const COUNTER_HEIGHT: f32 = 24.0;
 const BAR_WIDTH: f32 = 3.0;
 /// Right of each timeline track, between it and its label.
 const LANE_GAP: f32 = 8.0;
@@ -562,10 +564,10 @@ fn timeline(
     .into()
 }
 
-/// The pass chart, the marker lanes and the axis, one row each. Each row's
-/// track takes the width the label column leaves, and its time scale is that
-/// width less `BAR_WIDTH` (so a bar at the range's end stays inside): a time is
-/// at the same x in every row.
+/// The pass chart, the counter tracks, the marker lanes and the axis, one row
+/// each. Each row's track takes the width the label column leaves, and its time
+/// scale is that width less `BAR_WIDTH` (so a bar at the range's end stays
+/// inside): a time is at the same x in every row.
 fn timeline_tracks(
   capture: &ProfilerCapture,
   passes: &[Arc<ProfileSample>],
@@ -573,10 +575,15 @@ fn timeline_tracks(
   selected: Option<u64>,
   state_signal: Signal<ProfilerState>,
 ) -> Element {
-  Column::new()
+  // Missed vsyncs sit right under the bars they mark; the counters follow.
+  let mut tracks = Column::new()
     .spacing(4.0)
-    .child(pass_chart(passes, range, selected, state_signal))
-    .child(missed_vsync_lane(capture, range))
+    .child(pass_chart(passes, range, selected, state_signal.clone()))
+    .child(missed_vsync_lane(capture, range));
+  for counter in Counter::ALL {
+    tracks = tracks.child(counter_track(counter, passes, range, selected, state_signal.clone()));
+  }
+  tracks
     .child(input_lane(capture, range))
     .child(marker_lane(capture, range, "ui update", PINK, |data| {
       matches!(data, SampleData::UiUpdate(_))
@@ -597,6 +604,66 @@ fn missed_vsync_lane(capture: &ProfilerCapture, range: TimeRange) -> Element {
       9.0,
       FontWeight::Normal,
       if count > 0 { RED } else { MUTED },
+    )),
+  )
+}
+
+/// One counter's value per pass, a bar at the pass's start as in the pass
+/// chart; a click selects the pass. Its label shows the selected pass's value,
+/// or the range's highest, or that the counter is unavailable.
+fn counter_track(
+  counter: Counter,
+  passes: &[Arc<ProfileSample>],
+  range: TimeRange,
+  selected: Option<u64>,
+  state_signal: Signal<ProfilerState>,
+) -> Element {
+  let mut track = Stack::new().flex(1.0).height(COUNTER_HEIGHT).background(SURFACE_2);
+  let Some(points) = capture::counter_points(counter, passes) else {
+    return track_row(
+      track,
+      Column::new().child(mono_text(
+        &format!("{} unavailable", counter.label()),
+        9.0,
+        FontWeight::Normal,
+        MUTED,
+      )),
+    );
+  };
+  let highest = points.iter().map(|point| point.value).fold(0.0, f64::max);
+  for point in &points {
+    let is_selected = selected == Some(point.sequence);
+    let sequence = point.sequence;
+    let height = if highest > 0.0 {
+      (point.value / highest) as f32 * COUNTER_HEIGHT
+    } else {
+      0.0
+    };
+    let bar = Row::new()
+      .width(BAR_WIDTH)
+      .height(height.max(1.0))
+      .background(if is_selected { PRIMARY } else { BLUE })
+      .opacity(if is_selected { 1.0 } else { 0.7 })
+      .cursor(CursorIcon::Pointer)
+      .on_click({
+        let state_signal = state_signal.clone();
+        move |_| state_signal.update(|state| state.selected = Some(sequence))
+      });
+    track = track.child(placed(range.fraction(point.started_ms) as f32, bar, Alignment::End));
+  }
+  let shown = points
+    .iter()
+    .find(|point| selected == Some(point.sequence))
+    .map(|point| point.value)
+    .or_else(|| (!points.is_empty()).then_some(highest));
+  let value = shown.map_or_else(|| "–".to_owned(), |value| counter.format(value));
+  track_row(
+    track,
+    Column::new().child(mono_text(
+      &format!("{} {value}", counter.label()),
+      9.0,
+      FontWeight::Normal,
+      TEXT,
     )),
   )
 }
@@ -627,7 +694,6 @@ fn input_lane(capture: &ProfilerCapture, range: TimeRange) -> Element {
   }
   lane(&cells, label)
 }
-
 /// One row of the timeline: `track`, which must flex, then its label column.
 fn track_row(track: impl Into<Element>, label: Column) -> Element {
   Row::new()

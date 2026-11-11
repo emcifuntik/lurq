@@ -185,6 +185,7 @@ fn profiling_canvas_upload_export_does_not_advertise_wgpu_or_custom_backend_supp
           dropped_spans: 0,
           reasons: Default::default(),
           present: None,
+          counters: None,
         }),
       })],
       recording: None,

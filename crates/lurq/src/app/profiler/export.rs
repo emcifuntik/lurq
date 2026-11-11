@@ -154,7 +154,9 @@ fn sample_json(sample: &ProfileSample) -> Value {
         "continuous": present.continuous,
         "missed_vsync": present.missed_vsync(),
         "missed_vsyncs": present.missed_vsyncs
-      }))
+      })),
+      // Additive within schema_version 1; null for a pass without counters.
+      "counters": pass.counters.map(counters_json)
     }),
     SampleData::UiUpdate(update) => json!({
       "kind": "ui_update", "frame_id": update.frame_id,
@@ -180,6 +182,22 @@ fn sample_json(sample: &ProfileSample) -> Value {
 
 fn ms(duration: std::time::Duration) -> f64 {
   duration.as_secs_f64() * 1000.
+}
+
+fn counters_json(counters: PassCounters) -> Value {
+  let allocations = counters.allocations;
+  json!({
+    "nodes": counters.nodes, "memory_bytes": counters.memory_bytes,
+    "caches": counts!(counters.caches; glyph_atlas_bytes, text_cache_bytes, canvas_text_cache_bytes,
+      canvas_asset_cache_bytes),
+    "allocations": {
+      "available": allocations.is_some(),
+      "scope": "the pass thread from pass start until its counters are taken; live_bytes is process-wide",
+      "allocations": allocations.map(|a| a.allocations), "frees": allocations.map(|a| a.frees),
+      "allocated_bytes": allocations.map(|a| a.allocated_bytes), "freed_bytes": allocations.map(|a| a.freed_bytes),
+      "live_bytes": allocations.map(|a| a.live_bytes)
+    }
+  })
 }
 
 fn frame_json(frame: &FrameProfile, backend: &str) -> Value {
@@ -208,12 +226,15 @@ fn frame_json(frame: &FrameProfile, backend: &str) -> Value {
       },
       "cpu_timings_ms": frame.render_profile_available.then(|| timings!(render; total, init, acquire, globals_upload, atlas_upload,
         buffer_upload, image_upload, encode, submit, present)),
+      // Render-list draws; Canvas draws are counted by canvas.counts.batches.
+      "draw_calls": frame.render_profile_available.then_some(render.draw_calls),
       "glyph_atlas": counts!(render; glyph_atlas_upload_bytes, glyph_atlas_upload_rects,
         glyph_atlas_full_uploads, glyph_atlas_arena_uploads, glyph_atlas_dedicated_uploads),
       "canvas": {
         "cpu_timings_ms": timings!(render.canvas; total, tessellation, asset_upload, buffer_upload, recording, submit),
         "counts": counts!(render.canvas; batches, command_groups, vertices, tiles, uploaded_asset_bytes,
-          asset_cache_budget_bytes, asset_cache_stretch_bytes, asset_cache_uncached, asset_cache_uncached_bytes),
+          asset_cache_budget_bytes, asset_cache_bytes, asset_cache_stretch_bytes, asset_cache_uncached,
+          asset_cache_uncached_bytes),
         "asset_upload_details": render.canvas.asset_upload_details
           .filter(|_| upload_details_available)
           .map(CanvasAssetUploadProfile::to_json)

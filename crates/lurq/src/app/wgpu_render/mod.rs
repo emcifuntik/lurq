@@ -1853,6 +1853,7 @@ impl RenderEngine for WgpuRenderEngine {
     }
 
     let mut encoder = device.create_command_encoder(&Default::default());
+    let mut _draw_calls = 0usize;
     for (target_index, target) in layer_plan.targets().iter().enumerate() {
       let layer_slot = self.scratch_layer_slots.get(target_index).copied().flatten();
       let (space, target_view, clear) = match (target.layer, layer_slot, self.layer_compositor.as_ref()) {
@@ -1912,6 +1913,7 @@ impl RenderEngine for WgpuRenderEngine {
               active_index_buffer = Some(ActiveIndexBuffer::CommonU16);
             }
             compositor.composite(queue, &mut pass, slot, layer, &space);
+            _draw_calls += 1;
             active_pipeline = Some(ActivePipeline::Layer);
             continue;
           }
@@ -1963,6 +1965,7 @@ impl RenderEngine for WgpuRenderEngine {
                 active_index_buffer = Some(ActiveIndexBuffer::CommonU16);
               }
               pass.draw_indexed(0..6, 0, 0..prepared.count as u32);
+              _draw_calls += 1;
             }
             OrderedDraw::Glyph { start, count } => {
               let glyph_slice = &list.glyphs[*start..*start + *count];
@@ -2011,6 +2014,7 @@ impl RenderEngine for WgpuRenderEngine {
                 active_index_buffer = Some(ActiveIndexBuffer::CommonU16);
               }
               pass.draw_indexed(0..6, 0, 0..*count as u32);
+              _draw_calls += 1;
             }
             #[cfg(feature = "raster")]
             OrderedDraw::Image(index) => {
@@ -2331,6 +2335,7 @@ impl RenderEngine for WgpuRenderEngine {
                 active_index_buffer = Some(ActiveIndexBuffer::CommonU16);
               }
               pass.draw_indexed(0..6, 0, 0..1);
+              _draw_calls += 1;
             }
             #[cfg(feature = "svg")]
             OrderedDraw::Svg(index) => {
@@ -2392,6 +2397,7 @@ impl RenderEngine for WgpuRenderEngine {
               pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
               active_index_buffer = Some(ActiveIndexBuffer::SvgU32);
               pass.draw_indexed(0..svg_cmd.mesh.indices.len() as u32, 0, 0..1);
+              _draw_calls += 1;
             }
           }
         }
@@ -2460,6 +2466,7 @@ impl RenderEngine for WgpuRenderEngine {
         glyph_atlas_full_uploads: _atlas_full_uploads,
         glyph_atlas_arena_uploads: 0,
         glyph_atlas_dedicated_uploads: 0,
+        draw_calls: _draw_calls,
         buffer_upload: _buffer_upload_dur,
         image_upload: _image_texture_upload_dur,
         encode: _encode_dur,

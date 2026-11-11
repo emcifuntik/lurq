@@ -340,6 +340,91 @@ pub(crate) fn fps(passes: &[Arc<ProfileSample>]) -> Option<f64> {
     .map(|(_, fps)| fps)
 }
 
+/// A counter track under the frame timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Counter {
+  Fps,
+  Nodes,
+  DrawCalls,
+  Memory,
+  Allocations,
+}
+
+impl Counter {
+  pub(crate) const ALL: [Self; 5] = [Self::Fps, Self::Nodes, Self::DrawCalls, Self::Memory, Self::Allocations];
+
+  pub(crate) fn label(self) -> &'static str {
+    match self {
+      Self::Fps => "fps",
+      Self::Nodes => "nodes",
+      Self::DrawCalls => "draw calls",
+      Self::Memory => "memory",
+      Self::Allocations => "allocs",
+    }
+  }
+
+  pub(crate) fn format(self, value: f64) -> String {
+    match self {
+      Self::Memory => format_bytes(value as u64),
+      Self::Fps | Self::Nodes | Self::DrawCalls | Self::Allocations => format!("{value:.0}"),
+    }
+  }
+}
+
+/// One pass's value on a counter track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CounterPoint {
+  pub sequence: u64,
+  pub started_ms: f64,
+  pub value: f64,
+}
+
+/// `counter`'s value for each of `passes` that has one, in their order. None
+/// when none of them can have it: no pass carries counters (or, for draw
+/// calls, a render profile; for allocations, a `CountingAllocator`'s counts).
+/// A pass's FPS is that of the interval since the previous presented frame of
+/// its window, up to `IDLE_GAP_MS`.
+pub(crate) fn counter_points(counter: Counter, passes: &[Arc<ProfileSample>]) -> Option<Vec<CounterPoint>> {
+  let mut available = counter == Counter::Fps;
+  let mut last_presented: BTreeMap<&str, f64> = BTreeMap::new();
+  let mut points = Vec::new();
+  for sample in passes {
+    let Some(pass) = pass_of(sample) else {
+      continue;
+    };
+    let value = match counter {
+      Counter::Fps if pass.rendered => {
+        let previous = last_presented.insert(sample.window.as_str(), sample.completed_ms);
+        previous
+          .map(|previous| sample.completed_ms - previous)
+          .filter(|interval| *interval > 0.0 && *interval <= IDLE_GAP_MS)
+          .map(|interval| 1000.0 / interval)
+      }
+      Counter::Fps => None,
+      Counter::Nodes => pass.counters.map(|counters| counters.nodes as f64),
+      Counter::Memory => pass.counters.map(|counters| counters.memory_bytes as f64),
+      Counter::DrawCalls => pass
+        .frame
+        .as_ref()
+        .filter(|frame| frame.render_profile_available)
+        .map(|frame| frame.render.draw_calls as f64),
+      Counter::Allocations => pass
+        .counters
+        .and_then(|counters| counters.allocations)
+        .map(|allocations| allocations.allocations as f64),
+    };
+    if let Some(value) = value {
+      available = true;
+      points.push(CounterPoint {
+        sequence: sample.sequence,
+        started_ms: sample.started_ms,
+        value,
+      });
+    }
+  }
+  available.then_some(points)
+}
+
 /// One phase span of a pass, placed on the pass's own time axis.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PhaseRow {
@@ -436,6 +521,23 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
     ));
   }
 
+  if let Some(counters) = pass.counters {
+    let allocations = counters.allocations.map_or_else(
+      || vec![("allocations", "unavailable".to_owned())],
+      |allocations| count_rows!(allocations; allocations, frees, allocated_bytes, freed_bytes, live_bytes).to_vec(),
+    );
+    sections.push(section(
+      "COUNTERS",
+      count_rows!(counters; nodes, memory_bytes)
+        .into_iter()
+        .chain(
+          count_rows!(counters.caches; glyph_atlas_bytes, text_cache_bytes, canvas_text_cache_bytes,
+          canvas_asset_cache_bytes),
+        )
+        .chain(allocations),
+    ));
+  }
+
   if let Some(text) = &pass.canvas_text {
     sections.push(section(
       "CANVAS TEXT",
@@ -470,7 +572,7 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
       encode, submit, present)
     .into_iter()
     .chain(
-      count_rows!(render; glyph_atlas_upload_bytes, glyph_atlas_upload_rects, glyph_atlas_full_uploads,
+      count_rows!(render; draw_calls, glyph_atlas_upload_bytes, glyph_atlas_upload_rects, glyph_atlas_full_uploads,
       glyph_atlas_arena_uploads, glyph_atlas_dedicated_uploads),
     ),
   ));
@@ -482,7 +584,8 @@ pub(crate) fn pass_detail(sample: &ProfileSample, pass: &PassSample) -> Vec<Deta
       .into_iter()
       .chain(
         count_rows!(canvas; batches, command_groups, vertices, tiles, uploaded_asset_bytes,
-        asset_cache_budget_bytes, asset_cache_stretch_bytes, asset_cache_uncached, asset_cache_uncached_bytes),
+        asset_cache_budget_bytes, asset_cache_bytes, asset_cache_stretch_bytes, asset_cache_uncached,
+        asset_cache_uncached_bytes),
       ),
   ));
 

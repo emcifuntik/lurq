@@ -357,6 +357,9 @@ pub struct PassSample {
   pub reasons: PassReasons,
   /// Some for a presented pass.
   pub present: Option<PresentTiming>,
+  /// Sizes taken at the end of the pass; None when the pass started with no
+  /// session active.
+  pub counters: Option<PassCounters>,
 }
 
 /// One phase guard's lifetime, in nanoseconds since the collector epoch (the
@@ -367,6 +370,50 @@ pub struct PhaseSpan {
   pub depth: u8,
   pub start_ns: u64,
   pub end_ns: u64,
+}
+
+/// Counts and sizes of a captured pass, taken when it ends. Draw calls, quads,
+/// rects, glyphs and Canvas batches of a presented frame are in its
+/// `FrameProfile` (`render.draw_calls`, `quad_count`, ..., `render.canvas.batches`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PassCounters {
+  /// Nodes of the window's live tree.
+  pub nodes: usize,
+  /// The runtime memory estimate (`RuntimeMemoryProfile::total_bytes`), taken
+  /// at the end of this pass rather than the cached once-per-second value.
+  pub memory_bytes: usize,
+  pub caches: CacheSizes,
+  /// The pass thread's allocations during the pass; None when no
+  /// `CountingAllocator` is installed (or lurq lacks its feature).
+  pub allocations: Option<PassAllocations>,
+}
+
+/// Sizes of the caches a pass draws from, in bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CacheSizes {
+  /// The shared glyph atlas's RGBA pixels (CPU copy; each window's renderer
+  /// holds a GPU texture of the same size).
+  pub glyph_atlas_bytes: usize,
+  /// The UI GlyphEngine's estimate of its text caches and buffers.
+  pub text_cache_bytes: usize,
+  /// Charged bytes of the shared Canvas text engine's shape cache; 0 before
+  /// any Canvas drew text.
+  pub canvas_text_cache_bytes: usize,
+  /// Charged bytes of the textures this window's renderer keeps for Canvas
+  /// images and text, as of its last presented frame.
+  pub canvas_asset_cache_bytes: usize,
+}
+
+/// What the pass thread allocated during one pass, counted by an installed
+/// `CountingAllocator`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PassAllocations {
+  pub allocations: u64,
+  pub frees: u64,
+  pub allocated_bytes: u64,
+  pub freed_bytes: u64,
+  /// Bytes allocated and not yet freed by every thread, at the end of the pass.
+  pub live_bytes: u64,
 }
 
 /// Aggregate CPU work in CanvasTextEngine, separate from the UI GlyphEngine.

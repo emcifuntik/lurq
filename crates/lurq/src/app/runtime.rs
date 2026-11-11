@@ -2359,6 +2359,10 @@ impl Tree {
         .phase(crate::app::profiler::Phase::PassNotifications);
       self.mcp_notify_pass(&report);
     }
+    #[cfg(feature = "perf_profile")]
+    if self.profiling.captured() {
+      self.record_pass_counters(app);
+    }
     // Publish completion only after observers and MCP reconciliation/replies.
     // A blocked notification must remain unfinished to diagnostic readers.
     #[cfg(feature = "perf_profile")]
@@ -2391,6 +2395,40 @@ impl Tree {
       || self.autoscroll_moving()
       || self.has_continuous_redraw_image()
       || self.next_timeline_change().is_some_and(|at| at <= Instant::now())
+  }
+
+  /// Counts and sizes a captured pass records when it ends: its allocations
+  /// first, so the walks below are not counted as the pass's.
+  #[cfg(feature = "perf_profile")]
+  fn record_pass_counters(&mut self, app: &App) {
+    use crate::app::profiler::{CacheSizes, PassCounters};
+    let allocations = self.profiling.pass_allocations();
+    let nodes = self.root.as_ref().map_or(0, Node::subtree_len);
+    let (text_cache_bytes, glyph_atlas_bytes, canvas_text_cache_bytes) = {
+      let engine = app.shared.glyph_engine.lock();
+      #[cfg(feature = "canvas")]
+      let canvas_text = engine.existing_canvas_text_engine();
+      let sizes = (engine.estimated_memory_bytes(), engine.atlas_bytes());
+      // The Canvas text engine is locked after the glyph engine is released.
+      drop(engine);
+      #[cfg(feature = "canvas")]
+      let canvas_text_bytes = canvas_text.map_or(0, |engine| engine.lock().shape_cache_bytes());
+      #[cfg(not(feature = "canvas"))]
+      let canvas_text_bytes = 0;
+      (sizes.0, sizes.1, canvas_text_bytes)
+    };
+    let memory = self.memory_profile_with_glyph(text_cache_bytes);
+    self.profiling.set_counters(PassCounters {
+      nodes,
+      memory_bytes: memory.total_bytes,
+      caches: CacheSizes {
+        glyph_atlas_bytes,
+        text_cache_bytes,
+        canvas_text_cache_bytes,
+        canvas_asset_cache_bytes: self.last_profile.render.canvas.asset_cache_bytes,
+      },
+      allocations,
+    });
   }
 
   fn pass_inner(&mut self, app: &mut App, surface: &(impl HasWindowHandle + HasDisplayHandle)) -> PassReport {
