@@ -203,6 +203,7 @@ pub struct SelectStyle {
   pub(crate) option_selected_highlighted: Option<SelectPartStyle>,
   pub(crate) option_disabled: Option<SelectPartStyle>,
   pub(crate) option_detail: SelectPartStyle,
+  pub(crate) option_adornment_gap: SpacingValue,
   pub(crate) chevron: SelectIcon,
   pub(crate) chevron_open: Option<SelectIcon>,
   pub(crate) chevron_color: Option<TextColor>,
@@ -284,6 +285,7 @@ impl SelectStyle {
       option_selected_highlighted: None,
       option_disabled: None,
       option_detail: SelectPartStyle::default(),
+      option_adornment_gap: SpacingValue::from(8.0),
       chevron: SelectIcon::default_chevron(),
       chevron_open: None,
       chevron_color: None,
@@ -396,6 +398,14 @@ impl SelectStyle {
   /// its text fields apply.
   pub fn option_detail(mut self, style: SelectPartStyle) -> Self {
     self.option_detail = style;
+    self
+  }
+
+  /// Space between an option's label and its leading or trailing element
+  /// (see `SelectOption::leading`), in the menu and on the closed field; a
+  /// number or a spacing role. Defaults to 8.
+  pub fn option_adornment_gap(mut self, gap: impl Into<SpacingValue>) -> Self {
+    self.option_adornment_gap = gap.into();
     self
   }
 

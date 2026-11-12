@@ -95,6 +95,33 @@ fn with_color(node: Node, color: Option<&TextColor>) -> Node {
   }
 }
 
+/// What an option's leading or trailing element is built for: the state of
+/// its row in the open menu, or the closed field showing the selected option.
+/// `SelectOption::leading_with` and `trailing_with` receive it each time the
+/// row or field is built, so the element can follow the label's look.
+///
+/// The pointer hover is not a state here: it repaints a row's fill, border
+/// and shadow without rebuilding the row, as for the label.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct SelectAdornmentState {
+  /// The option is selected.
+  pub selected: bool,
+  /// The keyboard highlight is on the option's row. `false` on the field.
+  pub highlighted: bool,
+  /// The option is disabled.
+  pub disabled: bool,
+  /// The element is built for the closed field, not for a row of the menu.
+  pub in_field: bool,
+  /// The `text_color` of the row's resolved part (`option` with its state
+  /// parts merged), or of the trigger part on the field; `None` when the
+  /// part sets none and the label uses its text style's colour.
+  pub text_color: Option<TextColor>,
+}
+
+/// Builds an option's leading or trailing element for a state.
+pub(crate) type SelectAdornment = Arc<dyn Fn(&SelectAdornmentState) -> Element + Send + Sync>;
+
 /// Which side of an option row the checkmark slot sits on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SelectCheckmarkPosition {

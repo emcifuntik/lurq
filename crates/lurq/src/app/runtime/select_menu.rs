@@ -12,7 +12,8 @@ use crate::{
   core::ElementRect,
   layout::{Alignment, Size, layout_kind::Justify, layout_result::LayoutResult},
   node::{
-    EventHandler, Node, SelectCheckmarkPosition, SelectPartStyle, SelectStyle, SpacingValue, Style, SyntheticNodeRole,
+    EventHandler, Node, SelectAdornmentState, SelectCheckmarkPosition, SelectPartStyle, SelectStyle, SpacingValue,
+    Style, SyntheticNodeRole,
     border::ThemedBorderRadius,
     dimension::Dimension,
     node_kind::{NodeKind, SelectState, TextOverflow},
@@ -38,7 +39,7 @@ pub(super) fn build_select_menu(
   let rows = labels
     .iter()
     .enumerate()
-    .map(|(index, label)| option_row(state, &style, index, label, labels.len()))
+    .map(|(index, label)| option_row(state, &style, index, label, labels.len(), measure))
     .collect();
 
   // The menu's padding goes on the scrolled list, so it scrolls with the
@@ -89,7 +90,14 @@ fn option_extent(menu: &LayoutResult, index: usize) -> Option<(f32, f32)> {
   Some((row.offset.y, row.offset.y + row.result.size.height))
 }
 
-fn option_row(state: &SelectState, style: &SelectStyle, index: usize, label: &str, count: usize) -> Node {
+fn option_row(
+  state: &SelectState,
+  style: &SelectStyle,
+  index: usize,
+  label: &str,
+  count: usize,
+  measure: &mut dyn FnMut(&Node) -> LayoutResult,
+) -> Node {
   let option = SelectOptionState {
     hovered: false,
     highlighted: state.highlighted() == Some(index),
@@ -99,17 +107,26 @@ fn option_row(state: &SelectState, style: &SelectStyle, index: usize, label: &st
   let mut part = style.resolved_option(option);
   apply_select_menu_edge_radius(&mut part, &style.menu, index, count);
 
-  let text = option_text(&part, style, label, state.detail(index));
+  let adornment = SelectAdornmentState {
+    selected: option.selected,
+    highlighted: option.highlighted && !option.disabled,
+    disabled: option.disabled,
+    in_field: false,
+    text_color: part.text_color.clone(),
+  };
+  let (leading, trailing) = state.adornments(index);
+  let slots = [leading, trailing].map(|build| build.map(|build| build(&adornment).into_node().flex_shrink(0.0)));
+  let content = option_content(&part, style, label, state.detail(index), slots, measure);
   let multiple = state.multiple();
   let (gap, children) = if style.shows_checkmark(multiple) {
     let slot = checkmark_slot(style, &part, option.selected);
     let children = match style.checkmark_position {
-      SelectCheckmarkPosition::Leading => vec![slot, text],
-      SelectCheckmarkPosition::Trailing => vec![text, slot],
+      SelectCheckmarkPosition::Leading => vec![slot, content],
+      SelectCheckmarkPosition::Trailing => vec![content, slot],
     };
     (style.checkmark_gap, children)
   } else {
-    (SpacingValue::from(0.0), vec![text])
+    (SpacingValue::from(0.0), vec![content])
   };
 
   let mut row = Node::row(gap, Alignment::Center, children)
@@ -139,8 +156,21 @@ fn option_row(state: &SelectState, style: &SelectStyle, index: usize, label: &st
   row.hovered_style(hover_style(&hovered))
 }
 
-/// The label, with the detail line under it when the option has one.
-fn option_text(part: &SelectPartStyle, style: &SelectStyle, label: &str, detail: Option<Arc<str>>) -> Node {
+/// An option's content: the label between its leading and trailing elements,
+/// and the detail line under the label when the option has one.
+///
+/// The elements are centred on the label's line. Beside a detail line that
+/// takes two rows: the elements with the label, then the detail between
+/// spacers as wide as the elements, which `measure` sizes, so the detail
+/// starts and ends where the label does.
+fn option_content(
+  part: &SelectPartStyle,
+  style: &SelectStyle,
+  label: &str,
+  detail: Option<Arc<str>>,
+  [leading, trailing]: [Option<Node>; 2],
+  measure: &mut dyn FnMut(&Node) -> LayoutResult,
+) -> Node {
   let line = |node: Node| {
     node
       .text_wrap(false)
@@ -148,22 +178,51 @@ fn option_text(part: &SelectPartStyle, style: &SelectStyle, label: &str, detail:
       .min_width(0.0)
   };
   let label = line(part.text_node(label));
-  match detail {
-    Some(detail) => {
-      let mut detail_part = part.clone();
-      detail_part.merge_from(&style.option_detail);
+  let detail = detail.map(|detail| {
+    let mut detail_part = part.clone();
+    detail_part.merge_from(&style.option_detail);
+    line(detail_part.text_node(&detail))
+  });
+  let adorned = leading.is_some() || trailing.is_some();
+  let gap = style.option_adornment_gap;
+  let around = |before: Option<Node>, text: Node, after: Option<Node>, align: Alignment| {
+    let children = before.into_iter().chain([text.flex(1.0)]).chain(after).collect();
+    Node::row(gap, align, children)
+  };
+
+  match (detail, adorned) {
+    (None, false) => label.flex(1.0),
+    (None, true) => around(leading, label, trailing, Alignment::Center)
+      .min_width(0.0)
+      .flex(1.0),
+    (Some(detail), false) => Node::column(
+      0.0,
+      Alignment::Start,
+      vec![label.width(Dimension::Pct(100.0)), detail.width(Dimension::Pct(100.0))],
+    )
+    .min_width(0.0)
+    .flex(1.0),
+    (Some(detail), true) => {
+      let mut spacer = |slot: &Option<Node>| {
+        slot.as_ref().map(|element| {
+          Node::row(0.0, Alignment::Start, Vec::new())
+            .width(Dimension::Px(measure(element).size.width))
+            .flex_shrink(0.0)
+        })
+      };
+      let (before, after) = (spacer(&leading), spacer(&trailing));
+      let full = |row: Node| row.width(Dimension::Pct(100.0));
       Node::column(
         0.0,
         Alignment::Start,
         vec![
-          label.width(Dimension::Pct(100.0)),
-          line(detail_part.text_node(&detail)).width(Dimension::Pct(100.0)),
+          full(around(leading, label, trailing, Alignment::Center)),
+          full(around(before, detail, after, Alignment::Start)),
         ],
       )
       .min_width(0.0)
       .flex(1.0)
     }
-    None => label.flex(1.0),
   }
 }
 
