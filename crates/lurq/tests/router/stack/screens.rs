@@ -623,7 +623,7 @@ fn a_screens_list_is_clear_of_the_bar_in_its_first_frame() {
 }
 
 #[test]
-fn a_screen_over_its_toolbar_has_nothing_to_keep_clear_of_at_the_bottom() {
+fn a_screen_under_its_toolbar_keeps_clear_of_it_and_no_more() {
   let (mut tree, router) = setup();
   tree.window().set_safe_area(lurq::app::window::SafeAreaInsets {
     bottom: 34.0,
@@ -631,10 +631,8 @@ fn a_screen_over_its_toolbar_has_nothing_to_keep_clear_of_at_the_bottom() {
   });
   router.push("/tools");
   settle(&mut tree);
-  assert!(
-    shows(&mut tree, "clear of 0"),
-    "the toolbar is over the home indicator's room"
-  );
+  // The home indicator's room, the toolbar and the line over it: the indicator's room once, not twice.
+  assert!(shows(&mut tree, "clear of 78.5"), "the toolbar is over the screen");
   assert!(router.back());
   settle(&mut tree);
 }

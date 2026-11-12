@@ -458,8 +458,11 @@ impl Component for Sheet {
     // Where the sheet's top is: under the window before it sets off and when it goes, at its height
     // otherwise, and as far from there as a finger has it. Past its highest place it gives way less and less.
     let dragged = drag != NO_DRAG;
+    // With motion reduced the sheet does not cross the window: it fades in where it stands, and out.
+    let reduce_motion = window.system.reduce_motion;
+    let away = matches!(state.phase, Phase::Entering { started: false } | Phase::Leaving);
     let top = match state.phase {
-      Phase::Entering { started: false } | Phase::Leaving => room,
+      Phase::Entering { started: false } | Phase::Leaving if !reduce_motion => room,
       _ if dragged => {
         let top = room - height + drag;
         let limit = room - highest;
@@ -487,7 +490,9 @@ impl Component for Sheet {
       velocity: state.velocity,
     };
     // How much of the lowest height is in view: the window behind dims by as much.
-    let up = if lowest > 0.0 {
+    let up = if reduce_motion && away {
+      0.0
+    } else if lowest > 0.0 {
       ((room - top) / lowest).clamp(0.0, 1.0)
     } else {
       0.0
@@ -570,8 +575,10 @@ impl Component for Sheet {
       .rounded(style.corner_radius)
       .clip()
       .child(body)
+      .opacity(if reduce_motion && away { 0.0 } else { 1.0 })
       .transform(Transform2D::translate(0.0, top))
       .transition(Transition::transform().duration(pace).easing(curve))
+      .transition(Transition::opacity().duration(pace).easing(curve))
       // A press on the sheet is the sheet's: it is not a tap beside it.
       .on_click(|_| {})
       .on_pan({

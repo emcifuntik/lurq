@@ -365,6 +365,8 @@ pub struct TabBar {
   /// The active tab's picture and title, and the others'.
   pub tint: Color,
   pub color: Color,
+  /// The others' when the person asked for more contrast.
+  pub contrast_color: Color,
   /// How much what is behind the bar is blurred where the bar's color lets it show: the content of a tab
   /// that scrolls under a bar across the bottom. 0 is no blur.
   pub blur: f32,
@@ -400,6 +402,7 @@ impl Default for TabBar {
       border: Color::new(60, 60, 67, 74),
       tint: Color::from_hex("#007AFF"),
       color: Color::from_hex("#999999"),
+      contrast_color: Color::from_hex("#515154"),
       blur: 40.0,
       height: 49.0,
       low_height: 32.0,
@@ -432,6 +435,7 @@ impl TabBar {
       border: Color::new(84, 84, 88, 153),
       tint: Color::from_hex("#0A84FF"),
       color: Color::from_hex("#8E8E93"),
+      contrast_color: Color::from_hex("#C7C7CC"),
       ..Self::default()
     }
   }
@@ -644,18 +648,21 @@ impl Component for TabOutlet {
         safe_area,
         low,
       })),
-      // With transparency reduced the bar is all there, and nothing is blurred behind it.
-      Some(Bar::Standard(bar)) if window.system.reduce_transparency => Some(standard_bar(
-        &TabBar {
-          background: Color::new(bar.background.r(), bar.background.g(), bar.background.b(), 255),
+      // With transparency reduced or contrast increased the bar is all there, and nothing is blurred behind
+      // it; with contrast increased the line over it and the tabs that are not chosen stand out more.
+      Some(Bar::Standard(bar)) if window.system.reduce_transparency || window.system.increase_contrast => {
+        let solid = |color: Color| Color::new(color.r(), color.g(), color.b(), 255);
+        let mut bar = TabBar {
+          background: solid(bar.background),
           blur: 0.0,
           ..bar.clone()
-        },
-        &tabs,
-        &entries,
-        safe_area,
-        low,
-      )),
+        };
+        if window.system.increase_contrast {
+          bar.border = solid(bar.border);
+          bar.color = bar.contrast_color;
+        }
+        Some(standard_bar(&bar, &tabs, &entries, safe_area, low))
+      }
       Some(Bar::Standard(bar)) => Some(standard_bar(bar, &tabs, &entries, safe_area, low)),
     };
     let whole = Stack::new().size(FILL, FILL);
