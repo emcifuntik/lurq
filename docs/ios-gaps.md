@@ -48,12 +48,11 @@ inside its input.
 
 - **The way back's arrow** is the platform's symbol with the `raster` feature; without it, a drawing after
   it.
-- **The bar** is opaque when it has a color: content does not show through it, since the renderer has no
-  blur to make the platform's material with.
+- **The bar** is over a screen's list, which shows through it blurred; the platform's material also
+  brightens and saturates what is behind it, and the newest system's bar is glass that bends it. The
+  toolbar at the bottom and the list a long press on the way back opens are not blurred.
 - **How things move** in the stack (the spring's length, how far a large title grows and the way it takes to
   a way back) was set by eye and not measured against the platform; `StackMotion` changes the numbers.
-- **The list a long press on the way back opens** is plain: no blur behind it, no animation as it comes, and
-  it is not dimmed like the platform's menu.
 - **A search field** is the field alone: no scopes under it, no suggestions, and it does not come and go
   with a move of its own when it takes the bar's place.
 - **Sheets** are there (`Sheet`, and `SheetHost` for the app that draws back behind one), with these

@@ -151,6 +151,7 @@ A screen says what the bar shows for it by calling `ctx.navigation_item` in its 
 | `trailing(element)` | What is at the bar's trailing end while this screen is on top |
 | `title_view(element)` | What stands in the middle of the bar in place of the title |
 | `bar_hidden(true)` | No bar over this screen: it reaches the top of the outlet, under the status bar |
+| `hides_tab_bar(true)` | The bar of tabs under the stack goes while this screen is the top one; see [Tabs](#tabs) |
 | `large_title(true)` | The title large at the top of the content, scrolling away with it |
 | `prompt(text)` | A line of small text over the title, for which the bar grows |
 | `toolbar(element)` | A row of the screen's controls across the bottom of the outlet, in the bar's color |
@@ -158,6 +159,20 @@ A screen says what the bar shows for it by calling `ctx.navigation_item` in its 
 | `large_title_view(element)` | A title of the screen's own in the large title's place |
 | `search_view(element)` | A search field of the screen's own in the search field's place |
 
+
+### Content under the bar
+
+The bar is drawn over the top of the screens, and its `background` is not all there: what is under it shows
+through, blurred by `blur`. What is under it depends on the screen:
+
+- **A screen whose content is in `StackOutlet::large_title_scroll(ctx, content)`** has a list that reaches the
+  top of the outlet, under the bar, and the bottom, under a bar of tabs. The list keeps its content clear of
+  both: the first row starts under the bar and the last ends over the tabs, and in between the rows scroll
+  under the bars and show through them. It is the list to use for any screen that scrolls, with a large title
+  or without.
+- **Any other screen** is laid out under the bar, as if the bar took room: nothing of it is behind the bar.
+
+A bar with an opaque `background` hides what is under it, and `blur(0.0)` leaves it sharp.
 
 A screen with a large title puts its content in `StackOutlet::large_title_scroll(ctx, content)`, which draws
 the title over the content and scrolls the two as one. While the large title is in view the bar shows no title
@@ -249,6 +264,7 @@ NavigationBar {
 | `NavigationBar` | Default | |
 |-----------------|---------|--|
 | `background`, `tint`, `title`, `border` | light, or `dark()` | The bar's colors |
+| `blur` | 40 | How much a screen's list is blurred where it shows through the bar; see [Blur](../blur/) |
 | `height`, `low_height`, `low_window` | 44, 32, 480 | The bar's height, and its height in a window lower than `low_window` |
 | `title_size`, `title_weight` | 17, semibold | The title in the bar |
 | `text_size` | 17 | The way back, a search field, the list of the screens under |

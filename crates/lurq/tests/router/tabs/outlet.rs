@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use lurq::{
   app::{App, Tree, component::Component, ctx::Ctx, events::MouseButton, window::SafeAreaInsets},
-  components::{Column, NavigationItem, StackOutlet, TabBar, TabBarPlace, TabItem, TabOutlet, TabOutletProps, Tabs, Text},
+  components::{
+    Column, NavigationItem, StackOutlet, TabBar, TabBarPlace, TabItem, TabOutlet, TabOutletProps, Tabs, Text,
+  },
   node::Element,
   router::Routes,
 };

@@ -573,3 +573,26 @@ fn a_search_field_takes_the_bars_place_while_typed_into_and_cancel_gives_it_back
     "and the field loses the focus"
   );
 }
+
+#[test]
+fn the_bar_is_over_a_screens_list_and_a_plain_screen_is_kept_clear_of_it() {
+  let (mut tree, router) = setup();
+  router.push("/second");
+  settle(&mut tree);
+  let plain = tree
+    .find_element(|element| element.text_content() == Some("second screen"))
+    .expect("the screen")
+    .rect();
+  assert!((plain.1 - 44.5).abs() < 1.0, "under the bar: {plain:?}");
+
+  router.push("/big");
+  settle(&mut tree);
+  let title = tree
+    .find_element(|element| element.id() == Some("navigation-large-title"))
+    .expect("the large title")
+    .rect();
+  assert!(
+    title.1 >= 44.0 && title.1 < 70.0,
+    "the list's content starts clear of the bar: {title:?}"
+  );
+}

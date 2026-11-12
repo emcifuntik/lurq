@@ -125,6 +125,10 @@ pub struct NavigationBar {
   pub title: Color,
   /// The line under the bar.
   pub border: Color,
+  /// How much a screen's content is blurred where it shows through the bar: the content of a screen whose
+  /// list goes under the bar ([`StackOutlet::large_title_scroll`]), where the bar's `background` is not all
+  /// there. 0 is no blur.
+  pub blur: f32,
   /// How high the bar is, and how high in a window lower than `low_window`: a phone held on its side, which
   /// has no large titles either.
   pub height: f32,
@@ -162,10 +166,11 @@ impl NavigationBar {
   /// A light bar, sized as the platform's.
   pub fn new() -> Self {
     Self {
-      background: Color::from_hex("#f9f9f9"),
+      background: Color::new(249, 249, 249, 224),
       tint: Color::from_hex("#007aff"),
       title: Color::from_hex("#000000"),
       border: Color::from_hex("#c6c6c8"),
+      blur: 40.0,
       height: 44.0,
       low_height: 32.0,
       low_window: 480.0,
@@ -191,7 +196,7 @@ impl NavigationBar {
   /// A dark bar.
   pub fn dark() -> Self {
     Self {
-      background: Color::from_hex("#1c1c1e"),
+      background: Color::new(28, 28, 30, 204),
       tint: Color::from_hex("#0a84ff"),
       title: Color::from_hex("#ffffff"),
       border: Color::from_hex("#38383a"),
@@ -216,6 +221,11 @@ impl NavigationBar {
 
   pub fn border(mut self, color: Color) -> Self {
     self.border = color;
+    self
+  }
+
+  pub fn blur(mut self, radius: f32) -> Self {
+    self.blur = radius;
     self
   }
 
@@ -457,6 +467,9 @@ pub(crate) struct NavigationSlot {
   style: Arc<NavigationBar>,
   /// The screen's search field has the focus.
   searching: Signal<bool>,
+  /// See [`LayerBar`].
+  top: Signal<f32>,
+  under: Arc<AtomicBool>,
 }
 
 impl NavigationSlot {
@@ -623,6 +636,13 @@ struct LayerBar {
   short_probe: ElementRef,
   /// The screen's search field has the focus.
   searching: Signal<bool>,
+  /// How much of the screen the bar is over, from the top: as the outlet last rendered it, and as the
+  /// screen was told (`after_layout`).
+  top_now: Arc<Mutex<f32>>,
+  top: Signal<f32>,
+  /// The screen's list goes on under the bar and keeps its content clear of it itself
+  /// ([`StackOutlet::large_title_scroll`]): the outlet does not keep the screen clear.
+  under: Arc<AtomicBool>,
 }
 
 impl Default for LayerBar {
@@ -640,6 +660,9 @@ impl Default for LayerBar {
       flying: Signal::new(false),
       short_probe: ElementRef::default(),
       searching: Signal::new(false),
+      top_now: Arc::default(),
+      top: Signal::new(0.0),
+      under: Arc::default(),
     }
   }
 }
@@ -885,10 +908,35 @@ impl Component for StackOutlet {
             growth: (motion.large_title_growth, motion.large_title_pull),
             style: style.clone(),
             searching: layer.bar.searching.clone(),
+            top: layer.bar.top.clone(),
+            under: layer.bar.under.clone(),
           },
         },
         id == front || id == back,
       );
+      // The bar is over the screens. A screen whose list goes on under it keeps its own content clear; any
+      // other is kept clear here, by as much as its bar is high.
+      let (bar_hidden, prompted) = {
+        let item = layer.bar.item.lock();
+        (item.bar_hidden, item.prompt.is_some())
+      };
+      let top = match &props.bar {
+        Some(Bar::Standard(_)) if !bar_hidden => {
+          let items = if layer.bar.searching.get() {
+            0.0
+          } else {
+            bar_height + if prompted { style.prompt_height } else { 0.0 }
+          };
+          safe_area.top + items + 0.5
+        }
+        _ => 0.0,
+      };
+      *layer.bar.top_now.lock() = top;
+      let clear = if layer.bar.under.load(Ordering::Acquire) {
+        0.0
+      } else {
+        top
+      };
       // Every screen has its holder, shown or not, in the order of the stack: a node keeps its identity, and
       // with it where it was last painted, by its place among its siblings.
       let offset = if id == front {
@@ -901,6 +949,7 @@ impl Component for StackOutlet {
       let mut holder = Stack::new()
         .key(format!("stack-screen-{}", layer.entry.id))
         .size(FILL, FILL)
+        .padding_top(clear)
         .child(content)
         .transform(Transform2D::translate(offset, 0.0));
       if let Some(background) = props.background {
@@ -1224,29 +1273,33 @@ impl Component for StackOutlet {
     }
     drop(shown);
 
-    let content = Column::new()
-      .size(FILL, FILL)
+    // The bar, over the top of the screens: what is under it shows through, blurred, where the bar's color
+    // lets it.
+    let over = Column::new()
+      .width(FILL)
       .child(
         Column::new()
           .width(FILL)
           .height((safe_area.top + items_height * bar_share) * shown_share)
           .clip()
+          // Over a large title still in view the bar has no color of its own: it is one with what is behind
+          // the screens.
+          .background(Color::new(
+            bar.background.r(),
+            bar.background.g(),
+            bar.background.b(),
+            (f32::from(bar.background.a()) * lined).round() as u8,
+          ))
+          .backdrop_blur(bar.blur * lined)
           .transition(Transition::height().duration(line_pace).easing(line_curve))
+          .transition(Transition::background_color().duration(line_pace).easing(line_curve))
+          .transition(Transition::backdrop_blur().duration(line_pace).easing(line_curve))
           .child(
             Column::new()
               .width(FILL)
               .padding_top(safe_area.top)
               .padding_left(safe_area.left)
               .padding_right(safe_area.right)
-              // Over a large title still in view the bar has no color of its own: it is one with what is
-              // behind the screens.
-              .background(Color::new(
-                bar.background.r(),
-                bar.background.g(),
-                bar.background.b(),
-                (f32::from(bar.background.a()) * lined).round() as u8,
-              ))
-              .transition(Transition::background_color().duration(line_pace).easing(line_curve))
               .child(items),
           ),
       )
@@ -1257,7 +1310,9 @@ impl Component for StackOutlet {
           .background(bar.border)
           .opacity(lined * bar_share)
           .transition(Transition::opacity().duration(line_pace).easing(line_curve)),
-      )
+      );
+    let content = Column::new()
+      .size(FILL, FILL)
       .child(Column::new().width(FILL).flex(1.0).child(screens))
       // A screen's toolbar: across the bottom, over the home indicator's room, in the bar's color.
       .child(
@@ -1279,7 +1334,9 @@ impl Component for StackOutlet {
     let mut whole = Stack::new()
       .size(FILL, FILL)
       .ref_element(self.origin.clone())
+      .stack_align(StackAlignment::TopStart)
       .child(content)
+      .child(over)
       .child(overlay);
     if bar.back_menu && !menu_titles.is_empty() {
       // The list of the screens under, over everything: a tap on a screen's name goes back to it, and a tap
@@ -1359,6 +1416,12 @@ impl Component for StackOutlet {
       && link.0.get_untracked() != shown.tab_bar
     {
       link.0.set(shown.tab_bar);
+    }
+    for layer in shown.layers.iter().chain(shown.leaving.iter()) {
+      let top = *layer.bar.top_now.lock();
+      if layer.bar.top.get_untracked() != top {
+        layer.bar.top.set(top);
+      }
     }
     // Whether each way back has room for its label beside the title, now that both are laid out. The title
     // is in the middle of the bar, so the label has half of what the title leaves.
@@ -1772,7 +1835,19 @@ impl StackOutlet {
         },
       ));
     }
-    ScrollVertical::new(over.child(content.into())).with_scroll_state(slot.scroll.clone())
+    // The list goes on under the bar, and under a bar of tabs: its content is what keeps clear of them.
+    if !slot.under.swap(true, Ordering::AcqRel) {
+      slot.changed.update(|version| *version += 1);
+    }
+    let bottom = ctx.safe_area().bottom;
+    ScrollVertical::new(
+      Column::new()
+        .width(FILL)
+        .padding_top(slot.top.get())
+        .padding_bottom(bottom)
+        .child(over.child(content.into())),
+    )
+    .with_scroll_state(slot.scroll.clone())
   }
 
   /// Whether this screen is searching, to read and to set; `None` outside a stack. The outlet's own search

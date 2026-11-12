@@ -38,7 +38,7 @@ use lurq::{
   router::Routes,
 };
 
-use crate::ui::{BG, BORDER, FILL, PRIMARY, SURFACE, TEXT};
+use crate::ui::{BG, BORDER, FILL, PRIMARY, TEXT};
 
 struct MobileDemo {
   tabs: Tabs,
@@ -133,7 +133,8 @@ fn routes() -> Routes {
 pub(crate) fn shell(ctx: &mut Ctx) -> Element {
   let navigator = ctx.navigator();
   let bar = NavigationBar::dark()
-    .background(Color::from_hex(SURFACE))
+    // Not all there: a list that goes on under the bar shows through it, blurred.
+    .background(Color::new(30, 41, 59, 190))
     .tint(Color::from_hex(PRIMARY))
     .title(Color::from_hex(TEXT))
     .border(Color::from_hex(BORDER));

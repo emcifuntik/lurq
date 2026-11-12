@@ -3,7 +3,7 @@
 
 use lurq::{
   app::ctx::Ctx,
-  components::{Column, Link, NavigationItem, ScrollVertical, Tabs},
+  components::{Column, Link, NavigationItem, StackOutlet, Tabs},
   layout::text_style::FontWeight,
   node::Element,
   router::Routes,
@@ -19,19 +19,14 @@ pub(crate) fn routes() -> Routes {
 
 fn page(ctx: &mut Ctx, content: Column) -> Element {
   let safe_area = ctx.safe_area();
-  // The list goes on under the bar of tabs, which it shows through: what keeps clear of the bar is its content.
-  ScrollVertical::new(
-    content
-      .width(FILL)
-      .padding(16.0)
-      .padding_bottom(16.0 + safe_area.bottom)
-      .spacing(12.0),
-  )
-  .size(FILL, FILL)
-  .background(BG)
-  .padding_left(safe_area.left)
-  .padding_right(safe_area.right)
-  .into()
+  // The stack's list goes on under the navigation bar and the bar of tabs, which it shows through, and keeps
+  // its content clear of both.
+  StackOutlet::large_title_scroll(ctx, content.width(FILL).padding(16.0).spacing(12.0))
+    .size(FILL, FILL)
+    .background(BG)
+    .padding_left(safe_area.left)
+    .padding_right(safe_area.right)
+    .into()
 }
 
 fn first(ctx: &mut Ctx) -> Element {
