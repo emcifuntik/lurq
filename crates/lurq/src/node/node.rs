@@ -5927,7 +5927,7 @@ mod tests {
           Constraints::loose(Size::new(400.0, 400.0)),
           LayoutResult {
             size: Size::new(10.0, 10.0),
-            children: Vec::new().into(),
+            children: Vec::new(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
@@ -6184,7 +6184,7 @@ mod tests {
             offset: Offset::default(),
             result: LayoutResult {
               size: Size::new(50.0, 20.0),
-              children: Vec::new().into(),
+              children: Vec::new(),
               text_layout: None,
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
@@ -6197,7 +6197,7 @@ mod tests {
             offset: Offset::new(50.0, 0.0),
             result: LayoutResult {
               size: Size::new(50.0, 20.0),
-              children: Vec::new().into(),
+              children: Vec::new(),
               text_layout: None,
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
@@ -6206,8 +6206,7 @@ mod tests {
             }
             .into(),
           },
-        ]
-        .into(),
+        ],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -6246,7 +6245,7 @@ mod tests {
               offset: Offset::default(),
               result: LayoutResult {
                 size: Size::new(30.0, 20.0),
-                children: Vec::new().into(),
+                children: Vec::new(),
                 text_layout: None,
                 dropped: false,
                 holds: SubtreeHolds::UNKNOWN,
@@ -6254,8 +6253,7 @@ mod tests {
                 sticky_shifts: None,
               }
               .into(),
-            }]
-            .into(),
+            }],
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
@@ -6263,8 +6261,7 @@ mod tests {
             sticky_shifts: None,
           }
           .into(),
-        }]
-        .into(),
+        }],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -6299,7 +6296,7 @@ mod tests {
           offset: Offset::default(),
           result: LayoutResult {
             size: Size::new(100.0, 20.0),
-            children: Vec::new().into(),
+            children: Vec::new(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
@@ -6307,8 +6304,7 @@ mod tests {
             sticky_shifts: None,
           }
           .into(),
-        }]
-        .into(),
+        }],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,

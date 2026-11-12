@@ -2783,7 +2783,7 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2806,7 +2806,7 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2828,7 +2828,7 @@ impl LayoutEngine {
           .unwrap_or(DEFAULT_SELECT_HEIGHT);
         return LayoutResult {
           size: constraints.constrain(Size::new(width, height)),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2840,7 +2840,7 @@ impl LayoutEngine {
       NodeKind::Canvas { .. } => {
         return LayoutResult {
           size: constraints.constrain(node.intrinsic_size.unwrap_or(Size::new(300.0, 150.0))),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2855,7 +2855,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2870,7 +2870,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2885,7 +2885,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2900,7 +2900,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.viewbox_width(), data.viewbox_height()));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2915,7 +2915,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2936,7 +2936,7 @@ impl LayoutEngine {
     let preferred = node.intrinsic_size.unwrap_or_default();
     LayoutResult {
       size: constraints.constrain(preferred),
-      children: vec![].into(),
+      children: vec![],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -2969,7 +2969,7 @@ impl LayoutEngine {
     };
     LayoutResult {
       size,
-      children: vec![].into(),
+      children: vec![],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3124,7 +3124,7 @@ impl LayoutEngine {
     if children.is_empty() {
       return LayoutResult {
         size: constraints.constrain(Size::default()),
-        children: vec![].into(),
+        children: vec![],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -3165,7 +3165,7 @@ impl LayoutEngine {
       let result = if child.is_overlay_declaration() {
         Arc::new(LayoutResult {
           size: Size::default(),
-          children: Vec::new().into(),
+          children: Vec::new(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -3339,7 +3339,7 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: child_layouts.into(),
+      children: child_layouts,
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3621,7 +3621,7 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: child_layouts.into(),
+      children: child_layouts,
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3696,7 +3696,7 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: child_layouts.into(),
+      children: child_layouts,
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3946,9 +3946,8 @@ impl LayoutEngine {
         size,
         children: vec![ChildLayout {
           offset: state.content_offset(),
-          result: child_result.into(),
-        }]
-        .into(),
+          result: child_result,
+        }],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -3994,9 +3993,8 @@ impl LayoutEngine {
       size,
       children: vec![ChildLayout {
         offset: state.content_offset(),
-        result: child_result.into(),
-      }]
-      .into(),
+        result: child_result,
+      }],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -4015,7 +4013,7 @@ impl LayoutEngine {
     let Some(child) = node.children().first() else {
       return LayoutResult {
         size: Size::new(0.0, 0.0),
-        children: Vec::new().into(),
+        children: Vec::new(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -4030,9 +4028,8 @@ impl LayoutEngine {
       size,
       children: vec![ChildLayout {
         offset: Offset::default(),
-        result: child_result.into(),
-      }]
-      .into(),
+        result: child_result,
+      }],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -4553,7 +4550,7 @@ mod tests {
       constraints,
       LayoutResult {
         size: constraints.constrain(Size::new(10.0, 10.0)),
-        children: Vec::new().into(),
+        children: Vec::new(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,

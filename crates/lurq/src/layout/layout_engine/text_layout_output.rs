@@ -289,7 +289,7 @@ impl LayoutEngine {
   fn leaf_with_output(size: Size, output: TextLayoutOutput) -> LayoutResult {
     LayoutResult {
       size,
-      children: vec![].into(),
+      children: vec![],
       text_layout: Some(Arc::new(output)),
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
