@@ -13,7 +13,9 @@ pub(crate) use generic_family::{alias_name, cosmic_family};
 
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.2;
-const DEFAULT_TEXT_COLOR: Color = Color::new(0, 0, 0, 255);
+/// The color of `TextStyle::default()`. A typography style that keeps it names no color: its text is drawn in
+/// the theme's foreground (`ThemePalette::foreground`).
+pub(crate) const DEFAULT_TEXT_COLOR: Color = Color::new(0, 0, 0, 255);
 #[cfg(target_os = "windows")]
 const DEFAULT_FONT_FAMILY_WINDOWS: &str = "Segoe UI";
 #[cfg(not(target_os = "windows"))]

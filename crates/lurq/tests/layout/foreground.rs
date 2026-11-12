@@ -205,3 +205,77 @@ fn the_content_of_a_popup_starts_from_no_foreground() {
   assert_eq!(color_of(&tree, "anchor"), RED);
   assert_eq!(color_of(&tree, "in popup"), BLACK);
 }
+
+#[test]
+fn text_that_names_no_color_is_drawn_in_the_themes_foreground() {
+  let mut app = App::new();
+  app.theme().set_palette_color(PaletteColor::Foreground, BLUE);
+  app.theme().set_typography_style(
+    TypographyStyle::Caption,
+    TextStyle {
+      color: GREEN,
+      ..TextStyle::default()
+    },
+  );
+  let tree = painted(
+    &mut app,
+    Column::new()
+      .child(Text::new("body"))
+      .child(Text::new("title").variant(TypographyStyle::Title))
+      .child(Text::new("caption").variant(TypographyStyle::Caption))
+      .child(Text::new("named").color(RED))
+      .child(Text::styled("styled", TextStyle::default()))
+      .child(Row::new().foreground(RED).child(Text::new("under"))),
+  );
+
+  assert_eq!(color_of(&tree, "body"), BLUE);
+  assert_eq!(
+    color_of(&tree, "title"),
+    BLUE,
+    "a typography style with the default color names none"
+  );
+  assert_eq!(
+    color_of(&tree, "caption"),
+    GREEN,
+    "one with a color of its own keeps it"
+  );
+  assert_eq!(color_of(&tree, "named"), RED);
+  assert_eq!(color_of(&tree, "styled"), BLUE, "so does a style given to the text");
+  assert_eq!(color_of(&tree, "under"), RED, "a foreground above the text comes first");
+}
+
+#[test]
+fn the_themes_foreground_is_a_role_like_any_other() {
+  let mut app = App::new();
+  assert_eq!(
+    app.theme().palette_color(PaletteColor::Foreground),
+    BLACK,
+    "the color text had before the role"
+  );
+  let mut tree = painted(
+    &mut app,
+    Column::new()
+      .child(Text::new("body"))
+      .child(Text::new("role").color(PaletteColor::Foreground)),
+  );
+  assert_eq!(color_of(&tree, "body"), BLACK);
+
+  app.theme().set_palette_color(PaletteColor::Foreground, GREEN);
+  tree.request_redraw();
+  tree.pass(&mut app, &TestSurface);
+
+  assert_eq!(color_of(&tree, "body"), GREEN, "a change of the role repaints the text");
+  assert_eq!(color_of(&tree, "role"), GREEN);
+}
+
+#[test]
+fn a_text_input_is_drawn_in_the_themes_foreground() {
+  let mut app = App::new();
+  app.theme().set_palette_color(PaletteColor::Foreground, BLUE);
+  let tree = painted(
+    &mut app,
+    lurq::components::TextInput::new(lurq::core::Signal::new("typed".to_owned())),
+  );
+
+  assert_eq!(color_of(&tree, "typed"), BLUE);
+}

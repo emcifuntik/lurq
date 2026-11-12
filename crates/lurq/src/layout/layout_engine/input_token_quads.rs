@@ -28,7 +28,8 @@ impl LayoutEngine {
     if let Some(layout) = state.painted_layout() {
       return QuadContent::DecoratedInput { layout };
     }
-    let display = super::text_input_display_style(state, style, placeholder).clone();
+    let mut display = super::text_input_display_style(state, style, placeholder).clone();
+    display.color = self.palette.borrow().text_color(&display);
     let vertical_align = if state.overflow() == TextInputOverflow::Multiline {
       VerticalAlign::LineBox
     } else {

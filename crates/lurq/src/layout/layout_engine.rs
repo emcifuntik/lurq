@@ -1766,7 +1766,7 @@ impl LayoutEngine {
           .caret_color_value()
           .and_then(|color| color.resolve(&palette))
           .or_else(|| style.caret_color.as_ref().and_then(|color| color.resolve(&palette)))
-          .unwrap_or(style.color);
+          .unwrap_or_else(|| palette.text_color(style));
         let (caret_x, caret_y, caret_transform, caret_transform_origin) =
           transformed_quad_frame(caret_x, caret_y, transform);
         quads.push(Quad {

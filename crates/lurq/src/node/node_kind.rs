@@ -332,6 +332,8 @@ impl TextStyleSource {
       TextStyleBase::Typography(style) => typography.resolve_or_default(*style),
       TextStyleBase::Explicit(style) => style.clone(),
     };
+    // A style that keeps the default text color names none: the theme's foreground is its color.
+    style.color = palette.text_color(&style);
     if let Some(color) = self.color.as_ref().and_then(|color| color.resolve(palette)) {
       style.color = color;
     }

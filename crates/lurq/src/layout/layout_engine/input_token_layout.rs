@@ -33,11 +33,12 @@ impl LayoutEngine {
           .typography
           .and_then(|role| self.typography.borrow().try_get(role))
           .unwrap_or_else(|| base.clone());
+        let palette = self.palette.borrow();
         text.color = token
           .style
           .foreground
-          .resolve(&self.palette.borrow())
-          .unwrap_or(base.color);
+          .resolve(&palette)
+          .unwrap_or_else(|| palette.text_color(base));
         let pad = token.style.padding.resolve(&self.spacing.borrow(), width);
         let padding = if pad.is_finite() { pad.max(0.0) } else { 0.0 };
         let radius = token.style.radius.resolve(&self.radii.borrow());

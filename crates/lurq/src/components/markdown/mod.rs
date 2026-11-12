@@ -347,13 +347,16 @@ impl Component for Markdown {
       code_blocks: Cell::new(0),
       text: &text,
     };
-    let mut root = render_document(&document, &props.style, &theme, &render_ctx);
+    // A style that keeps the default text color names none: the document is drawn in the theme's foreground.
+    let mut base_style = props.style.clone();
+    base_style.color = ctx.theme().palette().text_color(&base_style);
+    let mut root = render_document(&document, &base_style, &theme, &render_ctx);
     let tooltips = links.take_tooltips();
     if !tooltips.is_empty() {
       root = root.child(ctx.mount::<LinkTooltips>(LinkTooltipsProps {
         tooltips: tooltips.into(),
         shown: self.hover.shown(),
-        style: props.style.clone(),
+        style: base_style,
         text: theme.link_tooltip.clone(),
         panel: theme.link_tooltip_box.clone(),
       }));

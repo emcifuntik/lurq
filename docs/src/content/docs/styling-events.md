@@ -67,12 +67,34 @@ Row::new()
 - The color is a concrete color or a `PaletteColor`, which follows the theme.
 - A text's own color wins: `Text::color(...)`, and the color of the style given to `Text::styled(...)`.
 - A text with a typography variant and no color of its own takes the foreground in place of the variant's color.
-- With no foreground above it a text keeps its typography style's color, as before.
+- With no foreground above it a text keeps its typography style's color, and where that is the default text color,
+  the theme's foreground: see [The theme's foreground](#the-themes-foreground).
 - `.foreground(...)` on a `Text` sets the color of that text.
 - A `TextInput` and Markdown draw in their own styles and do not read it.
 - The content of an overlay (a popup, a modal, a select's menu) is painted outside the element that declares it and
   starts from no foreground. Set one on the overlay's content.
 - It is paint only: it changes no size or position. On a live element use `ElementHandle::set_foreground`.
+
+### The theme's foreground
+
+`PaletteColor::Foreground` is the color of text that names none. It is black by default, the color of
+`TextStyle::default()`, so a theme that never sets it draws text as it always did.
+
+```rust
+// Light text for a dark theme: every text that names no color follows.
+app.theme().set_palette_color(PaletteColor::Foreground, Color::from_hex("#fafafa"));
+```
+
+A style that keeps the default text color names no color, and the theme's foreground stands in for it:
+
+- a `Text` with no color, whether it has no variant, a typography variant whose style keeps the default color, or a
+  style given to `Text::styled(...)` that keeps it;
+- a `TextInput`'s text, its placeholder where that has no style of its own, and its caret;
+- a Markdown document whose style keeps the default color.
+
+A typography style with a color of its own keeps it, and so does a text with `Text::color(...)`. A `.foreground(...)`
+above a text comes first, as described above. To draw text in exactly the default black under another foreground, name
+it: `Text::color("#000000")`.
 
 ## Opacity
 

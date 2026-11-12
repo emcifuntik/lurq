@@ -18,6 +18,10 @@ pub enum PaletteColor {
   TextSecondary,
   TextMuted,
   TextInverse,
+  /// The color of text that names none: a `Text` with no color of its own
+  /// and no `foreground` above it, whose typography style keeps the default
+  /// text color. See [`ThemePalette::foreground`].
+  Foreground,
   Success,
   SuccessMuted,
   Warning,
@@ -50,6 +54,7 @@ impl PaletteColor {
       Self::TextSecondary => "text_secondary",
       Self::TextMuted => "text_muted",
       Self::TextInverse => "text_inverse",
+      Self::Foreground => "foreground",
       Self::Success => "success",
       Self::SuccessMuted => "success_muted",
       Self::Warning => "warning",
@@ -97,6 +102,11 @@ pub struct ThemePalette {
   pub text_secondary: Color,
   pub text_muted: Color,
   pub text_inverse: Color,
+  /// The color text is drawn in when nothing names one: the text sets no
+  /// color, no element above it sets a `foreground`, and its typography style
+  /// has the color of `TextStyle::default()`. Black by default, which is that
+  /// color, so a theme that never sets it draws text as it always did.
+  pub foreground: Color,
   pub success: Color,
   pub success_muted: Color,
   pub warning: Color,
@@ -136,6 +146,7 @@ impl ThemePalette {
       PaletteColor::TextSecondary => Some(self.text_secondary),
       PaletteColor::TextMuted => Some(self.text_muted),
       PaletteColor::TextInverse => Some(self.text_inverse),
+      PaletteColor::Foreground => Some(self.foreground),
       PaletteColor::Success => Some(self.success),
       PaletteColor::SuccessMuted => Some(self.success_muted),
       PaletteColor::Warning => Some(self.warning),
@@ -164,6 +175,7 @@ impl ThemePalette {
       PaletteColor::TextSecondary => self.text_secondary = value,
       PaletteColor::TextMuted => self.text_muted = value,
       PaletteColor::TextInverse => self.text_inverse = value,
+      PaletteColor::Foreground => self.foreground = value,
       PaletteColor::Success => self.success = value,
       PaletteColor::SuccessMuted => self.success_muted = value,
       PaletteColor::Warning => self.warning = value,
@@ -185,6 +197,17 @@ impl ThemePalette {
   pub fn try_resolve(&self, color: impl Into<PaletteColor>) -> Option<Color> {
     self.try_get(color)
   }
+
+  /// The color a text of `style` is drawn in when the text names none: the
+  /// style's own, or the [`foreground`](Self::foreground) for a style that
+  /// keeps the default text color and so names none either.
+  pub(crate) fn text_color(&self, style: &crate::layout::text_style::TextStyle) -> Color {
+    if style.color == crate::layout::text_style::DEFAULT_TEXT_COLOR {
+      self.foreground
+    } else {
+      style.color
+    }
+  }
 }
 
 impl Default for ThemePalette {
@@ -204,6 +227,7 @@ impl Default for ThemePalette {
       text_secondary: Color::from_hex("#334155"),
       text_muted: Color::from_hex("#64748b"),
       text_inverse: Color::from_hex("#ffffff"),
+      foreground: crate::layout::text_style::DEFAULT_TEXT_COLOR,
       success: Color::from_hex("#16a34a"),
       success_muted: Color::from_hex("#dcfce7"),
       warning: Color::from_hex("#d97706"),

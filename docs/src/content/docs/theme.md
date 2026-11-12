@@ -114,6 +114,7 @@ Available roles:
 | `TextSecondary` | `text_secondary` | `#334155` |
 | `TextMuted` | `text_muted` | `#64748b` |
 | `TextInverse` | `text_inverse` | `#ffffff` |
+| `Foreground` | `foreground` | `#000000`: the color of text that names none, see [Foreground](../styling-events/#the-themes-foreground) |
 | `Success` | `success` | `#16a34a` |
 | `SuccessMuted` | `success_muted` | `#dcfce7` |
 | `Warning` | `warning` | `#d97706` |

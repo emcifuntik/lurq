@@ -4,6 +4,7 @@
 
 Added:
 
+- `PaletteColor::Foreground` and `ThemePalette::foreground`: the color of text that names none. A `Text`, a `TextInput` and a Markdown document whose style keeps the default text color are drawn in it, unless an element above sets a `.foreground(...)`. It is black by default, the color text had, so nothing changes until a theme sets it. See [styling](docs/src/content/docs/styling-events.md#the-themes-foreground).
 - Presence: `.exit_animation(animation)` on nodes and components names the keyframe animation an element leaves with. When an `Overlay`, a `Popup` or a `Modal` closes, what it showed stays on screen until the longest exit animation in it ends; each element plays its own, so a dialog's backdrop and panel can leave differently. The leaving layer is only painted: it takes no pointer, focus or Tab, is no modal, and nothing in it is found by id or by element ref. The animation an element plays from its mount is how it enters, as before. See [animation](docs/src/content/docs/animation-transforms.md#presence-entering-and-leaving-layers).
 - `examples/presence.rs` shows two menus and a dialog entering and leaving; `--capture <dir>` runs them by a script and saves a frame at each step.
 - Reduced motion: lurq reads the system's accessibility setting on Windows, macOS and iOS, when a window opens and when one takes focus. `Theme::reduced_motion()` and `Ctx::reduced_motion()` report what is in effect, and `Theme::set_reduced_motion(Some(bool))` decides for the app. While motion is reduced a transition of an element's transform, offset, width or height ends at once; fades and color changes still run, and keyframe animations are left to the app. See [animation](docs/src/content/docs/animation-transforms.md#reduced-motion).
@@ -24,6 +25,7 @@ Added:
 
 Behaviour changes:
 
+- `PaletteColor` has a new variant, `Foreground`, and `ThemePalette` a new public field, `foreground`: code that matches the enum without a wildcard arm, or builds a `ThemePalette` with every field named, must add them (`..ThemePalette::default()` takes care of the field).
 - An open layer is the layer the same declaration opened in the last pass, wherever it is among the others. Layers without a key were matched by their place, so when the first of two open popups closed, the second took over the first one's scroll offset, focus and node ids. Layers are still matched by place when the declaring element is new. A layer that plays a keyframe animation or has an exit animation is never matched to another declaration's layer: a popup opened as another closes is mounted anew.
 - On a machine whose user asked the system for less motion, transitions of place and size no longer animate, sheets and stack navigation included. `Theme::set_reduced_motion(Some(false))` restores them.
 - A transition of a color given as a `PaletteColor` role now runs. The value a node is heading to was read from concrete colors only, so a background or border set to a role changed at once whatever its transition said. A role whose color changes with the theme runs the transition as well.
