@@ -654,3 +654,49 @@ fn a_screen_that_gives_the_bar_an_element_is_not_rendered_without_end() {
     "at rest nothing renders the screen again"
   );
 }
+
+fn asked(tree: &mut Tree, change: impl FnOnce(&mut lurq::app::window::SystemSettings)) {
+  let mut system = lurq::app::window::SystemSettings::default();
+  change(&mut system);
+  tree.window().set_system_settings(system);
+}
+
+/// The alpha of the bar's own color as it is drawn.
+fn bar_alpha(tree: &mut Tree) -> Option<u8> {
+  crate::support::render_pass(tree)
+    .rects
+    .iter()
+    .find(|rect| (rect.color.r(), rect.color.g(), rect.color.b()) == (249, 249, 249) && rect.y < 1.0)
+    .map(|rect| rect.color.a())
+}
+
+#[test]
+fn with_transparency_reduced_the_bar_is_all_there() {
+  let (mut tree, router) = setup();
+  router.push("/second");
+  settle(&mut tree);
+  assert!(
+    bar_alpha(&mut tree).is_some_and(|alpha| alpha < 255),
+    "glass by default"
+  );
+
+  asked(&mut tree, |system| system.reduce_transparency = true);
+  settle(&mut tree);
+  assert_eq!(bar_alpha(&mut tree), Some(255));
+}
+
+#[test]
+fn with_motion_reduced_a_screen_comes_in_where_it_stands() {
+  let (mut tree, router) = setup();
+  asked(&mut tree, |system| system.reduce_motion = true);
+  run_pass(&mut tree);
+  router.push("/second");
+  // Its first frame: with motion it is a window's width to the right, out of view and not drawn.
+  let glyphs = crate::support::render_pass(&mut tree).glyphs;
+  assert!(
+    glyphs.iter().all(|glyph| glyph.x < 400.0),
+    "nothing is drawn off to the side"
+  );
+  settle(&mut tree);
+  assert!(shows(&mut tree, "second screen"));
+}

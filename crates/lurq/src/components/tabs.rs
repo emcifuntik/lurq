@@ -436,6 +436,14 @@ impl TabBar {
     }
   }
 
+  /// The platform's bar for an appearance: `ctx.window().system.appearance`, or the theme's.
+  pub fn for_appearance(appearance: crate::app::window::Appearance) -> Self {
+    match appearance {
+      crate::app::window::Appearance::Light => Self::new(),
+      crate::app::window::Appearance::Dark => Self::dark(),
+    }
+  }
+
   pub fn place(mut self, place: TabBarPlace) -> Self {
     self.place = place;
     self
@@ -636,6 +644,18 @@ impl Component for TabOutlet {
         safe_area,
         low,
       })),
+      // With transparency reduced the bar is all there, and nothing is blurred behind it.
+      Some(Bar::Standard(bar)) if window.system.reduce_transparency => Some(standard_bar(
+        &TabBar {
+          background: Color::new(bar.background.r(), bar.background.g(), bar.background.b(), 255),
+          blur: 0.0,
+          ..bar.clone()
+        },
+        &tabs,
+        &entries,
+        safe_area,
+        low,
+      )),
       Some(Bar::Standard(bar)) => Some(standard_bar(bar, &tabs, &entries, safe_area, low)),
     };
     let whole = Stack::new().size(FILL, FILL);
@@ -657,6 +677,12 @@ impl Component for TabOutlet {
           (0.0, hide_duration, Easing::EASE)
         } else {
           (moved.hidden, moved.pace, moved.curve)
+        };
+        // With motion reduced the bar is there or it is not.
+        let pace = if window.system.reduce_motion {
+          Duration::ZERO
+        } else {
+          pace
         };
         let bar = Row::new()
           .ref_element(self.bar.clone())

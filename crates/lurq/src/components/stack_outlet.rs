@@ -204,6 +204,14 @@ impl NavigationBar {
     }
   }
 
+  /// The platform's bar for an appearance: `ctx.window().system.appearance`, or the theme's.
+  pub fn for_appearance(appearance: crate::app::window::Appearance) -> Self {
+    match appearance {
+      crate::app::window::Appearance::Light => Self::new(),
+      crate::app::window::Appearance::Dark => Self::dark(),
+    }
+  }
+
   pub fn background(mut self, color: Color) -> Self {
     self.background = color;
     self
@@ -818,6 +826,8 @@ impl Component for StackOutlet {
     let safe_area = ctx.safe_area();
     let window = ctx.window();
     let width = window.logical_width();
+    // What the person asked of the whole system: no moves across the screen, nothing showing through.
+    let (reduce_motion, reduce_transparency) = (window.system.reduce_motion, window.system.reduce_transparency);
     // A window too low for it has no large titles, as a phone on its side has none.
     let style = Arc::new(match &props.bar {
       Some(Bar::Standard(bar)) => bar.clone(),
@@ -968,7 +978,11 @@ impl Component for StackOutlet {
       };
       // Every screen has its holder, shown or not, in the order of the stack: a node keeps its identity, and
       // with it where it was last painted, by its place among its siblings.
-      let offset = if id == front {
+      // With motion reduced a screen does not cross the window: it fades in over the one behind, which
+      // stays where it is, as the platform's do.
+      let offset = if reduce_motion {
+        0.0
+      } else if id == front {
         out * width
       } else if id == back {
         -motion.parallax * width * (1.0 - out)
@@ -980,6 +994,7 @@ impl Component for StackOutlet {
         .size(FILL, FILL)
         .padding_top(clear)
         .child(content)
+        .opacity(if reduce_motion && id == front { 1.0 - out } else { 1.0 })
         .transform(Transform2D::translate(offset, 0.0));
       if let Some(background) = props.background {
         holder = holder.background(background);
@@ -992,7 +1007,7 @@ impl Component for StackOutlet {
           .pointer_events_none();
         holder = holder.child(shade.transition(fade.clone()));
       }
-      screens = screens.child(holder.transition(slide.clone()));
+      screens = screens.child(holder.transition(slide.clone()).transition(fade.clone()));
     }
 
     let screens = screens.on_edge_pan({
@@ -1071,6 +1086,12 @@ impl Component for StackOutlet {
       return screens.into();
     };
     let bar = match bar {
+      // With transparency reduced the bar is all there, and nothing is blurred behind it.
+      Bar::Standard(bar) if reduce_transparency => NavigationBar {
+        background: Color::new(bar.background.r(), bar.background.g(), bar.background.b(), 255),
+        blur: 0.0,
+        ..bar
+      },
       Bar::Standard(bar) => bar,
       Bar::Custom(builder) => {
         let layers: Vec<&Layer> = shown.layers.iter().chain(shown.leaving.iter()).collect();
@@ -1278,7 +1299,11 @@ impl Component for StackOutlet {
         &navigator,
         part,
         out,
-        -(1.0 - out) * width * motion.parallax,
+        if reduce_motion {
+          0.0
+        } else {
+          -(1.0 - out) * width * motion.parallax
+        },
         pace,
         curve,
         false,
@@ -1292,7 +1317,7 @@ impl Component for StackOutlet {
         &navigator,
         part,
         1.0 - out,
-        out * width * 0.5,
+        if reduce_motion { 0.0 } else { out * width * 0.5 },
         pace,
         curve,
         true,

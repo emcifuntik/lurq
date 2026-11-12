@@ -115,6 +115,14 @@ impl SheetStyle {
     }
   }
 
+  /// The platform's sheet for an appearance: `ctx.window().system.appearance`, or the theme's.
+  pub fn for_appearance(appearance: crate::app::window::Appearance) -> Self {
+    match appearance {
+      crate::app::window::Appearance::Light => Self::new(),
+      crate::app::window::Appearance::Dark => Self::dark(),
+    }
+  }
+
   pub fn background(mut self, color: Color) -> Self {
     self.background = color;
     self

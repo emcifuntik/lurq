@@ -140,6 +140,39 @@ impl ThemeTypography {
   }
 }
 
+impl ThemeTypography {
+  /// These styles as a person who asked the system for larger or bolder text has them: every size
+  /// multiplied by `scale`, and every weight a step and a half heavier when `bold`.
+  pub fn adjusted(&self, scale: f32, bold: bool) -> Self {
+    let adjust = |style: &TextStyle| {
+      let mut style = style.clone();
+      style.font_size *= scale;
+      style.letter_spacing *= scale;
+      if bold {
+        style.weight = FontWeight::Numeric((style.weight.value() + 200).min(900));
+      }
+      style
+    };
+    Self {
+      heading: adjust(&self.heading),
+      title: adjust(&self.title),
+      body: adjust(&self.body),
+      description: adjust(&self.description),
+      caption: adjust(&self.caption),
+      label: adjust(&self.label),
+      field_label: adjust(&self.field_label),
+      button: adjust(&self.button),
+      link: adjust(&self.link),
+      mono: adjust(&self.mono),
+      extra: self
+        .extra
+        .iter()
+        .map(|(name, style)| (name.clone(), adjust(style)))
+        .collect(),
+    }
+  }
+}
+
 impl Default for ThemeTypography {
   fn default() -> Self {
     let body = TextStyle::default();
