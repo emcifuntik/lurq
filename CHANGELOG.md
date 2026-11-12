@@ -27,7 +27,6 @@ Added:
 Behaviour changes:
 
 - An open layer is the layer the same declaration opened in the last pass, wherever it is among the others. Layers without a key were matched by their place, so when the first of two open popups closed, the second took over the first one's scroll offset, focus and node ids. Layers are still matched by place when the declaring element is new. A layer that plays a keyframe animation or has an exit animation is never matched to another declaration's layer: a popup opened as another closes is mounted anew.
-- `NodeUpdate` has a new method, `exit_animation`: a type that implements the trait outside lurq must add it.
 - On a machine whose user asked the system for less motion, transitions of place and size no longer animate, sheets and stack navigation included. `Theme::set_reduced_motion(Some(false))` restores them.
 - A transition of a color given as a `PaletteColor` role now runs. The value a node is heading to was read from concrete colors only, so a background or border set to a role changed at once whatever its transition said. A role whose color changes with the theme runs the transition as well.
 - `AnimatableProperty` has three new variants and `AnimatableValue` two: code that matches either without a wildcard arm must add them.
