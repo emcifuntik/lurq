@@ -5634,6 +5634,38 @@ mod tests {
   }
 
   #[test]
+  fn bold_text_set_or_unset_lays_every_kept_text_out_anew() {
+    // No cache has the setting in its key: a text measured, wrapped and kept
+    // shaped before the setting changed must not answer for it after.
+    let style = TextStyle::default();
+    let text = "Bold text for every text, whatever set its weight";
+    let sizes = |engine: &mut GlyphEngine| {
+      let whole = engine.measure_text(text, &style, f32::MAX);
+      let wrapped = engine.measure_text(text, &style, 120.0);
+      [whole.width, whole.height, wrapped.width, wrapped.height]
+    };
+    let mut regular_only = GlyphEngine::new();
+    let regular = sizes(&mut regular_only);
+    let mut bold_only = GlyphEngine::new();
+    bold_only.set_bold_text(true);
+    let bold = sizes(&mut bold_only);
+
+    let mut engine = GlyphEngine::new();
+    assert_eq!(sizes(&mut engine), regular);
+    engine.set_bold_text(true);
+    let misses = engine.measure_misses;
+    assert_eq!(sizes(&mut engine), bold, "as an engine that never drew it lighter");
+    assert_eq!(engine.measure_misses, misses + 2, "both measured anew");
+    engine.set_bold_text(false);
+    assert_eq!(sizes(&mut engine), regular, "and back");
+    // The same setting again changes nothing and drops nothing.
+    let hits = engine.measure_hits;
+    engine.set_bold_text(false);
+    assert_eq!(sizes(&mut engine), regular);
+    assert_eq!(engine.measure_hits, hits + 2);
+  }
+
+  #[test]
   fn short_texts_kept_shaped_stay_within_their_budget_and_the_oldest_go_first() {
     let mut engine = GlyphEngine::new();
     engine.shaped_texts = super::ShapedTexts::new(512 * 1024);

@@ -287,6 +287,11 @@ impl App {
   /// while the window and the renderer are created. Call it after the fonts
   /// are loaded: loading a font forgets what was prepared.
   ///
+  /// The theme's bold text (`Theme::bold_text`) draws every text two weights
+  /// heavier, and the fonts are prepared at those weights when the theme has
+  /// it. A shell that reads the setting from the system does so when its
+  /// window starts: fonts prepared before that are the lighter ones.
+  ///
   /// ```no_run
   /// # use lurq::{app::App, layout::text_style::{FontWeight, TextStyle}};
   /// let app = App::new();
@@ -300,9 +305,13 @@ impl App {
   /// });
   /// ```
   pub fn warm_text_styles<'a>(&self, styles: impl IntoIterator<Item = &'a crate::layout::text_style::TextStyle>) {
+    let bold_text = self.shared.theme.bold_text();
     for style in styles {
       // A lock per style: a frame that wants the engine gets in between.
-      self.shared.glyph_engine.lock().warm_style(style);
+      let mut engine = self.shared.glyph_engine.lock();
+      // As a pass sets it, so the pass finds what is prepared here.
+      engine.set_bold_text(bold_text);
+      engine.warm_style(style);
     }
   }
 
@@ -411,6 +420,20 @@ mod tests {
         );
       }
     }
+  }
+
+  #[test]
+  fn fonts_are_warmed_at_the_weights_bold_text_draws() {
+    let app = App::new();
+    app.shared.theme.set_bold_text(true);
+    app.warm_text_styles(&[TextStyle::default()]);
+
+    let mut engine = app.shared.glyph_engine.lock();
+    // What a pass does first. The engine has the setting already, so nothing
+    // prepared is dropped, and the sample measured to warm the font is found.
+    engine.set_bold_text(true);
+    engine.measure_text("Ag", &TextStyle::default(), f32::MAX);
+    assert_eq!((engine.measure_hits, engine.measure_misses), (1, 1));
   }
 
   #[test]
