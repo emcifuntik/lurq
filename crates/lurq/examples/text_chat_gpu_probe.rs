@@ -15,7 +15,10 @@
 //! Backends named after the directory (`wgpu`, `dx12`) limit the run to them.
 //! The system must be composing windows: with every display asleep the DX12
 //! renderer, which waits for the compositor, draws no frame, and the probe
-//! stops saying so.
+//! stops saying so. `LURQ_PROBE_CAPTURES_ONLY=1` then still compares what is
+//! drawn: only the frames that are captured reach the renderer, a few of
+//! which a swapchain takes without the compositor. The times in `frames.csv`
+//! mean nothing in that mode.
 #[cfg(windows)]
 #[path = "../benches/text_chat/driver.rs"]
 mod driver;
@@ -137,6 +140,8 @@ mod probe {
   struct Capturing {
     backend: Box<dyn RenderEngine>,
     pending: PendingCapture,
+    /// Frames nobody captures are not drawn (`LURQ_PROBE_CAPTURES_ONLY`).
+    captures_only: bool,
   }
 
   impl RenderEngine for Capturing {
@@ -178,6 +183,9 @@ mod probe {
           window_clip: None,
         })
       });
+      if capture.is_none() && self.captures_only {
+        return true;
+      }
       self.backend.render_with_capture(list, window, display, capture)
     }
 
@@ -226,6 +234,7 @@ mod probe {
         Box::new(Capturing {
           backend: backend(backend_name),
           pending: slot.clone(),
+          captures_only: std::env::var_os("LURQ_PROBE_CAPTURES_ONLY").is_some(),
         })
       });
       let open = |name: &str| {
