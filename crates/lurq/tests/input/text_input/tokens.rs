@@ -75,9 +75,9 @@ impl Editor {
       key.into(),
       code.into(),
       shift,
-      command && cfg!(not(target_os = "macos")),
+      command && cfg!(not(target_vendor = "apple")),
       false,
-      command && cfg!(target_os = "macos"),
+      command && cfg!(target_vendor = "apple"),
     );
   }
 

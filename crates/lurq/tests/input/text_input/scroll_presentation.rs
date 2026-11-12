@@ -95,9 +95,9 @@ impl Editor {
       "z".into(),
       "KeyZ".into(),
       false,
-      cfg!(not(target_os = "macos")),
+      cfg!(not(target_vendor = "apple")),
       false,
-      cfg!(target_os = "macos"),
+      cfg!(target_vendor = "apple"),
     );
   }
 }
