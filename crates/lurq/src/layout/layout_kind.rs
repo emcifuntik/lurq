@@ -38,6 +38,9 @@ pub enum LayoutKind {
   Stack {
     align: StackAlignment,
   },
+  /// Children in the cells of columns and rows: see [`crate::layout::grid`]. Boxed: a node holds its layout
+  /// kind inline.
+  Grid(Box<crate::layout::grid::GridSpec>),
   LogicalModifier,
   ScrollModifier {
     state: ScrollState,

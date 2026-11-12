@@ -149,6 +149,54 @@ Stack layout:
 
 Absolute children do not contribute to stack size.
 
+### Grid
+
+`Grid` lays its children out in the cells of columns and rows, as CSS grid does.
+
+```rust
+use lurq::{
+  components::{Grid, Text, TextInput},
+  layout::grid::GridTrack,
+};
+
+// A form: labels as wide as the widest, fields in the room that is left, notes across both.
+Grid::new()
+  .columns([GridTrack::Auto, GridTrack::Fr(1.0)])
+  .gap(8.0)
+  .child(Text::new("Name"))
+  .child(TextInput::new(name))
+  .child(Text::new("Email"))
+  .child(TextInput::new(email))
+  .child(Text::new("Both are kept on this device.").column_span(2))
+```
+
+A track, a column or a row, is a `GridTrack`:
+
+| Track | Size |
+|-------|------|
+| `GridTrack::Px(120.0)`, or a plain `120.0` | A length in logical pixels. |
+| `GridTrack::Fr(1.0)` | A share of the room the other tracks and the gaps leave; `Fr(1.0)` and `Fr(2.0)` split it one to two. |
+| `GridTrack::Auto` | As large as the largest item in it. |
+
+- `.columns([...])` and `.rows([...])` name the tracks. `Grid::with_columns(3)` is three equal columns. Rows past the
+  last one named are added as the items need them, as tall as their content; an item placed past the last column adds
+  columns the same way.
+- `.gap(v)` is the gap between columns and between rows, `.column_gap(v)` and `.row_gap(v)` one of them: logical
+  pixels or a `SpacingSize` role. There is no gap around the tracks; use `.padding(...)`.
+- Children take the cells in their order, row after row, each in the next cell that has room for it.
+  `.column_span(n)` and `.row_span(n)` make a child take several; `.grid_column(i)` and `.grid_row(i)` name where it
+  starts, counted from 0. A child that names both is put there whatever is there already.
+- A child is stretched to its cell: `.align_items(Alignment::...)` says how it sits from top to bottom otherwise, and
+  `.justify_items(...)` from side to side. A child with a size of its own keeps it, at the start of its cell when it
+  is stretched.
+- In room of a known width a grid with `Fr` columns fills it. In unbounded room, as a child of a `Row` that does not
+  flex, it is as wide as its columns, and an `Fr` column is as wide as its content needs, in proportion with the
+  other `Fr` columns.
+- `Fr` rows share the height of a grid that is given one (`.height(...)`, or stretched by its parent). In a grid as
+  tall as its content they are as tall as theirs, in proportion.
+- `Auto` columns that do not fit the width give way in proportion, and their text wraps.
+- An absolutely positioned child takes no cell and is placed over the grid, as in a `Stack`.
+
 ## Relative Positioning
 
 ```rust

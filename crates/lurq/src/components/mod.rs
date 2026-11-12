@@ -10,6 +10,7 @@ mod drop_zone;
 mod form;
 #[cfg(all(feature = "raster", feature = "wgpu"))]
 mod gpu_viewport;
+mod grid;
 #[cfg(feature = "raster")]
 mod image;
 #[cfg(feature = "router")]
@@ -68,6 +69,7 @@ pub use form::{
 };
 #[cfg(all(feature = "raster", feature = "wgpu"))]
 pub use gpu_viewport::GpuViewport;
+pub use grid::Grid;
 #[cfg(feature = "raster")]
 pub use image::Image;
 #[cfg(feature = "router")]
@@ -366,6 +368,31 @@ macro_rules! impl_into_node {
 
       pub fn flex(mut self, factor: f32) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::flex(node, factor));
+        self
+      }
+
+      /// The column of a [`Grid`]($crate::components::Grid) the element starts in, counted from 0. Without
+      /// one it takes the next cell that has room.
+      pub fn grid_column(mut self, index: usize) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::grid_cell(node, |cell| cell.set_column(index)));
+        self
+      }
+
+      /// The row of a [`Grid`]($crate::components::Grid) the element starts in, counted from 0.
+      pub fn grid_row(mut self, index: usize) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::grid_cell(node, |cell| cell.set_row(index)));
+        self
+      }
+
+      /// How many columns of a [`Grid`]($crate::components::Grid) the element takes; one by default.
+      pub fn column_span(mut self, columns: usize) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::grid_cell(node, |cell| cell.set_column_span(columns)));
+        self
+      }
+
+      /// How many rows of a [`Grid`]($crate::components::Grid) the element takes; one by default.
+      pub fn row_span(mut self, rows: usize) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::grid_cell(node, |cell| cell.set_row_span(rows)));
         self
       }
 

@@ -531,6 +531,25 @@ fn push_layout_rows(rows: &mut Vec<DevToolsShapeRow>, layout: &LayoutKind) {
     LayoutKind::Stack { align } => {
       push_shape_row(rows, "align", stack_alignment_name(*align));
     }
+    LayoutKind::Grid(spec) => {
+      let tracks = |tracks: &[crate::layout::grid::GridTrack]| {
+        tracks
+          .iter()
+          .map(|track| match track {
+            crate::layout::grid::GridTrack::Px(pixels) => format_px(*pixels),
+            crate::layout::grid::GridTrack::Fr(share) => format!("{share}fr"),
+            crate::layout::grid::GridTrack::Auto => "auto".to_owned(),
+          })
+          .collect::<Vec<_>>()
+          .join(" ")
+      };
+      push_shape_row(rows, "columns", tracks(&spec.columns));
+      push_shape_row(rows, "rows", tracks(&spec.rows));
+      push_shape_row(rows, "column gap", format_spacing_value(&spec.column_gap));
+      push_shape_row(rows, "row gap", format_spacing_value(&spec.row_gap));
+      push_shape_row(rows, "align", alignment_name(spec.align));
+      push_shape_row(rows, "justify", alignment_name(spec.justify));
+    }
     LayoutKind::LogicalModifier => {}
     LayoutKind::ScrollModifier { state, direction, .. } => {
       push_shape_row(rows, "direction", scroll_direction_name(*direction));
@@ -728,6 +747,7 @@ fn layout_name(layout: &LayoutKind) -> &'static str {
     LayoutKind::Row { .. } => "Row",
     LayoutKind::Column { .. } => "Column",
     LayoutKind::Stack { .. } => "Stack",
+    LayoutKind::Grid(_) => "Grid",
     LayoutKind::LogicalModifier => "Logical",
     LayoutKind::ScrollModifier { .. } => "Scroll",
   }

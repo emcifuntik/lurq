@@ -43,6 +43,7 @@ mod box_shadow_quads;
 mod control_fill;
 mod flex_shrink;
 mod foreground;
+mod grid_layout;
 #[cfg(feature = "markdown")]
 pub(crate) mod inline_links;
 mod input_layout;
@@ -95,6 +96,7 @@ fn layout_kind_profile_name(kind: &LayoutKind) -> &'static str {
     LayoutKind::Row { .. } => "row",
     LayoutKind::Column { .. } => "column",
     LayoutKind::Stack { .. } => "stack",
+    LayoutKind::Grid(_) => "grid",
     LayoutKind::LogicalModifier => "logical_modifier",
     LayoutKind::ScrollModifier { .. } => "scroll_modifier",
   }
@@ -2198,6 +2200,11 @@ impl LayoutEngine {
     if Self::has_dirty_stretched_intrinsic_child(node) || Self::has_dirty_shrunk_child(node) {
       return None;
     }
+    // A grid sizes its tracks from its items and lays each item out in its cell: one that changed is
+    // measured again by the grid, not under the cell it had.
+    if matches!(node.layout_kind(), LayoutKind::Grid(_)) {
+      return None;
+    }
 
     // A descendant changed, but this node may still be able to keep its own
     // geometry. Patch dirty child results into the cached tree and only force
@@ -2689,6 +2696,7 @@ impl LayoutEngine {
         )
       }
       LayoutKind::Stack { align } => self.layout_stack(glyph_engine, node, constraints, *align, child_overrides),
+      LayoutKind::Grid(spec) => self.layout_grid(glyph_engine, node, constraints, spec, child_overrides),
       LayoutKind::LogicalModifier => self.layout_passthrough(glyph_engine, node, constraints, child_overrides),
       LayoutKind::ScrollModifier { state, direction, .. } => {
         self.layout_scroll(glyph_engine, node, constraints, state, *direction, child_overrides)

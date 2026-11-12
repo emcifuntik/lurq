@@ -3,6 +3,7 @@ pub mod backdrop;
 pub mod box_shadow;
 pub mod constraints;
 pub mod flex_direction;
+pub mod grid;
 pub mod layout_engine;
 pub mod layout_kind;
 pub mod layout_result;

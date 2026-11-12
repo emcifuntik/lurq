@@ -530,6 +530,7 @@ pub(crate) trait NodeUpdate {
   fn sticky(&mut self, sticky: crate::layout::layout_kind::Sticky);
   fn align(&mut self, alignment: Alignment);
   fn flex(&mut self, factor: f32);
+  fn grid_cell(&mut self, update: impl FnOnce(&mut crate::layout::grid::GridCell));
   fn flex_shrink(&mut self, factor: f32);
   fn flex_full(&mut self, grow: f32, shrink: f32, basis: Option<f32>);
   fn shrink_order(&mut self, order: i32);
@@ -951,6 +952,8 @@ pub(crate) struct Node {
   pub(crate) align_self: Option<Alignment>,
   pub(crate) flex: Option<FlexParams>,
   pub(crate) shrink_rule: ShrinkRule,
+  /// Where the node asks to be in a grid it is a child of.
+  pub(crate) grid_cell: crate::layout::grid::GridCell,
   pub(crate) node_kind: NodeKind,
   pub(crate) text_content: Guard<Option<String>>,
   pub(crate) text_wrap: bool,
@@ -1247,6 +1250,11 @@ impl NodeUpdate for Node {
 
   fn flex(&mut self, factor: f32) {
     self.flex = Some(FlexParams::grow(factor));
+    self.layout_cache.invalidate();
+  }
+
+  fn grid_cell(&mut self, update: impl FnOnce(&mut crate::layout::grid::GridCell)) {
+    update(&mut self.grid_cell);
     self.layout_cache.invalidate();
   }
 
@@ -2292,6 +2300,7 @@ impl Node {
       align_self: None,
       flex: None,
       shrink_rule: ShrinkRule::default(),
+      grid_cell: Default::default(),
       node_kind,
       node_id: NodeId::UNASSIGNED,
       tag_name: {
@@ -2833,6 +2842,30 @@ impl Node {
 
   pub fn stack(align: StackAlignment, children: Vec<Node>) -> Self {
     Self::from_parts(LayoutKind::Stack { align }, NodeKind::Empty, children)
+  }
+
+  pub(crate) fn grid(spec: crate::layout::grid::GridSpec, children: Vec<Node>) -> Self {
+    Self::from_parts(LayoutKind::Grid(Box::new(spec)), NodeKind::Empty, children)
+  }
+
+  /// Changes what a grid lays its children out by; nothing for a node that is no grid.
+  pub(crate) fn update_grid(&mut self, update: impl FnOnce(&mut crate::layout::grid::GridSpec)) {
+    if let LayoutKind::Grid(spec) = &mut self.layout_kind {
+      update(spec);
+      self.layout_cache.invalidate();
+    }
+  }
+
+  /// Where the node asks to be in a grid. A logical wrapper that asks for nothing passes its child's on, the
+  /// way [`Self::state_flex`] passes the child's flex factors on.
+  pub(crate) fn grid_cell(&self) -> crate::layout::grid::GridCell {
+    if self.grid_cell.is_auto()
+      && matches!(self.layout_kind, LayoutKind::LogicalModifier)
+      && let Some(child) = self.children.first()
+    {
+      return child.grid_cell();
+    }
+    self.grid_cell
   }
 
   pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
@@ -5247,6 +5280,7 @@ impl Node {
       && self.align_self == old.align_self
       && self.flex == old.flex
       && self.shrink_rule == old.shrink_rule
+      && self.grid_cell == old.grid_cell
       && self.text_content.as_ref() == old.text_content.as_ref()
       && self.text_wrap == old.text_wrap
       && self.text_overflow == old.text_overflow
@@ -5306,6 +5340,7 @@ impl Node {
         },
       ) => spacing == old_spacing && align == old_align && justify == old_justify && wrap == old_wrap,
       (LayoutKind::Stack { align }, LayoutKind::Stack { align: old_align }) => align == old_align,
+      (LayoutKind::Grid(spec), LayoutKind::Grid(old_spec)) => spec == old_spec,
       (LayoutKind::LogicalModifier, LayoutKind::LogicalModifier) => true,
       (
         LayoutKind::ScrollModifier { direction, .. },
@@ -5564,6 +5599,7 @@ impl Node {
       align_self: self.align_self,
       flex: self.flex,
       shrink_rule: self.shrink_rule,
+      grid_cell: self.grid_cell,
       node_kind: {
         #[cfg(feature = "canvas")]
         if let NodeKind::Canvas { canvas } = &self.node_kind {

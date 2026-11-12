@@ -4,6 +4,7 @@
 
 Added:
 
+- `Grid`: a container that lays its children out in the cells of columns and rows, as a subset of CSS grid. Tracks are `GridTrack::Px`, `Fr` (a share of the room left) or `Auto` (the size of their content); `.columns`, `.rows`, `.gap`, `.column_gap`, `.row_gap`, `.align_items` and `.justify_items` on the grid; `.column_span`, `.row_span`, `.grid_column` and `.grid_row` on its children. Children fill the cells in their order, row after row, and rows are added as they are needed. See [layout](docs/src/content/docs/layout.md#grid).
 - Sticky positioning: `.sticky(Sticky::top(0.0))` on nodes and components holds an element at an edge of the scroll container it is in while that scrolls, for as long as its parent's box has room for it, as CSS `position: sticky`. `Sticky` has `top`, `bottom`, `left` and `right` and `with_*` for more than one edge. The element keeps its room in flow, is painted over its siblings and hit before them, and scrolling places it without a layout. See [layout](docs/src/content/docs/layout.md#sticky-elements).
 - Dashed borders: `Border::dashed()` and `Border::dash(dash, gap)`, with `BorderDash`. The dashes run along the element's outline, around its corners, and the period is fitted so the pattern closes. Both native backends and the software screenshot renderer draw them. See [styling](docs/src/content/docs/styling-events.md#dashed-borders).
 - `layout::stroke`: the formulas a rect's stroke is painted with (`StrokeShape`, `stroke_coverage`, `outline_position`, `dash_coverage`), which both quad shaders mirror, and `layout::render_list::StrokeStyle`.
@@ -28,6 +29,7 @@ Added:
 
 Behaviour changes:
 
+- `LayoutKind` has a new variant, `Grid`: code that matches it without a wildcard arm must add it.
 - A border on one side of a rounded element follows the corners at its ends and thins out where it meets a side without a border, as CSS draws it. It was a square band that stuck out past the rounded corners.
 - A border outside or centered on a rounded element has the element's corners on its inner edge and is rounder on its outer edge by its width. Its outer edge had the element's radius and its inner edge a smaller one, which left a gap between the border and the element's background at each corner.
 - Where the sides of a border have different widths, each inner corner is shaped by the two sides that meet there. Every inner corner was cut by the widest side of the four.
