@@ -296,3 +296,103 @@ fn a_tab_that_is_not_shown_takes_no_press_from_the_one_that_is() {
   pointer_click(&mut tree, 200.0, 300.0, MouseButton::Left);
   assert_eq!(PRESSED.with(std::cell::Cell::get), 1);
 }
+
+/// Seven tabs under a bar of five places, flat or floating.
+struct Many {
+  tabs: Tabs,
+  floating: bool,
+}
+
+struct ManyProps(Arc<Mutex<Option<Tabs>>>, bool);
+
+impl PartialEq for ManyProps {
+  fn eq(&self, other: &Self) -> bool {
+    Arc::ptr_eq(&self.0, &other.0)
+  }
+}
+
+impl lurq::app::component::DevtoolsInspectable for ManyProps {
+  fn write_info(&self, _buffer: &mut Vec<lurq::app::component::ComponentInfo>) {}
+}
+
+impl Component for Many {
+  type Props = ManyProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let tabs = Tabs::new();
+    for index in 1..=7 {
+      let says = format!("screen {index}");
+      let router = ctx.router(Routes::new().route("/", move |_| Text::new(&says).into()));
+      router.replace("/");
+      tabs.add(format!("t{index}"), TabItem::new(format!("Tab {index}")), router);
+    }
+    let props = ctx.props::<ManyProps>();
+    *props.0.lock().unwrap() = Some(tabs.clone());
+    Self {
+      tabs,
+      floating: props.1,
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let bar = if self.floating { TabBar::new().floating() } else { TabBar::new() };
+    TabOutlet::mount(ctx, TabOutletProps::new(self.tabs.clone()).bar(bar))
+  }
+}
+
+fn many(floating: bool) -> (Tree, Tabs) {
+  let out = Arc::new(Mutex::new(None));
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(400, 800);
+  tree.mount_root::<Many>(&mut app, ManyProps(out.clone(), floating));
+  run_pass(&mut tree);
+  run_pass(&mut tree);
+  let tabs = out.lock().unwrap().clone().unwrap();
+  (tree, tabs)
+}
+
+fn centre_of(tree: &mut Tree, id: &str) -> (f32, f32) {
+  let (x, y, width, height) = tree
+    .find_element(|element| element.id() == Some(id))
+    .unwrap_or_else(|| panic!("{id} is there"))
+    .rect();
+  (x + width / 2.0, y + height / 2.0)
+}
+
+#[test]
+fn tabs_that_do_not_fit_are_listed_by_the_bars_last_place() {
+  let (mut tree, tabs) = many(false);
+  assert!(shows(&mut tree, "Tab 4"), "four tabs have places");
+  assert!(!shows(&mut tree, "Tab 5"), "the fifth place is for the rest");
+  assert!(shows(&mut tree, "More"));
+
+  let (x, y) = centre_of(&mut tree, "tab-more-places");
+  pointer_click(&mut tree, x, y, MouseButton::Left);
+  run_pass(&mut tree);
+  assert!(shows(&mut tree, "Tab 5") && shows(&mut tree, "Tab 7"), "the rest are listed");
+
+  let (x, y) = centre_of(&mut tree, "tab-t6");
+  pointer_click(&mut tree, x, y, MouseButton::Left);
+  run_pass(&mut tree);
+  assert_eq!(tabs.active(), "t6");
+  assert!(shows(&mut tree, "screen 6"));
+  assert!(!shows(&mut tree, "Tab 7"), "the list is put away");
+}
+
+#[test]
+fn a_floating_bar_stands_clear_of_the_windows_edges() {
+  let (mut tree, tabs) = many(true);
+  let (x, y, width, _) = tree
+    .find_element(|element| element.id() == Some("tab-t1"))
+    .expect("the first place")
+    .rect();
+  assert!(x >= 21.0, "in from the side: {x}");
+  assert!(y > 700.0 && y < 780.0, "over the bottom of the window: {y}");
+  assert!(width < 100.0, "five places share the bar: {width}");
+
+  let (x, y) = centre_of(&mut tree, "tab-t3");
+  pointer_click(&mut tree, x, y, MouseButton::Left);
+  run_pass(&mut tree);
+  assert_eq!(tabs.active(), "t3");
+}

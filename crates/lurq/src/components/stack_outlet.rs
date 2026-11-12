@@ -747,6 +747,10 @@ struct Shown {
   /// outlet's context, which is told so after layout.
   tab_bar: super::tabs::BarMove,
   tab_link: Option<super::tabs::TabBarLink>,
+  /// Where the top screen's list was at the last layout, and whether it was last scrolled down: a bar of
+  /// tabs that gets out of the way of a list being read is told so.
+  last_scroll: f32,
+  scrolled_down: bool,
 }
 
 pub struct StackOutlet {
@@ -777,6 +781,8 @@ impl Component for StackOutlet {
       velocity: 0.0,
       tab_bar: super::tabs::BarMove::SHOWN,
       tab_link: None,
+      last_scroll: 0.0,
+      scrolled_down: false,
     }));
     let changed = Signal::new(0u64);
     let drag = Signal::new(NO_DRAG);
@@ -1492,6 +1498,26 @@ impl Component for StackOutlet {
       && link.0.get_untracked() != shown.tab_bar
     {
       link.0.set(shown.tab_bar);
+    }
+    // Which way the top screen's list last went, by more than a finger's tremble; at its top it has gone
+    // nowhere.
+    if let Some(at) = shown.layers.last().map(|layer| layer.bar.scroll.scroll_y()) {
+      let moved = at - shown.last_scroll;
+      if at <= 0.0 {
+        shown.scrolled_down = false;
+      } else if moved > 4.0 {
+        shown.scrolled_down = true;
+      } else if moved < -4.0 {
+        shown.scrolled_down = false;
+      }
+      if moved.abs() > 4.0 || at <= 0.0 {
+        shown.last_scroll = at;
+      }
+      if let Some(link) = &shown.tab_link
+        && link.1.get_untracked() != shown.scrolled_down
+      {
+        link.1.set(shown.scrolled_down);
+      }
     }
     for layer in shown.layers.iter().chain(shown.leaving.iter()) {
       let top = *layer.bar.top_now.lock();

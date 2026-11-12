@@ -708,8 +708,12 @@ The theme follows three of them by itself:
 
 ### What The Components Do
 
-- `StackOutlet`: with motion reduced a screen fades in where it stands and the bar's titles do not slide;
-  with transparency reduced the bar is solid and nothing is blurred behind it.
-- `TabOutlet`'s bar: solid with transparency reduced, and it goes and comes at once with motion reduced.
+- `StackOutlet`: with motion reduced a screen fades in where it stands and the bar's titles do not slide.
+  With transparency reduced or contrast increased the bar is solid and nothing is blurred behind it, and with
+  contrast increased the line under it is all there. With button shapes the way back is underlined. A large
+  title is at the person's text size, up to `NavigationBar::large_title_max_scale`.
+- `TabOutlet`'s bar: solid with transparency reduced or contrast increased, when the tabs that are not chosen
+  also stand out more; it goes and comes at once with motion reduced.
+- `Sheet`: with motion reduced it fades in where it stands, and out.
 - `NavigationBar::for_appearance(..)`, `TabBar::for_appearance(..)` and `SheetStyle::for_appearance(..)` are
   the platform's light or dark ones: `NavigationBar::for_appearance(ctx.window().system.appearance)`.

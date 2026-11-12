@@ -48,23 +48,24 @@ inside its input.
 
 - **The way back's arrow** is the platform's symbol with the `raster` feature; without it, a drawing after
   it.
-- **The bar** is over a screen's list, which shows through it blurred; the platform's material also
-  brightens and saturates what is behind it, and the newest system's bar is glass that bends it. The
-  toolbar at the bottom and the list a long press on the way back opens are not blurred.
+- **The bar** is over a screen's list, which shows through it blurred, as it does through the toolbar and
+  the list a long press on the way back opens; the platform's material also brightens and saturates what is
+  behind it, and the newest system's bar is glass that bends it.
 - **How things move** in the stack (the spring's length, how far a large title grows and the way it takes to
   a way back) was set by eye and not measured against the platform; `StackMotion` changes the numbers.
 - **A search field** is the field alone: no scopes under it, no suggestions, and it does not come and go
   with a move of its own when it takes the bar's place.
 - **Sheets** are there (`Sheet`, and `SheetHost` for the app that draws back behind one), with these
-  differences from the platform's: a sheet is never one the window behind can still be used under; there is
-  no stack of screens inside a sheet with a bar of its own; the corners of the app drawn back are rounded at
-  once and not little by little; and the numbers (the radii, the dim, the spring, how small the app gets)
-  were set by eye.
-- **Tabs** are there (`Tabs`, `TabOutlet`, `TabBar`), with these differences from the platform's: the bar is
-  the plain one across the bottom, not the floating glass one of the newest system with a lens a finger
-  drags between tabs; it does not get smaller as the content scrolls; the picture of a tab that is chosen
-  does not spring; there is no tab for searching, no "More" tab for those that do not fit, no accessory over
-  the bar, and no sidebar in a wide window. Its sizes were set by eye in a simulator.
+  differences from the platform's: a sheet is never one the window behind can still be used under; the
+  corners of the app drawn back are rounded at once and not little by little; a list of a stack inside a
+  sheet does not give the finger to the sheet at its top; and the numbers (the radii, the dim, the spring,
+  how small the app gets) were set by eye.
+- **Tabs** are there (`Tabs`, `TabOutlet`, `TabBar`), flat or floating, with these differences from the
+  platform's: a floating bar is a blurred rounded bar, not glass, and has no lens a finger drags between
+  tabs; as a list is scrolled the bar goes out of view, where the platform's shrinks to a small one; the
+  picture of a tab that is chosen does not spring; the tab to search in is a place apart and does not open
+  into a field; the list of the tabs that do not fit cannot be put in another order; there is no accessory
+  over the bar, and no sidebar in a wide window. Its sizes were set by eye in a simulator.
 
 ## Touch
 
@@ -102,20 +103,21 @@ What a person sets for the whole system reaches a lurq app (`ctx.window().system
 the bars and the sheets follow it. Tried in a simulator: the appearance and the text size, changed while the
 app runs. Not checked on a device, and bold text, reduced motion and reduced transparency not checked at all.
 
-- **Dynamic Type** is the theme's typography alone, as on the platform: a size an app gives itself does not
-  change unless it asks (`theme.scaled`). The navigation bar's and the bar of tabs' own text does not grow,
-  and neither does a large title, which the platform's does. The styles of a form and of Markdown carry sizes
-  of their own, which do not follow.
+- **Dynamic Type** is the theme's typography, and a stack's large title: a size an app gives itself does
+  not change unless it asks (`theme.scaled`). The navigation bar's and the bar of tabs' own text keeps its
+  size, as the platform's does, but the platform shows a tab large when it is held, which lurq does not. The
+  styles of a form and of Markdown carry sizes of their own, which do not follow.
 - **Light and dark:** a theme follows with a palette for each. The demo app is dark in both.
 - **Bold Text** is the typography's weights; text with a weight of the app's own keeps it, where the
   platform makes every text heavier.
-- **Reduce Motion:** the stack fades. A sheet still comes up from the bottom, and a text input's caret, a
-  scroll's momentum and an app's own transitions are as always.
+- **Reduce Motion:** the stack and a sheet fade. A text input's caret, a scroll's momentum and an app's own
+  transitions are as always.
+- **Increase Contrast** makes the bars solid and their lines and unchosen tabs stand out; **Button Shapes**
+  underlines the way back. Nothing else in lurq acts on them, nor on **Differentiate Without Color** and
+  **On/Off Labels**, which are only told.
 - **The Liquid Glass setting** (clear or tinted) is not followed. No API tells it. UIKit keeps it in its own
   defaults (`UIViewGlassTintAmount` in `com.apple.UIKit`), which an app can read and which was seen to change
   with the setting on an iPhone 17, but the name is in no documentation and lurq does not lean on it.
-- **Increase Contrast, Differentiate Without Color, Button Shapes, On/Off Labels** are told and nothing in
-  lurq acts on them.
 - **A change while the app is in front and nothing happens** (the appearance at sunset) is taken at the next
   touch or frame, not at once.
 - **VoiceOver, Switch Control, Voice Control:** the screen is one opaque view to them. Nothing in it has a

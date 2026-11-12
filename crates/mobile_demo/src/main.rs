@@ -79,6 +79,20 @@ impl Component for MobileDemo {
           .selected_symbol("ellipsis.circle.fill"),
         more,
       );
+    // The tab to search in, which a floating bar stands apart from the others.
+    let search = ctx.router(more::search_routes());
+    search.replace("/");
+    tabs.add("search", TabItem::new("Search").search(), search);
+    // Tabs to add from the second tab's screen, until the bar has more than it has places for.
+    more::set_spares(
+      (1..=4)
+        .map(|number| {
+          let router = ctx.router(more::spare_routes(number));
+          router.replace("/");
+          router
+        })
+        .collect(),
+    );
     Self { tabs }
   }
 
@@ -87,6 +101,10 @@ impl Component for MobileDemo {
     let tabs = self.tabs.clone();
     SheetHost::mount(ctx, move |ctx| {
       let bar = TabBar::dark()
+        // A bar that floats over the content, as the newest system's does, and gets out of the way of a
+        // list that is being read.
+        .floating()
+        .minimizes_on_scroll(true)
         // Not all there: what scrolls under the bar shows through it, blurred.
         .background(Color::new(30, 41, 59, 190))
         .border(Color::from_hex(BORDER))
