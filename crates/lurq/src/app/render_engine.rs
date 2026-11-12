@@ -112,6 +112,14 @@ pub trait RenderEngine {
   fn last_profile(&self) -> Option<RenderProfile> {
     None
   }
+
+  /// Counts of the last frame's opacity layers and blurs: passes, copies,
+  /// blur draws and pooled textures. None for a backend that does not count
+  /// them.
+  #[cfg(feature = "perf_profile")]
+  fn layer_profile(&self) -> Option<crate::app::profile_types::LayerProfile> {
+    None
+  }
 }
 
 pub type RenderEngineFactory = std::sync::Arc<dyn Fn() -> Box<dyn RenderEngine>>;

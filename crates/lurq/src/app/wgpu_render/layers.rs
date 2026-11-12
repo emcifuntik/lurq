@@ -430,7 +430,7 @@ impl LayerCompositor {
     target: &wgpu::Texture,
     target_origin: [i32; 2],
     slots: &BackdropSlots,
-  ) {
+  ) -> usize {
     let blur = slots.blur.blur;
     encoder.copy_texture_to_texture(
       wgpu::TexelCopyTextureInfo {
@@ -455,7 +455,7 @@ impl LayerCompositor {
         depth_or_array_layers: 1,
       },
     );
-    self.prepare_blur(queue, encoder, vertices, indices, slots.copied, &slots.blur);
+    self.prepare_blur(queue, encoder, vertices, indices, slots.copied, &slots.blur)
   }
 
   /// Puts a blurred backdrop back into the pass painting `parent`, inside
@@ -482,6 +482,7 @@ impl LayerCompositor {
   /// Runs the passes of a blur that come before compositing, on the layer
   /// just painted into `painted`: the reduction of a wide blur, then the
   /// horizontal Gaussian. `vertices` and `indices` are the unit quad's.
+  /// Returns the number of passes it ran.
   pub(super) fn prepare_blur(
     &self,
     queue: &wgpu::Queue,
@@ -490,7 +491,7 @@ impl LayerCompositor {
     indices: &wgpu::Buffer,
     painted: usize,
     slots: &BlurSlots,
-  ) {
+  ) -> usize {
     let mut source = painted;
     if let Some(reduced) = slots.reduced {
       let uniforms = LayerBlurPass::reduce(&slots.blur, &slots.plan, self.size(source), self.size(reduced));
@@ -517,6 +518,7 @@ impl LayerCompositor {
       &uniforms,
       slots.plan.size,
     );
+    1 + usize::from(slots.reduced.is_some())
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -612,5 +614,16 @@ impl LayerCompositor {
   #[cfg(all(test, feature = "screenshot"))]
   pub(super) fn texture_count(&self) -> usize {
     self.slots.len()
+  }
+
+  /// The pool's textures and the bytes they hold, at four bytes a texel.
+  #[cfg(feature = "perf_profile")]
+  pub(super) fn texture_stats(&self) -> (usize, usize) {
+    let bytes = self
+      .slots
+      .iter()
+      .map(|slot| slot.width as usize * slot.height as usize * 4)
+      .sum();
+    (self.slots.len(), bytes)
   }
 }

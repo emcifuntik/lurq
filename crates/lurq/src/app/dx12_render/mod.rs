@@ -860,6 +860,11 @@ impl RenderEngine for Dx12RenderEngine {
   fn last_profile(&self) -> Option<RenderProfile> {
     Some(self.last_profile)
   }
+
+  #[cfg(feature = "perf_profile")]
+  fn layer_profile(&self) -> Option<crate::app::profile_types::LayerProfile> {
+    self.state.as_ref().map(|state| state.layer_profile)
+  }
 }
 
 struct Dx12State {
@@ -925,6 +930,9 @@ struct Dx12State {
   /// composites included; Canvas draws are not counted.
   #[cfg(feature = "perf_profile")]
   draw_calls: usize,
+  /// What the layers and blurs of the frame `encode_frame` recorded cost.
+  #[cfg(feature = "perf_profile")]
+  layer_profile: crate::app::profile_types::LayerProfile,
 }
 
 /// A recorded-but-not-yet-read screenshot: the readback buffer the back
@@ -2801,6 +2809,8 @@ impl Dx12State {
       layer_compositor: None,
       #[cfg(feature = "perf_profile")]
       draw_calls: 0,
+      #[cfg(feature = "perf_profile")]
+      layer_profile: Default::default(),
     };
     state.create_render_targets()?;
     state.frame_index = state.swapchain.GetCurrentBackBufferIndex() as usize;
@@ -2983,7 +2993,14 @@ impl Dx12State {
   }
 
   unsafe fn encode_frame(&mut self, list: &RenderList) -> Result<(GlyphAtlasUploadStats, std::time::Duration)> {
-    profile_if! { self.draw_calls = 0; }
+    profile_if! {
+      self.draw_calls = 0;
+      // The window is one pass, whatever else the frame takes.
+      self.layer_profile = crate::app::profile_types::LayerProfile {
+        render_passes: 1,
+        ..Default::default()
+      };
+    }
     let target = self.current_render_target();
     self.transition_resource(
       &target,

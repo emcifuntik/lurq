@@ -1,5 +1,6 @@
 pub use crate::app::profile_types::{
-  CanvasAssetUploadProfile, CanvasProfile, FrameProfile, GlyphEngineProfile, RenderProfile, RuntimeMemoryProfile,
+  CanvasAssetUploadProfile, CanvasProfile, FrameProfile, GlyphEngineProfile, LayerProfile, RenderProfile,
+  RuntimeMemoryProfile,
 };
 
 mod aggregate;

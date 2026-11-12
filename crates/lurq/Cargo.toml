@@ -182,6 +182,10 @@ name = "layer_blur_capture_check"
 required-features = ["screenshot", "wgpu", "dx12"]
 
 [[example]]
+name = "backdrop_blur_probe"
+required-features = ["screenshot", "wgpu", "dx12", "perf_profile"]
+
+[[example]]
 name = "canvas"
 required-features = ["canvas", "winit", "wgpu"]
 

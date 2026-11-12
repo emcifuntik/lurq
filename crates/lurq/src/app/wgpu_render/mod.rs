@@ -366,6 +366,8 @@ pub struct WgpuRenderEngine {
   #[cfg(feature = "perf_profile")]
   last_profile: RenderProfile,
   #[cfg(feature = "perf_profile")]
+  last_layer_profile: crate::app::profile_types::LayerProfile,
+  #[cfg(feature = "perf_profile")]
   profile_context: Option<crate::app::profiler::ProfileContext>,
   /// GPU time of frames rendered while a profiling session is active.
   #[cfg(feature = "perf_profile")]
@@ -473,6 +475,8 @@ impl WgpuRenderEngine {
       atlas_version: 0,
       #[cfg(feature = "perf_profile")]
       last_profile: RenderProfile::default(),
+      #[cfg(feature = "perf_profile")]
+      last_layer_profile: Default::default(),
       #[cfg(feature = "perf_profile")]
       profile_context: None,
       #[cfg(feature = "perf_profile")]
@@ -1921,6 +1925,8 @@ impl RenderEngine for WgpuRenderEngine {
     let target_count = layer_plan.targets().len();
     #[cfg(feature = "perf_profile")]
     let mut _draw_calls = 0usize;
+    #[cfg(feature = "perf_profile")]
+    let mut _layers = crate::app::profile_types::LayerProfile::default();
     for (target_index, target) in layer_plan.targets().iter().enumerate() {
       let layer_slot = self.scratch_layer_slots.get(target_index).copied().flatten();
       let (space, target_view, clear) = match (target.layer, layer_slot, self.layer_compositor.as_ref()) {
@@ -1979,6 +1985,7 @@ impl RenderEngine for WgpuRenderEngine {
         };
       }
       let mut pass = begin_target_pass!(wgpu::LoadOp::Clear(clear), true);
+      profile_if! { _layers.render_passes += 1; }
 
       let mut active_pipeline = None;
       let mut active_vertex_buffer = None;
@@ -1999,7 +2006,7 @@ impl RenderEngine for WgpuRenderEngine {
               _ => (output.texture(), [0, 0]),
             };
             drop(pass);
-            compositor.prepare_backdrop(
+            let _blur_passes = compositor.prepare_backdrop(
               queue,
               &mut encoder,
               vtx_buf,
@@ -2010,6 +2017,12 @@ impl RenderEngine for WgpuRenderEngine {
             );
             backdrops_left -= 1;
             pass = begin_target_pass!(wgpu::LoadOp::Load, false);
+            profile_if! {
+              _layers.render_passes += _blur_passes + 1;
+              _layers.blur_draws += _blur_passes;
+              _layers.target_copies += 1;
+              _layers.backdrops_blurred += 1;
+            }
             // A new pass starts with nothing bound.
             pass.set_vertex_buffer(0, vtx_buf.slice(..));
             active_vertex_buffer = Some(ActiveVertexBuffer::CommonQuad);
@@ -2018,7 +2031,10 @@ impl RenderEngine for WgpuRenderEngine {
             active_pipeline = Some(ActivePipeline::Layer);
             if set_scissor(&mut pass, space.layer_rect(backdrop.bounds()), &space) {
               compositor.composite_backdrop(queue, &mut pass, &backdrop, &space);
-              profile_if! { _draw_calls += 2; }
+              profile_if! {
+                _draw_calls += 2;
+                _layers.blur_draws += 2;
+              }
             }
             continue;
           }
@@ -2042,7 +2058,10 @@ impl RenderEngine for WgpuRenderEngine {
               active_index_buffer = Some(ActiveIndexBuffer::CommonU16);
             }
             match self.scratch_blur_slots.get(*child).copied().flatten() {
-              Some(blur_slots) => compositor.composite_blurred(queue, &mut pass, &blur_slots, layer, &space),
+              Some(blur_slots) => {
+                compositor.composite_blurred(queue, &mut pass, &blur_slots, layer, &space);
+                profile_if! { _layers.blur_draws += 1; }
+              }
               None => compositor.composite(queue, &mut pass, slot, layer, &space),
             }
             profile_if! { _draw_calls += 1; }
@@ -2542,11 +2561,18 @@ impl RenderEngine for WgpuRenderEngine {
         self.scratch_blur_slots.get(target_index).copied().flatten(),
         self.layer_compositor.as_ref(),
       ) {
-        compositor.prepare_blur(queue, &mut encoder, vtx_buf, idx_buf, slot, &blur_slots);
+        let _blur_passes = compositor.prepare_blur(queue, &mut encoder, vtx_buf, idx_buf, slot, &blur_slots);
+        profile_if! {
+          _layers.render_passes += _blur_passes;
+          _layers.blur_draws += _blur_passes;
+        }
       }
     }
     if let Some(compositor) = self.layer_compositor.as_mut() {
       compositor.end_frame();
+      profile_if! {
+        (_layers.textures, _layers.texture_bytes) = compositor.texture_stats();
+      }
     }
     if self.clip_globals.end_frame() {
       let clip_globals = &self.clip_globals;
@@ -2621,6 +2647,7 @@ impl RenderEngine for WgpuRenderEngine {
         present: _present_dur,
         total: profile_elapsed!(_total_start),
       };
+      self.last_layer_profile = _layers;
     }
     true
   }
@@ -2659,6 +2686,11 @@ impl RenderEngine for WgpuRenderEngine {
   #[cfg(feature = "perf_profile")]
   fn last_profile(&self) -> Option<RenderProfile> {
     Some(self.last_profile)
+  }
+
+  #[cfg(feature = "perf_profile")]
+  fn layer_profile(&self) -> Option<crate::app::profile_types::LayerProfile> {
+    Some(self.last_layer_profile)
   }
 }
 

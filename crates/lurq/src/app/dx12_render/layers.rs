@@ -537,6 +537,16 @@ impl Dx12State {
       .partition(|slot| slot.in_use || frame.saturating_sub(slot.last_used) <= LAYER_IDLE_FRAMES);
     compositor.slots = kept;
     compositor.retired[frame_index].extend(idle);
+    #[cfg(feature = "perf_profile")]
+    {
+      self.layer_profile.textures = compositor.slots.len();
+      // Four bytes a texel.
+      self.layer_profile.texture_bytes = compositor
+        .slots
+        .iter()
+        .map(|slot| slot.width as usize * slot.height as usize * 4)
+        .sum();
+    }
   }
 
   /// Drops the layer textures retired by the frame that last used this frame
@@ -572,6 +582,10 @@ impl Dx12State {
     self.command_list.OMSetRenderTargets(1, Some(&rtv), false, None);
     self.command_list.ClearRenderTargetView(rtv, &[0.0; 4], None);
     self.set_target_viewport(space);
+    #[cfg(feature = "perf_profile")]
+    {
+      self.layer_profile.render_passes += 1;
+    }
   }
 
   /// Finishes painting `slot`'s layer so it can be composited.
@@ -717,6 +731,12 @@ impl Dx12State {
     // Back to the target, as it was: the blur's passes painted elsewhere.
     self.command_list.OMSetRenderTargets(1, Some(&target_rtv), false, None);
     self.set_target_viewport(parent);
+    #[cfg(feature = "perf_profile")]
+    {
+      self.layer_profile.render_passes += 1;
+      self.layer_profile.target_copies += 1;
+      self.layer_profile.backdrops_blurred += 1;
+    }
     prepared?;
 
     let Some(compositor) = self.layer_compositor.as_ref() else {
@@ -754,6 +774,10 @@ impl Dx12State {
     );
     self.command_list.OMSetRenderTargets(1, Some(&rtv), false, None);
     self.command_list.ClearRenderTargetView(rtv, &[0.0; 4], None);
+    #[cfg(feature = "perf_profile")]
+    {
+      self.layer_profile.render_passes += 1;
+    }
     self.set_target_viewport(TargetSpace::blur_target(size, width, height));
     let scissor = RECT {
       left: 0,
@@ -813,6 +837,7 @@ impl Dx12State {
     #[cfg(feature = "perf_profile")]
     {
       self.draw_calls += 1;
+      self.layer_profile.blur_draws += 1;
     }
     Ok(())
   }
