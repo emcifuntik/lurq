@@ -228,15 +228,16 @@ pub(crate) struct TextStyleSource {
   base: TextStyleBase,
   color: Option<TextColor>,
   text_align: Option<TextAlign>,
-  letter_spacing: Option<f32>,
-  font_features: Option<crate::layout::text_style::FontFeatures>,
-  shadow: Option<crate::layout::text_style::TextShadow>,
-  /// What few texts set. Boxed: a text's style is part of every node.
+  /// What few texts set. Boxed: a text's style is part of every node, whose size is budgeted
+  /// (`size_budget.rs`).
   rare: Option<Box<RareTextStyle>>,
 }
 
 #[derive(Clone, Default, PartialEq)]
 struct RareTextStyle {
+  letter_spacing: Option<f32>,
+  font_features: Option<crate::layout::text_style::FontFeatures>,
+  shadow: Option<crate::layout::text_style::TextShadow>,
   underline: Option<crate::layout::text_style::TextUnderline>,
   strikethrough: Option<crate::layout::text_style::TextStrikethrough>,
   /// The most lines the text is laid out in; see `Text::max_lines`.
@@ -256,9 +257,6 @@ impl TextStyleSource {
       base: TextStyleBase::Default,
       color: None,
       text_align: None,
-      letter_spacing: None,
-      font_features: None,
-      shadow: None,
       rare: None,
     }
   }
@@ -268,9 +266,6 @@ impl TextStyleSource {
       base: TextStyleBase::Explicit(style),
       color: None,
       text_align: None,
-      letter_spacing: None,
-      font_features: None,
-      shadow: None,
       rare: None,
     }
   }
@@ -295,15 +290,15 @@ impl TextStyleSource {
   }
 
   pub(crate) fn set_letter_spacing(&mut self, letter_spacing: f32) {
-    self.letter_spacing = Some(letter_spacing);
+    self.rare_mut().letter_spacing = Some(letter_spacing);
   }
 
   pub(crate) fn set_font_features(&mut self, font_features: crate::layout::text_style::FontFeatures) {
-    self.font_features = Some(font_features);
+    self.rare_mut().font_features = Some(font_features);
   }
 
   pub(crate) fn set_shadow(&mut self, shadow: crate::layout::text_style::TextShadow) {
-    self.shadow = Some(shadow);
+    self.rare_mut().shadow = Some(shadow);
   }
 
   fn rare_mut(&mut self) -> &mut RareTextStyle {
@@ -340,16 +335,16 @@ impl TextStyleSource {
     if let Some(text_align) = self.text_align {
       style.text_align = text_align;
     }
-    if let Some(letter_spacing) = self.letter_spacing {
-      style.letter_spacing = letter_spacing;
-    }
-    if let Some(font_features) = &self.font_features {
-      style.font_features = font_features.clone();
-    }
-    if let Some(shadow) = self.shadow {
-      style.shadow = Some(shadow);
-    }
     if let Some(rare) = &self.rare {
+      if let Some(letter_spacing) = rare.letter_spacing {
+        style.letter_spacing = letter_spacing;
+      }
+      if let Some(font_features) = &rare.font_features {
+        style.font_features = font_features.clone();
+      }
+      if let Some(shadow) = rare.shadow {
+        style.shadow = Some(shadow);
+      }
       if let Some(underline) = rare.underline {
         style.underline = Some(underline);
       }

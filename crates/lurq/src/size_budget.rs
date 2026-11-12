@@ -10,7 +10,9 @@
 //! (`scripts/stack-depth-probe.py`).
 //!
 //! Measured on x86_64 with every feature enabled: role enums 8, `Element` 8,
-//! `Node` 1264, `WindowChrome` 872, `ChromeTitleBar` 760.
+//! `Node` 1232, `WindowChrome` 872, `ChromeTitleBar` 760. The sizes depend on
+//! the features that are on, and no two of the check's test runs turn all of
+//! them on, so `scripts/check.ps1` also builds the tests once with every one.
 
 use std::mem::size_of;
 
