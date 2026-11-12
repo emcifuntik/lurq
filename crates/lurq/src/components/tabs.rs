@@ -740,6 +740,7 @@ impl Component for TabOutlet {
           low,
           &self.more_open,
           drawn_in,
+          window.logical_width(),
         ))
       }
     };
@@ -940,25 +941,10 @@ fn standard_bar(
   low: bool,
   more_open: &Signal<bool>,
   drawn_in: bool,
+  window_width: f32,
 ) -> Element {
   let floating = bar.floating && bar.place == TabBarPlace::Bottom;
   let (shown, rest) = placed(bar, entries);
-  // Drawn in, the bar is the place of the tab that is shown, with no title, and the tab to search in: a
-  // press on it opens the bar again.
-  let active: Vec<TabEntry> = if drawn_in {
-    entries
-      .iter()
-      .filter(|entry| entry.active || entry.item.search)
-      .cloned()
-      .map(|mut entry| {
-        entry.item.title = String::new();
-        entry
-      })
-      .collect()
-  } else {
-    Vec::new()
-  };
-  let (shown, rest): (&[TabEntry], &[TabEntry]) = if drawn_in { (&active, &[]) } else { (shown, rest) };
   let height = if floating {
     bar.floating_height
   } else if low {
@@ -967,12 +953,39 @@ fn standard_bar(
     bar.height
   };
   let opened = more_open.get_untracked();
-  // A place: what it shows, whether it is the chosen one, and what a press on it does.
-  let place = |id: String, content: Column, chosen: bool, press: Box<dyn Fn() + Send + Sync>| {
-    let mut place = Row::new()
-      .id(id)
-      .flex(1.0)
-      .max_width(bar.item_max_width)
+  // A floating bar's places have widths of their own, which change with a move: drawn in, as a list is
+  // scrolled, the place of the tab that is shown is all the bar has, and the others have no width.
+  let apart_there = floating && shown.iter().any(|entry| entry.item.search);
+  let count = shown.iter().filter(|entry| !(floating && entry.item.search)).count() + usize::from(!rest.is_empty());
+  let full = (window_width
+    - safe_area.left
+    - safe_area.right
+    - 2.0 * bar.floating_margin
+    - if apart_there { height + 10.0 } else { 0.0 })
+  .max(0.0);
+  let each = ((full - 8.0) / count.max(1) as f32).max(0.0);
+  let alone = (height + 12.0).min(each.max(height));
+  let resize = Transition::width().duration(bar.hide_duration).easing(Easing::EASE);
+  let fade = Transition::opacity().duration(bar.hide_duration).easing(Easing::EASE);
+  // A place: what it shows, whether it is the chosen one, whether it is in the bar's row, and what a press on
+  // it does.
+  let place = |id: String, content: Column, chosen: bool, in_row: bool, press: Box<dyn Fn() + Send + Sync>| {
+    let mut place = Row::new().id(id);
+    place = if floating && in_row {
+      let (width, seen) = match (drawn_in, chosen) {
+        (false, _) => (each, 1.0),
+        (true, true) => (alone, 1.0),
+        (true, false) => (0.0, 0.0),
+      };
+      place
+        .width(width)
+        .opacity(seen)
+        .transition(resize.clone())
+        .transition(fade.clone())
+    } else {
+      place.flex(1.0).max_width(bar.item_max_width)
+    };
+    let mut place = place
       .height(FILL)
       .align_items(Alignment::Center)
       .justify(Justify::Center)
@@ -996,11 +1009,12 @@ fn standard_bar(
   for entry in shown {
     let chosen = entry.active && !opened;
     let (tabs, key, open) = (tabs.clone(), entry.key.clone(), more_open.clone());
-    let (scrolled, opens) = (entry.scrolled.clone(), drawn_in && entry.active);
+    let (scrolled, opens) = (entry.scrolled.clone(), drawn_in && entry.active && !entry.item.search);
     let made = place(
       format!("tab-{}", entry.key),
       place_content(bar, &entry.item, chosen, low),
       chosen,
+      !entry.item.search,
       Box::new(move || {
         if opens {
           scrolled.set(false);
@@ -1038,17 +1052,15 @@ fn standard_bar(
       "tab-more-places".to_owned(),
       place_content(bar, &item, chosen, low),
       chosen,
+      true,
       Box::new(move || open.set(!open.get_untracked())),
     ));
   }
 
   if floating {
-    let capsule = if drawn_in {
-      places.width(height + 16.0)
-    } else {
-      places.flex(1.0)
-    };
-    let capsule = capsule
+    let capsule = places
+      .width(if drawn_in { alone + 8.0 } else { full })
+      .transition(resize.clone())
       .height(height)
       .padding(4.0)
       .rounded(height / 2.0)
@@ -1059,17 +1071,15 @@ fn standard_bar(
     let mut row = Row::new()
       .width(FILL)
       .hit_test(crate::node::HitTestBehavior::ContentOnly)
-      .spacing(10.0)
       .padding_left(safe_area.left + bar.floating_margin)
       .padding_right(safe_area.right + bar.floating_margin)
       .padding_bottom(bar.floating_bottom)
       .child(capsule);
     if let Some(apart) = apart {
-      if drawn_in {
-        // The tab to search in keeps its place at the bar's end.
-        row = row.child(Row::new().flex(1.0).pointer_events_none());
-      }
-      row = row.child(apart);
+      // The tab to search in keeps its place at the bar's end as the bar draws in.
+      row = row
+        .child(Row::new().flex(1.0).min_width(10.0).pointer_events_none())
+        .child(apart);
     }
     return row.into();
   }
