@@ -79,6 +79,9 @@ unicode-segmentation = "1.12"
 raw-window-handle = "0.6"
 redb = { version = "4.1.0", optional = true }
 swash = "0.2.10"
+# The TrueType interpreter under swash, driven directly for grid-fitted fonts: swash's own
+# scaler drops every hint along x. Kept at the version swash resolves to.
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 wgpu = { version = "=29.0.4", optional = true }
 winit = { version = "0.30", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"], optional = true }
@@ -209,6 +212,10 @@ required-features = ["markdown", "winit", "wgpu", "clipboard"]
 
 [[example]]
 name = "text_input_scrollbar"
+required-features = ["winit", "wgpu", "screenshot"]
+
+[[example]]
+name = "icon_hinting"
 required-features = ["winit", "wgpu", "screenshot"]
 
 [[example]]
