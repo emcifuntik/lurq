@@ -66,8 +66,13 @@ impl Tree {
     trim_hits_to_scrollbar(&mut hits, lx, ly);
 
     let changed = with_input_source(source, || move_hover(root, &self.hover_path, &hits));
+    let scrollable_in_disabled = if disabled.is_some() {
+      super::scroll_containers_in_disabled(root, result, lx, ly, &hits)
+    } else {
+      Vec::new()
+    };
     let mut thumb_changed = false;
-    for (node, _) in &hits {
+    for (node, _) in scrollable_in_disabled.iter().chain(&hits) {
       if let Some((state, _)) = node.scroll_container() {
         let on_thumb = scrollbar_hit_at(node, lx, ly).is_some();
         if on_thumb != state.is_thumb_hovered() {

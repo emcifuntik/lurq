@@ -46,8 +46,8 @@ pub(crate) fn hit_test_tree<'a>(
 }
 
 /// Like [`hit_test_tree`], with what is inside a disabled element listed as
-/// if it were enabled: for tools that inspect the tree, not for input.
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
+/// if it were enabled: for tools that inspect the tree, and to find the
+/// scroll containers in a disabled element, which still scroll.
 pub(crate) fn hit_test_tree_inspecting<'a>(
   node: &'a Node,
   result: &LayoutResult,

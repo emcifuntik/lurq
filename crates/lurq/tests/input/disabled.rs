@@ -375,3 +375,75 @@ fn a_wheel_over_a_disabled_element_scrolls_the_container_it_is_in() {
 
   assert!(center(&mut tree, "content").1 < before, "the content moved up");
 }
+
+#[test]
+fn what_a_disabled_element_holds_still_scrolls() {
+  let mut app = App::new();
+  let mut tree = mounted(
+    &mut app,
+    Column::new()
+      .disabled(true)
+      .child(ScrollVertical::new(Column::new().id("content").child(Spacer::new().height(500.0))).size(100.0, 100.0)),
+  );
+  let before = center(&mut tree, "content").1;
+
+  tree.scroll(50.0, 50.0, 0.0, -60.0, ScrollPhase::Scroll);
+  tree.pass(&mut app, &TestSurface);
+
+  assert!(
+    center(&mut tree, "content").1 < before,
+    "a disabled panel can be read to its end"
+  );
+}
+
+#[test]
+fn a_wheel_does_not_reach_the_handlers_of_a_disabled_element() {
+  let (wheeled, bump) = counter();
+  let (outer, bump_outer) = counter();
+  let mut app = App::new();
+  let mut tree = mounted(
+    &mut app,
+    Column::new().on_scroll(move |_| bump_outer()).child(
+      Rect::new(100.0, 100.0)
+        .background(FILL)
+        .disabled(true)
+        .on_scroll(move |_| bump()),
+    ),
+  );
+
+  tree.scroll(50.0, 50.0, 0.0, -60.0, ScrollPhase::Scroll);
+
+  assert_eq!(
+    clicks(&wheeled),
+    0,
+    "a control that reads the wheel is disabled with the rest"
+  );
+  assert_eq!(clicks(&outer), 1, "the element it is in still takes the wheel");
+}
+
+#[test]
+fn the_scrollbar_of_a_container_in_a_disabled_element_can_be_dragged() {
+  use lurq::layout::layout_kind::{ScrollAxis, ScrollState};
+
+  let state = ScrollState::new();
+  let mut tree = Tree::new();
+  tree.set_root(
+    Column::new().disabled(true).child(
+      ScrollVertical::new(Spacer::new().height(600.0))
+        .with_scroll_state(state.clone())
+        .size(120.0, 120.0),
+    ),
+  );
+  // The scrollbar's place is recorded when it is painted.
+  crate::support::render_pass(&mut tree);
+  let (x, y, width, height) = state
+    .thumb_rect_for_axis(ScrollAxis::Vertical, &state.style())
+    .expect("the content overflows, so the scrollbar is shown");
+  let press = (x + width / 2.0, y + height / 2.0);
+
+  tree.mouse_down(press.0, press.1, MouseButton::Left);
+  tree.mouse_move(press.0, press.1 + 30.0);
+  tree.mouse_up(press.0, press.1 + 30.0, MouseButton::Left);
+
+  assert!(state.scroll_y() > 0.0, "the thumb follows the pointer");
+}

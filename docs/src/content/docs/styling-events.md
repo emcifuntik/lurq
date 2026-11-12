@@ -353,9 +353,11 @@ Row::new()
 - It still covers what is behind it: a press on a disabled element reaches nothing. That includes the elements it is
   in, as with a disabled control on the web: a clickable card is not clicked through its disabled button. A press on it
   leaves focus where it is.
-- A pointer that moves or scrolls over it still reaches the elements it is in: a row stays hovered over its disabled
-  button, and a wheel or a finger over a disabled element scrolls the container the element is in. A scroll container
-  that is itself disabled, or inside a disabled element, does not scroll by pointer.
+- A pointer that moves over it still reaches the elements it is in: a row stays hovered over its disabled button.
+- Scrolling is not input to a control, so it works as if nothing were disabled: a wheel or a finger over a disabled
+  element scrolls the containers the element is in and the scroll containers inside it, and their scrollbars can be
+  dragged, so what a disabled panel holds can be read to its end. Scroll handlers (`on_scroll`) of the disabled element
+  and of what is in it do not run, other than those of its scroll containers.
 - The disabled style, `.when_disabled(|style| ...)` or `.disabled_style(style)`, is merged over the element's style
   after every other state style while the element is disabled, by itself or by an element it is in, so each element in
   a disabled group can have its own. It changes painting only: a frame, padding or flex in it is ignored. Use

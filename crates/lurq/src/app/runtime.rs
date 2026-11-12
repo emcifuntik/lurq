@@ -4692,6 +4692,12 @@ impl Tree {
     // A press or click on a disabled element reaches nothing: not it, not what it covers and not the elements it is
     // in, as a click on a disabled control of the web. A move still reaches those elements, which stay hovered.
     let disabled_hit = take_disabled_hit(&mut hits);
+    // Its scroll containers still scroll, so their scrollbars still take the pointer.
+    let scrollable_in_disabled = if disabled_hit.is_some() {
+      scroll_containers_in_disabled(root, result, lx, ly, &hits)
+    } else {
+      Vec::new()
+    };
     trim_hits_to_scrollbar(&mut hits, lx, ly);
     let blocked = disabled_hit.is_some() && !matches!(evt.kind, MouseEventKind::Move);
     // What stays hovered while the press itself has no target.
@@ -5088,7 +5094,7 @@ impl Tree {
     // takes the pointer.
     let mut scrollbar_press = None;
     if !evt.default_prevented() {
-      for (node, _) in &hits {
+      for (node, _) in scrollable_in_disabled.iter().chain(&hits) {
         let Some((state, _)) = node.scroll_container() else {
           continue;
         };
@@ -5749,9 +5755,7 @@ impl Tree {
         Some((find_node_by_id(root, *target)?, rect))
       }));
     } else {
-      hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
-      // A wheel over a disabled element scrolls the containers the element is in.
-      take_disabled_hit(&mut hits);
+      hits = scroll_hits(root, result, lx, ly);
     }
     let scroll_delta_can_be_consumed =
       scroll_delta_can_be_consumed_by_hits(&hits, evt.delta_x, evt.delta_y, gesture_dy);
@@ -10486,6 +10490,42 @@ fn take_disabled_hit<'a>(hits: &mut Vec<(&'a Node, crate::app::hit_test::HitRect
     .first()
     .is_some_and(|(node, _)| node.is_disabled())
     .then(|| hits.remove(0).0)
+}
+
+/// The scroll containers inside the disabled element at the point, innermost first; `kept` is the hit list that
+/// element was taken off. Scrolling is no input to a control: a wheel, a finger and a press on their scrollbars
+/// still reach them, so what a disabled element holds can be read to its end.
+fn scroll_containers_in_disabled<'a>(
+  root: &'a Node,
+  layout: &LayoutResult,
+  x: f32,
+  y: f32,
+  kept: &[(&'a Node, crate::app::hit_test::HitRect)],
+) -> Vec<(&'a Node, crate::app::hit_test::HitRect)> {
+  let mut all = Vec::new();
+  crate::app::hit_test::hit_test_tree_inspecting(root, layout, 0.0, 0.0, x, y, &mut all);
+  all.retain(|(node, _)| {
+    node.scroll_container().is_some() && !kept.iter().any(|(kept, _)| kept.node_id() == node.node_id())
+  });
+  all
+}
+
+/// The hits a scroll at the point has, innermost first: what a pointer has there and, where it is over a disabled
+/// element, the scroll containers inside that element in place of it.
+fn scroll_hits<'a>(
+  root: &'a Node,
+  layout: &LayoutResult,
+  x: f32,
+  y: f32,
+) -> Vec<(&'a Node, crate::app::hit_test::HitRect)> {
+  let mut hits = Vec::new();
+  hit_test_tree(root, layout, 0.0, 0.0, x, y, &mut hits);
+  if take_disabled_hit(&mut hits).is_none() {
+    return hits;
+  }
+  let mut inside = scroll_containers_in_disabled(root, layout, x, y, &hits);
+  inside.append(&mut hits);
+  inside
 }
 
 fn hovered_cursor<'a>(mut nodes: impl Iterator<Item = &'a Node>) -> CursorIcon {
