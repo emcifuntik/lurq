@@ -1,6 +1,8 @@
 use super::*;
 
 #[cfg(test)]
+// Renaming it would rename every test in the file.
+#[allow(clippy::module_inception)]
 mod tests {
   use super::*;
 

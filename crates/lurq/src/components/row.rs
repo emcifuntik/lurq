@@ -41,7 +41,7 @@ impl Row {
   }
 
   pub fn wrap(mut self) -> Self {
-    self.update_node(|node| crate::node::NodeUpdate::wrap(node));
+    self.update_node(crate::node::NodeUpdate::wrap);
     self
   }
 }

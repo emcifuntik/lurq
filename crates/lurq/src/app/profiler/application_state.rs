@@ -1,5 +1,4 @@
 //! Collector-owned live slots and per-session application history.
-#![cfg(feature = "perf_profile")]
 use std::{collections::VecDeque, sync::Arc, time::Instant};
 
 use super::{

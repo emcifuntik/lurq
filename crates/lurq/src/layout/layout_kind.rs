@@ -184,6 +184,12 @@ impl ScrollState {
   }
 }
 
+impl Default for ScrollState {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl ScrollState {
   pub(crate) fn track_layout(&self, watch: &Arc<crate::core::layout_dirty::LayoutWatch>) {
     self.inner.lock().unwrap().layout_subscribers.bind(watch);

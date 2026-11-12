@@ -18,6 +18,8 @@ pub(crate) mod layout_cache;
 mod layout_tracking;
 pub(crate) mod lazy_box;
 mod letter_spacing;
+// The file holds the `Node` type; paths across the crate name it.
+#[allow(clippy::module_inception)]
 pub(crate) mod node;
 pub(crate) mod node_kind;
 pub(crate) mod outer_decoration;

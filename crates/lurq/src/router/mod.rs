@@ -127,10 +127,10 @@ fn find_guard_by_index(defs: &[RouteDef], target_index: usize) -> Option<&Arc<gu
     if def.index == target_index {
       return def.guard.as_ref();
     }
-    if let RouteDefKind::Layout { children, .. } = &def.kind {
-      if let Some(g) = find_guard_by_index(children, target_index) {
-        return Some(g);
-      }
+    if let RouteDefKind::Layout { children, .. } = &def.kind
+      && let Some(g) = find_guard_by_index(children, target_index)
+    {
+      return Some(g);
     }
   }
   None

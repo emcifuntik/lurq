@@ -259,6 +259,12 @@ pub struct AnimationEngine {
   pub has_active: bool,
 }
 
+impl Default for AnimationEngine {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl AnimationEngine {
   pub fn new() -> Self {
     Self {
@@ -357,12 +363,12 @@ impl AnimationEngine {
     crate::core::layout_dirty::visit();
     let mut needs_layout = false;
     let node_id = node.node_id();
-    if node_id.is_assigned() {
-      if let Some(spec) = node.playing_animation() {
-        self.seen.insert(node_id);
-        let spec = Animation::clone(spec);
-        needs_layout = self.process_node(node, &spec, now);
-      }
+    if node_id.is_assigned()
+      && let Some(spec) = node.playing_animation()
+    {
+      self.seen.insert(node_id);
+      let spec = Animation::clone(spec);
+      needs_layout = self.process_node(node, &spec, now);
     }
 
     for child in &mut node.children {
@@ -534,8 +540,8 @@ fn find_surrounding_frames(frames: &[KeyframeEntry], progress: f32) -> (usize, u
     return (0, 0);
   }
 
-  for i in 1..frames.len() {
-    if frames[i].offset >= progress {
+  for (i, frame) in frames.iter().enumerate().skip(1) {
+    if frame.offset >= progress {
       return (i - 1, i);
     }
   }

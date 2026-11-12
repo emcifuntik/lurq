@@ -131,9 +131,7 @@ fn hit_test_tree_with_transform<'a>(
   };
   let transform = if inherited_transform.is_identity() {
     local_affine
-  } else if local_affine.is_identity() {
-    inherited_transform
-  } else if local_transform.is_identity() {
+  } else if local_affine.is_identity() || local_transform.is_identity() {
     inherited_transform
   } else {
     inherited_transform.then(&local_affine)

@@ -603,7 +603,7 @@ impl ManagedWindow {
         }
         WindowCommand::SetFullScreen(full_screen) => {
           if let Some(window) = &self.window {
-            window.set_fullscreen(full_screen.then(|| Fullscreen::Borderless(None)));
+            window.set_fullscreen(full_screen.then_some(Fullscreen::Borderless(None)));
           }
           self.tree.window().set_full_screen(full_screen);
         }
@@ -1298,10 +1298,8 @@ impl ManagedSecondaryWindow {
     self.window = Some(window);
     self.sync_window_state(tree);
     let presented = show_after_first_present && self.present_now(app, tree);
-    if show_after_first_present {
-      if let Some(window) = &self.window {
-        window.set_visible(true);
-      }
+    if show_after_first_present && let Some(window) = &self.window {
+      window.set_visible(true);
     }
     if !presented {
       self.request_redraw();
@@ -1349,7 +1347,7 @@ impl ManagedSecondaryWindow {
         }
         WindowCommand::SetFullScreen(full_screen) => {
           if let Some(window) = &self.window {
-            window.set_fullscreen(full_screen.then(|| Fullscreen::Borderless(None)));
+            window.set_fullscreen(full_screen.then_some(Fullscreen::Borderless(None)));
           }
           tree.window().set_full_screen(full_screen);
         }

@@ -13,6 +13,8 @@ use crate::{
   node::{CursorIcon, Element, color::Color},
 };
 
+// Each argument is a separate piece of panel state; bundling them is a refactor of its own.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn top_bar(
   _node_count: usize,
   overlay_enabled: bool,

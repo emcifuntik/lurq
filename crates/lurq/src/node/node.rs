@@ -787,17 +787,12 @@ pub enum ButtonKind {
   Submit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum BackgroundSize {
+  #[default]
   Stretch,
   Cover,
   Contain,
-}
-
-impl Default for BackgroundSize {
-  fn default() -> Self {
-    Self::Stretch
-  }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2661,7 +2656,7 @@ impl Node {
 
   pub fn select_style(mut self, style: crate::node::SelectStyle) -> Self {
     let trigger = style.resolved_trigger(false, false, false);
-    if let Some(padding) = trigger.padding.clone() {
+    if let Some(padding) = trigger.padding {
       self = self.padding_custom(padding);
     }
     if let Some(min_width) = trigger.min_width {
@@ -2711,7 +2706,7 @@ impl Node {
       self = self.opacity(opacity);
     }
     if let Some(padding) = &part.padding {
-      self = self.padding_custom(padding.clone());
+      self = self.padding_custom(*padding);
     }
     if let Some(min_width) = part.min_width {
       self = self.min_width(min_width);
@@ -5189,10 +5184,9 @@ impl Node {
         ..
       },
     ) = (&mut self.layout_kind, &old.layout_kind)
+      && direction == old_direction
     {
-      if direction == old_direction {
-        *state = old_state.clone();
-      }
+      *state = old_state.clone();
     }
 
     // The children that are leaving `old` are continued by no child: the rest are matched as if they were
@@ -5799,25 +5793,25 @@ impl Node {
 
   pub(crate) fn state_style(&self) -> Style {
     let mut style = Style::new();
-    if self.style_state.is_focused() {
-      if let Some(focused) = &self.state_styles.focused {
-        style.merge_from(focused);
-      }
+    if self.style_state.is_focused()
+      && let Some(focused) = &self.state_styles.focused
+    {
+      style.merge_from(focused);
     }
     if self.style_state.is_focus_visible()
       && let Some(focus_visible) = &self.state_styles.focus_visible
     {
       style.merge_from(focus_visible);
     }
-    if self.style_state.is_hovered() {
-      if let Some(hovered) = &self.state_styles.hovered {
-        style.merge_from(hovered);
-      }
+    if self.style_state.is_hovered()
+      && let Some(hovered) = &self.state_styles.hovered
+    {
+      style.merge_from(hovered);
     }
-    if self.style_state.is_active() {
-      if let Some(active) = &self.state_styles.active {
-        style.merge_from(active);
-      }
+    if self.style_state.is_active()
+      && let Some(active) = &self.state_styles.active
+    {
+      style.merge_from(active);
     }
     if self.style_state.is_drag_over()
       && let Some(drag_over) = &self.state_styles.drag_over
@@ -5938,7 +5932,7 @@ mod tests {
           Constraints::loose(Size::new(400.0, 400.0)),
           LayoutResult {
             size: Size::new(10.0, 10.0),
-            children: Vec::new().into(),
+            children: Vec::new(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
@@ -6195,7 +6189,7 @@ mod tests {
             offset: Offset::default(),
             result: LayoutResult {
               size: Size::new(50.0, 20.0),
-              children: Vec::new().into(),
+              children: Vec::new(),
               text_layout: None,
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
@@ -6208,7 +6202,7 @@ mod tests {
             offset: Offset::new(50.0, 0.0),
             result: LayoutResult {
               size: Size::new(50.0, 20.0),
-              children: Vec::new().into(),
+              children: Vec::new(),
               text_layout: None,
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
@@ -6217,8 +6211,7 @@ mod tests {
             }
             .into(),
           },
-        ]
-        .into(),
+        ],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -6257,7 +6250,7 @@ mod tests {
               offset: Offset::default(),
               result: LayoutResult {
                 size: Size::new(30.0, 20.0),
-                children: Vec::new().into(),
+                children: Vec::new(),
                 text_layout: None,
                 dropped: false,
                 holds: SubtreeHolds::UNKNOWN,
@@ -6265,8 +6258,7 @@ mod tests {
                 sticky_shifts: None,
               }
               .into(),
-            }]
-            .into(),
+            }],
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
@@ -6274,8 +6266,7 @@ mod tests {
             sticky_shifts: None,
           }
           .into(),
-        }]
-        .into(),
+        }],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -6310,7 +6301,7 @@ mod tests {
           offset: Offset::default(),
           result: LayoutResult {
             size: Size::new(100.0, 20.0),
-            children: Vec::new().into(),
+            children: Vec::new(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
@@ -6318,8 +6309,7 @@ mod tests {
             sticky_shifts: None,
           }
           .into(),
-        }]
-        .into(),
+        }],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,

@@ -2404,7 +2404,7 @@ impl RenderEngine for WgpuRenderEngine {
                     });
                     pass.set_bind_group(0, &*clip_bind_group, &[]);
                   } else {
-                    pass.set_bind_group(0, &*bind_group, &[]);
+                    pass.set_bind_group(0, bind_group, &[]);
                   }
                 }
                 CachedImageTexture::Nv12 {
@@ -2961,7 +2961,11 @@ fn create_nv12_cached_image_texture(
   globals_buffer: &wgpu::Buffer,
   image: &crate::images::ImageCmd,
 ) -> Option<CachedImageTexture> {
-  if image.image_width == 0 || image.image_height == 0 || image.image_width % 2 != 0 || image.image_height % 2 != 0 {
+  if image.image_width == 0
+    || image.image_height == 0
+    || !image.image_width.is_multiple_of(2)
+    || !image.image_height.is_multiple_of(2)
+  {
     return None;
   }
   #[cfg(target_os = "macos")]

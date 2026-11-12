@@ -375,6 +375,8 @@ pub struct ProfileSample {
 }
 
 #[derive(Clone)]
+// Boxing the pass sample would change the type of a public variant.
+#[allow(clippy::large_enum_variant)]
 pub enum SampleData {
   Pass(PassSample),
   UiUpdate(UiUpdateSample),

@@ -900,7 +900,7 @@ fn delay_ms(delay: image::Delay) -> u64 {
 }
 
 fn nv12_len(width: u32, height: u32) -> usize {
-  assert!(width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0);
+  assert!(width > 0 && height > 0 && width.is_multiple_of(2) && height.is_multiple_of(2));
   (width * height + width * height / 2) as usize
 }
 

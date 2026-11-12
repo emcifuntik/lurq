@@ -120,6 +120,8 @@ fn tree_row_window(scroll_state: &ScrollState) -> TreeRowWindow {
   TreeRowWindow { start, end }
 }
 
+// Each argument is a separate piece of panel state; bundling them is a refactor of its own.
+#[allow(clippy::too_many_arguments)]
 fn collect_tree_rows(
   node: &DevToolsNode,
   path: &mut Vec<usize>,
@@ -186,6 +188,8 @@ fn collect_tree_rows(
   }
 }
 
+// Each argument is a separate piece of panel state; bundling them is a refactor of its own.
+#[allow(clippy::too_many_arguments)]
 fn tree_row(
   node: &DevToolsNode,
   path: Vec<usize>,

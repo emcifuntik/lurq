@@ -995,6 +995,8 @@ impl LayoutEngine {
     );
   }
 
+  // The paint state inherited down the tree, one argument per piece.
+  #[allow(clippy::too_many_arguments)]
   fn collect_quads(
     &self,
     node: &Node,
@@ -1368,9 +1370,7 @@ impl LayoutEngine {
     };
     let transform = if inherited_transform.is_identity() {
       local_affine
-    } else if local_affine.is_identity() {
-      inherited_transform
-    } else if local_transform.is_identity() {
+    } else if local_affine.is_identity() || local_transform.is_identity() {
       inherited_transform
     } else {
       inherited_transform.then(&local_affine)
@@ -1715,9 +1715,7 @@ impl LayoutEngine {
           } else {
             node.get_border_radius(&self.radii.borrow())
           },
-          border: if content_uses_separate_visual_rect {
-            None
-          } else if defer_border_to_overlay {
+          border: if content_uses_separate_visual_rect || defer_border_to_overlay {
             None
           } else {
             resolved_border
@@ -2783,7 +2781,7 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2806,7 +2804,7 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2828,7 +2826,7 @@ impl LayoutEngine {
           .unwrap_or(DEFAULT_SELECT_HEIGHT);
         return LayoutResult {
           size: constraints.constrain(Size::new(width, height)),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2840,7 +2838,7 @@ impl LayoutEngine {
       NodeKind::Canvas { .. } => {
         return LayoutResult {
           size: constraints.constrain(node.intrinsic_size.unwrap_or(Size::new(300.0, 150.0))),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2855,7 +2853,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2870,7 +2868,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2885,7 +2883,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2900,7 +2898,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.viewbox_width(), data.viewbox_height()));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2915,7 +2913,7 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -2936,7 +2934,7 @@ impl LayoutEngine {
     let preferred = node.intrinsic_size.unwrap_or_default();
     LayoutResult {
       size: constraints.constrain(preferred),
-      children: vec![].into(),
+      children: vec![],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -2969,7 +2967,7 @@ impl LayoutEngine {
     };
     LayoutResult {
       size,
-      children: vec![].into(),
+      children: vec![],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3124,7 +3122,7 @@ impl LayoutEngine {
     if children.is_empty() {
       return LayoutResult {
         size: constraints.constrain(Size::default()),
-        children: vec![].into(),
+        children: vec![],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -3165,7 +3163,7 @@ impl LayoutEngine {
       let result = if child.is_overlay_declaration() {
         Arc::new(LayoutResult {
           size: Size::default(),
-          children: Vec::new().into(),
+          children: Vec::new(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
@@ -3339,7 +3337,7 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: child_layouts.into(),
+      children: child_layouts,
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3621,7 +3619,7 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: child_layouts.into(),
+      children: child_layouts,
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3696,7 +3694,7 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: child_layouts.into(),
+      children: child_layouts,
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -3886,17 +3884,18 @@ impl LayoutEngine {
     resolved_width: Option<f32>,
     resolved_height: Option<f32>,
   ) {
-    if let Some(intrinsic) = node.intrinsic_size {
-      if intrinsic.width > 0.0 && intrinsic.height > 0.0 {
-        if let (Some(w), None) = (resolved_width, resolved_height) {
-          let h = w * intrinsic.height / intrinsic.width;
-          constraints.min_height = h;
-          constraints.max_height = h;
-        } else if let (None, Some(h)) = (resolved_width, resolved_height) {
-          let w = h * intrinsic.width / intrinsic.height;
-          constraints.min_width = w;
-          constraints.max_width = w;
-        }
+    if let Some(intrinsic) = node.intrinsic_size
+      && intrinsic.width > 0.0
+      && intrinsic.height > 0.0
+    {
+      if let (Some(w), None) = (resolved_width, resolved_height) {
+        let h = w * intrinsic.height / intrinsic.width;
+        constraints.min_height = h;
+        constraints.max_height = h;
+      } else if let (None, Some(h)) = (resolved_width, resolved_height) {
+        let w = h * intrinsic.width / intrinsic.height;
+        constraints.min_width = w;
+        constraints.max_width = w;
       }
     }
   }
@@ -3946,9 +3945,8 @@ impl LayoutEngine {
         size,
         children: vec![ChildLayout {
           offset: state.content_offset(),
-          result: child_result.into(),
-        }]
-        .into(),
+          result: child_result,
+        }],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -3994,9 +3992,8 @@ impl LayoutEngine {
       size,
       children: vec![ChildLayout {
         offset: state.content_offset(),
-        result: child_result.into(),
-      }]
-      .into(),
+        result: child_result,
+      }],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -4015,7 +4012,7 @@ impl LayoutEngine {
     let Some(child) = node.children().first() else {
       return LayoutResult {
         size: Size::new(0.0, 0.0),
-        children: Vec::new().into(),
+        children: Vec::new(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -4030,9 +4027,8 @@ impl LayoutEngine {
       size,
       children: vec![ChildLayout {
         offset: Offset::default(),
-        result: child_result.into(),
-      }]
-      .into(),
+        result: child_result,
+      }],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
@@ -4049,14 +4045,14 @@ impl LayoutEngine {
     child: &Node,
     constraints: Constraints,
   ) -> Arc<LayoutResult> {
-    if let Some(Some(child_override)) = child_overrides.and_then(|overrides| overrides.get(index)) {
-      if child_override.constraints == constraints {
-        // The override was laid out before this parent layout began, which
-        // may have laid the child out again under other constraints since.
-        Self::restore_text_layout_tree(child, &child_override.result);
-        child.layout_cache.record_reuse(constraints, &child_override.result);
-        return child_override.result.clone();
-      }
+    if let Some(Some(child_override)) = child_overrides.and_then(|overrides| overrides.get(index))
+      && child_override.constraints == constraints
+    {
+      // The override was laid out before this parent layout began, which
+      // may have laid the child out again under other constraints since.
+      Self::restore_text_layout_tree(child, &child_override.result);
+      child.layout_cache.record_reuse(constraints, &child_override.result);
+      return child_override.result.clone();
     }
 
     self.layout_node(glyph_engine, child, constraints)
@@ -4087,11 +4083,10 @@ fn multiline_preferred_height(
     .map(|rows| rows.max(1) as f32 * line_height)
     .unwrap_or(line_height);
   let preferred_height = content_height.max(min_height);
-  let preferred_height = max_rows
-    .map(|rows| preferred_height.min((rows.max(1) as f32 * line_height).max(min_height)))
-    .unwrap_or(preferred_height);
 
-  preferred_height
+  max_rows
+    .map(|rows| preferred_height.min((rows.max(1) as f32 * line_height).max(min_height)))
+    .unwrap_or(preferred_height)
 }
 
 fn explicit_multiline_height(text: &str, line_height: f32) -> f32 {
@@ -4553,7 +4548,7 @@ mod tests {
       constraints,
       LayoutResult {
         size: constraints.constrain(Size::new(10.0, 10.0)),
-        children: Vec::new().into(),
+        children: Vec::new(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
@@ -4744,7 +4739,7 @@ mod tests {
     let laid = compute(&engine, &mut glyph_engine, &old);
     assert_eq!(laid.size.height, 2000.0);
 
-    let mut new: Node = crate::node::Element::from(crate::components::Spacer::new().height(3000.0)).into_node();
+    let new: Node = crate::node::Element::from(crate::components::Spacer::new().height(3000.0)).into_node();
     // The transplant: previously laid cache adopted across a frame change,
     // flags cleared (what `preserve_from` does). Guards are cleared like the
     // retained diff does for unchanged content.
@@ -4845,7 +4840,7 @@ mod tests {
     let laid = compute(&engine, &mut glyph_engine, &old);
     assert_eq!(laid.size.height, 2050.0);
 
-    let mut new = column(3000.0);
+    let new = column(3000.0);
     // Lay the new tree once so every child's own cache is fresh and correct…
     compute(&engine, &mut glyph_engine, &new);
     // …then transplant the OLD column result onto the column node with clean
@@ -4979,7 +4974,7 @@ mod tests {
     let laid = compute(&engine, &mut glyph_engine, &old);
     assert_eq!((laid.children[0].offset.x, laid.children[0].offset.y), (10.0, 20.0));
 
-    let mut new = stack(30.0, 40.0);
+    let new = stack(30.0, 40.0);
     // Lay the new tree once so the child's own cache is fresh…
     compute(&engine, &mut glyph_engine, &new);
     // …then transplant the OLD stack cache (old child offset baked in) with
@@ -5248,6 +5243,8 @@ mod tests {
 
   /// The setters and styles of the interaction states that can move layout
   /// on their own (focus-visible needs focus, which creates the state first).
+  // A table of setter pairs for one test; an alias would only add a name.
+  #[allow(clippy::type_complexity)]
   fn interaction_states() -> [(fn(&Node, bool) -> bool, fn(Node, crate::node::Style) -> Node); 4] {
     [
       (Node::set_style_hovered, Node::hovered_style),

@@ -350,7 +350,7 @@ impl Style {
       self.frame = other.frame;
     }
     if other.padding.is_some() {
-      self.padding = other.padding.clone();
+      self.padding = other.padding;
     }
     if other.flex.is_some() {
       self.flex = other.flex;

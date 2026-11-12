@@ -553,9 +553,9 @@ fn render_markdown_image(inline: &MarkdownInline, base_style: &TextStyle, theme:
 
   #[cfg(all(feature = "image", feature = "resources"))]
   {
-    return crate::components::Image::from_resource(destination)
+    crate::components::Image::from_resource(destination)
       .max_width(FILL_WIDTH)
-      .into();
+      .into()
   }
 
   #[cfg(not(all(feature = "image", feature = "resources")))]

@@ -22,6 +22,8 @@ pub struct SecondaryWindowRequest {
   /// Optional stable machine name (titles aren't unique) surfaced to external
   /// tooling such as the MCP `lurq_windows` tool.
   pub(crate) name: Option<String>,
+  // The type is read once, where it is used; an alias would only add a name.
+  #[allow(clippy::type_complexity)]
   pub(crate) build: Box<dyn FnOnce(&mut App, &mut crate::app::Tree) + Send>,
 }
 

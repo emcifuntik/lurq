@@ -11,7 +11,7 @@ use crate::node::{
   radius_value::RadiusValue,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SliderPartStyle {
   pub(crate) width: Option<f32>,
   pub(crate) height: Option<f32>,
@@ -24,24 +24,6 @@ pub struct SliderPartStyle {
   pub(crate) background_resource_image: Option<Arc<str>>,
   #[cfg(feature = "raster")]
   pub(crate) background_size: BackgroundSize,
-}
-
-impl Default for SliderPartStyle {
-  fn default() -> Self {
-    Self {
-      width: None,
-      height: None,
-      color: None,
-      border_radius: None,
-      border: None,
-      #[cfg(feature = "raster")]
-      background_image: None,
-      #[cfg(all(feature = "image", feature = "resources"))]
-      background_resource_image: None,
-      #[cfg(feature = "raster")]
-      background_size: BackgroundSize::default(),
-    }
-  }
 }
 
 impl SliderPartStyle {

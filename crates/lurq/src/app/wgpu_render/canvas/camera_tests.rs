@@ -58,7 +58,7 @@ fn gpu_canvas_camera_cache_pixels() {
         d.clear_rect(45., 45., 15., 15.);
       }
       let ticket = gpu.snapshot();
-      renderer.process(&device, &queue, &[gpu.clone()]);
+      renderer.process(&device, &queue, std::slice::from_ref(&gpu));
       let actual = ticket.wait_timeout(Duration::from_secs(15)).unwrap().unwrap();
       let expected = cpu.snapshot().try_take().unwrap().unwrap();
       let different = actual

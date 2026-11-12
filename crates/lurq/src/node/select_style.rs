@@ -130,7 +130,7 @@ impl SelectPartStyle {
       self.border_radius = other.border_radius;
     }
     if other.padding.is_some() {
-      self.padding = other.padding.clone();
+      self.padding = other.padding;
     }
     if other.box_shadow.is_some() {
       self.box_shadow = other.box_shadow.clone();

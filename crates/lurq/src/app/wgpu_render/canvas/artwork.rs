@@ -3,21 +3,21 @@ use super::*;
 impl Renderer {
   pub(super) fn forget_artwork(&mut self, queue: &Queue, canvas: &CanvasHandle) {
     let id = canvas.surface_id();
-    if let Some(back) = self.surfaces.get_mut(&id) {
-      if let Some(art) = back.artwork.take() {
-        self.retired_artwork.push(ArtworkLease {
-          ready: presentation_pool::completion(queue),
-          art,
-        });
-      }
+    if let Some(back) = self.surfaces.get_mut(&id)
+      && let Some(art) = back.artwork.take()
+    {
+      self.retired_artwork.push(ArtworkLease {
+        ready: presentation_pool::completion(queue),
+        art,
+      });
     }
-    if let Some((_, front)) = self.fronts.get_mut(&id) {
-      if let Some(art) = front.artwork.take() {
-        self.retired_artwork.push(ArtworkLease {
-          ready: presentation_pool::completion(queue),
-          art,
-        });
-      }
+    if let Some((_, front)) = self.fronts.get_mut(&id)
+      && let Some(art) = front.artwork.take()
+    {
+      self.retired_artwork.push(ArtworkLease {
+        ready: presentation_pool::completion(queue),
+        art,
+      });
     }
     self.account_presentation(canvas);
   }
