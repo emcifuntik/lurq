@@ -5,9 +5,10 @@ use crate::{
   core::{ElementRef, Signal, SignalValue},
   layout::{Alignment, StackAlignment, layout_kind::Justify},
   node::{
-    Element, Node, SelectIcon, SelectStyle, SyntheticNodeRole,
+    Element, Node, SelectAdornmentState, SelectIcon, SelectStyle, SyntheticNodeRole,
     dimension::Dimension,
     node_kind::{SelectChangeCallback, TextOverflow},
+    select_icon::SelectAdornment,
   },
 };
 
@@ -21,10 +22,11 @@ where
 }
 
 /// One option of a [`Select`]: a value, its label, an optional detail line
-/// drawn under the label (for example why the option is disabled), and
-/// whether it is disabled. Disabled options cannot be chosen by pointer or
-/// keyboard, never take the hover or keyboard highlight, and are skipped by
-/// arrow keys, Home/End and type-ahead.
+/// drawn under the label (for example why the option is disabled), optional
+/// elements before and after the label (a brand mark, a status dot, a badge),
+/// and whether it is disabled. Disabled options cannot be chosen by pointer
+/// or keyboard, never take the hover or keyboard highlight, and are skipped
+/// by arrow keys, Home/End and type-ahead.
 ///
 /// `(value, label)` tuples convert into enabled options without a detail.
 #[derive(Clone)]
@@ -32,6 +34,8 @@ pub struct SelectOption<T> {
   value: T,
   label: Arc<str>,
   detail: Option<Arc<str>>,
+  leading: Option<SelectAdornment>,
+  trailing: Option<SelectAdornment>,
   disabled: bool,
 }
 
@@ -41,6 +45,8 @@ impl<T> SelectOption<T> {
       value,
       label: label.into(),
       detail: None,
+      leading: None,
+      trailing: None,
       disabled: false,
     }
   }
@@ -52,10 +58,66 @@ impl<T> SelectOption<T> {
     self
   }
 
+  /// An element drawn before the label, such as an icon or a brand mark. It
+  /// keeps its own size, sits `SelectStyle::option_adornment_gap` from the
+  /// label and is centred on the label's line. The closed field of a
+  /// single-select shows it for the selected option.
+  ///
+  /// The element is decorative: the option's name for type-ahead and
+  /// automation stays its label. Built menus are plain nodes, so pass an
+  /// icon, SVG, text or layout element, not a stateful component.
+  ///
+  /// The same element is drawn in every state of the row; use
+  /// [`leading_with`](Self::leading_with) for one that follows the state.
+  pub fn leading(mut self, element: impl Into<Element>) -> Self {
+    self.leading = Some(fixed_adornment(element.into()));
+    self
+  }
+
+  /// A leading element built for the state it is drawn in: whether the
+  /// option is selected, highlighted or disabled, whether it is on the closed
+  /// field, and the text colour of the row or field. Called each time the
+  /// row or field is built, so a mark can take the label's colour:
+  ///
+  /// ```ignore
+  /// SelectOption::new(value, "Claude Code").leading_with(|state| mark(state.text_color.clone()))
+  /// ```
+  pub fn leading_with<E>(mut self, build: impl Fn(&SelectAdornmentState) -> E + Send + Sync + 'static) -> Self
+  where
+    E: Into<Element>,
+  {
+    self.leading = Some(Arc::new(move |state| build(state).into()));
+    self
+  }
+
+  /// An element drawn after the label, at the row's trailing edge; otherwise
+  /// like [`leading`](Self::leading).
+  pub fn trailing(mut self, element: impl Into<Element>) -> Self {
+    self.trailing = Some(fixed_adornment(element.into()));
+    self
+  }
+
+  /// A trailing element built for the state it is drawn in; see
+  /// [`leading_with`](Self::leading_with).
+  pub fn trailing_with<E>(mut self, build: impl Fn(&SelectAdornmentState) -> E + Send + Sync + 'static) -> Self
+  where
+    E: Into<Element>,
+  {
+    self.trailing = Some(Arc::new(move |state| build(state).into()));
+    self
+  }
+
   pub fn disabled(mut self, disabled: bool) -> Self {
     self.disabled = disabled;
     self
   }
+}
+
+/// An adornment that draws a copy of `element` in every state.
+fn fixed_adornment(element: Element) -> SelectAdornment {
+  // An element is `Send` but not `Sync`; the lock makes the builder both.
+  let element = std::sync::Mutex::new(element);
+  Arc::new(move |_| element.lock().unwrap().clone())
 }
 
 impl<T, L> From<(T, L)> for SelectOption<T>
@@ -87,6 +149,10 @@ where
 
 #[derive(Clone)]
 pub struct SelectTriggerState {
+  /// The selected option's leading element; `None` in a multi-select.
+  pub leading: Option<Element>,
+  /// The selected option's trailing element; `None` in a multi-select.
+  pub trailing: Option<Element>,
   pub label: Option<Arc<str>>,
   pub placeholder: Option<Arc<str>>,
   pub selected_labels: Vec<Arc<str>>,
@@ -202,7 +268,14 @@ where
     let labels: Vec<Arc<str>> = self.options.iter().map(|option| option.label.clone()).collect();
     let details: Vec<Option<Arc<str>>> = self.options.iter().map(|option| option.detail.clone()).collect();
     let disabled: Vec<bool> = self.options.iter().map(|option| option.disabled).collect();
-    let values: Vec<T> = self.options.into_iter().map(|option| option.value).collect();
+    let mut leading = Vec::with_capacity(self.options.len());
+    let mut trailing = Vec::with_capacity(self.options.len());
+    let mut values = Vec::with_capacity(self.options.len());
+    for option in self.options {
+      leading.push(option.leading);
+      trailing.push(option.trailing);
+      values.push(option.value);
+    }
 
     let (selected, multiple, on_change, binding) = match self.binding {
       Binding::Single(signal) => {
@@ -250,7 +323,24 @@ where
       [label] => Some(label.clone()),
       many => Some(Arc::from(format!("{} selected", many.len()))),
     };
+    let single = match (multiple, selected.as_slice()) {
+      (false, [index]) => Some(*index),
+      _ => None,
+    };
+    let field = SelectAdornmentState {
+      selected: true,
+      highlighted: false,
+      disabled: single.is_some_and(|index| disabled[index]),
+      in_field: true,
+      text_color: self.style.resolved_trigger(false, false, false).text_color,
+    };
+    let adornment = |slots: &[Option<SelectAdornment>]| {
+      let build = slots.get(single?)?.as_ref()?;
+      Some(build(&field))
+    };
     let trigger_state = SelectTriggerState {
+      leading: adornment(&leading),
+      trailing: adornment(&trailing),
       label,
       placeholder: self.placeholder.clone(),
       selected_count: selected.len(),
@@ -267,6 +357,7 @@ where
       .with_children([trigger])
       .select_labels(labels)
       .select_options_meta(details, disabled)
+      .select_option_adornments(leading, trailing)
       .select_selected(selected)
       .select_multiple(multiple)
       .select_placeholder(self.placeholder)
@@ -301,7 +392,23 @@ fn default_trigger(state: SelectTriggerState, style: &SelectStyle) -> Node {
     None => chevron_node(&style.chevron, &trigger, style),
   };
 
-  Node::row(8.0, Alignment::Center, vec![text_node, chevron])
+  let content = if state.leading.is_none() && state.trailing.is_none() {
+    text_node
+  } else {
+    let slot = |element: Element| element.into_node().flex_shrink(0.0);
+    let children = state
+      .leading
+      .map(slot)
+      .into_iter()
+      .chain([text_node])
+      .chain(state.trailing.map(slot))
+      .collect();
+    Node::row(style.option_adornment_gap, Alignment::Center, children)
+      .min_width(0.0)
+      .flex(1.0)
+  };
+
+  Node::row(8.0, Alignment::Center, vec![content, chevron])
     .justify(Justify::Start)
     .width(Dimension::Pct(100.0))
 }
