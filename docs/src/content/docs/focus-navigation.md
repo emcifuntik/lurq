@@ -110,7 +110,7 @@ Button::new("Save")
   .focus_visible(|style| style.border_inside(BorderSize::Sm, PaletteColor::BorderFocus));
 ```
 
-Use `.focused(...)` / `.focused_style(...)` for a style on any focus, and `.focus_visible(...)` / `.focus_visible_style(...)` for a focus ring.
+Use `.focused(...)` / `.focused_style(...)` for a style on any focus, and `.focus_visible(...)` / `.focus_visible_style(...)` for a focus ring. A ring that sits outside the control and moves nothing is an [outline](../styling-events/#outline): `.focus_visible(|style| style.outline(Outline::new(2.0, PaletteColor::BorderFocus).offset(2.0)))`.
 
 Controls whose visuals are drawn from part styles have part-level focus styles, layered like their hovered styles. They show while the control is focus-visible, like the native focus ring of a browser's checkbox, range input and select: a click or a drag does not show them, Tab or a key press does. They change paint only; a width or height in them is ignored so focus never moves layout:
 

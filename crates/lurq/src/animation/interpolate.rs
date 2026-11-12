@@ -176,7 +176,7 @@ pub(crate) fn read_target(node: &crate::node::Node, prop: AnimatableProperty) ->
     AnimatableProperty::OffsetY => read_offset_y(node).map(AnimatableValue::Float),
     AnimatableProperty::Width => read_target_frame_dim(node, &style, true).map(AnimatableValue::Float),
     AnimatableProperty::Height => read_target_frame_dim(node, &style, false).map(AnimatableValue::Float),
-    AnimatableProperty::Opacity => Some(AnimatableValue::Float(node.opacity)),
+    AnimatableProperty::Opacity => Some(AnimatableValue::Float(style.opacity.unwrap_or(node.opacity))),
     AnimatableProperty::Blur => Some(AnimatableValue::Float(node.blur)),
     AnimatableProperty::BackdropBlur => Some(AnimatableValue::Float(node.backdrop_blur)),
     AnimatableProperty::Transform => decompose(&node.transform).map(AnimatableValue::Transform),

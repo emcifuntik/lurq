@@ -33,6 +33,7 @@ Common visual modifiers:
 | `.border_center(width, color)` | Border centered on the element edge from a concrete width or `BorderSize`. |
 | `.border_outside(width, color)` | Border outside the element bounds from a concrete width or `BorderSize`. |
 | `.box_shadow(shadow)` | Drop or inset shadows from a `ShadowStyle` role, a `BoxShadow`, or a list. See [Box Shadows](#box-shadows). |
+| `.outline(outline)` | A line around the element, outside its box, that takes no room in layout. See [Outline](#outline). |
 | `.opacity(value)` | Fade the element and its subtree as one group. See [Opacity](#opacity). |
 | `.blur(radius)` | Blur the element and its subtree as one layer. See [Blur](../blur/). |
 | `.backdrop_blur(radius)` | Blur what is painted behind the element: frosted glass. See [Blur](../blur/#frosted-glass). |
@@ -237,6 +238,36 @@ How shadows paint:
 
 Both native backends evaluate the blurred rounded rect analytically in the quad shader (a closed-form `erf` along one axis, eight samples along the other), so a shadow is one more instance in the quad pipeline: no offscreen pass and no blur texture. wgpu and DX12 render the same pixels; the devtools screenshot renderer uses the same formula on the CPU.
 
+## Outline
+
+`.outline(Outline::new(width, color))` draws a line around an element, outside its box, as CSS `outline` does, and
+`.offset(px)` on the outline leaves a gap between the box and the line, as `outline-offset` does. It is what a focus
+ring is made of:
+
+```rust
+use lurq::{
+  app::theme::PaletteColor,
+  components::Button,
+  node::Outline,
+};
+
+Button::new("Save")
+  .rounded(6.0)
+  .focus_visible(|style| style.outline(Outline::new(2.0, PaletteColor::BorderFocus).offset(2.0)))
+```
+
+- The width is logical pixels or a `BorderSize` role; the color is a concrete color or a `PaletteColor`.
+- It takes no room in layout: showing or hiding it moves nothing, unlike a border, which is part of the box.
+- The line follows the element's corner radii, grown by the offset and the width, so the ring stays concentric with a
+  rounded control. A square corner stays square.
+- A negative offset draws the line inside the box.
+- It is painted over the element's own content. A sibling painted later still covers it where they overlap.
+- It is inside the clips the element is under, as an outer shadow is: an element flush against the edge of a container
+  that clips, or of a scroll container, loses the part of its ring past that edge. Leave padding for it there.
+- An outline with no width, or `Outline::none()`, paints nothing; a state style uses `Outline::none()` to remove the
+  element's own outline.
+- On a live element use `ElementHandle::set_outline`.
+
 ## Hover, Active, And Focus Styles
 
 State styles merge into the base style while the node is hovered, active, focused, or focus-visible.
@@ -258,6 +289,32 @@ Text::new("Save")
 The focused style (`.focused(...)`) shows whenever the node has focus, whether a click, Tab, or a focus request put it there. The focus-visible style (`.focus_visible(...)`) shows only for keyboard focus, like CSS `:focus-visible`: Tab or a key press shows it, a click does not, and a text input shows it for any focus. Use it for focus rings. Checkboxes, sliders and selects also have part-level focus styles, which follow focus-visible; see [Focus-Visible](../focus-navigation/#focus-visible) and [Focused Styles](../focus-navigation/#focused-styles).
 
 A fifth state style, `.drag_over(...)` (`drag_over_style`), applies while files from the OS are dragged over the node; see [File Drag And Drop](#file-drag-and-drop).
+
+A state style can also set:
+
+- `.foreground(color)`: the color of the text in the element and under it while the state holds (see
+  [Foreground](#foreground)), so one style recolors a button's label and icon together.
+- `.opacity(value)`: the opacity of the element and its subtree while the state holds, in place of the element's own. A
+  `Transition::opacity()` on the element animates the change.
+- `.outline(outline)`: an [outline](#outline) while the state holds, typically a focus ring in `focus_visible`.
+
+These three change painting only. Where several state styles set the same value, the one applied last wins: drag-over,
+then active, hovered, focus-visible, focused.
+
+```rust
+use lurq::{components::{Row, Text}, node::Outline};
+
+// A ghost button: one hover style changes the fill and the label.
+Row::new()
+  .padding_horizontal(12.0)
+  .padding_vertical(8.0)
+  .rounded(6.0)
+  .foreground("#18181b")
+  .hovered(|style| style.background("#e4e4e9").foreground("#09090b"))
+  .active(|style| style.opacity(0.8))
+  .focus_visible(|style| style.outline(Outline::new(2.0, "#71717a").offset(2.0)))
+  .child(Text::new("Cancel"))
+```
 
 State styles can affect layout if they change frame, padding, or flex. That is supported, but it can force relayout when interaction state changes.
 

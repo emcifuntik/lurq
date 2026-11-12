@@ -537,6 +537,7 @@ pub(crate) trait NodeUpdate {
   fn background(&mut self, color: impl Into<BackgroundColor>);
   fn background_gradient(&mut self, gradient: impl Into<Gradient>);
   fn foreground(&mut self, color: impl Into<TextColor>);
+  fn outline(&mut self, outline: crate::node::outline::Outline);
   fn caret_color(&mut self, color: impl Into<TextColor>);
   fn selection_color(&mut self, color: impl Into<TextColor>);
   fn text_input_caret_mode(&mut self, mode: CaretMode);
@@ -872,6 +873,7 @@ pub(crate) struct RareStyle {
   pub(crate) box_shadow: Option<BoxShadowValue>,
   /// The text color the node gives itself and its subtree; see [`Node::foreground`].
   pub(crate) foreground: Option<TextColor>,
+  pub(crate) outline: Option<crate::node::outline::Outline>,
   pub(crate) caret_color: Option<TextColor>,
   pub(crate) selection_color: Option<TextColor>,
   pub(crate) caret_mode: Option<CaretMode>,
@@ -1261,6 +1263,10 @@ impl NodeUpdate for Node {
 
   fn foreground(&mut self, color: impl Into<TextColor>) {
     self.rare_style.foreground = Some(color.into());
+  }
+
+  fn outline(&mut self, outline: crate::node::outline::Outline) {
+    self.rare_style.outline = Some(outline);
   }
 
   fn caret_color(&mut self, color: impl Into<TextColor>) {
@@ -2837,6 +2843,13 @@ impl Node {
     self
   }
 
+  /// Draws a line around the node, outside its box: see
+  /// [`Outline`](crate::node::outline::Outline). It is paint only.
+  pub fn outline(mut self, outline: crate::node::outline::Outline) -> Self {
+    self.rare_style.outline = Some(outline);
+    self
+  }
+
   pub(crate) fn caret_color(mut self, color: impl Into<TextColor>) -> Self {
     self.set_caret_color(color.into());
     self
@@ -4363,8 +4376,53 @@ impl Node {
     self.background_color().and_then(BackgroundColor::as_color)
   }
 
-  pub(crate) fn foreground_value(&self) -> Option<&TextColor> {
-    self.rare_style.foreground.as_ref()
+  /// What `pick` finds in the state style that wins for it: of the styles
+  /// whose state the node is in that set the value, the one applied last
+  /// (drag-over, then active, hovered, focus-visible, focused). Builds no
+  /// merged style, and reads a state only for a style that sets the value.
+  fn state_style_value<'a, T>(&'a self, pick: impl Fn(&'a Style) -> Option<T>) -> Option<T> {
+    let states = &*self.state_styles;
+    let state = &self.style_state;
+    if let Some(value) = states.drag_over.as_ref().and_then(&pick)
+      && state.is_drag_over()
+    {
+      return Some(value);
+    }
+    if let Some(value) = states.active.as_ref().and_then(&pick)
+      && state.is_active()
+    {
+      return Some(value);
+    }
+    if let Some(value) = states.hovered.as_ref().and_then(&pick)
+      && state.is_hovered()
+    {
+      return Some(value);
+    }
+    if let Some(value) = states.focus_visible.as_ref().and_then(&pick)
+      && state.is_focus_visible()
+    {
+      return Some(value);
+    }
+    if let Some(value) = states.focused.as_ref().and_then(&pick)
+      && state.is_focused()
+    {
+      return Some(value);
+    }
+    None
+  }
+
+  /// The foreground in effect: the winning state style's over the node's own.
+  pub(crate) fn effective_foreground(&self) -> Option<&TextColor> {
+    self
+      .state_style_value(|style| style.foreground.as_ref())
+      .or(self.rare_style.foreground.as_ref())
+  }
+
+  /// The outline in effect: the winning state style's over the node's own.
+  pub(crate) fn effective_outline(&self) -> Option<&crate::node::outline::Outline> {
+    self
+      .state_style_value(|style| style.outline.as_deref())
+      .or(self.rare_style.outline.as_ref())
   }
 
   pub(crate) fn caret_color_value(&self) -> Option<TextColor> {
@@ -4489,10 +4547,12 @@ impl Node {
       .and_then(|borders| borders.resolve_with_sizes(palette, border_sizes))
   }
 
-  /// The node's opacity as drawn: the opacity it was built with, or a running transition or animation's.
+  /// The node's opacity as drawn: a running transition or animation's, else the winning state style's, else the
+  /// opacity it was built with.
   pub(crate) fn effective_opacity(&self) -> f32 {
     self
       .animation_override_float(crate::animation::AnimatableProperty::Opacity)
+      .or_else(|| self.state_style_value(|style| style.opacity))
       .unwrap_or(self.opacity)
   }
 

@@ -51,6 +51,7 @@ mod input_token_quads;
 #[cfg(feature = "perf_profile")]
 mod layout_trace;
 mod opacity_groups;
+mod outline_quads;
 mod scrollbar_quads;
 mod select_quads;
 mod selection_layout;
@@ -1003,7 +1004,7 @@ impl LayoutEngine {
             child_abs_y,
             inherited_transform,
             child_cull_clip,
-            self.box_shadow_outset(child_node),
+            self.paint_outset(child_node),
           )
         {
           continue;
@@ -1090,7 +1091,7 @@ impl LayoutEngine {
           child_abs_y,
           transform,
           child_cull_clip,
-          self.box_shadow_outset(child_node),
+          self.paint_outset(child_node),
         )
       {
         continue;
@@ -1984,6 +1985,7 @@ impl LayoutEngine {
         clip,
       });
     }
+    self.push_outline_quad(node, result, abs_x, abs_y, opacity, transform, clip, quads);
 
     if let Some((state, direction)) = node.scroll_container() {
       state.set_viewport_position(abs_x, abs_y);
@@ -4128,6 +4130,7 @@ fn node_is_plain_logical_wrapper(node: &Node) -> bool {
     && node.border.as_ref().is_none()
     && node.rare_style.box_shadow.is_none()
     && node.rare_style.foreground.is_none()
+    && node.rare_style.outline.is_none()
     && node.rare_style.caret_color.is_none()
     && node.rare_style.caret_mode.is_none()
     && node.scrollbar_style.as_ref().is_none()

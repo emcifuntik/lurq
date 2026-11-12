@@ -15,7 +15,7 @@ impl LayoutEngine {
   pub(super) fn enter_foreground_scope(&self, node: &Node) -> Option<Color> {
     let inherited = self.foreground.get();
     let own = node
-      .foreground_value()
+      .effective_foreground()
       .and_then(|color| color.resolve(&self.palette.borrow()));
     if own.is_some() {
       self.foreground.set(own);

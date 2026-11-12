@@ -21,6 +21,7 @@ mod letter_spacing;
 pub(crate) mod node;
 pub(crate) mod node_kind;
 pub(crate) mod outer_decoration;
+pub mod outline;
 pub mod padding;
 pub mod radius_value;
 pub mod select_icon;
@@ -60,6 +61,7 @@ pub use node::{
   VoidEventHandler,
 };
 pub(crate) use node::{Node, NodeUpdate, SyntheticNodeRole};
+pub use outline::Outline;
 pub use radius_value::RadiusValue;
 pub use select_icon::{SelectCheckmarkPosition, SelectIcon};
 pub use select_style::{SelectPartStyle, SelectStyle};

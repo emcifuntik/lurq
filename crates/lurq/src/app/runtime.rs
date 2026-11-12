@@ -8702,6 +8702,13 @@ impl<'t> ElementHandle<'t> {
     self.invalidate_render();
   }
 
+  /// Sets the line drawn around the element; see `Outline`.
+  pub fn set_outline(&mut self, outline: crate::node::Outline) {
+    let Some(node) = self.node_mut() else { return };
+    NodeUpdate::outline(node, outline);
+    self.invalidate_render();
+  }
+
   /// Replaces the node's text content. On `TextInput` nodes use
   /// [`ElementHandle::as_text_input`] + `set_value` instead — the input's
   /// signal-backed value overwrites raw text content on the next pass.

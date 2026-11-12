@@ -207,6 +207,14 @@ macro_rules! impl_into_node {
         self
       }
 
+      /// Draws a line around the element, outside its box and taking no
+      /// room in layout, like CSS `outline` with `outline-offset` (see
+      /// `Outline`). Put it in `focus_visible` for a focus ring.
+      pub fn outline(mut self, outline: $crate::node::Outline) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::outline(node, outline));
+        self
+      }
+
       /// CSS-like `box-shadow`: a [`ShadowStyle`](crate::app::theme::ShadowStyle)
       /// theme role, one [`BoxShadow`](crate::node::BoxShadow), or a list
       /// (the first on top). Paint only: it does not change layout or hit testing.

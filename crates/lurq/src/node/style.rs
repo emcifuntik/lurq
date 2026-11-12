@@ -10,9 +10,11 @@ use crate::{
     cursor::CursorIcon,
     dimension::Dimension,
     interaction_state::InteractionState,
+    outline::Outline,
     padding::Padding,
     radius_value::RadiusValue,
     spacing_value::SpacingValue,
+    text_color::TextColor,
   },
 };
 
@@ -22,6 +24,9 @@ pub struct Style {
   pub(crate) border_radius: Option<ThemedBorderRadius>,
   pub(crate) border: Option<Borders>,
   pub(crate) box_shadow: Option<Box<BoxShadowValue>>,
+  pub(crate) outline: Option<Box<Outline>>,
+  pub(crate) foreground: Option<TextColor>,
+  pub(crate) opacity: Option<f32>,
   pub(crate) cursor: Option<CursorIcon>,
   pub(crate) frame: Option<FrameConstraints>,
   pub(crate) padding: Option<Padding>,
@@ -287,6 +292,26 @@ impl Style {
     self
   }
 
+  /// The outline while this style applies: a focus ring in a focus-visible
+  /// style. [`Outline::none`] removes the element's own outline.
+  pub fn outline(mut self, outline: Outline) -> Self {
+    self.outline = Some(Box::new(outline));
+    self
+  }
+
+  /// The color of the text in the element and under it while this style
+  /// applies; see `Node::foreground`.
+  pub fn foreground(mut self, color: impl Into<TextColor>) -> Self {
+    self.foreground = Some(color.into());
+    self
+  }
+
+  /// The opacity of the element and its subtree while this style applies.
+  pub fn opacity(mut self, value: f32) -> Self {
+    self.opacity = Some(value);
+    self
+  }
+
   pub fn cursor(mut self, cursor: CursorIcon) -> Self {
     self.cursor = Some(cursor);
     self
@@ -306,6 +331,15 @@ impl Style {
     }
     if other.box_shadow.is_some() {
       self.box_shadow = other.box_shadow.clone();
+    }
+    if other.outline.is_some() {
+      self.outline = other.outline.clone();
+    }
+    if other.foreground.is_some() {
+      self.foreground = other.foreground.clone();
+    }
+    if other.opacity.is_some() {
+      self.opacity = other.opacity;
     }
     if other.cursor.is_some() {
       self.cursor = other.cursor;
