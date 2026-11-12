@@ -47,7 +47,7 @@ use crate::{
     Size,
     quad::{ClipRect, RichTextSpan},
     render_list::{GlyphAtlas, GlyphAtlasDirtyRect, GlyphCmd},
-    text_style::{FontFeatures, FontStyle, TextAlign, TextStyle, alias_name, cosmic_family},
+    text_style::{FontFeatures, FontStyle, TextAlign, TextStyle, VerticalAlign, alias_name, cosmic_family},
   },
   node::{
     color::Color,
@@ -1307,6 +1307,70 @@ impl GlyphEngine {
       return;
     }
     self.rasterize_rich_text_with_snap_into(spans, max_width, wrap, origin_x, origin_y, true, out);
+  }
+
+  /// Paints `text`, untransformed, in a box at (`origin_x`, `box_y`) that
+  /// is `box_height` tall: its glyphs at whole pixels, where `align` puts
+  /// its first line, cut to `clip`, each with `order` and `clip` set. What
+  /// `text_vertical_align_offset` and `rasterize_text_with_wrap_clipped_into`
+  /// append, in one lookup when the text was painted before: a frame that
+  /// changes no text spends one hash and one comparison on each.
+  #[allow(clippy::too_many_arguments)]
+  pub(crate) fn paint_text_into(
+    &mut self,
+    text: &str,
+    style: &TextStyle,
+    max_width: f32,
+    wrap: bool,
+    align: VerticalAlign,
+    box_height: f32,
+    origin_x: f32,
+    box_y: f32,
+    clip: ClipRect,
+    order: usize,
+    out: &mut Vec<GlyphCmd>,
+  ) {
+    // The offset and the glyphs are one entry when both are keyed alike; a
+    // traced run goes the long way, which prints it.
+    if effective_text_wrap(max_width, wrap) == wrap && glyph_debug_marker().is_none() {
+      let fingerprint = self.texts.fingerprint(text, style, max_width, wrap);
+      if let Some(entry) = self.texts.get(fingerprint, text, style, max_width, wrap) {
+        let offset = if box_height <= 0.0 || align == VerticalAlign::LineBox {
+          Some(0.0)
+        } else if align == VerticalAlign::Center {
+          entry
+            .optical_extents
+            .map(|extents| extents.map_or(0.0, |(top, bottom)| (box_height - (bottom - top)) * 0.5 - top))
+        } else {
+          entry.vertical_extents.map(|extents| {
+            extents.map_or(0.0, |extents| {
+              vertical_align::offset_for_extents(align, extents, box_height)
+            })
+          })
+        };
+        if let (Some(offset), Some(cached)) = (offset, entry.glyphs(GlyphPlacement::Snapped)) {
+          #[cfg(feature = "perf_profile")]
+          let append_start = Instant::now();
+          append_painted_glyph_cmds(cached, origin_x, box_y + offset, style, clip, order, out);
+          let hits = cached.len();
+          #[cfg(feature = "perf_profile")]
+          {
+            self.profile.append_cached += append_start.elapsed();
+          }
+          self.glyph_hits += hits;
+          // The offset's lookup, where one was needed.
+          self.measure_hits += usize::from(box_height > 0.0 && align != VerticalAlign::LineBox);
+          return;
+        }
+      }
+    }
+    let origin_y = box_y + self.text_vertical_align_offset(text, style, max_width, wrap, align, box_height);
+    let start = out.len();
+    self.rasterize_text_with_wrap_clipped_into(text, style, max_width, wrap, origin_x, origin_y, clip, out);
+    for glyph in &mut out[start..] {
+      glyph.order = order;
+      glyph.clip = clip;
+    }
   }
 
   #[cfg(test)]
@@ -3327,6 +3391,49 @@ fn measure_buffer(buffer: &Buffer, fallback_line_height: f32) -> Size {
     0.0
   };
   Size::new(width, height)
+}
+
+/// The glyph commands of a text painted at whole pixels from (`origin_x`,
+/// `origin_y`): those of `cached` that `clip` does not cut away, each with
+/// `order` and `clip` set. What `append_glyph_cmds_from_cached` appends for
+/// snapped glyphs, written once.
+fn append_painted_glyph_cmds(
+  cached: &[CachedGlyph],
+  origin_x: f32,
+  origin_y: f32,
+  style: &TextStyle,
+  clip: ClipRect,
+  order: usize,
+  out: &mut Vec<GlyphCmd>,
+) {
+  let color = style.color.to_linear_f32_array();
+  out.reserve(cached.len());
+  for glyph in cached {
+    let x = origin_x + glyph.x;
+    let y = origin_y + glyph.y;
+    if !glyph_rect_intersects_clip(x, y, glyph.width as f32, glyph.height as f32, Some(clip)) {
+      continue;
+    }
+    out.push(GlyphCmd {
+      order,
+      x: x.round(),
+      y: y.round(),
+      width: glyph.width as f32,
+      height: glyph.height as f32,
+      color,
+      atlas_min: [glyph.atlas_x as f32, glyph.atlas_y as f32],
+      atlas_max: [
+        (glyph.atlas_x + glyph.width) as f32,
+        (glyph.atlas_y + glyph.height) as f32,
+      ],
+      transform: [1.0, 0.0, 0.0, 1.0],
+      transform_origin: [0.0, 0.0],
+      sharpness: 1.0,
+      color_glyph: glyph.is_color,
+      shadow_sigma: 0.0,
+      clip,
+    });
+  }
 }
 
 fn append_glyph_cmds_from_cached(
@@ -5533,6 +5640,107 @@ mod tests {
     assert!(engine.shaped_texts.take(&text(199), &style).is_none());
     // The places a text taken and put again leaves behind do not pile up.
     assert!(engine.shaped_texts.places() <= engine.shaped_texts.len() * 2 + 64 + 1);
+  }
+
+  #[test]
+  fn painting_a_text_in_one_lookup_appends_what_the_two_calls_append() {
+    use crate::layout::text_style::VerticalAlign;
+    let signature = |glyphs: &[GlyphCmd]| {
+      glyphs
+        .iter()
+        .map(|glyph| {
+          (
+            (glyph.order, glyph.x, glyph.y, glyph.width, glyph.height),
+            (glyph.color, glyph.atlas_min, glyph.atlas_max, glyph.color_glyph),
+            (
+              glyph.transform,
+              glyph.transform_origin,
+              glyph.sharpness,
+              glyph.shadow_sigma,
+            ),
+            (
+              glyph.clip.x,
+              glyph.clip.y,
+              glyph.clip.width,
+              glyph.clip.height,
+              glyph.clip.active,
+            ),
+          )
+        })
+        .collect::<Vec<_>>()
+    };
+    let clips = [
+      ClipRect::default(),
+      // Cuts the text's lower lines and its right edge.
+      ClipRect {
+        x: 3.0,
+        y: 5.0,
+        width: 120.0,
+        height: 30.0,
+        active: true,
+        border_radius: None,
+      },
+    ];
+    let aligns = [
+      VerticalAlign::Top,
+      VerticalAlign::Center,
+      VerticalAlign::Bottom,
+      VerticalAlign::LineBox,
+    ];
+    let style = TextStyle {
+      color: crate::node::color::Color::new(20, 40, 60, 200),
+      ..TextStyle::default()
+    };
+    let mut painted = GlyphEngine::new();
+    let mut reference = GlyphEngine::new();
+    for text in SHAPED_TEXTS {
+      for (width, wrap) in [(160.0, true), (f32::MAX, false), (f32::MAX, true)] {
+        for (order, align) in aligns.into_iter().enumerate() {
+          for clip in clips {
+            for box_height in [0.0, 19.2, 80.0] {
+              let mut expected = Vec::new();
+              let offset = reference.text_vertical_align_offset(text, &style, width, wrap, align, box_height);
+              reference.rasterize_text_with_wrap_clipped_into(
+                text,
+                &style,
+                width,
+                wrap,
+                3.0,
+                7.0 + offset,
+                clip,
+                &mut expected,
+              );
+              for glyph in &mut expected {
+                glyph.order = order;
+                glyph.clip = clip;
+              }
+              // The first time through the two calls, then from the entry.
+              for pass in 0..2 {
+                let mut glyphs = Vec::new();
+                painted.paint_text_into(
+                  text,
+                  &style,
+                  width,
+                  wrap,
+                  align,
+                  box_height,
+                  3.0,
+                  7.0,
+                  clip,
+                  order,
+                  &mut glyphs,
+                );
+                assert_eq!(
+                  signature(&glyphs),
+                  signature(&expected),
+                  "{text:?} at {width}, wrap {wrap}, align {order}, box {box_height}, pass {pass}"
+                );
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   #[test]

@@ -2909,71 +2909,78 @@ impl Tree {
               quad.y * scale + quad.height * scale * 0.5,
             ]);
           let glyph_clip = expand_text_clip_for_rasterization(scaled_clip);
-          let text_y = scaled_y
-            + glyph_engine.text_vertical_align_offset(
+          if quad.transform.is_identity() {
+            // Where the text sits in its box and its glyphs, with their
+            // order and clip: one lookup for a text painted before.
+            glyph_engine.paint_text_into(
               text,
               &scaled_style,
               max_width,
               *wrap,
               *vertical_align,
               scaled_height,
-            );
-          if quad.transform.is_identity() {
-            glyph_engine.rasterize_text_with_wrap_clipped_into(
-              text,
-              &scaled_style,
-              max_width,
-              *wrap,
               quad.x * scale,
-              text_y,
+              scaled_y,
               glyph_clip,
-              &mut glyphs,
-            );
-          } else if *transform_mode == TextTransformMode::Rasterized {
-            glyph_engine.rasterize_text_with_baked_transform_into(
-              text,
-              &scaled_style,
-              max_width,
-              *wrap,
-              quad.x * scale,
-              text_y,
-              quad.transform,
-              glyph_origin,
+              order,
               &mut glyphs,
             );
           } else {
-            let raster_scale = transformed_text_raster_scale(quad.transform);
-            scaled_style.scale_pixels(raster_scale);
-            let raster_max_width = if max_width.is_finite() {
-              max_width * raster_scale
+            let text_y = scaled_y
+              + glyph_engine.text_vertical_align_offset(
+                text,
+                &scaled_style,
+                max_width,
+                *wrap,
+                *vertical_align,
+                scaled_height,
+              );
+            if *transform_mode == TextTransformMode::Rasterized {
+              glyph_engine.rasterize_text_with_baked_transform_into(
+                text,
+                &scaled_style,
+                max_width,
+                *wrap,
+                quad.x * scale,
+                text_y,
+                quad.transform,
+                glyph_origin,
+                &mut glyphs,
+              );
             } else {
-              f32::MAX
-            };
-            let raster_x = quad.x * scale * raster_scale;
-            let raster_y = text_y * raster_scale;
-            let unsnapped_start = glyphs.len();
-            glyph_engine.rasterize_text_unsnapped_with_wrap_into(
-              text,
-              &scaled_style,
-              raster_max_width,
-              *wrap,
-              raster_x,
-              raster_y,
-              &mut glyphs,
-            );
-            for glyph in &mut glyphs[unsnapped_start..] {
-              glyph.x /= raster_scale;
-              glyph.y /= raster_scale;
-              glyph.width /= raster_scale;
-              glyph.height /= raster_scale;
+              let raster_scale = transformed_text_raster_scale(quad.transform);
+              scaled_style.scale_pixels(raster_scale);
+              let raster_max_width = if max_width.is_finite() {
+                max_width * raster_scale
+              } else {
+                f32::MAX
+              };
+              let raster_x = quad.x * scale * raster_scale;
+              let raster_y = text_y * raster_scale;
+              let unsnapped_start = glyphs.len();
+              glyph_engine.rasterize_text_unsnapped_with_wrap_into(
+                text,
+                &scaled_style,
+                raster_max_width,
+                *wrap,
+                raster_x,
+                raster_y,
+                &mut glyphs,
+              );
+              for glyph in &mut glyphs[unsnapped_start..] {
+                glyph.x /= raster_scale;
+                glyph.y /= raster_scale;
+                glyph.width /= raster_scale;
+                glyph.height /= raster_scale;
+              }
             }
-          }
-          for g in &mut glyphs[glyph_start..] {
-            g.order = order;
-            g.clip = glyph_clip;
-            if !quad.transform.is_identity() && *transform_mode == TextTransformMode::Bitmap {
-              g.transform = glyph_xf;
-              g.transform_origin = [glyph_origin[0] - g.x, glyph_origin[1] - g.y];
+            for g in &mut glyphs[glyph_start..] {
+              g.order = order;
+              g.clip = glyph_clip;
+              if *transform_mode == TextTransformMode::Bitmap {
+                g.transform = glyph_xf;
+                g.transform_origin = [glyph_origin[0] - g.x, glyph_origin[1] - g.y];
+              }
             }
           }
           if let Some(marker) = glyph_debug_marker
