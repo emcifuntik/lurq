@@ -527,6 +527,7 @@ pub(crate) trait NodeUpdate {
   fn relative(&mut self, x: f32, y: f32);
   fn absolute(&mut self, x: f32, y: f32, width: impl Into<Dimension>, height: impl Into<Dimension>);
   fn absolute_position(&mut self, x: f32, y: f32);
+  fn sticky(&mut self, sticky: crate::layout::layout_kind::Sticky);
   fn align(&mut self, alignment: Alignment);
   fn flex(&mut self, factor: f32);
   fn flex_shrink(&mut self, factor: f32);
@@ -886,6 +887,9 @@ pub(crate) struct RareStyle {
   pub(crate) outline: Option<crate::node::outline::Outline>,
   /// The node and its subtree take no input; see [`Node::disabled`].
   pub(crate) disabled: bool,
+  /// Where the node sticks in the scroll container it is in. Here, and not in `Position`, because every
+  /// node holds a `Position` and few stick.
+  pub(crate) sticky: Option<crate::layout::layout_kind::Sticky>,
   pub(crate) caret_color: Option<TextColor>,
   pub(crate) selection_color: Option<TextColor>,
   pub(crate) caret_mode: Option<CaretMode>,
@@ -1230,6 +1234,10 @@ impl NodeUpdate for Node {
       height: None,
     };
     self.layout_cache.invalidate();
+  }
+
+  fn sticky(&mut self, sticky: crate::layout::layout_kind::Sticky) {
+    self.rare_style.sticky = Some(sticky);
   }
 
   fn align(&mut self, alignment: Alignment) {
@@ -2855,6 +2863,15 @@ impl Node {
     node.position = Position::Absolute { x, y, width, height };
     node.layout_cache.invalidate();
     node
+  }
+
+  /// Where the node sticks in its scroll container, if it does: see [`Sticky`](crate::layout::layout_kind::Sticky).
+  pub(crate) fn sticky(&self) -> Option<crate::layout::layout_kind::Sticky> {
+    self.rare_style.sticky
+  }
+
+  pub(crate) fn is_sticky(&self) -> bool {
+    self.rare_style.sticky.is_some()
   }
 
   pub fn align(mut self, alignment: Alignment) -> Self {
@@ -5852,6 +5869,7 @@ mod tests {
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
             generation: 0,
+            sticky_shifts: None,
           },
         );
       }
@@ -6108,6 +6126,7 @@ mod tests {
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
               generation: 0,
+              sticky_shifts: None,
             }
             .into(),
           },
@@ -6120,6 +6139,7 @@ mod tests {
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
               generation: 0,
+              sticky_shifts: None,
             }
             .into(),
           },
@@ -6129,6 +6149,7 @@ mod tests {
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       },
     );
     let mut new = Node::row(
@@ -6167,6 +6188,7 @@ mod tests {
                 dropped: false,
                 holds: SubtreeHolds::UNKNOWN,
                 generation: 0,
+                sticky_shifts: None,
               }
               .into(),
             }]
@@ -6175,6 +6197,7 @@ mod tests {
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
             generation: 0,
+            sticky_shifts: None,
           }
           .into(),
         }]
@@ -6183,6 +6206,7 @@ mod tests {
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       },
     );
 
@@ -6217,6 +6241,7 @@ mod tests {
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
             generation: 0,
+            sticky_shifts: None,
           }
           .into(),
         }]
@@ -6225,6 +6250,7 @@ mod tests {
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       },
     );
 

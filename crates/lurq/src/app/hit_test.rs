@@ -149,39 +149,45 @@ fn hit_test_tree_with_transform<'a>(
   let can_have_visible_children = inside || node.overflow == Overflow::Visible;
 
   if can_have_visible_children {
-    if occlude_stack_siblings && matches!(node.layout_kind(), LayoutKind::Stack { .. }) {
-      for (child_layout, child_node) in result.children.iter().zip(node.children().iter()).rev() {
-        let hit_count = hits.len();
-        hit_test_tree_with_transform(
-          child_node,
-          &child_layout.result,
-          abs_x + child_layout.offset.x,
-          abs_y + child_layout.offset.y,
-          px,
-          py,
-          transform,
-          occlude_stack_siblings,
-          fold_disabled,
-          hits,
-        );
-        if hits.len() > hit_count {
+    // What sticks is painted over its siblings, the last of them on top, so it is hit before them.
+    let children = || result.children.iter().zip(node.children().iter());
+    let sticky = children().any(|(_, child_node)| child_node.is_sticky());
+    let occludes = occlude_stack_siblings && matches!(node.layout_kind(), LayoutKind::Stack { .. });
+    let mut hit = |child_layout: &crate::layout::layout_result::ChildLayout, child_node: &'a Node| {
+      let hit_count = hits.len();
+      hit_test_tree_with_transform(
+        child_node,
+        &child_layout.result,
+        abs_x + child_layout.offset.x,
+        abs_y + child_layout.offset.y,
+        px,
+        py,
+        transform,
+        occlude_stack_siblings,
+        fold_disabled,
+        hits,
+      );
+      hits.len() > hit_count
+    };
+    // A sticky child that is hit covers the siblings under it, as a child of a stack covers the ones before it.
+    let mut covered = false;
+    if sticky {
+      for (child_layout, child_node) in children().rev().filter(|(_, child_node)| child_node.is_sticky()) {
+        if hit(child_layout, child_node) && occlude_stack_siblings {
+          covered = true;
           break;
         }
       }
-    } else {
-      for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
-        hit_test_tree_with_transform(
-          child_node,
-          &child_layout.result,
-          abs_x + child_layout.offset.x,
-          abs_y + child_layout.offset.y,
-          px,
-          py,
-          transform,
-          occlude_stack_siblings,
-          fold_disabled,
-          hits,
-        );
+    }
+    if !covered && occludes {
+      for (child_layout, child_node) in children().rev().filter(|(_, child_node)| !child_node.is_sticky()) {
+        if hit(child_layout, child_node) {
+          break;
+        }
+      }
+    } else if !covered {
+      for (child_layout, child_node) in children().filter(|(_, child_node)| !child_node.is_sticky()) {
+        hit(child_layout, child_node);
       }
     }
   }

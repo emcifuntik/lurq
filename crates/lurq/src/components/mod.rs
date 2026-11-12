@@ -335,6 +335,14 @@ macro_rules! impl_into_node {
         self
       }
 
+      /// Holds the element at an edge of the scroll container it is in while that scrolls, as CSS
+      /// `position: sticky`: `.sticky(Sticky::top(0.0))` for a header. See
+      /// [`Sticky`]($crate::layout::layout_kind::Sticky).
+      pub fn sticky(mut self, sticky: $crate::layout::layout_kind::Sticky) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::sticky(node, sticky));
+        self
+      }
+
       pub fn absolute(
         mut self,
         x: f32,

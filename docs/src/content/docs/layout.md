@@ -443,6 +443,35 @@ VirtualizedList::new(ctx, entries)
   .mount_keyed::<EntryRow, _, _, _>(|entry| entry.id, Clone::clone)
 ```
 
+### Sticky elements
+
+`.sticky(Sticky::top(0.0))` holds an element at an edge of the scroll container it is in while that scrolls, as CSS
+`position: sticky` does: a section's header that stays at the top while its rows scroll under it.
+
+```rust
+use lurq::{
+  components::{Column, Row, ScrollVertical, Text},
+  layout::layout_kind::Sticky,
+};
+
+let section = Column::new()
+  .child(Row::new().background("#f4f4f5").child(Text::new("A")).sticky(Sticky::top(0.0)))
+  .child(Text::new("Ada"))
+  .child(Text::new("Alan"));
+ScrollVertical::new(Column::new().child(section)).size(240.0, 320.0)
+```
+
+- The element is laid out in flow and keeps its room there: nothing around it moves when it sticks.
+- `Sticky::top`, `bottom`, `left` and `right` take the distance to keep from that edge of the viewport, in logical
+  pixels; `with_top` and the others add an edge, so `Sticky::top(0.0).with_left(0.0)` holds a corner cell of what
+  scrolls both ways.
+- It never leaves the box of its parent, inside the parent's padding. The end of a section takes the section's header
+  with it, and the next section's header takes its place. An element whose parent is no larger than itself has
+  nowhere to stick.
+- It sticks in the nearest scroll container around it. In none, it stays where it is laid out.
+- It is painted over its siblings and is hit before them, so a press on a stuck header does not reach the row under it.
+- Scrolling only moves it: nothing in it or around it is laid out again. An element ref on it reports where it is drawn.
+
 ### Middle-button autoscroll
 
 A scroll container can scroll the way browsers do while the middle button is held: `.middle_button_autoscroll(true)` on

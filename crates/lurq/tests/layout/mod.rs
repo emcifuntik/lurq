@@ -52,6 +52,7 @@ mod scroll_padding;
 mod scrollbar_placement;
 mod shrink_give_way;
 mod stack;
+mod sticky;
 mod state_style_paint;
 mod text_centering;
 mod text_decorations;

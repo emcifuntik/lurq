@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
   layout::{
-    Alignment, StackAlignment,
+    Alignment, Offset, Size, StackAlignment,
     scrollbar::{
       ScrollBarGeometry, ScrollBarPart, ScrollBarReveal, ScrollBarRevealFrame, ScrollBarStyle, ScrollBarVisibility,
     },
@@ -1082,6 +1082,113 @@ pub enum Position {
     width: Option<Dimension>,
     height: Option<Dimension>,
   },
+}
+
+/// Where an element sticks while the scroll container it is in scrolls, as CSS `position: sticky` with
+/// `top`, `right`, `bottom` and `left`. Set with `.sticky(...)`.
+///
+/// The element is laid out in flow and keeps its room there. While scrolling would take it past an edge it
+/// has an inset for, it stays that far inside the edge of the scroll container's viewport instead, for as
+/// long as the box of its parent has room for it: it never leaves that box, so the end of a section takes
+/// the section's header with it. It is painted over its siblings, which scroll under it.
+///
+/// An inset is in logical pixels. An element in no scroll container stays where it is laid out.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Sticky {
+  pub top: Option<f32>,
+  pub right: Option<f32>,
+  pub bottom: Option<f32>,
+  pub left: Option<f32>,
+}
+
+impl Sticky {
+  /// Sticks `inset` below the viewport's top edge: a header.
+  pub fn top(inset: f32) -> Self {
+    Self::default().with_top(inset)
+  }
+
+  /// Sticks `inset` above the viewport's bottom edge: a footer.
+  pub fn bottom(inset: f32) -> Self {
+    Self::default().with_bottom(inset)
+  }
+
+  /// Sticks `inset` from the viewport's left edge: a row's first column.
+  pub fn left(inset: f32) -> Self {
+    Self::default().with_left(inset)
+  }
+
+  /// Sticks `inset` from the viewport's right edge.
+  pub fn right(inset: f32) -> Self {
+    Self::default().with_right(inset)
+  }
+
+  pub fn with_top(mut self, inset: f32) -> Self {
+    self.top = Some(inset);
+    self
+  }
+
+  pub fn with_right(mut self, inset: f32) -> Self {
+    self.right = Some(inset);
+    self
+  }
+
+  pub fn with_bottom(mut self, inset: f32) -> Self {
+    self.bottom = Some(inset);
+    self
+  }
+
+  pub fn with_left(mut self, inset: f32) -> Self {
+    self.left = Some(inset);
+    self
+  }
+
+  /// Where an element of `size` whose place in flow is `natural` is put, given the viewport of its scroll
+  /// container and the box it may not leave, each as `[x, y, width, height]` in the coordinates `natural`
+  /// is in. Where both edges of an axis have an inset and the viewport has no room for both, the start
+  /// edge's holds.
+  pub(crate) fn place(&self, natural: Offset, size: Size, viewport: [f32; 4], block: [f32; 4]) -> Offset {
+    Offset {
+      x: stick(
+        natural.x,
+        size.width,
+        self.left,
+        self.right,
+        (viewport[0], viewport[2]),
+        (block[0], block[2]),
+      ),
+      y: stick(
+        natural.y,
+        size.height,
+        self.top,
+        self.bottom,
+        (viewport[1], viewport[3]),
+        (block[1], block[3]),
+      ),
+    }
+  }
+}
+
+/// One axis of [`Sticky::place`]: the start of an element `length` long whose place in flow is `natural`,
+/// held `start` and `end` inside a viewport and inside a block, each given as (start, length).
+fn stick(
+  natural: f32,
+  length: f32,
+  start: Option<f32>,
+  end: Option<f32>,
+  viewport: (f32, f32),
+  block: (f32, f32),
+) -> f32 {
+  let mut at = natural;
+  if let Some(end) = end.filter(|inset| inset.is_finite()) {
+    at = at.min(viewport.0 + viewport.1 - end - length);
+  }
+  if let Some(start) = start.filter(|inset| inset.is_finite()) {
+    at = at.max(viewport.0 + start);
+  }
+  // It stays in its block, and a block too small for that leaves it where it is laid out.
+  let low = block.0.min(natural);
+  let high = (block.0 + block.1 - length).max(natural);
+  at.clamp(low, high)
 }
 
 impl FrameConstraints {

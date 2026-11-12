@@ -246,6 +246,26 @@ impl Clone for OverlayLayoutRecord {
   }
 }
 
+/// The scroll container a node is in, while its layout is synced with the
+/// scroll: the container's viewport, and the box what sticks may not leave,
+/// each as `[x, y, width, height]` from the node's own corner.
+#[derive(Clone, Copy)]
+struct StickyScope {
+  viewport: [f32; 4],
+  block: [f32; 4],
+}
+
+impl StickyScope {
+  /// The scope seen from a child at `offset`.
+  fn moved_into(self, offset: Offset) -> Self {
+    let moved = |rect: [f32; 4]| [rect[0] - offset.x, rect[1] - offset.y, rect[2], rect[3]];
+    Self {
+      viewport: moved(self.viewport),
+      block: moved(self.block),
+    }
+  }
+}
+
 pub(crate) struct LayoutEngine {
   last_recalculated: Cell<bool>,
   text_input_caret_visible: Cell<bool>,
@@ -590,6 +610,7 @@ impl LayoutEngine {
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       }),
       paint_scale: Cell::new(1.0),
       #[cfg(feature = "perf_profile")]
@@ -1025,36 +1046,47 @@ impl LayoutEngine {
           (clip, cull_clip, culling_enabled)
         };
 
-      for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
-        let child_abs_x = abs_x + child_layout.offset.x;
-        let child_abs_y = abs_y + child_layout.offset.y;
-        if child_culling_enabled
-          && clipped_subtree_is_hidden(
+      // What sticks is painted after its siblings, which scroll under it.
+      for stuck in [false, true] {
+        let mut sticks_later = false;
+        for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
+          if child_node.is_sticky() != stuck {
+            sticks_later |= !stuck;
+            continue;
+          }
+          let child_abs_x = abs_x + child_layout.offset.x;
+          let child_abs_y = abs_y + child_layout.offset.y;
+          if child_culling_enabled
+            && clipped_subtree_is_hidden(
+              child_node,
+              &child_layout.result,
+              child_abs_x,
+              child_abs_y,
+              inherited_transform,
+              child_cull_clip,
+              self.paint_outset(child_node),
+            )
+          {
+            continue;
+          }
+
+          self.collect_quads(
             child_node,
             &child_layout.result,
             child_abs_x,
             child_abs_y,
+            abs_x,
+            abs_y,
             inherited_transform,
+            child_clip,
             child_cull_clip,
-            self.paint_outset(child_node),
-          )
-        {
-          continue;
+            child_culling_enabled,
+            quads,
+          );
         }
-
-        self.collect_quads(
-          child_node,
-          &child_layout.result,
-          child_abs_x,
-          child_abs_y,
-          abs_x,
-          abs_y,
-          inherited_transform,
-          child_clip,
-          child_cull_clip,
-          child_culling_enabled,
-          quads,
-        );
+        if !sticks_later {
+          break;
+        }
       }
       return;
     }
@@ -1113,36 +1145,47 @@ impl LayoutEngine {
 
     let select_scope = self.enter_select_scope(node);
     let scroll_scope = frame.scroll_viewport.map(|viewport| self.scroll_clip.replace(viewport));
-    for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
-      let child_abs_x = abs_x + child_layout.offset.x;
-      let child_abs_y = abs_y + child_layout.offset.y;
-      if child_culling_enabled
-        && clipped_subtree_is_hidden(
+    // What sticks is painted after its siblings, which scroll under it.
+    for stuck in [false, true] {
+      let mut sticks_later = false;
+      for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
+        if child_node.is_sticky() != stuck {
+          sticks_later |= !stuck;
+          continue;
+        }
+        let child_abs_x = abs_x + child_layout.offset.x;
+        let child_abs_y = abs_y + child_layout.offset.y;
+        if child_culling_enabled
+          && clipped_subtree_is_hidden(
+            child_node,
+            &child_layout.result,
+            child_abs_x,
+            child_abs_y,
+            transform,
+            child_cull_clip,
+            self.paint_outset(child_node),
+          )
+        {
+          continue;
+        }
+
+        self.collect_quads(
           child_node,
           &child_layout.result,
           child_abs_x,
           child_abs_y,
+          abs_x,
+          abs_y,
           transform,
+          child_clip,
           child_cull_clip,
-          self.paint_outset(child_node),
-        )
-      {
-        continue;
+          child_culling_enabled,
+          quads,
+        );
       }
-
-      self.collect_quads(
-        child_node,
-        &child_layout.result,
-        child_abs_x,
-        child_abs_y,
-        abs_x,
-        abs_y,
-        transform,
-        child_clip,
-        child_cull_clip,
-        child_culling_enabled,
-        quads,
-      );
+      if !sticks_later {
+        break;
+      }
     }
     self.leave_select_scope(select_scope);
     if let Some(outer) = scroll_scope {
@@ -2364,7 +2407,7 @@ impl LayoutEngine {
       }
       return cached;
     }
-    self.prepare_layout_result_tree(node, Arc::make_mut(&mut cached), true);
+    self.prepare_layout_result_tree(node, Arc::make_mut(&mut cached), true, None);
     cached
   }
 
@@ -2374,29 +2417,24 @@ impl LayoutEngine {
   /// rest stay shared with the caches that hold them. Serving a cached tree
   /// would otherwise copy all of it, and preparing every freshly laid-out
   /// parent would walk and copy its whole subtree again.
-  fn prepare_layout_result_tree(&self, node: &Node, result: &mut LayoutResult, restore_text_layout: bool) {
+  /// `sticky` is the scroll container the node is in, for placing what
+  /// sticks in it: `None` outside any, and for a caller that only syncs the
+  /// node's own subtree.
+  fn prepare_layout_result_tree(
+    &self,
+    node: &Node,
+    result: &mut LayoutResult,
+    restore_text_layout: bool,
+    sticky: Option<StickyScope>,
+  ) {
     result.generation = node.layout_cache.watch().generation();
     if restore_text_layout {
       Self::restore_text_layout_output(node, result);
     }
-    for (child_node, child_layout) in node.children().iter().zip(result.children.iter_mut()) {
-      if child_layout.result.holds.scroll {
-        self.prepare_layout_result_tree(child_node, Arc::make_mut(&mut child_layout.result), restore_text_layout);
-      } else if restore_text_layout && child_layout.result.holds.text {
-        Self::restore_text_layout_tree(child_node, &child_layout.result);
-      }
-    }
-    result.holds = result.children.iter().fold(
-      SubtreeHolds {
-        scroll: matches!(node.layout_kind(), LayoutKind::ScrollModifier { .. }),
-        text: result.text_layout.is_some(),
-      },
-      |holds, child| SubtreeHolds {
-        scroll: holds.scroll || child.result.holds.scroll,
-        text: holds.text || child.result.holds.text,
-      },
-    );
 
+    // A scroll container is synced before what is in it: what sticks there is placed against its viewport
+    // as it is scrolled now.
+    let mut sticky = sticky;
     if let LayoutKind::ScrollModifier { state, direction, .. } = node.layout_kind() {
       let content_width = result.children.first().map(|c| c.result.size.width).unwrap_or(0.0);
       let content_height = result.children.first().map(|c| c.result.size.height).unwrap_or(0.0);
@@ -2426,7 +2464,89 @@ impl LayoutEngine {
           y: offset.y + padding.top,
         };
       }
+      let viewport = [padding.left, padding.top, viewport.width, viewport.height];
+      sticky = Some(StickyScope {
+        viewport,
+        block: viewport,
+      });
     }
+
+    // What sticks stays in the box of the element it is in. A logical wrapper has no box of its own.
+    let scope = sticky.map(|scope| {
+      if matches!(node.layout_kind(), LayoutKind::LogicalModifier) {
+        return scope;
+      }
+      StickyScope {
+        viewport: scope.viewport,
+        block: self.content_box(node, result.size),
+      }
+    });
+    let mut shifts = result.sticky_shifts.take();
+    let mut holds_sticky = false;
+    for (index, (child_node, child_layout)) in node.children().iter().zip(result.children.iter_mut()).enumerate() {
+      let place = child_node.sticky();
+      holds_sticky |= place.is_some();
+      // A child that stuck and no longer does goes back to its place in flow, wherever the node is.
+      let shifted = shifts
+        .as_deref()
+        .and_then(|shifts| shifts.iter().find(|(shifted, _)| *shifted == index))
+        .map(|(_, shift)| *shift);
+      if let Some(scope) = scope.filter(|_| place.is_some() || shifted.is_some()) {
+        let shifted = shifted.unwrap_or_default();
+        let natural = Offset {
+          x: child_layout.offset.x - shifted.x,
+          y: child_layout.offset.y - shifted.y,
+        };
+        let placed = place.map_or(natural, |place| {
+          place.place(natural, child_layout.result.size, scope.viewport, scope.block)
+        });
+        let shift = Offset {
+          x: placed.x - natural.x,
+          y: placed.y - natural.y,
+        };
+        child_layout.offset = placed;
+        let shifts = shifts.get_or_insert_with(Box::default);
+        shifts.retain(|(shifted, _)| *shifted != index);
+        if shift != Offset::default() {
+          shifts.push((index, shift));
+        }
+      }
+      let child_scope = scope.map(|scope| scope.moved_into(child_layout.offset));
+      if child_layout.result.holds.scroll || (child_scope.is_some() && child_layout.result.holds.sticky) {
+        self.prepare_layout_result_tree(
+          child_node,
+          Arc::make_mut(&mut child_layout.result),
+          restore_text_layout,
+          child_scope,
+        );
+      } else if restore_text_layout && child_layout.result.holds.text {
+        Self::restore_text_layout_tree(child_node, &child_layout.result);
+      }
+    }
+    result.sticky_shifts = shifts.filter(|shifts| !shifts.is_empty());
+    result.holds = result.children.iter().fold(
+      SubtreeHolds {
+        scroll: matches!(node.layout_kind(), LayoutKind::ScrollModifier { .. }),
+        text: result.text_layout.is_some(),
+        sticky: holds_sticky || result.sticky_shifts.is_some(),
+      },
+      |holds, child| SubtreeHolds {
+        scroll: holds.scroll || child.result.holds.scroll,
+        text: holds.text || child.result.holds.text,
+        sticky: holds.sticky || child.result.holds.sticky,
+      },
+    );
+  }
+
+  /// The box of `node` inside its padding, as `[x, y, width, height]` from its own corner.
+  fn content_box(&self, node: &Node, size: Size) -> [f32; 4] {
+    let padding = self.resolved_padding_for_size(node, size);
+    [
+      padding.left,
+      padding.top,
+      (size.width - padding.left - padding.right).max(0.0),
+      (size.height - padding.top - padding.bottom).max(0.0),
+    ]
   }
 
   fn layout_node_uncached_with_child_overrides(
@@ -2459,7 +2579,7 @@ impl LayoutEngine {
     self.trace.laid_out(node, constraints);
     let mut result = self.layout_node_box(glyph_engine, node, constraints, child_overrides);
     Self::apply_runtime_rect(node, &mut result);
-    self.prepare_layout_result_tree(node, &mut result, false);
+    self.prepare_layout_result_tree(node, &mut result, false, None);
     let result = Arc::new(result);
     node.layout_cache.store_shared(constraints, result.clone());
     #[cfg(feature = "perf_profile")]
@@ -2660,6 +2780,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       NodeKind::Slider { .. } => {
@@ -2682,6 +2803,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       NodeKind::Select { state } => {
@@ -2703,6 +2825,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "canvas")]
@@ -2714,6 +2837,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "raster")]
@@ -2728,6 +2852,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "raster")]
@@ -2742,6 +2867,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "image")]
@@ -2756,6 +2882,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "svg")]
@@ -2770,6 +2897,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(all(feature = "svg", feature = "resources"))]
@@ -2784,6 +2912,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       // Its paragraph places it (`inline_links`); on its own it has no box.
@@ -2804,6 +2933,7 @@ impl LayoutEngine {
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -2836,6 +2966,7 @@ impl LayoutEngine {
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -2990,6 +3121,7 @@ impl LayoutEngine {
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       };
     }
 
@@ -3030,6 +3162,7 @@ impl LayoutEngine {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         })
       } else {
         let flex_params = child.state_flex();
@@ -3203,6 +3336,7 @@ impl LayoutEngine {
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -3484,6 +3618,7 @@ impl LayoutEngine {
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -3558,6 +3693,7 @@ impl LayoutEngine {
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -3809,6 +3945,7 @@ impl LayoutEngine {
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       };
     }
 
@@ -3856,6 +3993,7 @@ impl LayoutEngine {
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -3874,6 +4012,7 @@ impl LayoutEngine {
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       };
     };
     let child_result = self.layout_child_node(glyph_engine, child_overrides, 0, child, constraints);
@@ -3890,6 +4029,7 @@ impl LayoutEngine {
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -4410,6 +4550,7 @@ mod tests {
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       },
     );
     child.layout_cache.mark_local_dirty();
@@ -5274,7 +5415,8 @@ mod tests {
       first.holds,
       SubtreeHolds {
         scroll: false,
-        text: false
+        text: false,
+        sticky: false,
       }
     );
     for (row, served_row) in first.children.iter().zip(&served.children) {
@@ -5308,7 +5450,8 @@ mod tests {
       result.holds,
       SubtreeHolds {
         scroll: true,
-        text: true
+        text: true,
+        sticky: false,
       }
     );
     let holds: Vec<_> = result.children.iter().map(|child| child.result.holds).collect();
@@ -5317,15 +5460,18 @@ mod tests {
       [
         SubtreeHolds {
           scroll: false,
-          text: false
+          text: false,
+          sticky: false,
         },
         SubtreeHolds {
           scroll: false,
-          text: true
+          text: true,
+          sticky: false,
         },
         SubtreeHolds {
           scroll: true,
-          text: false
+          text: false,
+          sticky: false,
         },
       ]
     );

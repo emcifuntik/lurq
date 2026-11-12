@@ -600,6 +600,19 @@ fn push_flat_layout_rows(rows: &mut Vec<DevToolsShapeRow>, node: &crate::node::N
       push_shape_group(rows, "position", position);
     }
   }
+  if let Some(sticky) = node.sticky() {
+    let insets = [
+      ("top", sticky.top),
+      ("right", sticky.right),
+      ("bottom", sticky.bottom),
+      ("left", sticky.left),
+    ];
+    let position = insets
+      .into_iter()
+      .filter_map(|(edge, inset)| Some(shape_leaf(edge, format_px(inset?))))
+      .collect();
+    push_shape_group(rows, "sticky", position);
+  }
   if let Some(offset) = node.offset_position() {
     push_shape_group(
       rows,

@@ -4,6 +4,7 @@
 
 Added:
 
+- Sticky positioning: `.sticky(Sticky::top(0.0))` on nodes and components holds an element at an edge of the scroll container it is in while that scrolls, for as long as its parent's box has room for it, as CSS `position: sticky`. `Sticky` has `top`, `bottom`, `left` and `right` and `with_*` for more than one edge. The element keeps its room in flow, is painted over its siblings and hit before them, and scrolling places it without a layout. See [layout](docs/src/content/docs/layout.md#sticky-elements).
 - Dashed borders: `Border::dashed()` and `Border::dash(dash, gap)`, with `BorderDash`. The dashes run along the element's outline, around its corners, and the period is fitted so the pattern closes. Both native backends and the software screenshot renderer draw them. See [styling](docs/src/content/docs/styling-events.md#dashed-borders).
 - `layout::stroke`: the formulas a rect's stroke is painted with (`StrokeShape`, `stroke_coverage`, `outline_position`, `dash_coverage`), which both quad shaders mirror, and `layout::render_list::StrokeStyle`.
 - `PaletteColor::Foreground` and `ThemePalette::foreground`: the color of text that names none. A `Text`, a `TextInput` and a Markdown document whose style keeps the default text color are drawn in it, unless an element above sets a `.foreground(...)`. It is black by default, the color text had, so nothing changes until a theme sets it. See [styling](docs/src/content/docs/styling-events.md#the-themes-foreground).

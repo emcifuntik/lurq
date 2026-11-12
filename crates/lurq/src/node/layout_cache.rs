@@ -527,6 +527,7 @@ mod tests {
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
