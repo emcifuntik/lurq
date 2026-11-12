@@ -162,6 +162,13 @@ struct ScrollStateInner {
 }
 
 impl ScrollState {
+  /// Whether this is the state `other` is.
+  pub(crate) fn same(&self, other: &Self) -> bool {
+    Arc::ptr_eq(&self.inner, &other.inner)
+  }
+}
+
+impl ScrollState {
   pub(crate) fn track_layout(&self, watch: &Arc<crate::core::layout_dirty::LayoutWatch>) {
     self.inner.lock().unwrap().layout_subscribers.bind(watch);
   }

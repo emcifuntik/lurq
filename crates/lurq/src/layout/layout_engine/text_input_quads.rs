@@ -49,15 +49,29 @@ impl LayoutEngine {
     let content_height = (result.size.height - padding.top - padding.bottom).max(0.0);
     let vertical_offset = padding.top + text_input_vertical_offset(state, content_height);
     let (band_top, band_height) = state.text_band();
+    // Where the input is painted, which an ancestor's transform moves from where it is laid out: a sheet's
+    // content is laid out at the window's top and moved down to where the sheet stands.
+    let painted = |x: f32, y: f32| {
+      if transform.is_identity() {
+        (x, y)
+      } else {
+        transform.transform_point(x, y)
+      }
+    };
+    let caret = painted(
+      abs_x + padding.left + state.caret_x(),
+      abs_y + vertical_offset + state.caret_y() + band_top,
+    );
     self.ime_cursor_area.set(Some(ImeCursorArea {
-      x: abs_x + padding.left + state.caret_x(),
-      y: abs_y + vertical_offset + state.caret_y() + band_top,
+      x: caret.0,
+      y: caret.1,
       width: TEXT_INPUT_CARET_WIDTH,
       height: band_height.max(1.0),
     }));
+    let corner = painted(abs_x, abs_y);
     self.text_input_frame.set(Some(TextInputFrame {
-      bounds: (abs_x, abs_y, result.size.width, result.size.height),
-      text_origin: (abs_x + padding.left, abs_y + vertical_offset + band_top),
+      bounds: (corner.0, corner.1, result.size.width, result.size.height),
+      text_origin: painted(abs_x + padding.left, abs_y + vertical_offset + band_top),
       line_height: band_height.max(1.0),
     }));
 

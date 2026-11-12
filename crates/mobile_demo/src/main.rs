@@ -12,6 +12,7 @@ mod gestures;
 mod home;
 mod inputs;
 mod scroll;
+mod sheets;
 mod touch;
 mod ui;
 mod virtual_list;
@@ -82,6 +83,9 @@ fn routes() -> Routes {
       })
       .route("/scroll", |ctx| {
         screen(ctx, "/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
+      })
+      .route("/sheets", |ctx| {
+        screen(ctx, "/sheets", |ctx| ctx.mount::<sheets::SheetsScreen>(()))
       })
       .route("/virtual-list", |ctx| {
         screen(ctx, "/virtual-list", |ctx| {

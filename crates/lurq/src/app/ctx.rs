@@ -317,6 +317,7 @@ pub struct Modal {
   target: ModalTarget,
   dismiss_on_escape: bool,
   layer: ModalLayer,
+  dismiss: Option<Signal<bool>>,
 }
 
 impl Modal {
@@ -327,6 +328,7 @@ impl Modal {
       target: ModalTarget::Parent,
       dismiss_on_escape: true,
       layer: ModalLayer::Dialog,
+      dismiss: None,
     }
   }
 
@@ -350,6 +352,13 @@ impl Modal {
     self
   }
 
+  /// The signal Escape sets to `false`, for a modal that stays open after it: one that is shown on its way
+  /// out, as a [`Sheet`](crate::components::Sheet) is.
+  pub(crate) fn dismisses(mut self, open: Signal<bool>) -> Self {
+    self.dismiss = Some(open);
+    self
+  }
+
   /// Marks this layer as `WindowChrome`'s decoration instead of a dialog.
   pub(crate) fn window_chrome_layer(mut self) -> Self {
     self.layer = ModalLayer::WindowChrome;
@@ -364,7 +373,7 @@ impl Modal {
     Some(ModalSpec {
       target: self.target,
       node: *self.node,
-      open_signal: self.open.signal(),
+      open_signal: self.dismiss.or_else(|| self.open.signal()),
       dismiss_on_escape: self.dismiss_on_escape,
       layer: self.layer,
     })

@@ -39,6 +39,11 @@ pub(crate) const SCREENS: &[Screen] = &[
     checks: "Ten thousand uneven rows mounted as they come into view: momentum, the ends, the way to the top",
   },
   Screen {
+    path: "/sheets",
+    title: "Sheets",
+    checks: "Content that comes up from the bottom: its heights, a finger that drags it, a list inside it",
+  },
+  Screen {
     path: "/inputs",
     title: "Inputs",
     checks: "The on-screen keyboard, what it types into a field, and a field it would cover",

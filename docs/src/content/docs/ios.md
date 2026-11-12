@@ -146,6 +146,9 @@ is no haptic engine.
 finger from the left edge drags the top screen back, the screens under stay alive, and a navigation bar shows
 the title and the way back. See [A Stack Of Screens](../routing/#a-stack-of-screens).
 
+`Sheet` brings content up from the bottom over the screens and the bar: it stands at its heights, and a finger
+drags it between them and away. See [Sheets](../modals/#sheets).
+
 ## Scrolling
 
 Scroll containers scroll under a finger as `UIScrollView` does: the content follows the finger, goes on with
