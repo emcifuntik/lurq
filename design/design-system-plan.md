@@ -162,6 +162,8 @@ Some differences are behavioral conventions rather than looks: whether a select 
 
 Small, self-contained changes to nodes. Each lands with tests and a docs section, and none depends on the others. Recipes need E1–E4 to express their states without re-rendering.
 
+All of them but E7 are built. Section 13 says where each stands, what was decided while building it, and what still has to be checked on platforms it was not built on.
+
 | Item | Change | Notes |
 | --- | --- | --- |
 | E1 Foreground color | An inherited `foreground` on nodes: `.foreground(color)`. `Text` and `Icon` without an explicit color use the nearest ancestor's foreground, then the theme's `Foreground` role | Fixes the pure-black default and lets one part recolor its label and icon together. |
@@ -295,7 +297,7 @@ Phase 0 and the tokens half of Phase 1 can be reviewed and released on their own
 - **The theming API is the hardest part to change later.** Every component and every app theme depends on it. Step 2 exists to find its flaws on four components instead of thirty.
 - **Recipe surface area.** A patch type with fifteen optional fields, times parts, variants, sizes, states and nested slots, is a lot to document and keep stable. Keeping one shared patch type, and adding fields only when a component needs them, holds it down.
 - **No feature flag.** Every app compiles every component. Unused ones do not reach the binary, but build time grows with the set. If it becomes a problem, the large groups (data grid, charts, dock layout) can move behind features later without changing the rest.
-- **The icon font is hinted, and the engine is not.** The 152 glyphs are in the repository as sources and as a font, but until E9 lands they render unhinted, soft at small sizes on a 1x display. The hints are written by `scripts/build-icon-font.py`, not by a tool with a history, so every glyph added should be looked at on a comparison sheet at 12 to 24 px. A few glyphs still need redrawing.
+- **The icon font's hints are our own.** The 152 glyphs are in the repository as sources and as a font, and E9 draws them hinted. The hints are written by `scripts/build-icon-font.py`, not by a tool with a history, so every glyph added should be looked at on a comparison sheet at 12 to 24 px. A few glyphs still need redrawing. Nothing draws the font yet outside `examples/icon_hinting.rs`: DevTools is still on Lucide (question 8) and `Icon` is Phase 2.
 - **Renderers and behavior drifting apart.** A custom renderer that forgets to wire a part breaks hit-testing or focus. The behavior half must own events and semantics, and hand the renderer parts that already carry them.
 - **Resolution cost.** Merging base, variant, size and state on every render would be slow. Resolved recipes are cached per theme version and per combination.
 - **Breaking changes.** New default colors, renamed palette roles, a deprecated `FormTheme`. Mitigation: deprecated roles keep compiling and resolve to their replacements, a migration guide, and `Theme::legacy()`.
@@ -316,3 +318,70 @@ Phase 0 and the tokens half of Phase 1 can be reviewed and released on their own
 8. Does DevTools move to the new glyphs at once, so `lucide.ttf` can be removed, or keep Lucide with a notice file for now?
 9. Is a `gallery` binary acceptable in `crates/demo`, or should it be its own crate?
 10. Which platforms must screenshot tests run on in CI?
+
+## 13. Phase 0: status and handover
+
+Written when E1–E6, E8 and E9 were built, on branch `feat/design-system`. It is for whoever picks the work up next, and for checking it on the platforms it was not built on.
+
+### 13.1 Where each item stands
+
+| Item | State | Commits |
+| --- | --- | --- |
+| E1 Foreground | built | `e6c8a343` |
+| E2 State styles | built | `5d33f980` |
+| E3 Disabled | built | `697fcfea`, then `7e3789bf` (scrolling), `b3db6430` (state for every element) |
+| E4 Outline | built | `5d33f980`, then `d4a7bd32` (clipping) |
+| E5 Text decoration | built | `1298fcad`, then `058784a4` (node size), `9b2c264e` (line limit as painted) |
+| E6 Transitions | built | `29f95d08` |
+| E7 Presence | **not started** | — |
+| E8 Reduced motion | built; macOS and iOS not built or run (13.3) | `9986db86` |
+| E9 Hinted icons | built in its own session and merged | `19c57f9b`, `3d54ae3a`, merge `902c03e0` |
+
+Everything was built and run on Windows only. The check is `scripts/check.ps1`: the main test suite, the suite with `devtools,mcp,perf_profile,counting_allocator`, and the release stack-depth guard. All three passed at `29f95d08`; start there when something fails later. Clippy was not run. `cargo fmt --check` reports differences in five files this work did not write (`winit_shell/frame_source.rs`, `winit_shell/touch.rs`, `components/sheet.rs`, `components/stack_outlet.rs`, `tests/components/sheet.rs`); they were there before.
+
+`586e84c2` is not part of the plan: one line in a test that kept the second suite from compiling on the branch before this work began.
+
+### 13.2 What was decided while building
+
+Where the code differs from the table in section 5, the code is what was decided. User-facing behavior is in `docs/src/content/docs/styling-events.md`, `layout.md` and `animation-transforms.md`, and in the changelog.
+
+- **E1.** With no foreground above it a text keeps its typography style's color, so a tree that sets none paints as before. The theme's `Foreground` role does not exist yet; pointing the default at it is Phase 1. A `TextInput` and Markdown draw in their own styles and do not read the foreground, as an `<input>` does not inherit `color`. An overlay's content is painted outside the element that declares it and starts from no foreground.
+- **E2.** State styles carry `foreground`, `opacity` and `outline`. Where several set a value the last applied wins: disabled, then drag-over, active, hovered, focus-visible, focused.
+- **E3.** A press or click on a disabled element reaches nothing, the elements it is in included, as a disabled control on the web: a clickable card is not clicked through its disabled button. A pointer moving over it still reaches those elements. Scrolling is not input to a control and works as if nothing were disabled, inside the element too. Hit testing folds a disabled element's subtree into one hit; that is the mechanism to know before touching input code. The disabled style is paint-only. The state is written in the walk that assigns ids to a built tree, so it costs no walk of its own.
+- **E4.** `Outline` is a type (`Outline::new(width, color).offset(px)`), not three arguments. Containers clip their content by default, so an outline takes the clip of its element let out by its own reach; scroll viewports and the window, which the paint walk tracks apart, cut it where they cut the element.
+- **E5.** `TextStyle` and `MarkdownTextStyle` gained a public field, `strikethrough`: a source break for code that names every field, accepted and listed in the changelog. Markdown now draws `~~struck~~` text struck. `Text::max_lines` holds in the layout that paints the text as well as the one that sizes it.
+- **E6.** The outline animates as one value, and no outline is a value too, so a ring grows in and fades out. Transitions now read colors, widths and shadows given as theme roles; before, a color given as a role changed at once whatever its transition said. A role whose value changes with the theme runs the transition too. A list of more than four shadows changes at once.
+- **E8.** The setting lives in the theme: `Theme::reduced_motion()`, `Theme::set_reduced_motion(Option<bool>)`, `Ctx::reduced_motion()`. The shell reads the system when a window opens and when one takes focus. While motion is reduced, transitions of transform, offset, width and height end at once; fades and color changes run; keyframe animations are left to the app. A tree with no shell never reads the system, so tests do not depend on the machine.
+- **E9.** `App::load_hinted_font(data)`. The hinted outline comes from skrifa directly and is rasterized by zeno, because swash's scaler drops hints along x. Only pixel-snapped runs are hinted; a glyph under a transform is drawn unhinted.
+
+### 13.3 To check on macOS and iOS
+
+None of this has been compiled for an Apple target.
+
+**Written blind: the reduce-motion readers.** `crates/lurq/src/app/theme/motion.rs` has one `platform` module per target. The Windows one is built and tested. The other two were written from the API documentation.
+
+- macOS sends `+[NSWorkspace sharedWorkspace]` and `-accessibilityDisplayShouldReduceMotion` with `objc2::msg_send!`, through `class!(NSWorkspace)`. To check: that it compiles with objc2 0.6 (`msg_send!` on a `*mut AnyObject` receiver, returning `bool`); that `NSWorkspace` resolves, which needs AppKit linked, as `objc2-app-kit` already links it; that the call is safe from the thread the shell calls it on, the main thread.
+- iOS declares `UIAccessibilityIsReduceMotionEnabled()` as `unsafe extern "C"` in UIKit, returning `bool`. To check: that it links, and that it is right on the simulator target as well as the device.
+
+Steps on a Mac:
+
+1. `cargo test -p lurq --lib motion`. `the_platform_has_the_setting` fails if the reader returns `None`.
+2. `cargo check -p lurq --features winit,wgpu`, then the whole check: the three commands of `scripts/check.ps1`, run by hand, since the script is PowerShell.
+3. Run an example with a transition of a transform or a size, turn on System Settings › Accessibility › Display › Reduce motion, click back into the window: the transition should end at once, and run again after the setting is turned off. The setting is read on focus, not while the window stays focused.
+4. iOS: build `crates/mobile_demo` for the device and the simulator (`crates/mobile_demo/ios/build-rust.sh` is what Xcode runs), turn on Settings › Accessibility › Motion › Reduce Motion, come back to the app: a sheet and a stack push should switch without the slide and still fade.
+
+**Built on Windows, not looked at on a Mac or a phone.**
+
+- E3 on touch. The touch paths (`app/runtime/touch.rs`, `touch_pointer.rs`) take a disabled element out of taps, long presses and the pressed look, and let a finger scroll over and inside it. The tests drive these paths, but not through a real finger.
+- E9. The hinted path was looked at in a window on Windows only. On macOS and iOS: `cargo run -p lurq --example icon_hinting --features winit,wgpu,screenshot` on a 1x display if one is at hand; on a 2x display hinting matters little.
+- E4 and E6 paint through quads every backend already draws, so nothing there is specific to a platform; a look at a focus ring growing in on Metal is still worth a minute.
+
+**Linux.** No reader: there is no reduce-motion setting every desktop shares. GNOME's is `org.gnome.desktop.interface enable-animations`, reachable through the settings portal over D-Bus, which lurq does not link. Until someone adds that, motion is reduced there only when the app calls `set_reduced_motion`.
+
+### 13.4 Left to do
+
+- **E7 Presence.** Not started. Content of a layer has to stay mounted until its exit animation ends. Today the overlay host is rebuilt from the layout (`Tree::sync_overlay_host_from_layout` in `app/runtime.rs`) and a closed overlay's nodes are dropped in the same pass; only `Sheet` and `StackOutlet` animate out, each with its own code. Phase 3 needs it; nothing in Phase 1 or 2 does.
+- **DevTools on the new font** (question 8). The font holds the eight glyphs DevTools needed beyond the first 144. Moving DevTools to it lets `crates/lurq/assets/lucide.ttf` go, which is the one third-party asset the published crate still carries without a notice.
+- **`Icon`** is Phase 2: a name, the theme's table from names to a font and a character, the hinted font loaded by default.
+- **The Pencil file** has uncommitted changes on this checkout: the DevTools card on the Icons pages (152 glyphs). `bolt` and `external-link` there, and from the first set `settings`, `airplane`, `quote`, `strikethrough`, `bug`, the three hands, `megaphone`, `replace` and `replace-all`, are the glyphs to redraw. `pencil/lurq-devtools.pen` is a new file this work did not create.
+- **Deferred in section 5** and still deferred: dashed borders, a single-side border that follows the corner radius, grid layout, sticky positioning.
