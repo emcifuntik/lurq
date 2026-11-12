@@ -94,8 +94,9 @@ impl Node {
   }
 
   /// Makes the root of a layer that is leaving something the tree only
-  /// paints: no pointer reaches it, Tab passes it by, it is no modal, and no
-  /// lookup by id or by element ref finds what is in it.
+  /// paints: no pointer reaches it, Tab passes it by, it is no modal, no
+  /// lookup by id or by element ref finds what is in it, and no component
+  /// that renders again puts its output there.
   pub(crate) fn turn_into_leaving_layer(&mut self) {
     self.set_synthetic_role(SyntheticNodeRole::LeavingLayer);
     self.hit_test = HitTestBehavior::None;
@@ -104,6 +105,10 @@ impl Node {
 
   fn forget_names(&mut self) {
     self.element_id = None;
+    // The component that rendered this may still be mounted, for the layer when it opens again; what it renders
+    // next is not this layer's.
+    self.component_slot_id = None;
+    self.outer_decoration = None;
     // A canvas draws through its ref, which gets the canvas back when the layer is dropped.
     if !self.draws_canvas() {
       self.element_ref = None;

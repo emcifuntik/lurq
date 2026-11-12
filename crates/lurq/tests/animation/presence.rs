@@ -94,13 +94,17 @@ struct Stage {
 
 impl Stage {
   fn new(scene: impl Fn() -> Element + Send + Sync + 'static) -> Self {
+    Self::with_root::<Page>(Props { scene: Arc::new(scene) })
+  }
+
+  fn with_root<C: Component>(props: C::Props) -> Self {
     let mut app = App::new();
     let mut tree = Tree::new();
     tree.register_keyframes(fade(FADE_IN, 0.0, 1.0));
     tree.register_keyframes(fade(FADE_OUT, 1.0, 0.0));
     tree.register_keyframes(fade(FADE, 0.0, 1.0));
     tree.set_layout_constraints_override(Some(Constraints::tight(Size::new(400.0, 300.0))));
-    tree.mount_root::<Page>(&mut app, Props { scene: Arc::new(scene) });
+    tree.mount_root::<C>(&mut app, props);
     let mut stage = Self {
       app,
       tree,
@@ -748,4 +752,83 @@ fn what_has_no_exit_animation_goes_on_as_it_was_while_its_layer_leaves() {
 
   assert_close(&stage.opacities(PANEL_A), &[0.5]);
   assert_close(&stage.opacities(SPINNER), &[0.4]);
+}
+
+/// What the popup of [`Host`] shows: a component of its own, which renders again when `tick` changes.
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct HostProps {
+  #[devtools_ignore]
+  open: Signal<bool>,
+  #[devtools_ignore]
+  tick: Signal<u32>,
+}
+
+impl PartialEq for HostProps {
+  fn eq(&self, _other: &Self) -> bool {
+    true
+  }
+}
+
+struct Inner;
+
+impl Component for Inner {
+  type Props = HostProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let _ = ctx.props::<HostProps>().tick.get();
+    Rect::new(120.0, 40.0).background(PANEL_A).exit_animation(exit())
+  }
+}
+
+/// A page that mounts [`Inner`] for its popup's content in every render, open or closed.
+struct Host {
+  anchor: ElementRef,
+}
+
+impl Component for Host {
+  type Props = HostProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self {
+      anchor: ElementRef::new(),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<HostProps>().clone();
+    let content = ctx.mount::<Inner>(props.clone());
+    Column::new()
+      .child(Rect::new(150.0, 30.0).ref_element(self.anchor.clone()))
+      .child(Popup::new(self.anchor.clone(), content).open(props.open))
+  }
+}
+
+#[test]
+fn a_component_that_renders_again_does_not_reach_into_the_layer_it_left() {
+  let (open, tick) = (Signal::new(true), Signal::new(0));
+  let mut stage = Stage::with_root::<Host>(HostProps {
+    open: open.clone(),
+    tick: tick.clone(),
+  });
+  stage.at(300);
+  assert_close(&stage.opacities(PANEL_A), &[1.0]);
+
+  open.set(false);
+  stage.at(300);
+  stage.at(400);
+  assert_close(&stage.opacities(PANEL_A), &[0.5]);
+
+  // The component is still mounted, for the closed popup. Its fresh output is not the leaving layer's.
+  tick.set(1);
+  stage.at(400);
+  assert_close(&stage.opacities(PANEL_A), &[0.5]);
+  stage.at(450);
+  assert_close(&stage.opacities(PANEL_A), &[0.25]);
+
+  stage.at(500);
+  assert_close(&stage.opacities(PANEL_A), &[]);
 }

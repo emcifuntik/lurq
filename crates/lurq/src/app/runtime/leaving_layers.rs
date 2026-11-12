@@ -12,7 +12,8 @@
 //! A leaving layer is only painted. Its root takes no pointer and has the
 //! `LeavingLayer` role, so it is no modal and Tab passes it by; focus, hover
 //! and a press that were in it are let go when it begins to leave; its nodes
-//! lose their ids and element refs, so no lookup finds them. It is not taken
+//! lose their element ids, element refs and component slots, so no lookup finds them
+//! and a component that renders again leaves them alone. It is not taken
 //! over either: a layer opened again while it leaves is a new one, which
 //! enters over it.
 //!
