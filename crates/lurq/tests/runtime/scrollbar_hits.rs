@@ -79,6 +79,10 @@ fn trailing_row_buttons_under_a_plain_overlay_bar_keep_their_clicks_and_hover() 
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn trailing_row_buttons_under_a_painted_track_belong_to_the_scrollbar() {
   let state = ScrollState::new();
   let (clicks, on_click) = counter();
@@ -139,6 +143,10 @@ fn an_always_visible_bar_over_fitting_content_takes_no_pointer() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn where_nested_lanes_overlap_the_outer_bar_painted_on_top_wins() {
   let outer = ScrollState::new();
   let inner = ScrollState::new();
@@ -173,6 +181,10 @@ fn where_nested_lanes_overlap_the_outer_bar_painted_on_top_wins() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn in_the_corner_of_a_two_axis_scroller_the_horizontal_bar_painted_on_top_wins() {
   let state = ScrollState::new();
   let mut runtime = Tree::new();

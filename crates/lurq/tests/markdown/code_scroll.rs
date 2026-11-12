@@ -133,6 +133,10 @@ fn swipe(app: &mut App, tree: &mut Tree, dx: f32) {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn a_long_line_is_not_wrapped_and_the_block_scrolls_by_shift_wheel() {
   let (mut app, mut tree) = show(MarkdownProps::new(source(&long_line())));
   let (_, mut short) = show(MarkdownProps::new(source("short")));
@@ -181,6 +185,10 @@ fn a_long_line_is_not_wrapped_and_the_block_scrolls_by_shift_wheel() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn a_sideways_swipe_scrolls_the_block_and_the_bar_follows() {
   let (mut app, mut tree) = show(MarkdownProps::new(source(&long_line())));
   let text = code_text(&mut tree);
@@ -650,6 +658,10 @@ fn a_slanted_swipe_delivered_as_separate_events_scrolls_only_the_page() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn an_app_theme_bar_that_reserves_a_gutter_leaves_a_fitting_block_its_size() {
   let gutter_thumb = Color::from_hex("#8b5cf6");
   let app = App::new();
