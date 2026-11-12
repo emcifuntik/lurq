@@ -51,6 +51,11 @@ mod platform {
 mod platform {
   use objc2::{class, msg_send, runtime::AnyObject};
 
+  // `NSWorkspace` is a class of AppKit, and nothing links AppKit into a binary that names no symbol
+  // of it: one built without the winit shell, a test's for one.
+  #[link(name = "AppKit", kind = "framework")]
+  unsafe extern "C" {}
+
   pub(super) fn read() -> Option<bool> {
     // SAFETY: `+[NSWorkspace sharedWorkspace]` returns the process's workspace, which lives as long as
     // the process, and `-accessibilityDisplayShouldReduceMotion` (macOS 10.12) takes no argument and
