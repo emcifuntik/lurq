@@ -109,19 +109,16 @@ impl BackdropInputs {
   /// The input of a blur is what decides the pixels it copies out of its
   /// target (the rectangle of its [`LayerBlur`]):
   ///
-  /// - the target: the window with its size and clear colour, or the layer
-  ///   the blur is in with the rectangle it is painted for;
+  /// - the target: the window with its size and clear colour, or the layer the blur is in with the rectangle it is
+  ///   painted for;
   /// - the rectangle copied and the blur's deviation;
-  /// - every draw painted into the target before the blur whose painted
-  ///   pixels can reach the rectangle, in paint order, with all it is drawn
-  ///   from: its geometry, colours, gradient, shadow, transform and clip; a
-  ///   glyph's place in the atlas, and the atlas's version and size; an
-  ///   image's id, frame and version; an SVG's mesh;
-  /// - every layer composited into the target before the blur that shows
-  ///   inside the rectangle, with everything painted into it (its draws, the
-  ///   layers inside it and their blurs, and its backdrop blurs);
-  /// - every backdrop blur run on the target before this one that changes
-  ///   pixels inside the rectangle, with how it is put back and its own input.
+  /// - every draw painted into the target before the blur whose painted pixels can reach the rectangle, in paint order,
+  ///   with all it is drawn from: its geometry, colours, gradient, shadow, transform and clip; a glyph's place in the
+  ///   atlas, and the atlas's version and size; an image's id, frame and version; an SVG's mesh;
+  /// - every layer composited into the target before the blur that shows inside the rectangle, with everything painted
+  ///   into it (its draws, the layers inside it and their blurs, and its backdrop blurs);
+  /// - every backdrop blur run on the target before this one that changes pixels inside the rectangle, with how it is
+  ///   put back and its own input.
   ///
   /// A draw is left out when it cannot reach the rectangle, so a change next
   /// to the glass, or one painted after it, leaves the input as it was; so
@@ -236,7 +233,9 @@ impl<D: Fn(usize) -> PaintedDraw> Frame<'_, D> {
         let clear = self.list.clear_color;
         notes.tag(b'W');
         notes.u32s(&self.window);
-        notes.bytes.extend_from_slice(&[clear.r(), clear.g(), clear.b(), clear.a()]);
+        notes
+          .bytes
+          .extend_from_slice(&[clear.r(), clear.g(), clear.b(), clear.a()]);
       }
     }
     notes.f32(blur.sigma);
@@ -488,7 +487,9 @@ impl Notes {
   }
 
   fn color(&mut self, color: crate::node::color::Color) {
-    self.bytes.extend_from_slice(&[color.r(), color.g(), color.b(), color.a()]);
+    self
+      .bytes
+      .extend_from_slice(&[color.r(), color.g(), color.b(), color.a()]);
   }
 
   fn clip(&mut self, clip: &ClipRect) {
@@ -592,7 +593,12 @@ impl Notes {
       crate::images::ImagePixelFormat::Rgba8 => 0,
       crate::images::ImagePixelFormat::Nv12 => 1,
     });
-    self.u64(image.animation_frames.as_ref().map_or(u64::MAX, |frames| frames.len() as u64));
+    self.u64(
+      image
+        .animation_frames
+        .as_ref()
+        .map_or(u64::MAX, |frames| frames.len() as u64),
+    );
     self.f32s(&image.uv_min);
     self.f32s(&image.uv_max);
     self.f32s(&image.radii);

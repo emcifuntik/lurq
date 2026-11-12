@@ -14,8 +14,7 @@
 //! which only compares the PNGs of two such directories.
 //!
 //! Scenarios, a change before every frame:
-//! - `still`: a row inside the last panel changes colour, as a hover does.
-//!   Nothing painted behind any glass changes.
+//! - `still`: a row inside the last panel changes colour, as a hover does. Nothing painted behind any glass changes.
 //! - `small`: a chip under the menu changes colour: behind the menu only.
 //! - `all`: the gradient changes: behind every glass.
 //! - `resize`: the window alternates between two sizes.
@@ -185,7 +184,11 @@ fn main() {
       .background(ROW_FILLS[0])
       .child(Rect::new(10.0, 10.0).background(dots[index % dots.len()]).rounded(5.0))
       .child(Text::new(&format!("Row {index:02} of the list")).color("#f8fafc"))
-      .child(Rect::new(36.0 + (index % 5) as f32 * 14.0, 6.0).background("#ffffff59").rounded(3.0));
+      .child(
+        Rect::new(36.0 + (index % 5) as f32 * 14.0, 6.0)
+          .background("#ffffff59")
+          .rounded(3.0),
+      );
     match id {
       Some(id) => row.id(id).into(),
       None => row.into(),
@@ -230,7 +233,12 @@ fn main() {
           .rounded(8.0)
           .background(if index % 2 == 0 { "#0f172a66" } else { "#f8fafc33" })
           .child(Rect::new(18.0, 18.0).background("#fde68a").rounded(9.0))
-          .child(Text::new(&format!("Message {index:02}: the quick brown fox jumps over the lazy dog")).color("#f8fafc"))
+          .child(
+            Text::new(&format!(
+              "Message {index:02}: the quick brown fox jumps over the lazy dog"
+            ))
+            .color("#f8fafc"),
+          )
           .child(if index == 10 {
             Element::from(Rect::new(120.0, 16.0).background(CHIP_FILLS[0]).rounded(8.0).id("chip"))
           } else {
@@ -446,7 +454,10 @@ fn main() {
         self.frame(Some(scenario));
       }
       let profiling = self.tree.profiling_handle();
-      let session = profiling.start_recording(RecordingOptions::default()).expect("recording").id;
+      let session = profiling
+        .start_recording(RecordingOptions::default())
+        .expect("recording")
+        .id;
       self.shared.borrow_mut().frames.clear();
       for _ in 0..frames {
         self.frame(Some(scenario));

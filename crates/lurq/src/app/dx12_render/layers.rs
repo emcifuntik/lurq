@@ -354,13 +354,7 @@ impl LayerCompositor {
 
   /// Takes the free texture `fitting` for this frame, or a new one for a
   /// `width` x `height` layer.
-  unsafe fn take(
-    &mut self,
-    device: &ID3D12Device,
-    fitting: Option<usize>,
-    width: u32,
-    height: u32,
-  ) -> Result<usize> {
+  unsafe fn take(&mut self, device: &ID3D12Device, fitting: Option<usize>, width: u32, height: u32) -> Result<usize> {
     let index = match fitting {
       Some(index) => index,
       None => {

@@ -351,7 +351,12 @@ fn assert_backdrop_blur<E: RenderEngine>(new_engine: fn() -> E, backend: &str) {
   // the window's four edges in turn, at blurs reduced by two and by four.
   for sigma in [12.0, 24.0] {
     let whole = [0.0, 0.0, WIDTH as f32, HEIGHT as f32];
-    for (across, edge) in [(true, 6), (true, WIDTH as i32 - 6), (false, 6), (false, HEIGHT as i32 - 6)] {
+    for (across, edge) in [
+      (true, 6),
+      (true, WIDTH as i32 - 6),
+      (false, 6),
+      (false, HEIGHT as i32 - 6),
+    ] {
       let frame = render(&mut new_engine(), &split_at(edge, across, backdrop(1, whole, sigma)));
       assert_frame(
         &frame,
@@ -489,12 +494,7 @@ fn assert_backdrop_reuse<E: RenderEngine>(new_engine: fn() -> E, reuse: fn(&E) -
     let mut next = |list: &RenderList, what: &str| {
       let frame = frames.capture(&mut engine, list).rgba;
       let anew = render(&mut new_engine(), list);
-      let worst = frame
-        .iter()
-        .zip(&anew)
-        .map(|(a, b)| a.abs_diff(*b))
-        .max()
-        .unwrap_or(0);
+      let worst = frame.iter().zip(&anew).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
       // A stale blur is off by far more: a level allows for the textures of
       // other sizes a pool that has been used hands out.
       assert!(
@@ -511,8 +511,12 @@ fn assert_backdrop_reuse<E: RenderEngine>(new_engine: fn() -> E, reuse: fn(&E) -
 
     // Painted after the glass, over it and beside it: not behind it.
     let mut over = split(backdrop(1, BOX, sigma));
-    over.rects.push(rect(2, [70.0, 30.0, 20.0, 20.0], Color::new(200, 40, 10, 255)));
-    over.rects.push(rect(3, [2.0, 2.0, 6.0, 6.0], Color::new(10, 40, 200, 255)));
+    over
+      .rects
+      .push(rect(2, [70.0, 30.0, 20.0, 20.0], Color::new(200, 40, 10, 255)));
+    over
+      .rects
+      .push(rect(3, [2.0, 2.0, 6.0, 6.0], Color::new(10, 40, 200, 255)));
     assert_eq!(next(&over, "a draw over the glass"), (1, 1));
 
     // How it is put back changes every frame of a fade: its opacity, its
@@ -538,7 +542,10 @@ fn assert_backdrop_reuse<E: RenderEngine>(new_engine: fn() -> E, reuse: fn(&E) -
     // The glass moves: other pixels are read, into another texture.
     let elsewhere = [BOX[0] + 9.0, BOX[1] + 5.0, BOX[2], BOX[3]];
     assert_eq!(next(&split(backdrop(1, elsewhere, sigma)), "the glass moved"), (0, 1));
-    assert_eq!(next(&split(backdrop(1, elsewhere, sigma)), "the moved glass, still"), (1, 1));
+    assert_eq!(
+      next(&split(backdrop(1, elsewhere, sigma)), "the moved glass, still"),
+      (1, 1)
+    );
 
     // A second glass over a part of the first reads what the first left.
     let two = |edge: i32| {

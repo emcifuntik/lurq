@@ -3328,7 +3328,14 @@ impl Dx12State {
       let mut regions = std::mem::take(&mut self.backdrop_regions);
       let mut inputs = std::mem::take(&mut self.backdrop_inputs);
       backdrop_regions(list, plan, window, &mut regions);
-      inputs.describe(list, plan, draws.len(), |index| draws[index].1.painted(), &regions, window);
+      inputs.describe(
+        list,
+        plan,
+        draws.len(),
+        |index| draws[index].1.painted(),
+        &regions,
+        window,
+      );
       let begun = self.begin_layer_frame(&targets, &regions, &inputs, window, slots);
       self.backdrop_regions = regions;
       self.backdrop_inputs = inputs;
