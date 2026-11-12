@@ -61,6 +61,11 @@ thread_local! {
   static SOUGHT: lurq::core::Signal<String> = lurq::core::Signal::new(String::new());
 }
 
+thread_local! {
+  /// How many times the screen at `/tools` was rendered in this test.
+  static TOOLS_RENDERED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct Finding;
 
 impl Component for Finding {
@@ -144,7 +149,12 @@ impl Component for Root {
                 .prompt("a prompt over the title")
                 .toolbar(Text::new("a toolbar's control")),
             );
-            Text::new("tools screen").into()
+            TOOLS_RENDERED.with(|rendered| rendered.set(rendered.get() + 1));
+            let bottom = ctx.safe_area().bottom;
+            lurq::components::Column::new()
+              .child(Text::new("tools screen"))
+              .child(Text::new(&format!("clear of {bottom}")))
+              .into()
           })
           .route("/find", |ctx| ctx.mount::<Finding>(()))
           .route("/user/:id", |ctx| {
@@ -606,5 +616,41 @@ fn a_screens_list_is_clear_of_the_bar_in_its_first_frame() {
     .find_element(|element| element.id() == Some("navigation-large-title"))
     .expect("the large title")
     .rect();
-  assert!(title.1 >= 44.0, "not under the bar first, to jump down after: {title:?}");
+  assert!(
+    title.1 >= 44.0,
+    "not under the bar first, to jump down after: {title:?}"
+  );
+}
+
+#[test]
+fn a_screen_over_its_toolbar_has_nothing_to_keep_clear_of_at_the_bottom() {
+  let (mut tree, router) = setup();
+  tree.window().set_safe_area(lurq::app::window::SafeAreaInsets {
+    bottom: 34.0,
+    ..Default::default()
+  });
+  router.push("/tools");
+  settle(&mut tree);
+  assert!(
+    shows(&mut tree, "clear of 0"),
+    "the toolbar is over the home indicator's room"
+  );
+  assert!(router.back());
+  settle(&mut tree);
+}
+
+#[test]
+fn a_screen_that_gives_the_bar_an_element_is_not_rendered_without_end() {
+  let (mut tree, router) = setup();
+  router.push("/tools");
+  settle(&mut tree);
+  let rendered = TOOLS_RENDERED.with(std::cell::Cell::get);
+  for _ in 0..5 {
+    run_pass(&mut tree);
+  }
+  assert_eq!(
+    TOOLS_RENDERED.with(std::cell::Cell::get),
+    rendered,
+    "at rest nothing renders the screen again"
+  );
 }

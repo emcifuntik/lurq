@@ -470,6 +470,11 @@ pub(crate) struct NavigationSlot {
   /// See [`LayerBar`].
   top: Signal<f32>,
   under: Arc<AtomicBool>,
+  /// The outlet draws a screen's toolbar: it has a bar of its own.
+  toolbars: bool,
+  /// Whether the screen has a toolbar, and whether it hides the bar of tabs: what it keeps clear of at the
+  /// bottom follows.
+  bottom: Signal<(bool, bool)>,
 }
 
 impl NavigationSlot {
@@ -484,6 +489,15 @@ impl NavigationSlot {
     };
     if !same {
       self.changed.update(|version| *version += 1);
+    }
+    // What the screen's holder is made by, apart: it is not made again for every render of a screen that
+    // gives an element, which would render the screen again, and so without end.
+    let bottom = {
+      let item = self.item.lock();
+      (item.toolbar.is_some() && !item.bar_hidden, item.hides_tab_bar)
+    };
+    if self.bottom.get_untracked() != bottom {
+      self.bottom.set(bottom);
     }
   }
 }
@@ -643,6 +657,8 @@ struct LayerBar {
   /// The screen's list goes on under the bar and keeps its content clear of it itself
   /// ([`StackOutlet::large_title_scroll`]): the outlet does not keep the screen clear.
   under: Arc<AtomicBool>,
+  /// See [`NavigationSlot`].
+  bottom: Signal<(bool, bool)>,
 }
 
 impl Default for LayerBar {
@@ -663,6 +679,7 @@ impl Default for LayerBar {
       top_now: Arc::default(),
       top: Signal::new(0.0),
       under: Arc::default(),
+      bottom: Signal::new((false, false)),
     }
   }
 }
@@ -934,6 +951,8 @@ impl Component for StackOutlet {
             searching: layer.bar.searching.clone(),
             top: layer.bar.top.clone(),
             under: layer.bar.under.clone(),
+            toolbars: matches!(props.bar, Some(Bar::Standard(_))),
+            bottom: layer.bar.bottom.clone(),
           },
         },
         id == front || id == back,
@@ -2138,11 +2157,16 @@ impl Component for StackLayer {
     ctx.provide(RouterMatches(props.matches.clone()));
     ctx.provide(OutletDepth(props.depth));
     ctx.provide(StackState(props.state.clone()));
-    // A screen that hides the bar of tabs has no bar over its content to keep clear of. What the screen says
-    // of itself it says in its own render, after this one: this one is run again for it.
-    let _ = props.slot.changed.get();
-    if props.slot.item.lock().hides_tab_bar {
-      ctx.provide_if_changed(crate::app::ctx::BottomBarInset(0.0));
+    // What the screen says of itself it says in its own render, after this one: this one is run again when
+    // that changes what the screen keeps clear of.
+    let (has_toolbar, hides_tab_bar) = props.slot.bottom.get();
+    let toolbar = props.slot.toolbars && has_toolbar;
+    if toolbar {
+      // The screen ends where its toolbar starts, and the toolbar is clear of what is under it.
+      ctx.provide_if_changed(crate::app::ctx::BottomBarInset::Under);
+    } else if hides_tab_bar {
+      // A screen that hides the bar of tabs has no bar over its content to keep clear of.
+      ctx.provide_if_changed(crate::app::ctx::BottomBarInset::Over(0.0));
     }
     ctx.provide(props.slot.clone());
     match props.matches.get(props.depth) {

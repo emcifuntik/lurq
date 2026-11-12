@@ -712,10 +712,15 @@ struct ElementRequests {
   scroll_to_top: bool,
 }
 
-/// How much more than the window's safe area a component's descendants keep clear of at the bottom, for a
-/// bar the component draws over them there: [`Ctx::safe_area`] adds it.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct BottomBarInset(pub(crate) f32);
+/// What a component's descendants keep clear of at the bottom, for a bar the component draws there:
+/// [`Ctx::safe_area`] follows it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum BottomBarInset {
+  /// A bar over the descendants, so high over the window's own bottom inset: they keep clear of both.
+  Over(f32),
+  /// A bar under the descendants, which end where it starts: nothing is left to keep clear of.
+  Under,
+}
 
 pub struct Ctx {
   dirty: Arc<AtomicBool>,
@@ -2215,8 +2220,10 @@ impl Ctx {
   /// that scrolls under such a bar is padded by this inside its list, and shows through the bar.
   pub fn safe_area(&mut self) -> crate::app::window::SafeAreaInsets {
     let mut safe_area = self.window().safe_area;
-    if let Some(bar) = self.use_context::<BottomBarInset>() {
-      safe_area.bottom += bar.0;
+    match self.use_context::<BottomBarInset>() {
+      Some(BottomBarInset::Over(bar)) => safe_area.bottom += bar,
+      Some(BottomBarInset::Under) => safe_area.bottom = 0.0,
+      None => {}
     }
     safe_area
   }

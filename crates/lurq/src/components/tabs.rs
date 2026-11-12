@@ -594,7 +594,7 @@ impl Component for TabOutlet {
     // A bar across the bottom is over the tabs' content, which shows through it: the content keeps clear of
     // the bar's height more than of the window's bottom, while the bar is there.
     let bar_height = self.bar_height.get();
-    ctx.provide_if_changed(BottomBarInset(if over && !away {
+    ctx.provide_if_changed(BottomBarInset::Over(if over && !away {
       (bar_height - safe_area.bottom).max(0.0)
     } else {
       0.0
