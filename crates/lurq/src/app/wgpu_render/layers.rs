@@ -113,6 +113,11 @@ struct LayerSlot {
   /// Holds the uniforms of the one pass that reads this texture in a frame:
   /// a `LayerComposite` or a `LayerBlurPass`.
   uniform: wgpu::Buffer,
+  /// The bytes `uniform` holds. A pass whose uniforms are the ones of the
+  /// frame before writes nothing: every write is a staging buffer and a copy
+  /// when the frame is submitted, and a layer or a glass that holds still
+  /// has the same passes frame after frame.
+  uniforms: std::cell::RefCell<Vec<u8>>,
   bind_group: wgpu::BindGroup,
   blur_bind_group: wgpu::BindGroup,
   width: u32,
@@ -128,6 +133,18 @@ impl LayerSlot {
   /// The bytes the texture holds, at four a texel.
   fn bytes(&self) -> usize {
     self.width as usize * self.height as usize * 4
+  }
+
+  /// Puts the uniforms of the pass that reads the texture this frame in its
+  /// buffer, unless it holds them already.
+  fn write_uniforms(&self, queue: &wgpu::Queue, uniforms: &[u8]) {
+    let mut held = self.uniforms.borrow_mut();
+    if held.as_slice() == uniforms {
+      return;
+    }
+    queue.write_buffer(&self.uniform, 0, uniforms);
+    held.clear();
+    held.extend_from_slice(uniforms);
   }
 }
 
@@ -457,6 +474,7 @@ impl LayerCompositor {
       texture,
       view,
       uniform,
+      uniforms: Default::default(),
       bind_group,
       blur_bind_group,
       width,
@@ -665,7 +683,7 @@ impl LayerCompositor {
     let blurred = slots.blurred;
     let uniforms = LayerBlurPass::backdrop(&slots.region, &slots.plan, parent, self.size(blurred));
     let slot = &self.slots[blurred];
-    queue.write_buffer(&slot.uniform, 0, bytemuck::bytes_of(&uniforms));
+    slot.write_uniforms(queue, bytemuck::bytes_of(&uniforms));
     pass.set_bind_group(0, &slot.blur_bind_group, &[]);
     for pipeline in [&self.backdrop_erase_pipeline, &self.backdrop_add_pipeline] {
       pass.set_pipeline(pipeline);
@@ -776,7 +794,7 @@ impl LayerCompositor {
     let slot = &self.slots[source];
     // Each texture is read by one pass per frame, so its own buffer holds
     // that pass's values until the frame's submit.
-    queue.write_buffer(&slot.uniform, 0, bytemuck::bytes_of(uniforms));
+    slot.write_uniforms(queue, bytemuck::bytes_of(uniforms));
     pass.set_pipeline(&self.blur_pipeline);
     pass.set_bind_group(0, &slot.blur_bind_group, &[]);
     pass.draw_indexed(0..QuadVertex::INDICES.len() as u32, 0, 0..1);
@@ -798,11 +816,7 @@ impl LayerCompositor {
     let slot = &self.slots[slot];
     // Each layer is composited once per frame, so its own buffer holds the
     // values until the frame's submit.
-    queue.write_buffer(
-      &slot.uniform,
-      0,
-      bytemuck::bytes_of(&LayerComposite::new(layer, parent)),
-    );
+    slot.write_uniforms(queue, bytemuck::bytes_of(&LayerComposite::new(layer, parent)));
     pass.set_pipeline(&self.pipeline);
     pass.set_bind_group(0, &slot.bind_group, &[]);
     pass.draw_indexed(0..QuadVertex::INDICES.len() as u32, 0, 0..1);

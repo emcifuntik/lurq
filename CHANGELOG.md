@@ -28,6 +28,7 @@ Fixes:
 Internal:
 
 - A blur is finished before it is composited. The vertical Gaussian runs on the (reduced) copy into a texture of its own, as the horizontal one does, and the pass that composites a blurred layer or puts a backdrop back reads that texture once per pixel. Before, that pass ran the vertical Gaussian itself at the window's resolution, 25 reads per pixel, or 50 over a reduced copy (two Gaussians, interpolated): `backdrop_blur(32.0)` took about 56 texture reads per pixel of glass and takes about 14. A blur takes one more pass and one more pooled texture for it.
+- The wgpu renderer writes the uniforms of a layer composite or a blur pass only when they differ from the ones the layer texture's buffer holds. Every such write is a staging buffer and a copy at the frame's submit, and a faded group, a blurred layer or a glass that holds still has the same passes frame after frame: a frame that blurs four backdrops again took 16 writes for them and takes none.
 
 ## 0.60.0 — 2026-11-11
 
