@@ -356,3 +356,32 @@ key reaches the tree as on a desktop.
 
 The shell presents from a `CADisplayLink` at the display's full rate, and only while something changes: an idle
 app draws nothing. Going to the background and coming back needs nothing from the app.
+#### A secret behind the check
+
+An ask of the app's own guards nothing by itself: what it guards is in the app, which can be made to skip the
+ask. A token or a key an app logs in with is kept in the device's keychain instead, where the system asks for
+the face or the finger before it gives the secret back.
+
+```rust
+use lurq::app::biometry::{self, AuthPolicy, SecretError};
+
+biometry::keep_secret("session", token.as_bytes(), AuthPolicy::BiometryOrPasscode)?;
+
+let session = self.session.clone();
+biometry::read_secret("session", "Log you in", move |answer| match answer {
+  Ok(token) => session.set(Some(token)),
+  Err(SecretError::NotFound) => session.set(None), // nothing kept: ask for the password
+  Err(SecretError::Auth(_)) => {}                  // not let through
+});
+```
+
+- `keep_secret` asks nothing and replaces what was kept under the name. `read_secret` shows the system's
+  prompt, and answers on another thread. `has_secret` and `forget_secret` ask nothing either.
+- The secret stays on the device and out of its backups, and a device with no passcode keeps none
+  (`AuthError::Unavailable`).
+- With `AuthPolicy::BiometryOnly` the secret is for the faces or the fingers the device knows when it is kept:
+  once those change it is gone (`NotFound`), and the app asks for the password again.
+- In a simulator the keychain takes an app's secrets only when the entitlements Xcode makes up for a
+  simulator are in the binary. A binary cargo builds has none: `crates/mobile_demo/ios/build-rust.sh` shows
+  how they are linked in.
+
