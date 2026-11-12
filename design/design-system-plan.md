@@ -50,8 +50,9 @@ Agreed on 2026-11-12. The phases below build on them.
 **Icon notes (D5).**
 
 - **The set is small.** Only what components draw themselves: chevrons and arrows, check, minus, plus, close, search, the status marks (info, success, warning, error), spinner, ellipsis, grip, calendar, clock, eye, copy, upload, external link, window controls and a few more — on the order of fifty. Icons an app shows in its own content are the app's to bring.
-- **They are drawn in the Pencil file**: 144 glyphs on a 24-unit grid with a 2-unit stroke, one `Icon/<name>` component each, on the Icons pages next to a table from Lucide names to lurq names. Every icon in the file is an instance of one of them; no Lucide glyph is left. A few need a second pass: settings, airplane, quote, strikethrough, bug, the three hands, megaphone, replace and replace-all.
-- **How they reach the screen is open** (section 12): an icon font generated from the sources, or vector paths. A font needs no optional feature because text rendering is always present.
+- **They are drawn in the Pencil file**: 152 glyphs on a 24-unit grid with a 2-unit stroke, one `Icon/<name>` component each, on the Icons pages next to a table from Lucide names to lurq names. Every icon in the file is an instance of one of them; no Lucide glyph is left. A few need a second pass: settings, airplane, quote, strikethrough, bug, the three hands, megaphone, replace and replace-all.
+- **They reach the screen as a hinted icon font.** The sources are in the repository: one SVG of filled outlines per glyph in `design/icons/svg`, exported from the Pencil file. `scripts/build-icon-font.py` builds `crates/lurq/assets/lurq-icons.ttf` from them and writes the TrueType hints itself. `design/icons/codepoints.json` gives each name a codepoint from U+E000 up; a name keeps its codepoint for good, and a new glyph takes the next free one. A font needs no optional feature because text rendering is always present.
+- **What the hints do.** A straight stroke is one pixel wide up to 17 px. Above that it keeps the width it was drawn with, with the edge that faces out of the glyph on the pixel grid, so it weighs what the diagonal next to it does. Strokes are placed from the middle of the glyph outward and keep a whole pixel of white between them; where the white is too narrow for that, a stroke is drawn in whole pixels. Diagonals and free stroke ends are left alone. None of it shows until the glyph engine renders this font hinted (E9 in section 5).
 - **Lucide today.** lurq already ships `assets/lucide.ttf` in the published crate, for DevTools, with no license notice in the repository. Lucide is ISC and its Feather-derived icons are MIT; both allow this but require their notices to accompany copies. Either DevTools moves to the new glyphs and the file is removed, or a notice file is added until it does. A wider license audit is under way separately.
 
 ## 4. Theming model
@@ -171,6 +172,7 @@ Small, self-contained changes to nodes. Each lands with tests and a docs section
 | E6 Transitions | Make `foreground`, `box_shadow` and `outline` animatable | Opacity, background, border and transform already are. |
 | E7 Presence | An enter and exit animation hook for layers: content stays mounted until its exit animation ends | Popovers, dialogs and toasts fade and slide in the design. Today only `Sheet` and `StackOutlet` animate, each with its own code. |
 | E8 Reduced motion | Read the system setting where the platform has one; expose `ctx.reduced_motion()`; durations resolve to zero or a fade | Docs currently state lurq does not read it. |
+| E9 Hinted icons | The glyph engine renders the icon font hinted and snapped to whole pixels: whole sizes, whole positions. Today `render_glyph_image` forces hinting off for all fonts, which is right for text placed at fractions of a pixel and stays so | The font opts into native ClearType in `prep`; without that a smooth rasterizer ignores hints along x. swash's own scaler ignores them either way, because it pins `preserve_linear_metrics`. So the icon path hints the outline through skrifa (smooth mode without linear metrics) and hands it to zeno, the rasterizer swash uses. |
 
 Deferred until a component needs them: dashed borders, a single-side border that follows the corner radius, grid layout, sticky positioning. No z-index — overlay layers already cover it.
 
@@ -274,11 +276,11 @@ No bridge in this plan, but every component declares a semantic role, name and s
 | Step | Depends on | Rough size |
 | --- | --- | --- |
 | Phase 0, E1–E4 | — | small each; E1 touches text layout and is the largest |
-| Phase 0, E5–E8 | — | small to medium; E7 is the largest |
+| Phase 0, E5–E9 | — | small to medium; E7 is the largest |
 | Phase 1, tokens and schemes | E1 | medium; the palette migration touches every themed component and the docs |
 | Phase 1, theme machinery | E1–E4 | medium to large; it is new architecture |
 | Step 2, proof on four components | Phase 1 | medium; expect to revise the machinery here |
-| Glyph set (D5) | — | drawn in Pencil (144 glyphs); left: a second pass on a few, and the export to code |
+| Glyph set (D5) | E9 to look right | drawn in Pencil (152 glyphs), with sources, generator and hinted font in the repository; left: a second pass on a few |
 | Phase 2 | Step 2, glyph set | large; about 25 components |
 | Phase 3 | Phase 2, E7 | large |
 | Phase 4 | Phase 2 | medium |
@@ -293,7 +295,7 @@ Phase 0 and the tokens half of Phase 1 can be reviewed and released on their own
 - **The theming API is the hardest part to change later.** Every component and every app theme depends on it. Step 2 exists to find its flaws on four components instead of thirty.
 - **Recipe surface area.** A patch type with fifteen optional fields, times parts, variants, sizes, states and nested slots, is a lot to document and keep stable. Keeping one shared patch type, and adding fields only when a component needs them, holds it down.
 - **No feature flag.** Every app compiles every component. Unused ones do not reach the binary, but build time grows with the set. If it becomes a problem, the large groups (data grid, charts, dock layout) can move behind features later without changing the rest.
-- **The icon set lives only in Pencil.** The 144 glyphs are drawn and the component sheets use them, but nothing in the repository holds them yet. They need a source format in the repository and a way to the screen (question 7), and a few need redrawing.
+- **The icon font is hinted, and the engine is not.** The 152 glyphs are in the repository as sources and as a font, but until E9 lands they render unhinted, soft at small sizes on a 1x display. The hints are written by `scripts/build-icon-font.py`, not by a tool with a history, so every glyph added should be looked at on a comparison sheet at 12 to 24 px. A few glyphs still need redrawing.
 - **Renderers and behavior drifting apart.** A custom renderer that forgets to wire a part breaks hit-testing or focus. The behavior half must own events and semantics, and hand the renderer parts that already carry them.
 - **Resolution cost.** Merging base, variant, size and state on every render would be slow. Resolved recipes are cached per theme version and per combination.
 - **Breaking changes.** New default colors, renamed palette roles, a deprecated `FormTheme`. Mitigation: deprecated roles keep compiling and resolve to their replacements, a migration guide, and `Theme::legacy()`.
@@ -310,7 +312,7 @@ Phase 0 and the tokens half of Phase 1 can be reviewed and released on their own
 4. Does lurq ship a native-looking iOS theme itself, after the proof in step 2, or leave it to apps and the community?
 5. Should the new components be configured through builders like the existing `components`, or through props structs like the `form` compound controls?
 6. Does the default theme change in the same release that adds the components, or one release later?
-7. How do the glyphs reach the screen: an icon font generated from sources kept in the repository, or vector paths? A font works with no optional feature; paths need the `svg` or `canvas` machinery, or a new path primitive.
+7. Settled: the glyphs reach the screen as a hinted icon font, built by `scripts/build-icon-font.py` from `design/icons/svg` (icon notes, D5). Vector paths would have needed the `svg` or `canvas` machinery, or a new path primitive.
 8. Does DevTools move to the new glyphs at once, so `lucide.ttf` can be removed, or keep Lucide with a notice file for now?
 9. Is a `gallery` binary acceptable in `crates/demo`, or should it be its own crate?
 10. Which platforms must screenshot tests run on in CI?

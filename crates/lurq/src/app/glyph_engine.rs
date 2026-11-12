@@ -20,6 +20,7 @@ mod cap_height;
 mod carets;
 mod face_weight;
 mod generic_families;
+mod hinted;
 pub(crate) mod input_tokens;
 #[cfg(target_os = "ios")]
 mod ios_emoji;
@@ -466,6 +467,7 @@ pub(crate) struct GlyphEngine {
   font_system: FontSystem,
   swash_context: ScaleContext,
   transformed_scale_context: ScaleContext,
+  hinted_fonts: hinted::HintedFonts,
   font_aliases: HashMap<String, String>,
   face_weights: FaceWeights,
   measure_cache: HashMap<u64, Vec<(CacheKey, Size)>>,
@@ -515,6 +517,7 @@ impl GlyphEngine {
       canvas_text_framed: false,
       swash_context: ScaleContext::new(),
       transformed_scale_context: ScaleContext::new(),
+      hinted_fonts: hinted::HintedFonts::default(),
       font_aliases: HashMap::new(),
       input_cache: input_tokens::InputCache::default(),
       face_weights: FaceWeights::default(),
@@ -546,6 +549,15 @@ impl GlyphEngine {
 
   pub(crate) fn load_font(&mut self, data: Vec<u8>) {
     self.font_system.db_mut().load_font_data(data);
+    self.clear_text_caches();
+  }
+
+  /// Loads a font whose glyphs are drawn grid-fitted: at whole pixel sizes and
+  /// positions, with the font's hints applied. Meant for icon fonts; see `hinted`.
+  pub(crate) fn load_hinted_font(&mut self, data: Vec<u8>) {
+    let source = cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(data));
+    let faces = self.font_system.db_mut().load_font_source(source);
+    self.hinted_fonts.add(faces);
     self.clear_text_caches();
   }
 
@@ -1673,7 +1685,7 @@ impl GlyphEngine {
           continue;
         }
         let cached_glyph = if snap_to_pixel {
-          let physical = glyph.physical((0.0, run.line_y), 1.0);
+          let physical = self.hinted_fonts.physical(glyph, run.line_y);
           let Some(packed) = self.get_or_pack_glyph(physical.cache_key) else {
             if let Some(marker) = &debug_marker {
               eprintln!(
@@ -1896,7 +1908,7 @@ impl GlyphEngine {
         let default_color = first.style.color;
         let color = glyph_color(glyph.color_opt, default_color);
         let cached_glyph = if snap_to_pixel {
-          let physical = glyph.physical((0.0, run.line_y), 1.0);
+          let physical = self.hinted_fonts.physical(glyph, run.line_y);
           let Some(packed) = self.get_or_pack_glyph(physical.cache_key) else {
             continue;
           };
@@ -2025,7 +2037,16 @@ impl GlyphEngine {
     }
     #[cfg(feature = "perf_profile")]
     let swash_start = Instant::now();
-    let image = render_glyph_image(&mut self.swash_context, &font, cache_key);
+    let image = if cache_key.flags.contains(hinted::HINTED) {
+      let face = self
+        .font_system
+        .db()
+        .face(cache_key.font_id)
+        .map_or(0, |face| face.index);
+      self.hinted_fonts.render(&font, face, cache_key)
+    } else {
+      render_glyph_image(&mut self.swash_context, &font, cache_key)
+    };
     #[cfg(feature = "perf_profile")]
     {
       self.profile.swash_lookup += swash_start.elapsed();
@@ -2583,7 +2604,7 @@ impl GlyphEngine {
         if glyph_cluster_is_whitespace(run.text, glyph) {
           continue;
         }
-        let physical = glyph.physical((0.0, run.line_y), 1.0);
+        let physical = self.hinted_fonts.physical(glyph, run.line_y);
         glyphs.push(CachedRichShapedGlyph {
           x: physical.x as f32,
           y: physical.y as f32,
@@ -3167,7 +3188,8 @@ fn render_glyph_image(context: &mut ScaleContext, font: &Font, cache_key: GlyphC
   // Unhinted outlines sample the same smooth shape at every phase, so all
   // instances match (the transformed-glyph path below renders unhinted for the
   // same reason, as do DirectWrite's "natural" modes, which pair subpixel
-  // positioning with unhinted horizontal metrics).
+  // positioning with unhinted horizontal metrics). A font loaded as hinted does
+  // not come here from a pixel-snapped run: `hinted` places and draws its glyphs.
   let mut scaler = scaler::unhinted_scaler(context, font, cache_key).build();
   let offset = Vector::new(cache_key.x_bin.as_float(), cache_key.y_bin.as_float());
   let transform = cache_key

@@ -29,6 +29,16 @@ app.register_font("ui", "Inter");
 
 A family may also be a CSS generic family (`"serif"`, `"sans-serif"`, `"monospace"`, `"cursive"`, `"fantasy"`), drawn with the platform's font for it; see [Generic Families](../theme/#generic-families) and [`GenericFamily`](https://docs.rs/lurq/latest/lurq/layout/text_style/enum.GenericFamily.html) for the fonts of each platform. A bundled font replaces one by an alias of the keyword: `app.register_font("monospace", "JetBrains Mono")`.
 
+### Hinted Fonts
+
+Text is drawn unhinted: a letter falls at any fraction of a pixel, and looks the same wherever it falls. An icon font is the opposite case. Its glyphs are drawn on a pixel grid, and a stroke a pixel and a half wide spread over three pixels is a blur. Load such a font with `load_hinted_font`:
+
+```rust
+app.load_hinted_font(include_bytes!("../assets/icons.ttf").to_vec());
+```
+
+Its glyphs are then drawn grid-fitted: at the nearest whole pixel size and position, with the font's TrueType hints applied along both axes. The font has to carry hints for this to do anything, and to ask for native ClearType in its `prep` program for the hints along x to count. A glyph under a transform, or in a text that is not snapped to pixels, is drawn unhinted like any other.
+
 Text uses `TextStyle`.
 
 ```rust
