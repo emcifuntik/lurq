@@ -33,8 +33,8 @@ Common visual modifiers:
 | `.border_outside(width, color)` | Border outside the element bounds from a concrete width or `BorderSize`. |
 | `.box_shadow(shadow)` | Drop or inset shadows from a `ShadowStyle` role, a `BoxShadow`, or a list. See [Box Shadows](#box-shadows). |
 | `.opacity(value)` | Fade the element and its subtree as one group. See [Opacity](#opacity). |
-| `.blur(radius)` | Blur the element and its subtree as one layer. See [Blur](#blur). |
-| `.backdrop_blur(radius)` | Blur what is painted behind the element: frosted glass. See [Backdrop Blur](#backdrop-blur). |
+| `.blur(radius)` | Blur the element and its subtree as one layer. See [Blur](../blur/). |
+| `.backdrop_blur(radius)` | Blur what is painted behind the element: frosted glass. See [Blur](../blur/#frosted-glass). |
 | `.clip()` | Clip descendants to this element. |
 | `.overflow_visible()` | Allow descendants to paint outside this element. |
 
@@ -81,47 +81,9 @@ Stack::new()
 
 ## Blur
 
-`.blur(radius)` blurs an element together with everything inside it, as CSS `filter: blur()` and a design tool's layer
-blur do: the subtree is painted into an offscreen layer, and the layer is drawn through a Gaussian blur. What is
-behind the element is not blurred.
-
-```rust
-use lurq::{animation::Transition, components::{Column, Text}};
-
-// A panel that goes out of focus when `inactive`, over 200 ms.
-Column::new()
-  .padding(16.0)
-  .background("#ffffff")
-  .child(Text::new("Drafts"))
-  .blur(if inactive { 6.0 } else { 0.0 })
-  .transition(Transition::blur().duration_ms(200))
-```
-
-- `radius` is in logical pixels and means what a shadow's blur radius means: the Gaussian's standard deviation is half
-  of it, so `blur(8.0)` softens an edge like `BoxShadow::new(0.0, 0.0, 8.0, ..)`. CSS's `blur(4px)` names the
-  deviation itself and is `blur(8.0)` here. `0` (the default) is no blur and no layer; the radius is clamped to
-  `layout::opacity_layer::MAX_BLUR_RADIUS` (256).
-- The blur spreads past the element's box, by three deviations (`1.5 * radius`). It is cut by the clips the element is
-  under and by the window, as the element's own pixels are; inside them, content of the element that lies just outside
-  the clip still bleeds in, so a blurred element cut by a scroll container or the window's edge does not fade out
-  there. Containers clip by default: give a blur room with padding, or call `.overflow_visible()` on the containers it
-  should escape. A rounded clip cuts the blur with its corners.
-- `.blur(...)` and `.opacity(...)` on one element share a layer: the blurred result is faded.
-- Blur changes painting only: layout, scrolling and hit testing are the same at any radius.
-- The radius is in the element's own units, so it scales with the transforms the element is under, its own included:
-  `blur(8.0)` on an element scaled by 2 softens it as `blur(16.0)` would unscaled. A transform that scales the axes
-  differently blurs by their geometric mean, the same along both.
-- The cost is the layer's pixels, not the radius: a wide blur runs on a reduced copy of the layer. A blurred layer
-  takes two or three pooled textures for its frame.
-- A blurred `LayerCmd` carries a `LayerBlur`: the deviation in physical pixels and the rectangle the layer is painted
-  for, which is larger than the `bounds` it shows in and may reach outside the window, and the rounded clip to cut
-  the result to, if the element is under one. A custom `RenderEngine` that ignores it draws the layer unblurred.
-
-## Backdrop Blur
-
-`.backdrop_blur(radius)` blurs what is painted behind an element, inside the element's box, as CSS
-`backdrop-filter: blur()` does: frosted glass. The element then paints itself over the result, so the blur shows
-wherever the element is translucent. Give it a translucent background; an opaque one hides the blur.
+`.blur(radius)` blurs an element together with everything inside it, as CSS `filter: blur()` does, and
+`.backdrop_blur(radius)` blurs what is painted behind an element, inside its box, as CSS `backdrop-filter: blur()`
+does: frosted glass for an element with a translucent background.
 
 ```rust
 use lurq::components::{Column, Text};
@@ -130,30 +92,15 @@ use lurq::components::{Column, Text};
 Column::new()
   .padding(12.0)
   .background("#ffffff40")
-  .border_inside(1.0, "#ffffff99")
   .rounded(12.0)
   .backdrop_blur(16.0)
   .child(Text::new("Toolbar"))
 ```
 
-- `radius` means what `.blur(radius)`'s means and has the same limit; `0` (the default) is no blur.
-- The blur fills the element's box with its corner radii, inside the clips the element is under (their rounded
-  corners included). It does not spread past the box. Under a `.transform(...)` the box is the transformed box,
-  turned, scaled or skewed as the element is, and the radius scales as `.blur(...)`'s does.
-- "Behind" is everything painted before the element: earlier siblings, ancestors' backgrounds, anything under an
-  overlay. Inside an ancestor with `.opacity(...)` below 1 or a `.blur(...)`, it is only what that ancestor's layer
-  holds, as in CSS: the blur does not see through the layer to the window.
-- At the window's edge (or its layer's) the blur reads the edge pixels as if they went on, so glass against an edge
-  does not darken there.
-- The element's own `.opacity(...)` fades the blur with it: at `0.5` the blurred backdrop is mixed half and half with
-  the sharp one.
-- `Transition::backdrop_blur()` animates the radius.
-- Each backdrop blur stops the frame's drawing, copies the pixels around the box and blurs the copy, so it costs a
-  few passes and pooled textures of about the box's size. A handful of glass panels is cheap; a long list of glass
-  rows is not what it is for.
-- `RenderList::backdrops` lists the frame's backdrop blurs (`BackdropCmd`: the box, its radii and clip, the deviation
-  in physical pixels, and the render order the blur happens at). A custom `RenderEngine` that ignores them draws the
-  frame without the blurs.
+The radius is in logical pixels, with the Gaussian's deviation at half of it, as for a shadow's blur radius; `0` (the
+default) is no blur. Both change painting only, follow the element's transforms and the clips it is under, and
+animate with `Transition::blur()` and `Transition::backdrop_blur()`. [Blur](../blur/) has the rules for edges,
+clips, layers and cost.
 
 ## Gradients
 

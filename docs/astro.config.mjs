@@ -20,6 +20,7 @@ export default defineConfig({
                         'theme',
                         'animation-transforms',
                         'styling-events',
+                        'blur',
                         'focus-navigation',
                         'forms',
                         'routing',
