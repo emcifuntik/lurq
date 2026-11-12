@@ -162,7 +162,7 @@ Some differences are behavioral conventions rather than looks: whether a select 
 
 Small, self-contained changes to nodes. Each lands with tests and a docs section, and none depends on the others. Recipes need E1–E4 to express their states without re-rendering.
 
-All of them but E7 are built. Section 13 says where each stands, what was decided while building it, and what still has to be checked on platforms it was not built on.
+All of them are built. Section 13 says where each stands, what was decided while building it, and what still has to be checked on platforms it was not built on.
 
 | Item | Change | Notes |
 | --- | --- | --- |
@@ -321,7 +321,7 @@ Phase 0 and the tokens half of Phase 1 can be reviewed and released on their own
 
 ## 13. Phase 0: status and handover
 
-Written when E1–E6, E8 and E9 were built, on branch `feat/design-system`. It is for whoever picks the work up next, and for checking it on the platforms it was not built on.
+Written when all of Phase 0 was built, on branch `feat/design-system`. It is for whoever picks the work up next, and for checking it on the platforms it was not built on.
 
 ### 13.1 Where each item stands
 
@@ -333,17 +333,17 @@ Written when E1–E6, E8 and E9 were built, on branch `feat/design-system`. It i
 | E4 Outline | built | `5d33f980`, then `d4a7bd32` (clipping) |
 | E5 Text decoration | built | `1298fcad`, then `058784a4` (node size), `9b2c264e` (line limit as painted) |
 | E6 Transitions | built | `29f95d08` |
-| E7 Presence | **not started** | — |
+| E7 Presence | built | `bee2b8d8` |
 | E8 Reduced motion | built; macOS and iOS not built or run (13.3) | `9986db86` |
 | E9 Hinted icons | built in its own session and merged | `19c57f9b`, `3d54ae3a`, merge `902c03e0` |
 
-Everything was built and run on Windows only. The check is `scripts/check.ps1`: the main test suite, the suite with `devtools,mcp,perf_profile,counting_allocator`, and the release stack-depth guard. All three passed at `29f95d08`; start there when something fails later. Clippy was not run. `cargo fmt --check` reports differences in five files this work did not write (`winit_shell/frame_source.rs`, `winit_shell/touch.rs`, `components/sheet.rs`, `components/stack_outlet.rs`, `tests/components/sheet.rs`); they were there before.
+Everything was built and run on Windows only. The check is `scripts/check.ps1`: the main test suite, the suite with `devtools,mcp,perf_profile,counting_allocator`, and the release stack-depth guard. All three passed at `bee2b8d8`, the last commit of Phase 0; start there when something fails later. Clippy was not run. `cargo fmt --check` reports differences in five files this work did not write (`winit_shell/frame_source.rs`, `winit_shell/touch.rs`, `components/sheet.rs`, `components/stack_outlet.rs`, `tests/components/sheet.rs`); they were there before.
 
 `586e84c2` is not part of the plan: one line in a test that kept the second suite from compiling on the branch before this work began.
 
 ### 13.2 What was decided while building
 
-Where the code differs from the table in section 5, the code is what was decided. User-facing behavior is in `docs/src/content/docs/styling-events.md`, `layout.md` and `animation-transforms.md`, and in the changelog.
+Where the code differs from the table in section 5, the code is what was decided. User-facing behavior is in `docs/src/content/docs/styling-events.md`, `layout.md`, `animation-transforms.md` and `modals.md`, and in the changelog.
 
 - **E1.** With no foreground above it a text keeps its typography style's color, so a tree that sets none paints as before. The theme's `Foreground` role does not exist yet; pointing the default at it is Phase 1. A `TextInput` and Markdown draw in their own styles and do not read the foreground, as an `<input>` does not inherit `color`. An overlay's content is painted outside the element that declares it and starts from no foreground.
 - **E2.** State styles carry `foreground`, `opacity` and `outline`. Where several set a value the last applied wins: disabled, then drag-over, active, hovered, focus-visible, focused.
@@ -351,6 +351,8 @@ Where the code differs from the table in section 5, the code is what was decided
 - **E4.** `Outline` is a type (`Outline::new(width, color).offset(px)`), not three arguments. Containers clip their content by default, so an outline takes the clip of its element let out by its own reach; scroll viewports and the window, which the paint walk tracks apart, cut it where they cut the element.
 - **E5.** `TextStyle` and `MarkdownTextStyle` gained a public field, `strikethrough`: a source break for code that names every field, accepted and listed in the changelog. Markdown now draws `~~struck~~` text struck. `Text::max_lines` holds in the layout that paints the text as well as the one that sizes it.
 - **E6.** The outline animates as one value, and no outline is a value too, so a ring grows in and fades out. Transitions now read colors, widths and shadows given as theme roles; before, a color given as a role changed at once whatever its transition said. A role whose value changes with the theme runs the transition too. A list of more than four shadows changes at once.
+- **E7.** There is no `Presence` type. An element enters with the animation it plays from its mount, which a layer's content already did, and `.exit_animation(animation)` on any element names what it leaves with. A closed layer with an exit animation anywhere in it stays in the overlay host until the longest ends, so a dialog's backdrop and panel leave each in its own way. What stays is the layer's nodes as they were when it closed: the app does not render them again. The layer is only painted: no pointer, focus or Tab, no modal trap, no lookup by id or ref (`node/presence.rs`, `app/runtime/leaving_layers.rs`). A layer opened again while it leaves is a new layer over the old one, not the old one turned around. A popup hidden with its anchor does not leave. An exit animation outside a layer never plays: keeping a removed child of a `Row` in the flow while it leaves is a different problem and was left alone.
+- **E7, layer identity.** Building it showed that open layers were matched between passes by their place in the host: when the first of two popups closed, the second took over its state. A layer is now the layer the same declaring node opened last pass, then the layer of its key, and by place only when the declaring node is new. A layer with an animation in it is never matched to another declaration's, which is what lets one popup leave while the next enters.
 - **E8.** The setting lives in the theme: `Theme::reduced_motion()`, `Theme::set_reduced_motion(Option<bool>)`, `Ctx::reduced_motion()`. The shell reads the system when a window opens and when one takes focus. While motion is reduced, transitions of transform, offset, width and height end at once; fades and color changes run; keyframe animations are left to the app. A tree with no shell never reads the system, so tests do not depend on the machine.
 - **E9.** `App::load_hinted_font(data)`. The hinted outline comes from skrifa directly and is rasterized by zeno, because swash's scaler drops hints along x. Only pixel-snapped runs are hinted; a glyph under a transform is drawn unhinted.
 
@@ -375,12 +377,14 @@ Steps on a Mac:
 - E3 on touch. The touch paths (`app/runtime/touch.rs`, `touch_pointer.rs`) take a disabled element out of taps, long presses and the pressed look, and let a finger scroll over and inside it. The tests drive these paths, but not through a real finger.
 - E9. The hinted path was looked at in a window on Windows only. On macOS and iOS: `cargo run -p lurq --example icon_hinting --features winit,wgpu,screenshot` on a 1x display if one is at hand; on a 2x display hinting matters little.
 - E4 and E6 paint through quads every backend already draws, so nothing there is specific to a platform; a look at a focus ring growing in on Metal is still worth a minute.
+- E7 has no code of its own per platform, and it was not looked at in a window on any of them: its tests move the tree's clock, and two of them run a model of the winit loop (`app/winit_shell/frame_pacing_tests.rs`). In a window, on macOS and on a phone: give a popup's and a dialog's content `.animation(...)` and `.exit_animation(...)` (the sample in `animation-transforms.md`, "Presence"), open and close them, and look for three things. The content fades out instead of vanishing. It is gone when the fade ends, with nothing left over the page, and the window draws no frames after that. A click or a tap where the leaving layer is reaches the page under it. On iOS also close a dialog that holds a focused text input: the keyboard should go down as the dialog begins to leave, since the focus is let go then.
 
 **Linux.** No reader: there is no reduce-motion setting every desktop shares. GNOME's is `org.gnome.desktop.interface enable-animations`, reachable through the settings portal over D-Bus, which lurq does not link. Until someone adds that, motion is reduced there only when the app calls `set_reduced_motion`.
 
 ### 13.4 Left to do
 
-- **E7 Presence.** Not started. Content of a layer has to stay mounted until its exit animation ends. Today the overlay host is rebuilt from the layout (`Tree::sync_overlay_host_from_layout` in `app/runtime.rs`) and a closed overlay's nodes are dropped in the same pass; only `Sheet` and `StackOutlet` animate out, each with its own code. Phase 3 needs it; nothing in Phase 1 or 2 does.
+- **Phase 0 is built.** What is left of it is the check on macOS and iOS in 13.3, which is the last step before Phase 1.
+- **Presence beyond layers.** `Sheet` and `StackOutlet` still animate out with their own code; they could move to exit animations, and nothing needs them to. A `Select` menu has no exit animation: its menu is built by lurq, so Phase 3 gives it one from the theme. A child removed from a `Row` or a `Column` does not leave (13.2); a toast stack in Phase 3 either makes each toast a layer or needs that solved.
 - **DevTools on the new font** (question 8). The font holds the eight glyphs DevTools needed beyond the first 144. Moving DevTools to it lets `crates/lurq/assets/lucide.ttf` go, which is the one third-party asset the published crate still carries without a notice.
 - **`Icon`** is Phase 2: a name, the theme's table from names to a font and a character, the hinted font loaded by default.
 - **The Pencil file** has uncommitted changes on this checkout: the DevTools card on the Icons pages (152 glyphs). `bolt` and `external-link` there, and from the first set `settings`, `airplane`, `quote`, `strikethrough`, `bug`, the three hands, `megaphone`, `replace` and `replace-all`, are the glyphs to redraw. `pencil/lurq-devtools.pen` is a new file this work did not create.
