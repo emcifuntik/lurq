@@ -270,6 +270,9 @@ impl PartialEq for Tappable {
   }
 }
 
+#[cfg(feature = "devtools")]
+impl lurq::app::component::DevtoolsInspectable for Tappable {}
+
 struct TappableRow;
 
 impl Component for TappableRow {
