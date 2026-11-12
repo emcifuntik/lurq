@@ -452,7 +452,7 @@ impl Dx12VideoSurfaceAllocator {
   }
 
   pub fn create_nv12_surface(&self, width: u32, height: u32) -> Result<Option<Dx12Nv12Surface>> {
-    if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
+    if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
       return Err(Error::from_win32());
     }
     let device = self
@@ -493,7 +493,7 @@ impl Dx12VideoSurfaceAllocator {
     height: u32,
     shared_handle_raw: isize,
   ) -> Result<Option<Dx12Nv12Surface>> {
-    if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 || shared_handle_raw == 0 {
+    if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) || shared_handle_raw == 0 {
       return Err(Error::from_win32());
     }
     let device = self
@@ -543,8 +543,8 @@ impl Dx12VideoSurfaceAllocator {
   ) -> Result<Option<Dx12Nv12Surface>> {
     if width == 0
       || height == 0
-      || width % 2 != 0
-      || height % 2 != 0
+      || !width.is_multiple_of(2)
+      || !height.is_multiple_of(2)
       || y_shared_handle_raw == 0
       || uv_shared_handle_raw == 0
     {
@@ -3736,7 +3736,7 @@ impl Dx12State {
     );
     if native_nv12_resources.is_some() {
       let draw_count = DX12_NATIVE_IMAGE_DRAW_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-      if draw_count == 1 || draw_count % 120 == 0 {
+      if draw_count == 1 || draw_count.is_multiple_of(120) {
         dx12_native_image_log(format_args!(
           "draw #{} image={} version={} stream_frame={:?} y_keyed={} y_acquired={} uv_keyed={} uv_acquired={} descriptor={}",
           draw_count,
@@ -4341,7 +4341,7 @@ impl Dx12State {
         descriptor_index
       }
       crate::images::ImagePixelFormat::Nv12 => {
-        if image.image_width % 2 != 0 || image.image_height % 2 != 0 {
+        if !image.image_width.is_multiple_of(2) || !image.image_height.is_multiple_of(2) {
           return Err(dx12_invalid_arg(format!(
             "dx12 nv12 image dimensions must be even: image id={} size={}x{}",
             image.image_id, image.image_width, image.image_height
@@ -4414,8 +4414,8 @@ impl Dx12State {
       }
     }
     if image.image_format != crate::images::ImagePixelFormat::Nv12
-      || image.image_width % 2 != 0
-      || image.image_height % 2 != 0
+      || !image.image_width.is_multiple_of(2)
+      || !image.image_height.is_multiple_of(2)
     {
       return Err(dx12_invalid_arg(format!(
         "dx12 native image must be even-sized nv12: image id={} format={:?} size={}x{}",
