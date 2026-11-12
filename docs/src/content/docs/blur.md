@@ -110,7 +110,7 @@ blur transition lays nothing out again.
 ## Cost
 
 - `.blur(...)`: the cost follows the layer's pixels, not the radius. A wide blur runs on a reduced copy of the layer,
-  so `blur(64.0)` is not slower than `blur(8.0)`. A blurred layer takes two or three pooled textures for its frame
+  so `blur(64.0)` is not slower than `blur(8.0)`. A blurred layer takes three or four pooled textures for its frame
   and is painted for `1.5 * radius` more on each side than it shows, which is what the radius limit bounds.
 - `.backdrop_blur(...)`: each one stops the frame's drawing, copies the pixels around the box and blurs the copy. That
   is a few passes and pooled textures of about the box's size. A handful of glass panels is cheap. A long list in

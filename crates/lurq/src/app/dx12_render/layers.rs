@@ -1,7 +1,7 @@
 //! Offscreen targets for flattened group opacity and layer blur (see
 //! [`crate::layout::opacity_layer`]) and the pipelines that composite them.
 //!
-//! A blurred layer takes one or two more textures from the same pool for the
+//! A blurred layer takes two or three more textures from the same pool for the
 //! passes between painting it and compositing it ([`BlurSlots`]). A backdrop
 //! blur (see [`crate::layout::backdrop`]) takes those and one for the copy of
 //! its target ([`BackdropSlots`]).
@@ -91,13 +91,15 @@ pub(super) struct LayerCompositor {
 }
 
 /// The textures a blurred layer's passes paint, beside the one it is painted
-/// into: the reduced copy of a wide blur, and the horizontal pass's result,
-/// which the pass compositing the layer reads.
+/// into: the reduced copy of a wide blur, the horizontal pass's result, and
+/// the vertical pass's, which is the finished blur the pass compositing the
+/// layer reads.
 #[derive(Clone, Copy)]
 struct BlurSlots {
   blur: LayerBlur,
   plan: BlurPlan,
   reduced: Option<usize>,
+  horizontal: usize,
   blurred: usize,
 }
 
@@ -180,11 +182,13 @@ impl LayerCompositor {
       true => Some(self.acquire(device, plan.size[0], plan.size[1])?),
       false => None,
     };
+    let horizontal = self.acquire(device, plan.size[0], plan.size[1])?;
     let blurred = self.acquire(device, plan.size[0], plan.size[1])?;
     Ok(BlurSlots {
       blur: *blur,
       plan,
       reduced,
+      horizontal,
       blurred,
     })
   }
@@ -616,8 +620,8 @@ impl Dx12State {
 
   /// Runs the passes of a blur that come before compositing, on the layer
   /// just painted into `painted` as the frame's target `target`: the
-  /// reduction of a wide blur, then the horizontal Gaussian. Does nothing
-  /// for a layer without a blur.
+  /// reduction of a wide blur, then the horizontal Gaussian and the vertical
+  /// one. Does nothing for a layer without a blur.
   pub(super) unsafe fn prepare_layer_blur(&mut self, target: usize, painted: usize) -> Result<()> {
     let Some(compositor) = self.layer_compositor.as_ref() else {
       return Ok(());
@@ -647,8 +651,17 @@ impl Dx12State {
     let Some(compositor) = self.layer_compositor.as_ref() else {
       return Ok(());
     };
-    let constants = LayerBlurPass::horizontal(&slots.plan, compositor.size(source), compositor.size(slots.blurred));
-    self.run_blur_pass(source, slots.blurred, &constants, slots.plan.size)
+    let constants = LayerBlurPass::horizontal(&slots.plan, compositor.size(source), compositor.size(slots.horizontal));
+    self.run_blur_pass(source, slots.horizontal, &constants, slots.plan.size)?;
+    let Some(compositor) = self.layer_compositor.as_ref() else {
+      return Ok(());
+    };
+    let constants = LayerBlurPass::vertical(
+      &slots.plan,
+      compositor.size(slots.horizontal),
+      compositor.size(slots.blurred),
+    );
+    self.run_blur_pass(slots.horizontal, slots.blurred, &constants, slots.plan.size)
   }
 
   /// Runs the backdrop blur `index` of the frame on the current target, in

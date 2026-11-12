@@ -20,6 +20,14 @@ Behaviour changes:
 - A layer around a blurred one covers the blur's spread, so `LayerCmd::bounds` of a faded group can be larger than its own rects and glyphs.
 - `SelectTriggerState` has two new public fields, `leading` and `trailing`: code that builds one with every field named must add them.
 
+Fixes:
+
+- A wide blur against the window's left or right edge is no longer flat along it. A blur that runs on a reduced copy read the copy's outermost texel for the last half of it, so the pixels next to the window's edge repeated their neighbour: with a sharp edge 6 pixels from the window's, the first pixel under `backdrop_blur(24.0)` was 3 levels of 255 off. The reduced copy now has a texel of the repeated edge around it, and all four edges are read the same way.
+
+Internal:
+
+- A blur is finished before it is composited. The vertical Gaussian runs on the (reduced) copy into a texture of its own, as the horizontal one does, and the pass that composites a blurred layer or puts a backdrop back reads that texture once per pixel. Before, that pass ran the vertical Gaussian itself at the window's resolution, 25 reads per pixel, or 50 over a reduced copy (two Gaussians, interpolated): `backdrop_blur(32.0)` took about 56 texture reads per pixel of glass and takes about 14. A blur takes one more pass and one more pooled texture for it.
+
 ## 0.60.0 — 2026-11-11
 
 Added:

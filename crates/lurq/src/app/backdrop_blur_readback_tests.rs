@@ -121,11 +121,34 @@ fn sharp(x: i32) -> f32 {
 /// `sigma`. The light half runs on past the window's right edge, as the
 /// window's edge pixels do for a blur.
 fn soft(x: i32, sigma: f32) -> f32 {
+  soft_from(x, EDGE, sigma)
+}
+
+/// The colour at `at` along an axis once an edge at `edge`, dark before it
+/// and light from it on, is blurred by `sigma`. Both sides run on past the
+/// window, as its edge pixels do for a blur.
+fn soft_from(at: i32, edge: i32, sigma: f32) -> f32 {
   let reach = (sigma * 3.0).ceil() as i32 + 1;
   let weight = |offset: i32| (-(offset * offset) as f32 / (2.0 * sigma * sigma)).exp();
   let total: f32 = (-reach..=reach).map(weight).sum();
-  let light: f32 = (-reach..=reach).filter(|offset| x + offset >= EDGE).map(weight).sum();
+  let light: f32 = (-reach..=reach).filter(|offset| at + offset >= edge).map(weight).sum();
   f32::from(DARK) + f32::from(LIGHT - DARK) * light / total
+}
+
+/// A window that is dark before `edge` along an axis and light from it on,
+/// with `blur` over it at order 1: columns for `across`, rows otherwise.
+fn split_at(edge: i32, across: bool, blur: BackdropCmd) -> RenderList {
+  let (width, height) = (WIDTH as f32, HEIGHT as f32);
+  let light = if across {
+    [edge as f32, -16.0, width, height + 32.0]
+  } else {
+    [-16.0, edge as f32, width + 32.0, height]
+  };
+  list(
+    vec![rect(0, light, Color::new(LIGHT, LIGHT, LIGHT, 255))],
+    Vec::new(),
+    vec![blur],
+  )
 }
 
 /// Checks every pixel against `expected(x, y)`; a NaN there leaves the
@@ -173,6 +196,24 @@ fn assert_backdrop_blur<E: RenderEngine>(new_engine: fn() -> E, backend: &str) {
       |x, y| if in_box(x, y, BOX) { soft(x, sigma) } else { sharp(x) },
       2.5,
       &format!("{backend}: sigma {sigma}"),
+    );
+  }
+
+  // The same along the other axis: the window is dark above a row and light
+  // from it on, so the vertical pass does the work.
+  for sigma in [4.0, 12.0, 20.0] {
+    let frame = render(&mut new_engine(), &split_at(48, false, backdrop(1, BOX, sigma)));
+    assert_frame(
+      &frame,
+      |x, y| {
+        if in_box(x, y, BOX) {
+          soft_from(y, 48, sigma)
+        } else {
+          f32::from(if y >= 48 { LIGHT } else { DARK })
+        }
+      },
+      2.5,
+      &format!("{backend}: rows at sigma {sigma}"),
     );
   }
 
@@ -302,6 +343,26 @@ fn assert_backdrop_blur<E: RenderEngine>(new_engine: fn() -> E, backend: &str) {
       2.5,
       &format!("{backend}: the whole window at sigma {sigma}"),
     );
+  }
+
+  // Glass against the window's edges over an edge that lies close to one:
+  // the pixels between that edge and the window's are read between the
+  // outermost texel of a reduced copy and the repeated edge past it. Each of
+  // the window's four edges in turn, at blurs reduced by two and by four.
+  for sigma in [12.0, 24.0] {
+    let whole = [0.0, 0.0, WIDTH as f32, HEIGHT as f32];
+    for (across, edge) in [(true, 6), (true, WIDTH as i32 - 6), (false, 6), (false, HEIGHT as i32 - 6)] {
+      let frame = render(&mut new_engine(), &split_at(edge, across, backdrop(1, whole, sigma)));
+      assert_frame(
+        &frame,
+        |x, y| soft_from(if across { x } else { y }, edge, sigma),
+        2.5,
+        &format!(
+          "{backend}: an edge at {} {edge} of the whole window at sigma {sigma}",
+          if across { "column" } else { "row" }
+        ),
+      );
+    }
   }
 
   // Inside a faded layer the blur reads the layer, not the window: here the

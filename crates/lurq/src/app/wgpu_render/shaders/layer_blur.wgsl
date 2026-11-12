@@ -2,10 +2,11 @@
 // `layout::opacity_layer::LayerBlurPass`).
 //
 // A blurred layer is painted like any other, then blurred on its way into
-// its parent: a horizontal Gaussian into an intermediate texture, and a
-// vertical one drawn straight into the parent at the layer's opacity. A wide
-// blur first reduces the layer with a box filter, and both Gaussians run on
-// the reduced copy; the last pass then also scales it back up.
+// its parent: a horizontal Gaussian and a vertical one between intermediate
+// textures, and a pass that draws the result into the parent at the layer's
+// opacity, one read per pixel. A wide blur first reduces the layer with a
+// box filter, and both Gaussians run on the reduced copy; the last pass then
+// also scales it back up, with the sampler's interpolation.
 //
 // Every texture holds premultiplied colour and was cleared to transparent,
 // so the premultiplied source-over blend of the pipeline writes an
@@ -25,7 +26,7 @@ struct Pass {
     dest:   vec4<f32>,  // target size, then the offset added to a target pixel
     source: vec4<f32>,  // offset target pixel -> source texel scale, then 1 / source texture size
     kernel: vec4<f32>,  // Gaussian axis in source texels, sigma in source texels, opacity
-    mode:   vec4<f32>,  // x = 0: Gaussian; otherwise box taps per axis. y, z: mask and clip scale
+    mode:   vec4<f32>,  // x = 0: Gaussian; otherwise box taps per axis. y, z: mask and clip scale. w = 1: one read
     limit:  vec4<f32>,  // lowest, then highest source texel centre a tap may read
     mask:         vec4<f32>,  // backdrop: the box to fill: centre in target pixels, half size
     mask_inverse: vec4<f32>,  // 2x2 from a target-pixel offset to the box's own axes
@@ -80,8 +81,9 @@ fn reduce(center: vec2<f32>, taps: i32) -> vec4<f32> {
 // A Gaussian along `axis`, centred on the texel centre `center`. Texels `i`
 // and `i + 1` are read with one bilinear tap between them, placed so the
 // filter weighs them as the Gaussian does; that only holds from a texel
-// centre.
-fn gaussian_at(center: vec2<f32>, axis: vec2<f32>, sigma: f32) -> vec4<f32> {
+// centre, which is where a Gaussian pass reads: its target has its source's
+// texels.
+fn gaussian(center: vec2<f32>, axis: vec2<f32>, sigma: f32) -> vec4<f32> {
     var sum = read(center);
     var total = 1.0;
     let falloff = -0.5 / (sigma * sigma);
@@ -102,25 +104,13 @@ fn gaussian_at(center: vec2<f32>, axis: vec2<f32>, sigma: f32) -> vec4<f32> {
     return sum / total;
 }
 
-// A Gaussian along `axis` at `center`. The pass that scales a reduced layer
-// back up reads between texel centres along the axis: there the Gaussian is
-// taken at the texel centre on either side and the two are interpolated.
-// (Across the axis the sampler interpolates.)
-fn gaussian(center: vec2<f32>, axis: vec2<f32>, sigma: f32) -> vec4<f32> {
-    let along = dot(center, axis) - 0.5;
-    let between = along - floor(along);
-    let before = center - axis * between;
-    if (between < 0.001) {
-        return gaussian_at(before, axis, sigma);
-    }
-    if (between > 0.999) {
-        return gaussian_at(before + axis, axis, sigma);
-    }
-    return mix(gaussian_at(before, axis, sigma), gaussian_at(before + axis, axis, sigma), between);
-}
-
 fn blurred(pixel: vec2<f32>) -> vec4<f32> {
     let center = (pixel + blur.dest.zw) * blur.source.xy;
+    // The pass that composites a finished blur: the sampler interpolates
+    // between the texels of a reduced layer as it scales it back up.
+    if (blur.mode.w > 0.5) {
+        return read(center);
+    }
     let taps = i32(blur.mode.x);
     if (taps > 0) {
         return reduce(center, taps);

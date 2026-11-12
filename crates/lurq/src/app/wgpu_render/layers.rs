@@ -1,7 +1,7 @@
 //! Offscreen targets for flattened group opacity and layer blur (see
 //! [`crate::layout::opacity_layer`]) and the pipelines that composite them.
 //!
-//! A blurred layer takes one or two more textures from the same pool for the
+//! A blurred layer takes two or three more textures from the same pool for the
 //! passes between painting it and compositing it ([`BlurSlots`]). A backdrop
 //! blur (see [`crate::layout::backdrop`]) takes those and one for the copy of
 //! its target ([`BackdropSlots`]).
@@ -40,13 +40,15 @@ pub(super) struct LayerCompositor {
 }
 
 /// The textures a blurred layer's passes paint, beside the one it is painted
-/// into: the reduced copy of a wide blur, and the horizontal pass's result,
-/// which the pass compositing the layer reads.
+/// into: the reduced copy of a wide blur, the horizontal pass's result, and
+/// the vertical pass's, which is the finished blur the pass compositing the
+/// layer reads.
 #[derive(Clone, Copy)]
 pub(super) struct BlurSlots {
   blur: LayerBlur,
   plan: BlurPlan,
   reduced: Option<usize>,
+  horizontal: usize,
   blurred: usize,
 }
 
@@ -392,11 +394,13 @@ impl LayerCompositor {
   pub(super) fn acquire_blur(&mut self, device: &wgpu::Device, blur: &LayerBlur) -> BlurSlots {
     let plan = BlurPlan::new(blur);
     let reduced = (plan.reduction > 1).then(|| self.acquire(device, plan.size[0], plan.size[1]));
+    let horizontal = self.acquire(device, plan.size[0], plan.size[1]);
     let blurred = self.acquire(device, plan.size[0], plan.size[1]);
     BlurSlots {
       blur: *blur,
       plan,
       reduced,
+      horizontal,
       blurred,
     }
   }
@@ -418,8 +422,7 @@ impl LayerCompositor {
 
   /// Runs a backdrop blur up to compositing, between two passes of its
   /// target: copies the pixels it reads out of `target` (whose texel (0, 0)
-  /// is window pixel `target_origin`), then reduces and blurs the copy
-  /// along x.
+  /// is window pixel `target_origin`), then reduces and blurs the copy.
   #[allow(clippy::too_many_arguments)]
   pub(super) fn prepare_backdrop(
     &self,
@@ -459,8 +462,7 @@ impl LayerCompositor {
   }
 
   /// Puts a blurred backdrop back into the pass painting `parent`, inside
-  /// the node's box: the vertical Gaussian over what
-  /// [`Self::prepare_backdrop`] left in `slots`.
+  /// the node's box: what [`Self::prepare_backdrop`] left in `slots`.
   pub(super) fn composite_backdrop(
     &self,
     queue: &wgpu::Queue,
@@ -481,8 +483,8 @@ impl LayerCompositor {
 
   /// Runs the passes of a blur that come before compositing, on the layer
   /// just painted into `painted`: the reduction of a wide blur, then the
-  /// horizontal Gaussian. `vertices` and `indices` are the unit quad's.
-  /// Returns the number of passes it ran.
+  /// horizontal Gaussian and the vertical one. `vertices` and `indices` are
+  /// the unit quad's. Returns the number of passes it ran.
   pub(super) fn prepare_blur(
     &self,
     queue: &wgpu::Queue,
@@ -507,18 +509,29 @@ impl LayerCompositor {
       );
       source = reduced;
     }
-    let uniforms = LayerBlurPass::horizontal(&slots.plan, self.size(source), self.size(slots.blurred));
+    let uniforms = LayerBlurPass::horizontal(&slots.plan, self.size(source), self.size(slots.horizontal));
     self.run_blur_pass(
       queue,
       encoder,
       vertices,
       indices,
       source,
+      slots.horizontal,
+      &uniforms,
+      slots.plan.size,
+    );
+    let uniforms = LayerBlurPass::vertical(&slots.plan, self.size(slots.horizontal), self.size(slots.blurred));
+    self.run_blur_pass(
+      queue,
+      encoder,
+      vertices,
+      indices,
+      slots.horizontal,
       slots.blurred,
       &uniforms,
       slots.plan.size,
     );
-    1 + usize::from(slots.reduced.is_some())
+    2 + usize::from(slots.reduced.is_some())
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -553,8 +566,8 @@ impl LayerCompositor {
     self.draw_blur(queue, &mut pass, source, uniforms);
   }
 
-  /// Draws a blurred `layer` into the pass painting `parent`: the vertical
-  /// Gaussian over what [`Self::prepare_blur`] left in `slots`.
+  /// Draws a blurred `layer` into the pass painting `parent`: what
+  /// [`Self::prepare_blur`] left in `slots`.
   pub(super) fn composite_blurred(
     &self,
     queue: &wgpu::Queue,
