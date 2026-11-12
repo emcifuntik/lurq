@@ -500,7 +500,7 @@ fn a_list_that_does_not_scroll_to_top_leaves_the_status_bars_tap_alone() {
 
 #[test]
 fn a_finger_scrolls_from_a_scroll_indicator_and_drags_a_bar_that_is_always_there() {
-  use crate::layout::scrollbar::ScrollBarStyle;
+  use crate::layout::scrollbar::{ScrollBarStyle, ScrollBarVisibility};
 
   let list_with = |style: ScrollBarStyle| {
     let mut app = App::new();
@@ -518,10 +518,11 @@ fn a_finger_scrolls_from_a_scroll_indicator_and_drags_a_bar_that_is_always_there
     tree.pass(&mut app, &HeadlessSurface);
     tree
   };
-  // On the bar, at the list's right edge.
+  // On the bar, at the list's right edge. A phone's default bar is an indicator, so this one says it stays.
   let mut bar = list_with(ScrollBarStyle {
     width: 12.0,
     padding: 0.0,
+    visible: ScrollBarVisibility::Auto,
     ..ScrollBarStyle::thin()
   });
   assert!(!bar.touch_scrolls_at(96.0, 10.0), "a bar is dragged");
