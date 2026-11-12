@@ -497,6 +497,18 @@ impl_tuple_devtools_inspectable!(A:0, B:1, C:2, D:3);
 impl_tuple_devtools_inspectable!(A:0, B:1, C:2, D:3, E:4);
 impl_tuple_devtools_inspectable!(A:0, B:1, C:2, D:3, E:4, F:5);
 
+pub trait Component: Send + Sync + 'static {
+  #[cfg(feature = "devtools")]
+  type Props: Send + PartialEq + DevtoolsInspectable + 'static;
+  #[cfg(not(feature = "devtools"))]
+  type Props: Send + PartialEq + 'static;
+  fn create(ctx: &mut Ctx) -> Self;
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element>;
+  fn after_layout(&self) {}
+  fn on_mounted(&self) {}
+  fn on_unmounted(&self) {}
+}
+
 #[cfg(test)]
 mod tests {
   use super::{ComponentInfo, DevtoolsFormatter, DevtoolsInspectable};
@@ -577,16 +589,4 @@ mod tests {
     assert_eq!(fields[1].name(), "1");
     assert_eq!(fields[1].formatted_value(), Some("\"items\""));
   }
-}
-
-pub trait Component: Send + Sync + 'static {
-  #[cfg(feature = "devtools")]
-  type Props: Send + PartialEq + DevtoolsInspectable + 'static;
-  #[cfg(not(feature = "devtools"))]
-  type Props: Send + PartialEq + 'static;
-  fn create(ctx: &mut Ctx) -> Self;
-  fn render(&self, ctx: &mut Ctx) -> impl Into<Element>;
-  fn after_layout(&self) {}
-  fn on_mounted(&self) {}
-  fn on_unmounted(&self) {}
 }
