@@ -37,7 +37,7 @@ struct PaintedText {
 
 /// The width the paint wraps a text of `width` at, in device pixels, or
 /// none when it neither wraps nor aligns.
-fn painted_max_width(scale: f32, wrap: bool, align: TextAlign, width: f32) -> f32 {
+pub(super) fn painted_max_width(scale: f32, wrap: bool, align: TextAlign, width: f32) -> f32 {
   if (wrap || align != TextAlign::Left) && width > 0.0 {
     (width * scale).ceil()
   } else {

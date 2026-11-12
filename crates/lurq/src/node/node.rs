@@ -683,6 +683,9 @@ pub(crate) trait NodeUpdate {
   fn text_variant(&mut self, typography_style: impl Into<TypographyStyle>);
   fn text_color(&mut self, color: impl Into<TextColor>);
   fn text_shadow(&mut self, shadow: crate::layout::text_style::TextShadow);
+  fn text_underline(&mut self, underline: crate::layout::text_style::TextUnderline);
+  fn text_strikethrough(&mut self, strikethrough: crate::layout::text_style::TextStrikethrough);
+  fn text_max_lines(&mut self, max_lines: u32);
   fn text_align(&mut self, align: impl Into<TextAlign>);
   fn on_input(&mut self, f: impl IntoTextInputEventHandler);
   fn off_input(&mut self, f: impl IntoTextInputEventHandler);
@@ -2023,6 +2026,27 @@ impl NodeUpdate for Node {
   fn text_shadow(&mut self, shadow: crate::layout::text_style::TextShadow) {
     if let NodeKind::Text { style, .. } = &mut self.node_kind {
       style.set_shadow(shadow);
+    }
+  }
+
+  fn text_underline(&mut self, underline: crate::layout::text_style::TextUnderline) {
+    if let NodeKind::Text { style, .. } = &mut self.node_kind {
+      style.set_underline(underline);
+      self.layout_cache.invalidate();
+    }
+  }
+
+  fn text_strikethrough(&mut self, strikethrough: crate::layout::text_style::TextStrikethrough) {
+    if let NodeKind::Text { style, .. } = &mut self.node_kind {
+      style.set_strikethrough(strikethrough);
+      self.layout_cache.invalidate();
+    }
+  }
+
+  fn text_max_lines(&mut self, max_lines: u32) {
+    if let NodeKind::Text { style, .. } = &mut self.node_kind {
+      style.set_max_lines(max_lines);
+      self.layout_cache.invalidate();
     }
   }
 

@@ -49,6 +49,9 @@ pub(crate) struct TextOutput {
   /// paint places it (`VerticalAlign`); measured with the carets, so a
   /// selection meets the glyphs.
   pub(super) text_top: f32,
+  /// A plain text that draws an underline or a line through it: where its
+  /// lines lie.
+  pub(super) decoration: Option<Arc<super::text_decorations::TextDecorationLayout>>,
   /// Rich text that paints underlines or links: where its text lies.
   #[cfg(feature = "markdown")]
   pub(super) inline: Option<Arc<super::inline_links::InlineTextLayout>>,
@@ -65,6 +68,10 @@ impl TextLayoutOutput {
             .carets
             .as_ref()
             .map_or(0, |carets| carets.positions.estimated_shared_memory_bytes())
+          + output
+            .decoration
+            .as_ref()
+            .map_or(0, |decoration| decoration.estimated_memory_bytes())
           + output.inline_memory_bytes()
       }
       #[cfg(feature = "markdown")]
@@ -91,7 +98,21 @@ impl TextOutput {
       render_wrap: self.render_wrap,
       carets: self.carets.clone(),
       text_top: inline.top,
+      decoration: self.decoration.clone(),
       inline: Some(inline),
+    }
+  }
+
+  /// This output, drawing its underline or the line through it as `decoration` lays them out.
+  pub(super) fn with_decoration(&self, decoration: Arc<super::text_decorations::TextDecorationLayout>) -> Self {
+    Self {
+      display_text: self.display_text.clone(),
+      render_wrap: self.render_wrap,
+      carets: self.carets.clone(),
+      text_top: self.text_top,
+      decoration: Some(decoration),
+      #[cfg(feature = "markdown")]
+      inline: self.inline.clone(),
     }
   }
 
@@ -103,6 +124,7 @@ impl TextOutput {
       render_wrap: self.render_wrap,
       carets: Some(carets),
       text_top,
+      decoration: self.decoration.clone(),
       #[cfg(feature = "markdown")]
       inline: self.inline.clone(),
     }

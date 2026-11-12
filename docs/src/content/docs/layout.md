@@ -515,6 +515,49 @@ lurq::components::Text::styled("hello", TextStyle {
 })
 ```
 
+### Line Limit
+
+`Text::max_lines(n)` lays a wrapped text out in at most `n` lines, as CSS `line-clamp` does. A text that needs more
+keeps its start and ends in an ellipsis on the last line:
+
+```rust
+use lurq::components::Text;
+
+// A card's description: two lines, then "…".
+Text::new(description).max_lines(2)
+```
+
+- The text keeps as much as leaves room for the ellipsis on the last line, and no whitespace before it.
+- Lines ended by a line break in the text count as lines.
+- A text that fits in `n` lines is left as it is, and `0` is no limit.
+- It applies to a text that wraps in a bounded width. `nowrap()` and `TextOverflow::Elipsis`, which keep a text on one
+  line, are not affected; use `TextOverflow::Elipsis` for a single line cut at its width.
+- The limit is found in the logical layout. At a fractional display scale the paint lays the text out in device pixels
+  and can wrap a word differently, so a cut text can then paint a line more than its box holds.
+
+### Underline And Strikethrough
+
+A text draws a line under its words, or through them, like CSS `text-decoration`:
+
+```rust
+use lurq::{
+  components::Text,
+  layout::text_style::{TextStrikethrough, TextUnderline},
+};
+
+Text::new("Read the docs").underline(TextUnderline::new());
+Text::new("12.99").strikethrough(TextStrikethrough::new().color(muted));
+```
+
+- `Text::underline(...)` and `Text::strikethrough(...)` set them on one text; `TextStyle::underline` and
+  `TextStyle::strikethrough` set them in a style, a typography role's included.
+- Each unset value follows the text: its color (the [foreground](../styling-events/#foreground) it takes, when it names
+  none), and the thickness and position the font gives its underline and its strikeout. `TextUnderline` also takes an
+  `offset`.
+- The lines are drawn for every laid-out line of the text, wrapped lines included, under and through its words and not
+  the whitespace a wrapped line ends in. They change neither the text's size nor its wrapping.
+- Markdown draws `~~struck~~` text with a line through it (`ThemeMarkdown::strikethrough`).
+
 The glyph engine also records caret positions for text selection, one before and one after every glyph of the layout
 the text is drawn with (a right-to-left glyph's caret before it is at its right edge). `Text::selectable(true)` uses
 those positions for drag ranges, double-click word selection, and triple-click line selection. Wrapped or multiline

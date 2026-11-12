@@ -16,5 +16,6 @@ mod links;
 mod outer_id;
 mod parse;
 mod selection;
+mod strikethrough;
 mod table_cells;
 mod text;

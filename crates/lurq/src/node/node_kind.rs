@@ -231,6 +231,10 @@ pub(crate) struct TextStyleSource {
   letter_spacing: Option<f32>,
   font_features: Option<crate::layout::text_style::FontFeatures>,
   shadow: Option<crate::layout::text_style::TextShadow>,
+  underline: Option<crate::layout::text_style::TextUnderline>,
+  strikethrough: Option<crate::layout::text_style::TextStrikethrough>,
+  /// The most lines the text is laid out in; see `Text::max_lines`.
+  max_lines: Option<u32>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -249,6 +253,9 @@ impl TextStyleSource {
       letter_spacing: None,
       font_features: None,
       shadow: None,
+      underline: None,
+      strikethrough: None,
+      max_lines: None,
     }
   }
 
@@ -260,6 +267,9 @@ impl TextStyleSource {
       letter_spacing: None,
       font_features: None,
       shadow: None,
+      underline: None,
+      strikethrough: None,
+      max_lines: None,
     }
   }
 
@@ -294,6 +304,22 @@ impl TextStyleSource {
     self.shadow = Some(shadow);
   }
 
+  pub(crate) fn set_underline(&mut self, underline: crate::layout::text_style::TextUnderline) {
+    self.underline = Some(underline);
+  }
+
+  pub(crate) fn set_strikethrough(&mut self, strikethrough: crate::layout::text_style::TextStrikethrough) {
+    self.strikethrough = Some(strikethrough);
+  }
+
+  pub(crate) fn set_max_lines(&mut self, max_lines: u32) {
+    self.max_lines = Some(max_lines);
+  }
+
+  pub(crate) fn max_lines(&self) -> Option<u32> {
+    self.max_lines
+  }
+
   pub(crate) fn resolve(&self, typography: &ThemeTypography, palette: &ThemePalette) -> TextStyle {
     let mut style = match &self.base {
       TextStyleBase::Default => typography.default_style().clone(),
@@ -314,6 +340,12 @@ impl TextStyleSource {
     }
     if let Some(shadow) = self.shadow {
       style.shadow = Some(shadow);
+    }
+    if let Some(underline) = self.underline {
+      style.underline = Some(underline);
+    }
+    if let Some(strikethrough) = self.strikethrough {
+      style.strikethrough = Some(strikethrough);
     }
     style
   }

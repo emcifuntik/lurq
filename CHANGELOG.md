@@ -4,6 +4,8 @@
 
 Added:
 
+- `Text::max_lines(n)`: a wrapped text takes at most `n` lines and ends in an ellipsis on the last one when it had more, as CSS `line-clamp`. See [layout](docs/src/content/docs/layout.md#line-limit).
+- A plain `Text` draws the underline of its style, which only Markdown drew before, and `Text::underline(...)` sets one on a text. `TextStrikethrough`, `TextStyle::strikethrough`, `MarkdownTextStyle::strikethrough` and `Text::strikethrough(...)` draw a line through text. Both follow the text line by line, wrapped lines included, in the text's color and at the font's metrics unless set. See [layout](docs/src/content/docs/layout.md#underline-and-strikethrough).
 - `.disabled(bool)` on nodes and components, and `ElementHandle::set_disabled`: the element and everything in it take no input. No press, click, tap, long press or drop reaches them, none of them is hovered, pressed or focused, Tab passes them by, focus requests and `ElementHandle::click()` on them do nothing, and a focused element that becomes disabled loses focus. A disabled element still covers what is behind it and a press on it reaches nothing, the elements it is in included; a pointer moving or scrolling over it still reaches those. `.when_disabled(|style| ...)` / `.disabled_style(style)` is a paint-only state style applied after every other, on the element and on the elements in it, and `InteractionState::is_disabled()` reports the state. See [styling](docs/src/content/docs/styling-events.md#disabled).
 - `Outline` and `.outline(outline)` on nodes, components and state styles, and `ElementHandle::set_outline`: a line around an element, outside its box, with an offset, as CSS `outline` and `outline-offset`. It takes no room in layout, follows the element's corner radii, is painted over the element's content and inside the clips the element is under, and is counted when an element whose box is clipped away is culled. In `focus_visible` it is a focus ring that moves nothing. See [styling](docs/src/content/docs/styling-events.md#outline).
 - State styles (`hovered`, `active`, `focused`, `focus_visible`, `drag_over`) can set `.foreground(color)` and `.opacity(value)`: the color of the text under the element, and the element's opacity, while the state holds. Both are paint only, and `Transition::opacity()` animates a state style's opacity.
@@ -16,6 +18,9 @@ Added:
 
 Behaviour changes:
 
+- `TextStyle` and `MarkdownTextStyle` have a new public field, `strikethrough`: code that builds one with every field named must add it (`..TextStyle::default()` takes care of it).
+- Markdown draws `~~struck~~` text with a line through it: `ThemeMarkdown::strikethrough` now sets a strikethrough by default. Set it to `MarkdownInlineStyle::default()` for the old look.
+- A plain `Text` whose style has an `underline` now draws it.
 - `LayerCmd` has a new public field, `blur: Option<LayerBlur>`, `RenderList` a new public field, `backdrops: Vec<BackdropCmd>`, `AnimatableProperty` two new variants and `QuadContent` a new variant, `Backdrop`: code that builds a `LayerCmd` or a `RenderList` with every field named, or matches `AnimatableProperty` or `QuadContent` without a wildcard arm, must add them. A custom `RenderEngine` that ignores `RenderList::backdrops` draws the frame without its backdrop blurs. A custom `RenderEngine` that paints `RenderList::layers` should paint a blurred layer for `LayerCmd::painted()` (larger than `bounds`, and possibly outside the window) and blur it by `LayerBlur::sigma`; one that ignores the field draws the layer unblurred, clipped to `bounds`.
 - A layer around a blurred one covers the blur's spread, so `LayerCmd::bounds` of a faded group can be larger than its own rects and glyphs.
 

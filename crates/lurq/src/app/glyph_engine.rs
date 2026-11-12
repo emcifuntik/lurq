@@ -26,6 +26,7 @@ mod ios_emoji;
 #[cfg(target_os = "ios")]
 mod ios_fallback;
 mod letter_spacing;
+mod line_clamp;
 mod reflow;
 mod scaler;
 mod span_boxes;
@@ -937,6 +938,22 @@ impl GlyphEngine {
       optical_top,
       optical_bottom,
     })
+  }
+
+  /// Where the laid-out lines of a plain text lie: one box per line that
+  /// holds words, laid out as measuring and painting lay it out, from the
+  /// plain text cache they share.
+  pub(crate) fn text_line_boxes(
+    &mut self,
+    text: &str,
+    style: &TextStyle,
+    max_width: f32,
+    wrap: bool,
+  ) -> std::sync::Arc<[SpanBox]> {
+    let buffer = self.full_text_buffer(text, style, max_width, wrap);
+    let boxes = span_boxes::line_boxes(&buffer, &mut self.font_system, &mut self.underline_metrics);
+    self.retain_plain_buffer(buffer);
+    boxes
   }
 
   /// Where the glyphs of a line in `style` sit in its line box by the font's

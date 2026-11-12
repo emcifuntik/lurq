@@ -62,6 +62,7 @@ mod shrink_floors;
 mod shrink_sharing;
 #[cfg(feature = "markdown")]
 mod styled_input_layout;
+mod text_decorations;
 mod text_highlights;
 mod text_input_quads;
 mod text_layout_output;
@@ -1621,6 +1622,12 @@ impl LayoutEngine {
           QuadContent::RichText { spans, .. } => Self::inline_underlines(result, spans, inline_paint),
           _ => Vec::new(),
         };
+        let text_lines = match &content {
+          QuadContent::Text { style, .. } => {
+            Self::text_decoration_quads(result, style, (abs_x, abs_y), transform, clip, opacity)
+          }
+          _ => Vec::new(),
+        };
         quads.push(Quad {
           x: content_x,
           y: content_y,
@@ -1644,6 +1651,7 @@ impl LayoutEngine {
           },
           clip: content_clip,
         });
+        quads.extend(text_lines);
         #[cfg(feature = "markdown")]
         {
           quads.extend(underlines);
@@ -2458,6 +2466,7 @@ impl LayoutEngine {
       )
     };
     self.lay_out_text_selection(glyph_engine, node, &mut result);
+    self.lay_out_text_decorations(glyph_engine, node, &mut result);
     #[cfg(feature = "markdown")]
     self.lay_out_inline_text(glyph_engine, node, &mut result);
     result
@@ -2548,16 +2557,17 @@ impl LayoutEngine {
     match node.node_kind() {
       NodeKind::Text { state, style, .. } => {
         let source = node.text_content().unwrap_or_default();
-        let style = style.resolve(&self.typography.borrow(), &self.palette.borrow());
+        let resolved = style.resolve(&self.typography.borrow(), &self.palette.borrow());
         let (content, force_display_text) = (source, false);
         return self.layout_text_node(
           glyph_engine,
           content,
           state,
-          &style,
+          &resolved,
           constraints,
           node.text_wrap,
           node.text_overflow,
+          style.max_lines(),
           force_display_text,
         );
       }
@@ -2792,11 +2802,15 @@ impl LayoutEngine {
     constraints: Constraints,
     wrap: bool,
     overflow: TextOverflow,
+    max_lines: Option<u32>,
     force_display_text: bool,
   ) -> LayoutResult {
     let effective_wrap = wrap && overflow == TextOverflow::Clip;
     let overflow_display_text = match overflow {
-      TextOverflow::Clip => None,
+      // A wrapped text with a limit of lines ends in an ellipsis on the last line it may take.
+      TextOverflow::Clip => max_lines
+        .filter(|_| effective_wrap && bounded_text_width(constraints.max_width))
+        .and_then(|lines| glyph_engine.text_clamped_to_lines(text, style, constraints.max_width, lines as usize)),
       TextOverflow::Elipsis => self.ellipsize_text(glyph_engine, text, style, constraints.max_width),
     };
     let layout_text = overflow_display_text.as_deref().unwrap_or(text);
@@ -2816,6 +2830,7 @@ impl LayoutEngine {
       render_wrap,
       carets: None,
       text_top: 0.0,
+      decoration: None,
       #[cfg(feature = "markdown")]
       inline: None,
     };
@@ -2854,6 +2869,7 @@ impl LayoutEngine {
       render_wrap,
       carets: None,
       text_top: 0.0,
+      decoration: None,
       #[cfg(feature = "markdown")]
       inline: None,
     };
