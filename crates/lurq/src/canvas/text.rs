@@ -216,7 +216,11 @@ impl CanvasTextEngine {
     }
     #[cfg(feature = "perf_profile")]
     profile::shape_hit(false);
-    let result = Arc::new(self.shape_uncached(text, font, scale, color, output)?);
+    let result = self.shape_uncached(text, font, scale, color, output);
+    // The engine keeps whole shaped texts (`ShapeCache`); the words
+    // cosmic-text keeps beside them would only grow with every new text.
+    self.fonts.shape_run_cache.trim(0);
+    let result = Arc::new(result?);
     #[cfg(feature = "perf_profile")]
     profile::produced(result.data.len());
     self.shaped.insert(text, font, scale, color, output, result.clone());

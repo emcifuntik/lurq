@@ -60,6 +60,11 @@ const GLYPH_LAYOUT_CACHE_LIMIT: usize = 1024;
 const PLAIN_BUFFER_CACHE_LIMIT: usize = 64;
 // Keep logical and physical document layouts together at fractional display scales.
 const PLAIN_BUFFER_CACHE_BYTES: usize = 48 * 1024 * 1024;
+/// Passes, or texts laid out anew, after which the words cosmic-text keeps
+/// shaped are looked through for unused ones, whichever comes first.
+const SHAPED_WORDS_TRIM_INTERVAL: usize = 256;
+/// Looks a shaped word stays through without being used again.
+const SHAPED_WORDS_KEPT_TRIMS: u64 = 2;
 /// What the short texts kept shaped may hold: a few screens of labels and
 /// messages, so that a resize or a new scale factor lays them out again
 /// without shaping them again.
@@ -491,6 +496,9 @@ pub(crate) struct GlyphEngine {
   plain_buffers: Vec<CachedPlainBuffer>,
   /// The same for shorter texts, found by what shapes them.
   shaped_texts: ShapedTexts,
+  /// Passes and newly laid out texts since the shaped words were last looked
+  /// through (`trim_shaped_words`).
+  shaped_words_age: usize,
   plain_buffer_bytes: usize,
   plain_buffer_budget: usize,
   pub(crate) measure_hits: usize,
@@ -536,6 +544,7 @@ impl GlyphEngine {
       buffer_pool: Vec::new(),
       plain_buffers: Vec::new(),
       shaped_texts: ShapedTexts::new(SHAPED_TEXT_CACHE_BYTES),
+      shaped_words_age: 0,
       plain_buffer_bytes: 0,
       plain_buffer_budget: plain_buffer_cache_budget(),
       measure_hits: 0,
@@ -642,6 +651,9 @@ impl GlyphEngine {
     self.input_cache.clear();
     self.plain_buffers.clear();
     self.shaped_texts.clear();
+    // Words shaped with the fonts there were: another font may now cover them.
+    self.font_system.shape_run_cache = cosmic_text::ShapeRunCache::default();
+    self.shaped_words_age = 0;
     self.plain_buffer_bytes = 0;
     self.texts.clear();
     self.rich_shaped_layout_cache.clear();
@@ -654,8 +666,22 @@ impl GlyphEngine {
   /// A pass of a window begins: its counters start from zero, and what the
   /// text caches are asked for from here on counts as in use.
   pub(crate) fn begin_pass(&mut self) {
+    self.trim_shaped_words();
     self.reset_stats();
     self.texts.begin_pass();
+  }
+
+  /// cosmic-text keeps the glyphs of the words it shaped, so a word of one
+  /// text is not shaped again in the next. It drops none on its own: every so
+  /// many passes or newly laid out texts, the words not used since a few
+  /// looks ago go. Typing shapes a new word a keystroke and scrolling a few
+  /// a row; both stay bounded.
+  fn trim_shaped_words(&mut self) {
+    self.shaped_words_age += 1 + self.measure_misses;
+    if self.shaped_words_age >= SHAPED_WORDS_TRIM_INTERVAL {
+      self.shaped_words_age = 0;
+      self.font_system.shape_run_cache.trim(SHAPED_WORDS_KEPT_TRIMS);
+    }
   }
 
   pub(crate) fn reset_stats(&mut self) {
