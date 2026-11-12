@@ -219,6 +219,10 @@ name = "icon_hinting"
 required-features = ["winit", "wgpu", "screenshot"]
 
 [[example]]
+name = "presence"
+required-features = ["winit", "wgpu", "screenshot"]
+
+[[example]]
 name = "text_interaction_probe"
 required-features = ["winit", "dx12", "perf_profile"]
 
