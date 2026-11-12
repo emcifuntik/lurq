@@ -614,12 +614,17 @@ impl Component for TabOutlet {
       if entry.active {
         moved = entry.bar_move.get();
       }
-      screens = screens.child(
-        Stack::new()
-          .key(format!("tab-{}", entry.key))
-          .size(FILL, FILL)
-          .child(host),
-      );
+      // A tab that is not shown has nothing to touch, and its holder, over the shown one's, takes no touch
+      // from it.
+      let holder = Stack::new()
+        .key(format!("tab-{}", entry.key))
+        .size(FILL, FILL)
+        .child(host);
+      screens = screens.child(if entry.active {
+        holder
+      } else {
+        holder.pointer_events_none()
+      });
     }
 
     let bar: Option<Element> = match &props.bar {

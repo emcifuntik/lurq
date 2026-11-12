@@ -38,6 +38,11 @@ thread_local! {
   static MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+thread_local! {
+  /// How many times the first tab's screen was pressed in this test.
+  static PRESSED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct Home;
 
 impl Component for Home {
@@ -51,6 +56,11 @@ impl Component for Home {
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let bottom = ctx.safe_area().bottom;
     Column::new()
+      .size(
+        lurq::node::dimension::Dimension::Pct(100.0),
+        lurq::node::dimension::Dimension::Pct(100.0),
+      )
+      .on_click(|_| PRESSED.with(|pressed| pressed.set(pressed.get() + 1)))
       .child(Text::new("home screen"))
       .child(Text::new(&format!("clear of {bottom}")))
   }
@@ -277,4 +287,12 @@ fn a_screen_that_hides_the_bar_has_the_bars_room() {
   pointer_click(&mut tree, 60.0, 740.0, MouseButton::Left);
   run_pass(&mut tree);
   assert_eq!(tabs.active(), "stacked");
+}
+
+#[test]
+fn a_tab_that_is_not_shown_takes_no_press_from_the_one_that_is() {
+  let (mut tree, _tabs) = setup(Bar::Bottom);
+  // The first tab is shown, and the others' places in the tree come after it.
+  pointer_click(&mut tree, 200.0, 300.0, MouseButton::Left);
+  assert_eq!(PRESSED.with(std::cell::Cell::get), 1);
 }
