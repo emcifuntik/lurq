@@ -1368,9 +1368,7 @@ impl LayoutEngine {
     };
     let transform = if inherited_transform.is_identity() {
       local_affine
-    } else if local_affine.is_identity() {
-      inherited_transform
-    } else if local_transform.is_identity() {
+    } else if local_affine.is_identity() || local_transform.is_identity() {
       inherited_transform
     } else {
       inherited_transform.then(&local_affine)
@@ -1715,9 +1713,7 @@ impl LayoutEngine {
           } else {
             node.get_border_radius(&self.radii.borrow())
           },
-          border: if content_uses_separate_visual_rect {
-            None
-          } else if defer_border_to_overlay {
+          border: if content_uses_separate_visual_rect || defer_border_to_overlay {
             None
           } else {
             resolved_border

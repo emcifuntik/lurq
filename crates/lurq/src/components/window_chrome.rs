@@ -673,10 +673,9 @@ fn platform_custom_chrome_enabled() -> bool {
 }
 
 fn platform_chrome_height(windows_height: f32, macos_height: f32) -> f32 {
+  // Every platform but macOS takes the Windows height.
   if cfg!(target_os = "macos") {
     macos_height.max(0.0)
-  } else if cfg!(target_os = "windows") {
-    windows_height.max(0.0)
   } else {
     windows_height.max(0.0)
   }

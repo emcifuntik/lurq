@@ -4046,31 +4046,25 @@ impl Tree {
           && self.follows_focused_link(click_modifiers))
       {
         true
-      } else if matches!((key.as_str(), code.as_str()), ("Enter", _) | (_, "Enter")) && {
-        #[cfg(feature = "form")]
-        {
-          self.submit_focused_single_line_text_input()
-        }
-        #[cfg(not(feature = "form"))]
-        {
-          false
-        }
-      } {
-        true
       } else {
-        false
+        matches!((key.as_str(), code.as_str()), ("Enter", _) | (_, "Enter")) && {
+          #[cfg(feature = "form")]
+          {
+            self.submit_focused_single_line_text_input()
+          }
+          #[cfg(not(feature = "form"))]
+          {
+            false
+          }
+        }
       };
 
-      if handled {
-        self.needs_redraw = true;
-      } else if self.dismiss_top_overlay_on_escape(&key, &code) {
+      if handled || self.dismiss_top_overlay_on_escape(&key, &code) {
         self.needs_redraw = true;
       } else {
         let blurred_text_input = self.blur_focused_text_input_on_key(&key, &code);
         let cleared_text_selection = self.clear_selectable_text_selection_on_key(&key, &code);
-        if blurred_text_input || cleared_text_selection {
-          self.needs_redraw = true;
-        } else if self.dispatch_text_input(&evt) {
+        if blurred_text_input || cleared_text_selection || self.dispatch_text_input(&evt) {
           self.needs_redraw = true;
         } else {
           self.dispatch_selectable_text_clipboard(&key, &code, shift, ctrl, meta);
