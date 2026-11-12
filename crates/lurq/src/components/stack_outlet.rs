@@ -129,6 +129,10 @@ pub struct NavigationBar {
   /// list goes under the bar ([`StackOutlet::large_title_scroll`]), where the bar's `background` is not all
   /// there. 0 is no blur.
   pub blur: f32,
+  /// A large title is as much larger as the person asked text to be (a phone's Dynamic Type), up to so many
+  /// times its size: the bar's own title and labels keep theirs, as the platform's do. 1 keeps the large
+  /// title's size too.
+  pub large_title_max_scale: f32,
   /// How high the bar is, and how high in a window lower than `low_window`: a phone held on its side, which
   /// has no large titles either.
   pub height: f32,
@@ -163,6 +167,23 @@ pub struct NavigationBar {
 }
 
 impl NavigationBar {
+  /// This bar as the person's settings for the whole system have it: a large title at their text size,
+  /// nothing showing through with transparency reduced or contrast increased, and a line under it that is
+  /// all there with contrast increased.
+  fn adapted(mut self, system: &crate::app::window::SystemSettings, text_scale: f32) -> Self {
+    let scale = text_scale.clamp(1.0_f32.min(text_scale), self.large_title_max_scale.max(1.0));
+    self.large_title_size *= scale;
+    self.large_title_height *= scale;
+    if system.reduce_transparency || system.increase_contrast {
+      self.background = Color::new(self.background.r(), self.background.g(), self.background.b(), 255);
+      self.blur = 0.0;
+    }
+    if system.increase_contrast {
+      self.border = Color::new(self.border.r(), self.border.g(), self.border.b(), 255);
+    }
+    self
+  }
+
   /// A light bar, sized as the platform's.
   pub fn new() -> Self {
     Self {
@@ -171,6 +192,7 @@ impl NavigationBar {
       title: Color::from_hex("#000000"),
       border: Color::from_hex("#c6c6c8"),
       blur: 40.0,
+      large_title_max_scale: 1.5,
       height: 44.0,
       low_height: 32.0,
       low_window: 480.0,
@@ -201,6 +223,14 @@ impl NavigationBar {
       title: Color::from_hex("#ffffff"),
       border: Color::from_hex("#38383a"),
       ..Self::new()
+    }
+  }
+
+  /// The platform's bar for an appearance: `ctx.window().system.appearance`, or the theme's.
+  pub fn for_appearance(appearance: crate::app::window::Appearance) -> Self {
+    match appearance {
+      crate::app::window::Appearance::Light => Self::new(),
+      crate::app::window::Appearance::Dark => Self::dark(),
     }
   }
 
@@ -279,6 +309,9 @@ pub struct NavigationSearch {
   pub placeholder: String,
   /// What the way to cancel says.
   pub cancel: String,
+  /// While the field is searched in, it takes the bar's place and a large title goes, as the platform's
+  /// search does unless told not to. With `false` the bar and the title stay where they are.
+  pub hides_bar: bool,
 }
 
 impl NavigationSearch {
@@ -287,7 +320,14 @@ impl NavigationSearch {
       text,
       placeholder: "Search".to_owned(),
       cancel: "Cancel".to_owned(),
+      hides_bar: true,
     }
+  }
+
+  /// Whether the bar and a large title give way to the field while it is searched in.
+  pub fn hides_bar(mut self, hides: bool) -> Self {
+    self.hides_bar = hides;
+    self
   }
 
   pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
@@ -301,8 +341,8 @@ impl NavigationSearch {
   }
 
   /// What tells one search field from another.
-  fn key(&self) -> (usize, &str, &str) {
-    (self.text.id(), &self.placeholder, &self.cancel)
+  fn key(&self) -> (usize, &str, &str, bool) {
+    (self.text.id(), &self.placeholder, &self.cancel, self.hides_bar)
   }
 }
 
@@ -717,6 +757,12 @@ struct Shown {
   /// outlet's context, which is told so after layout.
   tab_bar: super::tabs::BarMove,
   tab_link: Option<super::tabs::TabBarLink>,
+  /// Where the top screen's list was at the last layout, and whether it was last scrolled down: a bar of
+  /// tabs that gets out of the way of a list being read is told so.
+  last_scroll: f32,
+  scrolled_down: bool,
+  /// The sheet the stack is in, which is told the top screen's list.
+  sheet: Option<super::sheet::SheetScroll>,
 }
 
 pub struct StackOutlet {
@@ -747,6 +793,9 @@ impl Component for StackOutlet {
       velocity: 0.0,
       tab_bar: super::tabs::BarMove::SHOWN,
       tab_link: None,
+      last_scroll: 0.0,
+      scrolled_down: false,
+      sheet: None,
     }));
     let changed = Signal::new(0u64);
     let drag = Signal::new(NO_DRAG);
@@ -818,11 +867,18 @@ impl Component for StackOutlet {
     let safe_area = ctx.safe_area();
     let window = ctx.window();
     let width = window.logical_width();
+    // What the person asked of the whole system: no moves across the screen, nothing showing through.
+    let system = window.system;
+    let reduce_motion = system.reduce_motion;
+    let text_scale = ctx.theme().text_scale();
     // A window too low for it has no large titles, as a phone on its side has none.
-    let style = Arc::new(match &props.bar {
-      Some(Bar::Standard(bar)) => bar.clone(),
-      _ => NavigationBar::new(),
-    });
+    let style = Arc::new(
+      match &props.bar {
+        Some(Bar::Standard(bar)) => bar.clone(),
+        _ => NavigationBar::new(),
+      }
+      .adapted(&system, text_scale),
+    );
     let low = window.logical_height() < style.low_window;
     let bar_height = if low { style.low_height } else { style.height };
 
@@ -968,7 +1024,11 @@ impl Component for StackOutlet {
       };
       // Every screen has its holder, shown or not, in the order of the stack: a node keeps its identity, and
       // with it where it was last painted, by its place among its siblings.
-      let offset = if id == front {
+      // With motion reduced a screen does not cross the window: it fades in over the one behind, which
+      // stays where it is, as the platform's do.
+      let offset = if reduce_motion {
+        0.0
+      } else if id == front {
         out * width
       } else if id == back {
         -motion.parallax * width * (1.0 - out)
@@ -980,6 +1040,7 @@ impl Component for StackOutlet {
         .size(FILL, FILL)
         .padding_top(clear)
         .child(content)
+        .opacity(if reduce_motion && id == front { 1.0 - out } else { 1.0 })
         .transform(Transform2D::translate(offset, 0.0));
       if let Some(background) = props.background {
         holder = holder.background(background);
@@ -992,7 +1053,7 @@ impl Component for StackOutlet {
           .pointer_events_none();
         holder = holder.child(shade.transition(fade.clone()));
       }
-      screens = screens.child(holder.transition(slide.clone()));
+      screens = screens.child(holder.transition(slide.clone()).transition(fade.clone()));
     }
 
     let screens = screens.on_edge_pan({
@@ -1065,13 +1126,14 @@ impl Component for StackOutlet {
       let hidden = front_hides * (1.0 - out) + hides(back).unwrap_or(front_hides) * out;
       shown.tab_bar = super::tabs::BarMove { hidden, pace, curve };
       shown.tab_link = ctx.use_context::<super::tabs::TabBarLink>();
+      shown.sheet = ctx.use_context::<super::sheet::SheetScroll>();
     }
 
     let Some(bar) = props.bar else {
       return screens.into();
     };
     let bar = match bar {
-      Bar::Standard(bar) => bar,
+      Bar::Standard(bar) => bar.adapted(&system, text_scale),
       Bar::Custom(builder) => {
         let layers: Vec<&Layer> = shown.layers.iter().chain(shown.leaving.iter()).collect();
         let screen_of = |id: Option<u64>| {
@@ -1142,6 +1204,7 @@ impl Component for StackOutlet {
         label_hidden: false,
         short_probe: layer.bar.short_probe.clone(),
         searching: layer.bar.searching.get(),
+        button_shapes: system.button_shapes,
       })
     };
     let (back_part, mut front_part) = (part_of(back), part_of(front));
@@ -1278,7 +1341,11 @@ impl Component for StackOutlet {
         &navigator,
         part,
         out,
-        -(1.0 - out) * width * motion.parallax,
+        if reduce_motion {
+          0.0
+        } else {
+          -(1.0 - out) * width * motion.parallax
+        },
         pace,
         curve,
         false,
@@ -1292,7 +1359,7 @@ impl Component for StackOutlet {
         &navigator,
         part,
         1.0 - out,
-        out * width * 0.5,
+        if reduce_motion { 0.0 } else { out * width * 0.5 },
         pace,
         curve,
         true,
@@ -1340,31 +1407,30 @@ impl Component for StackOutlet {
           .opacity(lined * bar_share)
           .transition(Transition::opacity().duration(line_pace).easing(line_curve)),
       );
-    let content = Column::new()
-      .size(FILL, FILL)
-      .child(Column::new().width(FILL).flex(1.0).child(screens))
-      // A screen's toolbar: across the bottom, over the home indicator's room, in the bar's color.
+    // A screen's toolbar: across the bottom, over the home indicator's room and over the screen, whose list
+    // shows through it as it does through the bar.
+    let toolbar = Column::new()
+      .width(FILL)
+      .height((bar.toolbar_height + safe_area.bottom + 0.5) * toolbar_share)
+      .clip()
+      .align(Alignment::End)
+      .transition(Transition::height().duration(line_pace).easing(line_curve))
+      .background(bar.background)
+      .backdrop_blur(bar.blur)
+      .child(Row::new().width(FILL).height(0.5).background(bar.border))
       .child(
         Column::new()
           .width(FILL)
-          .height((bar.toolbar_height + safe_area.bottom + 0.5) * toolbar_share)
-          .clip()
-          .transition(Transition::height().duration(line_pace).easing(line_curve))
-          .background(bar.background)
-          .child(Row::new().width(FILL).height(0.5).background(bar.border))
-          .child(
-            Column::new()
-              .width(FILL)
-              .padding_left(safe_area.left)
-              .padding_right(safe_area.right)
-              .child(tools),
-          ),
+          .padding_left(safe_area.left)
+          .padding_right(safe_area.right)
+          .child(tools),
       );
     let mut whole = Stack::new()
       .size(FILL, FILL)
       .ref_element(self.origin.clone())
       .stack_align(StackAlignment::TopStart)
-      .child(content)
+      .child(screens)
+      .child(toolbar)
       .child(over)
       .child(overlay);
     if bar.back_menu && !menu_titles.is_empty() {
@@ -1377,6 +1443,7 @@ impl Component for StackOutlet {
       let mut list = Column::new()
         .width(bar.back_menu_width)
         .background(bar.background)
+        .backdrop_blur(bar.blur)
         .border_inside(0.5, bar.border)
         .rounded(13.0)
         .clip()
@@ -1445,6 +1512,39 @@ impl Component for StackOutlet {
       && link.0.get_untracked() != shown.tab_bar
     {
       link.0.set(shown.tab_bar);
+    }
+    // A sheet the stack is in gives a finger to its top screen's list, and takes it at that list's top.
+    if let (Some(sheet), Some(top)) = (&shown.sheet, shown.layers.last()) {
+      let list = top.bar.under.load(Ordering::Acquire).then(|| top.bar.scroll.clone());
+      let mut told = sheet.0.lock();
+      let same = match (&*told, &list) {
+        (Some(a), Some(b)) => a.same(b),
+        (None, None) => true,
+        _ => false,
+      };
+      if !same {
+        *told = list;
+      }
+    }
+    // Which way the top screen's list last went, by more than a finger's tremble; at its top it has gone
+    // nowhere.
+    if let Some(at) = shown.layers.last().map(|layer| layer.bar.scroll.scroll_y()) {
+      let moved = at - shown.last_scroll;
+      if at <= 0.0 {
+        shown.scrolled_down = false;
+      } else if moved > 4.0 {
+        shown.scrolled_down = true;
+      } else if moved < -4.0 {
+        shown.scrolled_down = false;
+      }
+      if moved.abs() > 4.0 || at <= 0.0 {
+        shown.last_scroll = at;
+      }
+      if let Some(link) = &shown.tab_link
+        && link.1.get_untracked() != shown.scrolled_down
+      {
+        link.1.set(shown.scrolled_down);
+      }
     }
     for layer in shown.layers.iter().chain(shown.leaving.iter()) {
       let top = *layer.bar.top_now.lock();
@@ -1605,6 +1705,8 @@ struct BarPart {
   short_probe: ElementRef,
   /// The screen's search field is being typed into: it has the bar's place.
   searching: bool,
+  /// What can be pressed is to look so: the way back's label is underlined.
+  button_shapes: bool,
 }
 
 /// One screen's part of the bar: its title in the middle, the way back before it and what the screen put at
@@ -1685,9 +1787,24 @@ fn bar_item(
         .spacing(BACK_SPACING)
         .child(chevron(bar.tint))
         .child(
-          text(says, FontWeight::Normal, bar.tint)
-            .ref_element(part.label.clone())
-            .opacity(if part.label_hidden { 0.0 } else { 1.0 }),
+          Column::new()
+            .child(
+              text(says, FontWeight::Normal, bar.tint)
+                .ref_element(part.label.clone())
+                .opacity(if part.label_hidden { 0.0 } else { 1.0 }),
+            )
+            // With button shapes asked for, a line under the label says it can be pressed.
+            .child(
+              Row::new()
+                .width(FILL)
+                .height(1.0)
+                .background(bar.tint)
+                .opacity(if part.button_shapes && !part.label_hidden && !says.is_empty() {
+                  1.0
+                } else {
+                  0.0
+                }),
+            ),
         )
         .on_click({
           let menu = menu.clone();
@@ -1886,6 +2003,13 @@ impl StackOutlet {
     ctx.use_context::<NavigationSlot>().map(|slot| slot.searching)
   }
 
+  /// How much of this screen the bar is over, from the top: what the list of
+  /// [`large_title_scroll`](Self::large_title_scroll) keeps its content clear of. 0 outside a stack. For what
+  /// stands over that list at its top, as the spinner of a [`PullToRefresh`](super::PullToRefresh) does.
+  pub fn bar_inset(ctx: &mut Ctx) -> f32 {
+    ctx.use_context::<NavigationSlot>().map_or(0.0, |slot| slot.top.get())
+  }
+
   /// The state of the list [`large_title_scroll`](Self::large_title_scroll) makes for this screen, to set it
   /// up or to scroll it; `None` outside a stack.
   pub fn screen_scroll(ctx: &mut Ctx) -> Option<ScrollState> {
@@ -1945,8 +2069,10 @@ impl Component for SearchField {
     // The search goes on while the field has the focus, and after, while something is typed in it: until it
     // is cancelled. The outlet and the screen are told when that changes.
     let searching = self.focused.get() || !props.search.text.get().is_empty();
-    if props.searching.get_untracked() != searching {
-      props.searching.set(searching);
+    // A field that leaves the bar where it is does not say it is searched in: nothing gives way to it.
+    let takes_bar = searching && props.search.hides_bar;
+    if props.searching.get_untracked() != takes_bar {
+      props.searching.set(takes_bar);
     }
     // A tap on the way to cancel puts the keyboard away: the field loses the focus after this render.
     let cancelled = self.cancelled.get();
@@ -1991,7 +2117,7 @@ impl Component for SearchField {
       .width(FILL)
       .align_items(Alignment::Center)
       .padding_horizontal(bar.inset)
-      .padding_top(if searching { 8.0 } else { 0.0 })
+      .padding_top(if takes_bar { 8.0 } else { 0.0 })
       .padding_bottom(8.0)
       .spacing(12.0)
       .child(field);
@@ -2162,8 +2288,15 @@ impl Component for StackLayer {
     let (has_toolbar, hides_tab_bar) = props.slot.bottom.get();
     let toolbar = props.slot.toolbars && has_toolbar;
     if toolbar {
-      // The screen ends where its toolbar starts, and the toolbar is clear of what is under it.
-      ctx.provide_if_changed(crate::app::ctx::BottomBarInset::Under);
+      // The toolbar is over the screen, above whatever bar is under the stack: the screen keeps clear of
+      // both.
+      let under = match ctx.use_context::<crate::app::ctx::BottomBarInset>() {
+        Some(crate::app::ctx::BottomBarInset::Over(height)) if !hides_tab_bar => height,
+        _ => 0.0,
+      };
+      ctx.provide_if_changed(crate::app::ctx::BottomBarInset::Over(
+        under + props.slot.style.toolbar_height + 0.5,
+      ));
     } else if hides_tab_bar {
       // A screen that hides the bar of tabs has no bar over its content to keep clear of.
       ctx.provide_if_changed(crate::app::ctx::BottomBarInset::Over(0.0));

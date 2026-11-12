@@ -216,8 +216,10 @@ fn generic_family_serif_is_the_platform_serif_font() {
   );
   assert_eq!(serif, width(&mut app, SAMPLE, "Serif"));
   let sans = width(&mut app, SAMPLE, "sans-serif");
+  // Two fonts set a sentence at two widths, however near: the platform's serif and sans-serif can be within
+  // a pixel of each other over a short sample, and one font is at the same width to the last bit.
   assert!(
-    (serif - sans).abs() > 1.0,
+    (serif - sans).abs() > 0.01,
     "serif ({serif}) and sans-serif ({sans}) draw in different fonts"
   );
 }

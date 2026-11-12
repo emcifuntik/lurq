@@ -23,6 +23,8 @@ pub struct WindowInfo {
   pub is_focused: bool,
   /// The edges of the window the system draws over or cuts off; see [`SafeAreaInsets`].
   pub safe_area: SafeAreaInsets,
+  /// What the person set for the whole system; see [`SystemSettings`].
+  pub system: SystemSettings,
 }
 
 /// What the system tells an app about itself, heard with `ctx.window().on_app_event(..)`. A phone tells all of
@@ -159,6 +161,54 @@ pub struct SafeAreaInsets {
   /// How much more `bottom` is for the on-screen keyboard being up: 0 with the keyboard down. What stands at
   /// the bottom of the window, as a sheet does, rises by it.
   pub keyboard: f32,
+}
+
+/// Whether the system is in its light look or its dark one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Appearance {
+  #[default]
+  Light,
+  Dark,
+}
+
+/// What a person set for the whole system, which an app is to follow: `ctx.window().system`. A phone tells all
+/// of it; a desktop shell tells the appearance, and the rest is as if nothing was set. The theme takes the
+/// appearance, the text scale and bold text by itself ([`Theme::apply_system`](crate::app::theme::Theme));
+/// the rest is for the app and its components to read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SystemSettings {
+  pub appearance: Appearance,
+  /// How much larger than usual the person asked text to be: 1 for the usual size (a phone's Dynamic Type).
+  pub text_scale: f32,
+  pub bold_text: bool,
+  /// Things are not to move across the screen: one takes another's place by fading.
+  pub reduce_motion: bool,
+  /// Colors are to stand further apart.
+  pub increase_contrast: bool,
+  /// Nothing is to show through anything: no glass, no blur.
+  pub reduce_transparency: bool,
+  /// What a color says is to be said some other way too.
+  pub differentiate_without_color: bool,
+  /// What can be pressed is to look so: an outline or an underline.
+  pub button_shapes: bool,
+  /// A switch is to say on and off with a mark as well as with its place.
+  pub on_off_labels: bool,
+}
+
+impl Default for SystemSettings {
+  fn default() -> Self {
+    Self {
+      appearance: Appearance::Light,
+      text_scale: 1.0,
+      bold_text: false,
+      reduce_motion: false,
+      increase_contrast: false,
+      reduce_transparency: false,
+      differentiate_without_color: false,
+      button_shapes: false,
+      on_off_labels: false,
+    }
+  }
 }
 
 impl WindowInfo {
@@ -433,6 +483,7 @@ impl Window {
           is_decorated: true,
           is_focused: true,
           safe_area: SafeAreaInsets::default(),
+          system: SystemSettings::default(),
         },
         corner_radius: WindowCornerRadius::Default,
         border_color: WindowBorderColor::Default,
@@ -734,6 +785,19 @@ impl Window {
         return;
       }
       inner.info.safe_area = safe_area;
+      Self::bump_version(&mut inner)
+    };
+    self.version_signal.set(version);
+  }
+
+  /// Sets what a shell read of the system's settings. Public for tests and for shells outside the crate.
+  pub fn set_system_settings(&self, system: SystemSettings) {
+    let version = {
+      let mut inner = self.inner.write().unwrap();
+      if inner.info.system == system {
+        return;
+      }
+      inner.info.system = system;
       Self::bump_version(&mut inner)
     };
     self.version_signal.set(version);

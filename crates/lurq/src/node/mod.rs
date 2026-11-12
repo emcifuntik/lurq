@@ -64,7 +64,7 @@ pub use node::{
 pub(crate) use node::{Node, NodeUpdate, SyntheticNodeRole};
 pub use outline::{Outline, ResolvedOutline};
 pub use radius_value::RadiusValue;
-pub use select_icon::{SelectCheckmarkPosition, SelectIcon};
+pub use select_icon::{SelectAdornmentState, SelectCheckmarkPosition, SelectIcon};
 pub use select_style::{SelectPartStyle, SelectStyle};
 pub use slider_style::SliderPartStyle;
 pub use spacing_value::SpacingValue;

@@ -75,7 +75,7 @@ mod focus_visible;
 mod history_swipe;
 mod hover;
 mod ime;
-pub use ime::{KeyboardTraits, TextInputGeometry, TextInputSnapshot};
+pub use ime::{AutofillPeer, KeyboardTraits, TextInputGeometry, TextInputSnapshot};
 #[cfg(all(test, feature = "markdown"))]
 mod inline_link_copy_tests;
 #[cfg(feature = "markdown")]
@@ -3944,7 +3944,11 @@ impl Tree {
   pub fn scroll(&mut self, x: f32, y: f32, delta_x: f32, delta_y: f32, phase: ScrollPhase) {
     #[cfg(feature = "perf_profile")]
     let input = self.profiling.input(crate::app::profiler::InputKind::Scroll);
-    self.track_pointer(x, y);
+    // A wheel turns under a pointer, which is then there. A finger's scroll comes from where the finger
+    // landed, and the finger goes with what it moves: no pointer is left there to hover what comes under it.
+    if !self.touch_scroll_latched {
+      self.track_pointer(x, y);
+    }
     self.lay_out_rebuilt_for_input();
     let horizontal_taken = self.dispatch_scroll(x, y, delta_x, delta_y, phase);
     let scale = self.scale_factor();
@@ -6778,6 +6782,8 @@ impl Tree {
       // out with the theme as it is now, even if a focus callback below
       // changes it; that change lays out next pass.
       self.layout_engine.set_theme(theme);
+      let bold_text = theme.bold_text();
+      app.shared.glyph_engine.lock().set_bold_text(bold_text);
       #[cfg(feature = "canvas")]
       let canvas_font = crate::canvas::CanvasFont::from_style(theme.typography().default_style());
       let theme_changed = self.last_theme_version != theme_version;

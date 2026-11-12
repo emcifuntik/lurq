@@ -1,6 +1,7 @@
 pub mod app_state;
 #[cfg(all(test, windows, feature = "screenshot", any(feature = "wgpu", feature = "dx12")))]
 mod backdrop_blur_readback_tests;
+pub mod biometry;
 #[cfg(all(
   test,
   windows,

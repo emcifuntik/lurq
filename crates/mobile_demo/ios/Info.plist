@@ -24,6 +24,9 @@
 			</array>
 		</dict>
 	</dict>
+	<!-- Why the app asks for the person's face: without it the system ends the app at the first ask. -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>To show what is behind the lock on the Face ID screen.</string>
 	<!-- A link of the app's own, `lurqdemo://anything`, to see that the app hears what it is opened with. -->
 	<key>CFBundleURLTypes</key>
 	<array>

@@ -21,6 +21,8 @@ Added:
 - `AnimatableProperty::Blur` and `AnimatableProperty::BackdropBlur`, `Transition::blur()` and `Transition::backdrop_blur()`: the radii animate in transitions and keyframe animations, and `Transition::all()` includes them. Like opacity, a blur that is animating keeps the node's layout cache.
 - `layout::opacity_layer::RoundedBox`: a rounded box in the window, possibly turned or scaled, with its bounds and its coverage of a pixel. A blurred layer carries the rounded clip it is cut to as one (`LayerBlur::clip`).
 - `examples/layer_blur_capture_check.rs` renders a scene of blurred nodes and frosted glass through layout and both native backends and compares the captures.
+- `SelectOption::leading(element)` and `SelectOption::trailing(element)`: an element before or after an option's label, such as a brand mark, a status dot or a badge (lurq#104). It keeps its own size, sits `SelectStyle::option_adornment_gap` (default 8) from the label and is centred on the label's line, also beside a detail line. The closed field of a single-select shows the selected option's elements, and a custom `Select::trigger` gets them as `SelectTriggerState::leading` and `trailing`. The elements are decorative: type-ahead and automation keep using the label.
+- `SelectOption::leading_with(|state| ...)` and `trailing_with`: the element is built for the state it is drawn in. The builder receives a `SelectAdornmentState` (`selected`, `highlighted`, `disabled`, `in_field` and the row's or field's `text_color`), so a mark can take the label's colour on a selected or highlighted row.
 
 Behaviour changes:
 
@@ -34,6 +36,7 @@ Behaviour changes:
 - A plain `Text` whose style has an `underline` now draws it.
 - `LayerCmd` has a new public field, `blur: Option<LayerBlur>`, `RenderList` a new public field, `backdrops: Vec<BackdropCmd>`, `AnimatableProperty` two new variants and `QuadContent` a new variant, `Backdrop`: code that builds a `LayerCmd` or a `RenderList` with every field named, or matches `AnimatableProperty` or `QuadContent` without a wildcard arm, must add them. A custom `RenderEngine` that ignores `RenderList::backdrops` draws the frame without its backdrop blurs. A custom `RenderEngine` that paints `RenderList::layers` should paint a blurred layer for `LayerCmd::painted()` (larger than `bounds`, and possibly outside the window) and blur it by `LayerBlur::sigma`; one that ignores the field draws the layer unblurred, clipped to `bounds`.
 - A layer around a blurred one covers the blur's spread, so `LayerCmd::bounds` of a faded group can be larger than its own rects and glyphs.
+- `SelectTriggerState` has two new public fields, `leading` and `trailing`: code that builds one with every field named must add them.
 
 ## 0.60.0 — 2026-11-11
 

@@ -2596,6 +2596,17 @@ impl Node {
     self
   }
 
+  pub(crate) fn select_option_adornments(
+    self,
+    leading: Vec<Option<crate::node::select_icon::SelectAdornment>>,
+    trailing: Vec<Option<crate::node::select_icon::SelectAdornment>>,
+  ) -> Self {
+    if let Some(state) = self.select_state() {
+      state.set_adornments(leading, trailing);
+    }
+    self
+  }
+
   pub fn select_selected(self, selected: Vec<usize>) -> Self {
     if let Some(state) = self.select_state() {
       state.set_selected(selected);

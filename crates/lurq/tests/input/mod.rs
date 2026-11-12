@@ -21,6 +21,7 @@ mod select {
 }
 
 mod text_input {
+  mod autofill;
   mod basic_layout;
   mod clipped_paint;
   mod controller;

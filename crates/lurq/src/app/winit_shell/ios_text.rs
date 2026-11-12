@@ -34,8 +34,9 @@ use std::{
   ptr::NonNull,
   sync::{
     Mutex,
-    atomic::{AtomicPtr, Ordering},
+    atomic::{AtomicBool, AtomicPtr, Ordering},
   },
+  time::{Duration, Instant},
 };
 
 use objc2::{
@@ -52,7 +53,7 @@ use crate::{
   app::{
     Tree,
     events::ImeEvent,
-    runtime::{KeyboardTraits, TextInputSnapshot},
+    runtime::{AutofillPeer, KeyboardTraits, TextInputSnapshot},
   },
   node::{
     node_kind::{ContentKind, KeyboardKind, ReturnKey},
@@ -108,7 +109,18 @@ struct Mirror {
   geometry: Option<Geometry>,
   traits: Option<KeyboardTraits>,
   edits: Vec<Edit>,
+  /// When more than one character came at once into an input that hides what is typed: a saved password.
+  filled_at: Option<Instant>,
+  /// UIKit drew the caret where the view did not take it, or may have, as a saved password came: it is to be
+  /// told where the caret is.
+  caret_astray: bool,
 }
+
+/// How long after a saved password came UIKit's own moves of the caret are taken to be part of the filling.
+const FILL_SETTLES: Duration = Duration::from_millis(700);
+
+/// Whether a text input is typed into. winit's view takes no keyboard then: see [`quiet_window_view`].
+static TYPES: AtomicBool = AtomicBool::new(false);
 
 /// Where the focused input is on the screen, in points in the window.
 #[derive(Clone, PartialEq)]
@@ -192,10 +204,17 @@ static WINDOW_VIEW: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
 /// The rectangles UIKit last showed the selection as, in the window, as the tree was told them.
 static HIGHLIGHT: Mutex<Vec<(f64, f64, f64, f64)>> = Mutex::new(Vec::new());
 
+/// The view that types now. One that typed before it may still be told and asked by UIKit as it goes: what
+/// UIKit keeps for a view is kept for this one alone.
+static TYPING_VIEW: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
 /// UIKit's delegate, which is told of changes it did not make. UIKit owns it and clears it.
 static INPUT_DELEGATE: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
-/// The tokenizer UIKit asks for word and line boundaries, made once for the view.
+/// The tokenizer UIKit asks for word and line boundaries, made once for the view that types.
 static TOKENIZER: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
+
+fn types_now(view: &AnyObject) -> bool {
+  std::ptr::eq(TYPING_VIEW.load(Ordering::Acquire), view)
+}
 
 fn with_mirror<T>(default: T, read: impl FnOnce(&mut Mirror) -> T) -> T {
   MIRROR.lock().unwrap().as_mut().map_or(default, read)
@@ -363,6 +382,10 @@ extern "C-unwind" fn insert_text(_this: &AnyObject, _cmd: Sel, text: *mut AnyObj
     if !text.contains('\n') {
       mirror.replace(start, end, &text);
     }
+    if mirror.traits.is_some_and(|traits| traits.secure) && text.chars().nth(1).is_some() {
+      mirror.filled_at = Some(Instant::now());
+      mirror.caret_astray = true;
+    }
     mirror.edits.push(Edit::Insert(text));
   });
 }
@@ -414,8 +437,17 @@ extern "C-unwind" fn set_selected_text_range(_this: &AnyObject, _cmd: Sel, selec
   let Some((start, end)) = ends_of(selected) else {
     return;
   };
-  with_mirror((), |mirror| {
+  let refused = with_mirror(false, |mirror| {
     let selection = (mirror.byte_of(start), mirror.byte_of(end));
+    // After it fills a saved password in, UIKit puts the caret at the start and at the end by turns, and
+    // leaves it at the start (seen on an iPhone 17: start, end, start, end, start). A text field of its own
+    // ends with the caret after the password: the moves to the start that come with the filling are not
+    // taken, and UIKit, which draws the caret where it put it, is told on the shell's next turn where it is.
+    let filling = mirror.filled_at.is_some_and(|at| at.elapsed() < FILL_SETTLES);
+    if filling && selection == (0, 0) && !mirror.text.is_empty() {
+      mirror.caret_astray = true;
+      return true;
+    }
     if selection != mirror.selection {
       mirror.selection = selection;
       mirror.edits.push(Edit::Select {
@@ -423,7 +455,19 @@ extern "C-unwind" fn set_selected_text_range(_this: &AnyObject, _cmd: Sel, selec
         end: selection.1,
       });
     }
+    false
   });
+  if refused {
+    wake_shell();
+  }
+}
+
+/// Has the shell take a turn, which nothing else may bring: asking the window's view to draw wakes it.
+fn wake_shell() {
+  let window_view = WINDOW_VIEW.load(Ordering::Acquire);
+  if let Some(window_view) = unsafe { window_view.as_ref() } {
+    let _: () = unsafe { msg_send![window_view, setNeedsDisplay] };
+  }
 }
 
 extern "C-unwind" fn marked_text_range(_this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
@@ -578,25 +622,37 @@ extern "C-unwind" fn offset_from_position(
   }
 }
 
-extern "C-unwind" fn input_delegate(_this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
-  INPUT_DELEGATE.load(Ordering::Acquire)
+extern "C-unwind" fn input_delegate(this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
+  if types_now(this) {
+    INPUT_DELEGATE.load(Ordering::Acquire)
+  } else {
+    std::ptr::null_mut()
+  }
 }
 
-extern "C-unwind" fn set_input_delegate(_this: &AnyObject, _cmd: Sel, delegate: *mut AnyObject) {
-  INPUT_DELEGATE.store(delegate, Ordering::Release);
+extern "C-unwind" fn set_input_delegate(this: &AnyObject, _cmd: Sel, delegate: *mut AnyObject) {
+  // A view that typed before is told it has no delegate after the one that types now was given its own.
+  if types_now(this) {
+    INPUT_DELEGATE.store(delegate, Ordering::Release);
+  }
 }
 
 extern "C-unwind" fn tokenizer(this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
+  // UIKit's own, which reads words and lines out of the text through the view it is made for.
+  let make = || -> Retained<AnyObject> {
+    unsafe {
+      let tokenizer: objc2::rc::Allocated<AnyObject> = msg_send![class!(UITextInputStringTokenizer), alloc];
+      msg_send![tokenizer, initWithTextInput: this]
+    }
+  };
+  if !types_now(this) {
+    return Retained::autorelease_ptr(make());
+  }
   let tokenizer = TOKENIZER.load(Ordering::Acquire);
   if !tokenizer.is_null() {
     return tokenizer;
   }
-  // UIKit's own, which reads words and lines out of the text through this view.
-  let tokenizer: Retained<AnyObject> = unsafe {
-    let tokenizer: objc2::rc::Allocated<AnyObject> = msg_send![class!(UITextInputStringTokenizer), alloc];
-    msg_send![tokenizer, initWithTextInput: this]
-  };
-  let tokenizer = Retained::into_raw(tokenizer);
+  let tokenizer = Retained::into_raw(make());
   TOKENIZER.store(tokenizer, Ordering::Release);
   tokenizer
 }
@@ -752,10 +808,7 @@ fn selection_rect_class() -> &'static AnyClass {
 extern "C-unwind" fn selection_rects_for_range(_this: &AnyObject, _cmd: Sel, range: *mut AnyObject) -> *mut AnyObject {
   // UIKit is about to show a selection, a handle's as it is dragged too: the shell reads where on its next
   // turn, which nothing else may bring, a handle's touches being UIKit's.
-  let window_view = WINDOW_VIEW.load(Ordering::Acquire);
-  if let Some(window_view) = unsafe { window_view.as_ref() } {
-    let _: () = unsafe { msg_send![window_view, setNeedsDisplay] };
-  }
+  wake_shell();
   let rects: Retained<AnyObject> = unsafe { msg_send![class!(NSMutableArray), array] };
   let rows = ends_of(range).and_then(|(start, end)| {
     with_mirror(None, |mirror| {
@@ -1070,8 +1123,46 @@ fn text_input_class() -> &'static AnyClass {
     sel!(autocorrectionType) => correction_type as extern "C-unwind" fn(_, _) -> _,
     sel!(spellCheckingType) => correction_type as extern "C-unwind" fn(_, _) -> _,
     sel!(textContentType) => text_content_type as extern "C-unwind" fn(_, _) -> _,
+    sel!(isKindOfClass:) => is_kind_of_class as extern "C-unwind" fn(_, _, _) -> _,
+    sel!(forwardingTargetForSelector:) => forwarding_target as extern "C-unwind" fn(_, _, _) -> _,
   }
   builder.register()
+}
+
+// Saved passwords: UIKit offers them only to a `UITextField`, which it asks the focused view whether it
+// is. While the input typed into hides what is typed, the view says it is one, and what UIKit then asks of
+// a text field that this view has no answer to goes to a text field that is not seen. The filling itself comes
+// through `UITextInput`, as typing does.
+
+/// The text field that answers for the view; made when first asked for, and kept.
+static FIELD_STAND_IN: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
+
+fn field_stand_in() -> *mut AnyObject {
+  let field = FIELD_STAND_IN.load(Ordering::Acquire);
+  if !field.is_null() {
+    return field;
+  }
+  let field: Retained<AnyObject> = unsafe { msg_send![class!(UITextField), new] };
+  let field = Retained::into_raw(field);
+  FIELD_STAND_IN.store(field, Ordering::Release);
+  field
+}
+
+fn is_secure() -> bool {
+  traits().is_some_and(|traits| traits.secure)
+}
+
+extern "C-unwind" fn is_kind_of_class(this: &AnyObject, _cmd: Sel, class: *const AnyClass) -> Bool {
+  let is: Bool = unsafe { msg_send![super(this, class!(UIView)), isKindOfClass: class] };
+  Bool::new(is.as_bool() || (is_secure() && std::ptr::eq(class, class!(UITextField))))
+}
+
+extern "C-unwind" fn forwarding_target(_this: &AnyObject, _cmd: Sel, _selector: Sel) -> *mut AnyObject {
+  if is_secure() {
+    field_stand_in()
+  } else {
+    std::ptr::null_mut()
+  }
 }
 
 /// What UIKit is told changed when the tree's input is not what the copy says.
@@ -1083,9 +1174,64 @@ enum Changed {
   Place,
 }
 
+/// Has winit's view, which the text input's view is in, stand aside for it.
+///
+/// winit's view takes keys itself (`UIKeyInput`), for apps that have it show the keyboard, which the shell
+/// never does: a view of the shell's own types. As it is, it gets in that view's way twice.
+///
+/// UIKit hands the keyboard to the next view up that will take it when a view gives it up
+/// (`-[UIResponder resignFirstResponder]`), and winit's always will: the keyboard the person put away stayed,
+/// winit's now and knowing nothing of the input. While an input is typed into it takes none.
+///
+/// And to fill a saved login in UIKit looks through the window for the fields of the form, the one for the
+/// name beside the one for the password, and does not look inside a view that types itself
+/// (`_requiresKeyboardWhenFirstResponder`): it saw winit's view and none of those in it, and filled the
+/// password in alone. A view that says it is not to be edited is not one that types.
+fn quiet_window_view(view: &AnyObject) {
+  extern "C-unwind" fn is_editable(_this: &AnyObject, _cmd: Sel) -> Bool {
+    Bool::NO
+  }
+  extern "C-unwind" fn can_become_first_responder(_this: &AnyObject, _cmd: Sel) -> Bool {
+    Bool::new(!TYPES.load(Ordering::Acquire))
+  }
+  let class = view.class();
+  let types = c"B@:";
+  unsafe {
+    let class = std::ptr::from_ref(class).cast_mut();
+    // Both leave a class that already has them as it is: every view answers `isEditable`, with yes, and this
+    // is winit's class's own answer.
+    objc2::ffi::class_addMethod(
+      class.cast(),
+      sel!(isEditable),
+      std::mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel) -> Bool, unsafe extern "C-unwind" fn()>(is_editable),
+      types.as_ptr(),
+    );
+    objc2::ffi::class_replaceMethod(
+      class.cast(),
+      sel!(canBecomeFirstResponder),
+      std::mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel) -> Bool, unsafe extern "C-unwind" fn()>(
+        can_become_first_responder,
+      ),
+      types.as_ptr(),
+    );
+  }
+}
+
 /// The view the keyboard types into. Main thread only.
 pub(super) struct TextInput {
   view: Retained<AnyObject>,
+  /// Text fields that are not seen, one for each other input a saved login may fill: the platform looks for
+  /// a field for the name beside the one for the password, and fills both.
+  peers: Vec<Peer>,
+}
+
+struct Peer {
+  id: crate::core::NodeId,
+  field: Retained<AnyObject>,
+  /// What the field and the tree's input both said at the last turn.
+  value: String,
+  /// Where the field was put in the window: see `sync_peers`.
+  place: Option<(f64, f64)>,
 }
 
 impl TextInput {
@@ -1093,17 +1239,69 @@ impl TextInput {
   pub(super) fn new(parent: NonNull<c_void>) -> Self {
     let parent: &AnyObject = unsafe { parent.cast::<AnyObject>().as_ref() };
     WINDOW_VIEW.store(std::ptr::from_ref(parent).cast_mut(), Ordering::Release);
+    quiet_window_view(parent);
+    Self {
+      view: Self::view_in(parent),
+      peers: Vec::new(),
+    }
+  }
+
+  /// A view to type into, in the window's view, and the one that types from now on.
+  fn view_in(parent: &AnyObject) -> Retained<AnyObject> {
     unsafe {
       let view: Retained<AnyObject> = msg_send![text_input_class(), new];
       // No size until an input has the focus, so nothing to see or touch; a hidden view could not take the
       // keyboard.
       let _: () = msg_send![&*view, setUserInteractionEnabled: false];
       let _: () = msg_send![parent, addSubview: &*view];
-      // The platform's caret, selection handles, loupe and menu: `UITextInteractionModeEditable`.
+      Self::interact(&view);
+      TYPING_VIEW.store(Retained::as_ptr(&view).cast_mut(), Ordering::Release);
+      INPUT_DELEGATE.store(std::ptr::null_mut(), Ordering::Release);
+      let tokenizer = TOKENIZER.swap(std::ptr::null_mut(), Ordering::AcqRel);
+      drop(Retained::from_raw(tokenizer));
+      view
+    }
+  }
+
+  /// Gives a view the platform's caret, selection handles, loupe and menu: `UITextInteractionModeEditable`.
+  fn interact(view: &AnyObject) {
+    unsafe {
       let interaction: Retained<AnyObject> = msg_send![class!(UITextInteraction), textInteractionForMode: 0isize];
-      let _: () = msg_send![&*interaction, setTextInput: &*view];
-      let _: () = msg_send![&*view, addInteraction: &*interaction];
-      Self { view }
+      let _: () = msg_send![&*interaction, setTextInput: view];
+      let _: () = msg_send![view, addInteraction: &*interaction];
+    }
+  }
+
+  /// Has UIKit read the view's selection anew. It keeps the selection it draws the caret and the handles from
+  /// to itself, and reads the view's as it sets one itself, a key or a finger's, and as it makes the
+  /// interaction: told by the view's input delegate that the selection changed, it tells the keyboard, and
+  /// draws the caret where it was. So a selection UIKit did not set, the tree's own or a saved password's,
+  /// which UIKit puts in without reading where the caret then is, has the view take a new interaction.
+  fn reread_selection(&self) {
+    unsafe {
+      // The interaction, which takes the ones it made with it, and what those leave behind.
+      let interactions: Retained<AnyObject> = msg_send![&*self.view, interactions];
+      let count: usize = msg_send![&*interactions, count];
+      for index in 0..count {
+        let interaction: Retained<AnyObject> = msg_send![&*interactions, objectAtIndex: index];
+        let _: () = msg_send![&*self.view, removeInteraction: &*interaction];
+      }
+    }
+    Self::interact(&self.view);
+    self.show_selection(true);
+    self.update_selection();
+  }
+
+  /// Puts a new view in the place of the one that types, and gives back the old, which is still in the
+  /// window. UIKit takes a view to be one field for as long as it lives: what it found out as the view first
+  /// took the keyboard, the fields of a login around it among that, it keeps while the keyboard goes between
+  /// that login's fields, and this view is all of them. So each input to type into has a view of its own, as
+  /// each has a text field of its own in an app of UIKit's.
+  fn renew(&mut self) -> Retained<AnyObject> {
+    let parent: Option<Retained<AnyObject>> = unsafe { msg_send![&*self.view, superview] };
+    match parent {
+      Some(parent) => std::mem::replace(&mut self.view, Self::view_in(&parent)),
+      None => self.view.clone(),
     }
   }
 
@@ -1141,6 +1339,27 @@ impl TextInput {
           .collect(),
       );
     }
+    let typing = MIRROR
+      .lock()
+      .unwrap()
+      .as_ref()
+      .is_some_and(|mirror| mirror.traits.is_some());
+    let other_peers = self.sync_peers(tree);
+    // While another app's or the system's view is over this one, the list of saved passwords among them, the
+    // keyboard is neither the view's nor lost: UIKit gives it back with the screen.
+    let active = unsafe {
+      let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
+      let state: isize = msg_send![&*app, applicationState];
+      state == 0
+    };
+    let first: bool = unsafe { msg_send![&*self.view, isFirstResponder] };
+    if typing && active && !first {
+      // The view is no longer the one that types, and the input is left: the person put the keyboard away, as
+      // a finger that takes it down with it does, or UIKit did, as it does to a field of its own when a saved
+      // login came from another app's list that had a keyboard up
+      // (`-[UIKeyboardSceneDelegate _restoreInputViewsWithId:animated:]`).
+      tree.keyboard_was_put_away();
+    }
     let traits = tree.keyboard_traits();
     let snapshot = tree.text_input_snapshot();
     let (Some(traits), Some(snapshot)) = (traits, snapshot) else {
@@ -1148,6 +1367,14 @@ impl TextInput {
       return;
     };
     let previous = with_mirror(None, |mirror| mirror.traits);
+    // An input that hides what is typed where the one before did not, or is for something else of the
+    // person's, or is of another login, is another field to UIKit: it decides what to offer over the keyboard,
+    // a saved password among it, and which fields a saved login fills, as a view takes the keyboard.
+    let another = match previous {
+      None => true,
+      Some(previous) => previous.secure != traits.secure || previous.content != traits.content || other_peers,
+    };
+    let before = another.then(|| self.renew());
     let geometry = snapshot.geometry.as_ref().map(|geometry| Geometry {
       bounds: (
         f64::from(geometry.bounds.0),
@@ -1180,7 +1407,9 @@ impl TextInput {
       }
     }
     // The view lies over the input, for the platform's caret and handles to be drawn and touched there.
-    if moved && let Some(geometry) = &geometry {
+    if (moved || another)
+      && let Some(geometry) = &geometry
+    {
       let frame = CGRect {
         origin: CGPoint {
           x: geometry.bounds.0,
@@ -1195,23 +1424,48 @@ impl TextInput {
         let _: () = msg_send![&*self.view, setFrame: frame];
         let _: () = msg_send![&*self.view, setUserInteractionEnabled: true];
       }
+    } else if another {
+      // The input is not laid out yet. UIKit takes no view without a size for a field of a login, and reads
+      // the fields in the order they lie in: under the first row, where the fields for a name are
+      // (`sync_peers`), until the input's place is known.
+      let frame = CGRect {
+        origin: CGPoint { x: 0.0, y: 1.0 },
+        size: CGSize {
+          width: 1.0,
+          height: 1.0,
+        },
+      };
+      let _: () = unsafe { msg_send![&*self.view, setFrame: frame] };
     }
     if let Some(changed) = &changed {
       self.tell(changed, false);
       self.update_selection();
     }
+    // The tree's text or selection is not what UIKit made it, or a saved password came, after which UIKit
+    // may draw the caret where the view did not take it (`set_selected_text_range`): it reads the caret anew.
+    // A new view's interaction is new.
+    let astray = with_mirror(false, |mirror| std::mem::take(&mut mirror.caret_astray));
+    if before.is_none() && (astray || matches!(changed, Some(Changed::Text | Changed::Selection))) {
+      self.reread_selection();
+    }
+    TYPES.store(true, Ordering::Release);
     unsafe {
-      match previous {
-        None => {
-          let _: () = msg_send![&*self.view, setHidden: false];
+      match (before, previous) {
+        // The keyboard goes from the view that typed to the new one, and stays up as it does between two
+        // fields.
+        (Some(before), _) => {
+          // As the new view takes the keyboard UIKit looks for the fields of a login around it, and the old
+          // view, still in the window, is not one of them: a view of no size is passed over.
+          let _: () = msg_send![&*before, setFrame: no_rect()];
           let _: bool = msg_send![&*self.view, becomeFirstResponder];
           self.show_selection(true);
+          let _: () = msg_send![&*before, removeFromSuperview];
         }
         // Another input took the focus: the keyboard stays up and becomes the one it asks for.
-        Some(previous) if previous != traits => {
+        (None, Some(previous)) if previous != traits => {
           let _: () = msg_send![&*self.view, reloadInputViews];
         }
-        Some(_) => {}
+        (None, _) => {}
       }
     }
   }
@@ -1343,6 +1597,120 @@ impl TextInput {
     }
   }
 
+  /// Keeps a text field for each other input of a login, and takes into the tree what the platform filled
+  /// one in with. Says whether the fields are others than they were.
+  fn sync_peers(&mut self, tree: &mut Tree) -> bool {
+    let wanted = tree.autofill_peers();
+    let mut other = false;
+    self.peers.retain(|peer| {
+      let kept = wanted.iter().any(|wanted| wanted.id == peer.id);
+      if !kept {
+        let _: () = unsafe { msg_send![&*peer.field, removeFromSuperview] };
+        other = true;
+      }
+      kept
+    });
+    for wanted in &wanted {
+      if self.peers.iter().any(|peer| peer.id == wanted.id) {
+        continue;
+      }
+      other = true;
+      unsafe {
+        let field: Retained<AnyObject> = msg_send![class!(UITextField), new];
+        // In the window, where the platform looks for it, and neither seen nor touched.
+        let _: () = msg_send![&*field, setAlpha: 0.01f64];
+        let _: () = msg_send![&*field, setUserInteractionEnabled: false];
+        let content = match wanted.content {
+          ContentKind::Email => UITextContentTypeEmailAddress,
+          ContentKind::Username => UITextContentTypeUsername,
+          ContentKind::Password => UITextContentTypePassword,
+          ContentKind::NewPassword => UITextContentTypeNewPassword,
+          _ if wanted.secure => UITextContentTypePassword,
+          _ => std::ptr::null_mut(),
+        };
+        let _: () = msg_send![&*field, setTextContentType: content];
+        let _: () = msg_send![&*field, setSecureTextEntry: wanted.secure];
+        let superview: Option<Retained<AnyObject>> = msg_send![&*self.view, superview];
+        if let Some(superview) = superview {
+          // Under the view that types, as a form's fields are one after another.
+          let _: () = msg_send![&*superview, insertSubview: &*field, belowSubview: &*self.view];
+        }
+        // The field starts as the input is: the first turn sets it.
+        self.peers.push(Peer {
+          id: wanted.id,
+          field,
+          value: String::from("\u{0}"),
+          place: None,
+        });
+      }
+    }
+    // UIKit reads a form in the order its fields lie in, a row after another and each from its left, and takes
+    // the field next before the password's to be the name's, whatever each says it is for. So the fields lie
+    // around the view that types as a login's do: those for a name in the window's first row, the one that
+    // says it is the name to log in with last of them, and those for a password in its last.
+    let password =
+      |peer: &AutofillPeer| peer.secure || matches!(peer.content, ContentKind::Password | ContentKind::NewPassword);
+    let bottom = unsafe {
+      let superview: Option<Retained<AnyObject>> = msg_send![&*self.view, superview];
+      match superview {
+        Some(superview) => {
+          let bounds: CGRect = msg_send![&*superview, bounds];
+          (bounds.size.height - 1.0).max(1.0)
+        }
+        None => 1.0,
+      }
+    };
+    let (mut before, mut after) = (0.0, 0.0);
+    let rows: [&dyn Fn(&AutofillPeer) -> bool; 3] = [
+      &|peer| !password(peer) && peer.content != ContentKind::Username,
+      &|peer| !password(peer) && peer.content == ContentKind::Username,
+      &|peer| password(peer),
+    ];
+    for (row, belongs) in rows.iter().enumerate() {
+      for wanted in wanted.iter().filter(|wanted| belongs(wanted)) {
+        let Some(peer) = self.peers.iter_mut().find(|peer| peer.id == wanted.id) else {
+          continue;
+        };
+        let place = if row == 2 {
+          after += 1.0;
+          (after - 1.0, bottom)
+        } else {
+          before += 1.0;
+          (before - 1.0, 0.0)
+        };
+        if peer.place != Some(place) {
+          let frame = CGRect {
+            origin: CGPoint { x: place.0, y: place.1 },
+            size: CGSize {
+              width: 1.0,
+              height: 1.0,
+            },
+          };
+          let _: () = unsafe { msg_send![&*peer.field, setFrame: frame] };
+          peer.place = Some(place);
+        }
+      }
+    }
+    for peer in &mut self.peers {
+      let Some(wanted) = wanted.iter().find(|wanted| wanted.id == peer.id) else {
+        continue;
+      };
+      let said = unsafe {
+        let text: *mut AnyObject = msg_send![&*peer.field, text];
+        string_of(text).unwrap_or_default()
+      };
+      if peer.value != "\u{0}" && said != peer.value {
+        // The platform wrote in the field: a saved login's other half.
+        tree.autofill(peer.id, &said);
+        peer.value = said;
+      } else if wanted.value != peer.value {
+        let _: () = unsafe { msg_send![&*peer.field, setText: ns_string(&wanted.value)] };
+        peer.value.clone_from(&wanted.value);
+      }
+    }
+    other
+  }
+
   /// No text input has focus: the keyboard goes away.
   fn dismiss(&mut self) {
     if MIRROR.lock().unwrap().take().is_none() {
@@ -1350,20 +1718,13 @@ impl TextInput {
     }
     unsafe {
       self.show_selection(false);
+      // winit's view takes no keyboard yet, so none is handed to it as this view gives its own up: taking
+      // interaction from a view that types has it give the keyboard up too.
       let _: () = msg_send![&*self.view, setUserInteractionEnabled: false];
       // Hidden where it is: moved away, its caret was at times seen on its way out, at the window's corner.
       let _: () = msg_send![&*self.view, setHidden: true];
       let _: bool = msg_send![&*self.view, resignFirstResponder];
-      // When this view gives the keyboard up UIKit hands it to the next view that takes keys, which is
-      // winit's, and the keyboard stays. Whoever holds it now lets it go.
-      let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
-      let _: bool = msg_send![
-        &*app,
-        sendAction: sel!(resignFirstResponder),
-        to: std::ptr::null::<AnyObject>(),
-        from: std::ptr::null::<AnyObject>(),
-        forEvent: std::ptr::null::<AnyObject>()
-      ];
     }
+    TYPES.store(false, Ordering::Release);
   }
 }

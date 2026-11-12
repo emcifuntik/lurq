@@ -3,7 +3,10 @@
 
 use lurq::{
   app::{component::Component, ctx::Ctx},
-  components::{Column, Row, ScrollVertical, Sheet, SheetDetent, SheetProps, SheetStyle, TextInput},
+  components::{
+    Column, Link, NavigationBar, NavigationItem, Router, Row, ScrollVertical, Sheet, SheetDetent, SheetProps,
+    SheetStyle, StackOutlet, StackOutletProps, TextInput,
+  },
   core::Signal,
   layout::{
     Alignment,
@@ -11,6 +14,7 @@ use lurq::{
     text_style::{FontWeight, TextStyle},
   },
   node::{Element, color::Color},
+  router::{RouterHandle, Routes},
 };
 
 use crate::ui::{BG, BORDER, FILL, PRIMARY, SURFACE, TAP_TARGET, TEXT, button, caption, card, label, text};
@@ -19,6 +23,9 @@ pub(crate) struct SheetsScreen {
   choice: Signal<bool>,
   list: Signal<bool>,
   held: Signal<bool>,
+  /// A sheet with a stack of screens of its own, and the router those screens are in.
+  stacked: Signal<bool>,
+  stack: RouterHandle,
   /// Which of the list sheet's heights it is at.
   height: Signal<usize>,
   scroll: ScrollState,
@@ -30,7 +37,55 @@ impl Component for SheetsScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
+    let done = ctx.signal(false);
+    let stack = ctx.router(Routes::new().layout(
+      "/",
+      |ctx| {
+        StackOutlet::mount_with(
+          ctx,
+          StackOutletProps::new()
+            .bar(NavigationBar::dark().background(Color::new(30, 41, 59, 190)))
+            .background(Color::from_hex(SURFACE)),
+        )
+      },
+      {
+        let done = done.clone();
+        move |routes| {
+          let done = done.clone();
+          routes
+            .route("/", move |ctx| {
+              let done = done.clone();
+              ctx.navigation_item(
+                NavigationItem::new("In a sheet")
+                  .trailing(text("Done", 17.0, FontWeight::Bold, PRIMARY).on_click(move |_| done.set(false))),
+              );
+              Column::new()
+                .width(FILL)
+                .padding(16.0)
+                .spacing(12.0)
+                .child(caption("A stack of screens of the sheet's own, with its bar at the sheet's top.").width(FILL))
+                .child(
+                  Link::build_empty(ctx, "/next")
+                    .child(card(label("A screen deeper  ›")))
+                    .width(FILL),
+                )
+                .into()
+            })
+            .route("/next", |ctx| {
+              ctx.navigation_item(NavigationItem::new("Deeper"));
+              Column::new()
+                .width(FILL)
+                .padding(16.0)
+                .child(caption("Back with the bar's way back, or a finger from the sheet's left edge.").width(FILL))
+                .into()
+            })
+        }
+      },
+    ));
+    stack.replace("/");
     Self {
+      stacked: done,
+      stack,
       choice: ctx.signal(false),
       list: ctx.signal(false),
       held: ctx.signal(false),
@@ -147,6 +202,17 @@ impl Component for SheetsScreen {
         .child(button("Done", move || done.set(false)).width(FILL)),
     );
 
+    // Its content is made in the sheet, which is what puts the stack's bar at the sheet's top.
+    let router = self.stack.clone();
+    let stacked = Sheet::mount_keyed_with(
+      ctx,
+      "stacked",
+      SheetProps::new(self.stacked.clone())
+        .detents([SheetDetent::Large])
+        .style(style),
+      move |ctx| Router::mount(ctx, router.clone()),
+    );
+
     Column::new()
       .size(FILL, FILL)
       .background(BG)
@@ -156,6 +222,7 @@ impl Component for SheetsScreen {
       .child(opens("As high as its content", &self.choice))
       .child(opens("Two heights and a list", &self.list))
       .child(opens("One that stays", &self.held))
+      .child(opens("A stack of screens in a sheet", &self.stacked))
       .child(card(label(&if picked.is_empty() {
         "Nothing picked yet".to_owned()
       } else {
@@ -164,6 +231,7 @@ impl Component for SheetsScreen {
       .child(choice)
       .child(list)
       .child(held)
+      .child(stacked)
   }
 }
 

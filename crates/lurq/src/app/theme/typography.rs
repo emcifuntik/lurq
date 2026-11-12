@@ -140,6 +140,36 @@ impl ThemeTypography {
   }
 }
 
+impl ThemeTypography {
+  /// These styles as a person who asked the system for larger text has them: every size multiplied by
+  /// `scale`.
+  pub fn scaled(&self, scale: f32) -> Self {
+    let adjust = |style: &TextStyle| {
+      let mut style = style.clone();
+      style.font_size *= scale;
+      style.letter_spacing *= scale;
+      style
+    };
+    Self {
+      heading: adjust(&self.heading),
+      title: adjust(&self.title),
+      body: adjust(&self.body),
+      description: adjust(&self.description),
+      caption: adjust(&self.caption),
+      label: adjust(&self.label),
+      field_label: adjust(&self.field_label),
+      button: adjust(&self.button),
+      link: adjust(&self.link),
+      mono: adjust(&self.mono),
+      extra: self
+        .extra
+        .iter()
+        .map(|(name, style)| (name.clone(), adjust(style)))
+        .collect(),
+    }
+  }
+}
+
 impl Default for ThemeTypography {
   fn default() -> Self {
     let body = TextStyle::default();
