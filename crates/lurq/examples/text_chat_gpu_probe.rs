@@ -11,6 +11,11 @@
 //! `scripts/compare-text-chat-captures.py` compares the hashes of two runs.
 //! Nothing is shown; the frames are presented to a window that is never made
 //! visible, so `present_us` is not a display's frame time.
+//!
+//! Backends named after the directory (`wgpu`, `dx12`) limit the run to them.
+//! The system must be composing windows: with every display asleep the DX12
+//! renderer, which waits for the compositor, draws no frame, and the probe
+//! stops saying so.
 #[cfg(windows)]
 #[path = "../benches/text_chat/driver.rs"]
 mod driver;
@@ -311,17 +316,25 @@ mod probe {
 
     /// Draws the screen once more and keeps its pixels as `name`.
     fn capture(&mut self, name: &str) {
-      let (sender, receiver) = mpsc::channel();
-      let target = RenderCaptureTarget::Bytes(Arc::new(move |frame| {
-        let _ = sender.send(frame);
-      }));
       let (width, height) = self.chat.physical_size();
-      *self.pending.lock().unwrap() = Some((width, height, target));
-      assert!(self.chat.pass().rendered, "{}: no frame for {name}", self.backend);
-      let frame = receiver
-        .recv_timeout(Duration::from_secs(15))
-        .expect("a capture")
-        .expect("a readable capture");
+      // A frame the renderer gives up on takes its capture with it: asked
+      // again, as the readback tests do.
+      let frame = (0..10)
+        .find_map(|_| {
+          let (sender, receiver) = mpsc::channel();
+          let target = RenderCaptureTarget::Bytes(Arc::new(move |frame| {
+            let _ = sender.send(frame);
+          }));
+          *self.pending.lock().unwrap() = Some((width, height, target));
+          self.chat.pass();
+          receiver.recv_timeout(Duration::from_secs(15)).ok()?.ok()
+        })
+        .unwrap_or_else(|| {
+          panic!(
+            "{}: no frame for the capture of {name}; is the system composing windows?",
+            self.backend
+          )
+        });
       let png = self.directory.join(format!("{name}-{}.png", self.backend));
       image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
         .expect("the capture's pixels")
@@ -396,7 +409,8 @@ mod probe {
     captured
   }
 
-  pub fn run(directory: &Path) {
+  pub fn run(directory: &Path, backends: &[String]) {
+    let runs = |backend: &str| backends.is_empty() || backends.iter().any(|name| name == backend);
     std::fs::create_dir_all(directory).expect("the output directory");
     std::fs::write(
       directory.join("frames.csv"),
@@ -406,8 +420,16 @@ mod probe {
     )
     .expect("frames.csv");
     std::fs::write(directory.join("captures.csv"), "backend,capture,width,height,fnv1a\n").expect("captures.csv");
-    let wgpu = run_backend("wgpu", directory, true);
-    let dx12 = run_backend("dx12", directory, true);
+    let wgpu = if runs("wgpu") {
+      run_backend("wgpu", directory, true)
+    } else {
+      Vec::new()
+    };
+    let dx12 = if runs("dx12") {
+      run_backend("dx12", directory, true)
+    } else {
+      Vec::new()
+    };
 
     // The two backends draw the same frame.
     for ((name, wgpu), (_, dx12)) in wgpu.iter().zip(&dx12) {
@@ -423,8 +445,9 @@ mod probe {
       assert!(over_two == 0, "{name}: the backends disagree by {worst}");
     }
     println!(
-      "text chat GPU probe: {} captures per backend in {}",
+      "text chat GPU probe: {} wgpu and {} dx12 captures in {}",
       wgpu.len(),
+      dx12.len(),
       directory.display()
     );
   }
@@ -432,11 +455,12 @@ mod probe {
 
 #[cfg(windows)]
 fn main() {
-  let directory = std::env::args_os()
-    .nth(1)
+  let mut arguments = std::env::args().skip(1);
+  let directory = arguments
+    .next()
     .map(std::path::PathBuf::from)
     .unwrap_or_else(|| "target/text-chat-gpu".into());
-  probe::run(&directory);
+  probe::run(&directory, &arguments.collect::<Vec<_>>());
 }
 
 #[cfg(not(windows))]

@@ -16,6 +16,8 @@ pub const SCROLL_STEP: f32 = 600.0;
 pub const RESIZE_STEP: u32 = 2;
 pub const RESIZE_MIN_WIDTH: u32 = VIEWPORT.0 - 320;
 const TYPED: &str = "sounds good, I will check the build tonight ";
+/// Times a frame the renderer gave up on is drawn again.
+const FRAME_ATTEMPTS: usize = 20;
 
 pub struct Chat<S> {
   pub app: App,
@@ -65,9 +67,21 @@ impl<S: HasWindowHandle + HasDisplayHandle> Chat<S> {
     }
   }
 
+  /// A pass that draws the frame. A renderer whose window the system is not
+  /// composing (a display asleep, a remote session changing) may give up on
+  /// a frame: the frame is drawn again, so every step ends with it drawn.
   pub fn pass(&mut self) -> PassReport {
     self.tree.request_redraw();
-    self.tree.pass(&mut self.app, &self.surface)
+    let mut report = self.tree.pass(&mut self.app, &self.surface);
+    for _ in 0..FRAME_ATTEMPTS {
+      if report.rendered {
+        break;
+      }
+      std::thread::sleep(std::time::Duration::from_millis(10));
+      self.tree.request_redraw();
+      report = self.tree.pass(&mut self.app, &self.surface);
+    }
+    report
   }
 
   pub fn idle(&mut self) {
