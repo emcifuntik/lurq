@@ -164,8 +164,10 @@ fn give_way_drop_below_follows_a_resize_continuously_until_it_drops() {
         }
       } else {
         drops += 1;
+        // The line narrows a tenth of a pixel at a time: the step before the drop is within one of the size,
+        // wherever the font's widths put the first step.
         assert!(
-          before[0] <= FLOOR + 0.01,
+          before[0] <= FLOOR + 0.1 + 0.01,
           "the request reached its size before dropping: {before:?}"
         );
       }

@@ -185,8 +185,16 @@ impl WindowChrome {
     self
   }
 
+  /// The chrome's sizes. A title bar given a height of its own is that high, and the content starts under
+  /// it: the platform's height is for a title bar that was given none.
   pub fn metrics(&self) -> WindowChromeMetrics {
-    self.props.metrics()
+    let mut metrics = self.props.metrics();
+    if metrics.enabled
+      && let Some(height) = self.title_bar.height
+    {
+      metrics.height = height;
+    }
+    metrics
   }
 
   pub fn mount(self, ctx: &mut Ctx) -> Element {
