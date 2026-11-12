@@ -4512,7 +4512,7 @@ mod tests {
     let laid = compute(&engine, &mut glyph_engine, &old);
     assert_eq!(laid.size.height, 2000.0);
 
-    let mut new: Node = crate::node::Element::from(crate::components::Spacer::new().height(3000.0)).into_node();
+    let new: Node = crate::node::Element::from(crate::components::Spacer::new().height(3000.0)).into_node();
     // The transplant: previously laid cache adopted across a frame change,
     // flags cleared (what `preserve_from` does). Guards are cleared like the
     // retained diff does for unchanged content.
@@ -4613,7 +4613,7 @@ mod tests {
     let laid = compute(&engine, &mut glyph_engine, &old);
     assert_eq!(laid.size.height, 2050.0);
 
-    let mut new = column(3000.0);
+    let new = column(3000.0);
     // Lay the new tree once so every child's own cache is fresh and correct…
     compute(&engine, &mut glyph_engine, &new);
     // …then transplant the OLD column result onto the column node with clean
@@ -4747,7 +4747,7 @@ mod tests {
     let laid = compute(&engine, &mut glyph_engine, &old);
     assert_eq!((laid.children[0].offset.x, laid.children[0].offset.y), (10.0, 20.0));
 
-    let mut new = stack(30.0, 40.0);
+    let new = stack(30.0, 40.0);
     // Lay the new tree once so the child's own cache is fresh…
     compute(&engine, &mut glyph_engine, &new);
     // …then transplant the OLD stack cache (old child offset baked in) with
