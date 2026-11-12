@@ -19,7 +19,7 @@ fn input(text: &str) -> (Tree, App, Signal<String>, TextInputController) {
 }
 
 fn key(tree: &mut Tree, key: &str, code: &str, shift: bool) {
-  let (ctrl, meta) = (cfg!(not(target_os = "macos")), cfg!(target_os = "macos"));
+  let (ctrl, meta) = (cfg!(not(target_vendor = "apple")), cfg!(target_vendor = "apple"));
   tree.key_down_with_meta(key.into(), code.into(), shift, ctrl, false, meta);
 }
 

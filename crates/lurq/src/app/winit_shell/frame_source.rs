@@ -1,11 +1,11 @@
 //! Where a window's frames come from: the one place the shell asks for a frame, learns that one is due and says
 //! that one was shown, whatever paces them on the platform.
 //!
-//! - On a desktop a frame is a redraw winit is asked for, and the frames that come from time (an animation's,
-//!   a transition's) are held to the display's refresh by [`FramePacing`].
-//! - On iOS a `CADisplayLink` fires once a refresh while frames are wanted and for a moment after, and the shell presents from the
-//!   turn of the loop it wakes. It is the only clock: a frame from time is asked for as soon as the timeline
-//!   changes and waits for the next refresh like any other, with no pacing of the shell's own on top, which
+//! - On a desktop a frame is a redraw winit is asked for, and the frames that come from time (an animation's, a
+//!   transition's) are held to the display's refresh by [`FramePacing`].
+//! - On iOS a `CADisplayLink` fires once a refresh while frames are wanted and for a moment after, and the shell
+//!   presents from the turn of the loop it wakes. It is the only clock: a frame from time is asked for as soon as the
+//!   timeline changes and waits for the next refresh like any other, with no pacing of the shell's own on top, which
 //!   went by a refresh rate the monitor reports as 60 Hz on a display that runs at 120.
 
 use std::time::Instant;

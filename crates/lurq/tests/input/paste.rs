@@ -317,7 +317,7 @@ fn a_ctrl_v_from_the_os_reads_as_much_of_the_clipboard_as_the_paste_needs() {
   let clipboard = TestClipboard::install(&mut runtime);
   runtime.set_root(TextInput::new(value.clone()).id("input"));
   let mut runtime = focus(runtime);
-  let shortcut = if cfg!(target_os = "macos") {
+  let shortcut = if cfg!(target_vendor = "apple") {
     (false, true)
   } else {
     (true, false)

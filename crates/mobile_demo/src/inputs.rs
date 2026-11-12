@@ -95,7 +95,10 @@ impl Component for InputsScreen {
           .keyboard(KeyboardKind::Number)
           .content(ContentKind::OneTimeCode),
       ))
-      .child(field("Several lines", TextInput::new(self.notes.clone()).textarea().rows(3, 6)))
+      .child(field(
+        "Several lines",
+        TextInput::new(self.notes.clone()).textarea().rows(3, 6),
+      ))
       .child(card(
         Column::new()
           .spacing(8.0)

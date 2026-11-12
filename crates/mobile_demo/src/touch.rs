@@ -25,7 +25,7 @@ use crate::ui::{
 const PAD_HEIGHT: f32 = 220.0;
 const DOT: f32 = 56.0;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, lurq::DevtoolsInspectable)]
 struct Pointer {
   x: f32,
   y: f32,
@@ -33,7 +33,7 @@ struct Pointer {
   pressed: bool,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, lurq::DevtoolsInspectable)]
 struct Counts {
   downs: u32,
   ups: u32,
