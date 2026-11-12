@@ -51,6 +51,8 @@ Transition builders include:
 | `Transition::offset_x()` / `Transition::offset_y()` | Animate relative offset |
 | `Transition::width()` / `Transition::height()` | Animate frame dimensions |
 | `Transition::opacity()` | Animate opacity |
+| `Transition::blur()` | Animate the [blur](../blur/) radius |
+| `Transition::backdrop_blur()` | Animate the [backdrop blur](../blur/#frosted-glass) radius |
 | `Transition::transform()` | Animate `Transform2D` |
 
 `duration(...)`, `duration_ms(...)`, `delay(...)`, `delay_ms(...)`, `easing(...)`, and `linear()` configure timing.

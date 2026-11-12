@@ -111,6 +111,13 @@ pub enum QuadContent {
     color: Color,
     gradient: Option<RenderGradient>,
   },
+  /// Blurs what is painted behind the quad's box by this radius, in logical
+  /// pixels, before the quads after it are painted. Paints nothing itself;
+  /// the quad's opacity is how much of the blurred backdrop shows. See
+  /// [`crate::layout::backdrop`].
+  Backdrop {
+    blur: f32,
+  },
   Text {
     text: String,
     style: TextStyle,

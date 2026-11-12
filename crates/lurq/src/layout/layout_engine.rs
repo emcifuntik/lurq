@@ -1021,9 +1021,28 @@ impl LayoutEngine {
       return;
     }
 
-    // A plain wrapper never carries opacity (the fast path above requires
-    // the default), so only here can a node open an opacity group.
+    // A plain wrapper never carries opacity or a blur (the fast path above
+    // requires the defaults), so only here can a node open an opacity group.
     let group_start = quads.len();
+    // The radius is in the node's own units: on screen it is scaled by the
+    // transforms the node is under, its own included.
+    let blur = node.effective_blur();
+    let blur = if blur > 0.0 {
+      blur
+        * opacity_groups::transform_scale(inherited_transform)
+        * opacity_groups::transform_scale(node.effective_transform())
+    } else {
+      blur
+    };
+    let group_clip = clip;
+    let (clip, cull_clip) = if blur > 0.0 {
+      (
+        opacity_groups::blur_content_clip(clip, blur),
+        opacity_groups::blur_content_clip(cull_clip, blur),
+      )
+    } else {
+      (clip, cull_clip)
+    };
     let frame = self.push_node_quads(
       node,
       result,
@@ -1044,6 +1063,14 @@ impl LayoutEngine {
       child_culling_enabled,
       ..
     } = frame;
+    // The node's backdrop blur is painted into the target the node's layer
+    // is composited into, before that layer: the blur reads what is behind
+    // the node, and the node's opacity is the blur's own (its quad's).
+    let group_start = group_start
+      + usize::from(matches!(
+        quads.get(group_start).map(|quad| &quad.content),
+        Some(QuadContent::Backdrop { .. })
+      ));
 
     let select_scope = self.enter_select_scope(node);
     for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
@@ -1081,8 +1108,8 @@ impl LayoutEngine {
 
     self.push_node_overlay_quads(node, result, abs_x, abs_y, &frame, clip, quads);
     let opacity = node.effective_opacity();
-    if opacity < DEFAULT_QUAD_OPACITY {
-      self.close_opacity_group(opacity, group_start, quads);
+    if opacity < DEFAULT_QUAD_OPACITY || blur > 0.0 {
+      self.close_opacity_group(opacity, blur, group_clip, group_start, quads);
     }
   }
 
@@ -1259,6 +1286,27 @@ impl LayoutEngine {
     } else {
       inherited_transform.then(&local_affine)
     };
+
+    // A backdrop blur comes first: it is under everything the node paints,
+    // and outside the node's own opacity group (see `collect_quads`).
+    let backdrop_blur = node.effective_backdrop_blur();
+    if backdrop_blur > 0.0 {
+      let (backdrop_x, backdrop_y, backdrop_transform, backdrop_transform_origin) =
+        transformed_quad_frame(abs_x, abs_y, transform);
+      quads.push(Quad {
+        x: backdrop_x,
+        y: backdrop_y,
+        width: result.size.width,
+        height: result.size.height,
+        opacity: node.effective_opacity().clamp(0.0, 1.0),
+        transform: backdrop_transform,
+        transform_origin: backdrop_transform_origin,
+        content: QuadContent::Backdrop { blur: backdrop_blur },
+        border_radius: node.get_border_radius(&self.radii.borrow()),
+        border: None,
+        clip,
+      });
+    }
 
     let content_is_background = matches!(content, QuadContent::Rect { .. } | QuadContent::None);
     self.push_box_shadow_quads(node, result, abs_x, abs_y, false, opacity, transform, clip, quads);
@@ -4070,6 +4118,8 @@ fn node_is_plain_logical_wrapper(node: &Node) -> bool {
     && node.state_styles.focus_visible.is_none()
     && node.state_styles.drag_over.is_none()
     && node.effective_opacity() == DEFAULT_QUAD_OPACITY
+    && node.effective_blur() == 0.0
+    && node.effective_backdrop_blur() == 0.0
     // A fade that ended at full opacity and holds it fills forwards with an opacity override; nothing else may
     // be overridden.
     && node

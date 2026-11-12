@@ -3239,7 +3239,12 @@ impl Dx12State {
     // plan is the window's draws alone.
     let mut plan = std::mem::take(&mut self.layer_plan);
     let mut slots = std::mem::take(&mut self.layer_slots);
-    plan.build(ordered_draws.len(), |index| ordered_draws[index].0, &list.layers);
+    plan.build(
+      ordered_draws.len(),
+      |index| ordered_draws[index].0,
+      &list.layers,
+      &list.backdrops,
+    );
     let result = self.draw_planned(list, &ordered_draws, &plan, &mut slots);
     self.layer_plan = plan;
     self.layer_slots = slots;
@@ -3254,19 +3259,36 @@ impl Dx12State {
     slots: &mut Vec<Option<usize>>,
   ) -> Result<()> {
     slots.clear();
-    if plan.has_layers() {
+    let layered = plan.has_layers() || plan.has_backdrops();
+    if layered {
       let targets: Vec<_> = plan
         .targets()
         .iter()
         .map(|target| target.layer.map(|layer| &list.layers[layer]))
         .collect();
-      dx12_context(self.begin_layer_frame(&targets, slots), "prepare dx12 opacity layers")?;
+      // A backdrop blur reads the target its step is in.
+      let mut backdrops = vec![None; list.backdrops.len()];
+      for target in plan.targets() {
+        let (origin, size) = match target.layer {
+          Some(layer) => list.layers[layer].painted(),
+          None => ([0, 0], [self.width, self.height]),
+        };
+        for step in plan.steps(target) {
+          if let LayerStep::Backdrop(index) = step {
+            backdrops[*index] = crate::layout::backdrop::BackdropRegion::new(&list.backdrops[*index], origin, size);
+          }
+        }
+      }
+      dx12_context(
+        self.begin_layer_frame(&targets, &backdrops, slots),
+        "prepare dx12 opacity layers",
+      )?;
     }
     for (target_index, target) in plan.targets().iter().enumerate() {
       let layer_slot = slots.get(target_index).copied().flatten();
       match (target.layer, layer_slot) {
         (Some(layer), Some(slot)) => self.begin_layer_target(slot, &list.layers[layer]),
-        _ if plan.has_layers() => self.begin_window_target(),
+        _ if layered => self.begin_window_target(),
         _ => {}
       }
       for step in plan.steps(target) {
@@ -3276,11 +3298,15 @@ impl Dx12State {
               self.draw_one(list, draw)?;
             }
           }
+          LayerStep::Backdrop(index) => {
+            let layer = target.layer.map(|layer| &list.layers[layer]).zip(layer_slot);
+            dx12_context(self.blur_backdrop(*index, layer), "blur dx12 backdrop")?;
+          }
           LayerStep::Composite(child) => {
             let child_layer = plan.targets()[*child].layer;
             if let (Some(layer), Some(slot)) = (child_layer, slots.get(*child).copied().flatten()) {
               dx12_context(
-                self.composite_layer(slot, &list.layers[layer]),
+                self.composite_layer(*child, slot, &list.layers[layer]),
                 "composite dx12 opacity layer",
               )?;
             }
@@ -3289,9 +3315,10 @@ impl Dx12State {
       }
       if let (Some(_), Some(slot)) = (target.layer, layer_slot) {
         self.end_layer_target(slot);
+        dx12_context(self.prepare_layer_blur(target_index, slot), "blur dx12 layer")?;
       }
     }
-    if plan.has_layers() {
+    if layered {
       self.end_layer_frame();
     }
     Ok(())

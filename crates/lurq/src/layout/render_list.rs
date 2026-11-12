@@ -18,6 +18,9 @@ pub struct RenderList {
   /// Subtrees faded with `opacity < 1`, each painted into an offscreen layer
   /// and composited once at its opacity. Empty when nothing is faded.
   pub layers: Vec<crate::layout::opacity_layer::LayerCmd>,
+  /// Blurs of what is painted behind a node (`.backdrop_blur(...)`), by
+  /// ascending order. Empty when nothing blurs its backdrop.
+  pub backdrops: Vec<crate::layout::backdrop::BackdropCmd>,
   pub atlas: GlyphAtlas,
 }
 

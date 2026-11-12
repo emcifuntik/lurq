@@ -95,6 +95,8 @@ pub use touch::TouchMomentum;
 pub use touch_pointer::TouchRoute;
 #[cfg(test)]
 mod refresh_layout_tests;
+#[cfg(all(test, feature = "devtools"))]
+mod screenshot_blur_tests;
 mod scroll_into_view;
 mod select_menu;
 mod selected_text_lines;
@@ -829,6 +831,7 @@ pub struct Tree {
   #[cfg(feature = "svg")]
   render_svgs: Vec<crate::svg::SvgCmd>,
   render_layers: Vec<crate::layout::opacity_layer::LayerCmd>,
+  render_backdrops: Vec<crate::layout::backdrop::BackdropCmd>,
   opacity_groups: Vec<crate::layout::opacity_layer::OpacityGroup>,
   cached_render_list: Option<CachedRenderList>,
   #[cfg(feature = "canvas")]
@@ -1218,6 +1221,7 @@ impl Tree {
       #[cfg(feature = "svg")]
       render_svgs: Vec::new(),
       render_layers: Vec::new(),
+      render_backdrops: Vec::new(),
       opacity_groups: Vec::new(),
       cached_render_list: None,
       #[cfg(feature = "canvas")]
@@ -2764,6 +2768,9 @@ impl Tree {
     let glyph_debug_marker = crate::app::glyph_engine::glyph_debug_marker();
     let mut glyph_debug_regions: Vec<(String, f32, f32, f32, f32, usize)> = Vec::new();
 
+    let mut backdrops = std::mem::take(&mut self.render_backdrops);
+    backdrops.clear();
+
     for (order, quad) in quads.iter().enumerate() {
       let scaled_clip = if quad.clip.active {
         ClipRect {
@@ -3262,6 +3269,31 @@ impl Tree {
             scaled_clip,
           ));
         }
+        QuadContent::Backdrop { blur } => {
+          let (w, h) = (quad.width * scale, quad.height * scale);
+          backdrops.push(crate::layout::backdrop::BackdropCmd {
+            order,
+            x: quad.x * scale,
+            y: quad.y * scale,
+            width: w,
+            height: h,
+            radii: scaled_radii(quad.border_radius, scale, w, h),
+            transform: quad.transform.matrix_2x2(),
+            transform_origin: quad
+              .transform_origin
+              .map(|[x, y]| [x * scale, y * scale])
+              .unwrap_or([w * 0.5, h * 0.5]),
+            clip: scaled_clip,
+            // The radius is in the node's own units, like the box.
+            sigma: {
+              let [a, b, c, d] = quad.transform.matrix_2x2();
+              let transform_scale = (a * d - b * c).abs().sqrt();
+              let radius = (*blur * transform_scale).min(crate::layout::opacity_layer::MAX_BLUR_RADIUS);
+              crate::layout::opacity_layer::blur_sigma(radius) * scale
+            },
+            opacity: quad.opacity.clamp(0.0, 1.0),
+          });
+        }
         QuadContent::None => {}
       }
     }
@@ -3274,6 +3306,7 @@ impl Tree {
       &opacity_groups,
       quad_count,
       [self.viewport_physical.width, self.viewport_physical.height],
+      scale,
       &rects,
       &glyphs,
       #[cfg(feature = "raster")]
@@ -3303,9 +3336,17 @@ impl Tree {
       #[cfg(feature = "devtools")]
       {
         #[cfg(feature = "raster")]
-        self.save_pending_devtools_screenshot(clear_color, &rects, &glyphs, &images, &layers, &glyph_engine.atlas());
+        self.save_pending_devtools_screenshot(
+          clear_color,
+          &rects,
+          &glyphs,
+          &images,
+          &layers,
+          &backdrops,
+          &glyph_engine.atlas(),
+        );
         #[cfg(not(feature = "raster"))]
-        self.save_pending_devtools_screenshot(clear_color, &rects, &glyphs, &layers, &glyph_engine.atlas());
+        self.save_pending_devtools_screenshot(clear_color, &rects, &glyphs, &layers, &backdrops, &glyph_engine.atlas());
       }
       None
     };
@@ -3384,6 +3425,7 @@ impl Tree {
       #[cfg(feature = "svg")]
       svgs,
       layers,
+      backdrops,
       atlas: glyph_engine.atlas(),
     };
 
@@ -3532,14 +3574,17 @@ impl Tree {
       #[cfg(feature = "svg")]
       mut svgs,
       mut layers,
+      mut backdrops,
       atlas: _,
     } = list;
     rects.clear();
     glyphs.clear();
     layers.clear();
+    backdrops.clear();
     self.render_rects = rects;
     self.render_glyphs = glyphs;
     self.render_layers = layers;
+    self.render_backdrops = backdrops;
     #[cfg(feature = "raster")]
     {
       images.clear();
@@ -9269,6 +9314,7 @@ impl Tree {
     glyphs: &[GlyphCmd],
     images: &[crate::images::ImageCmd],
     layers: &[crate::layout::opacity_layer::LayerCmd],
+    backdrops: &[crate::layout::backdrop::BackdropCmd],
     atlas: &crate::layout::render_list::GlyphAtlas,
   ) {
     let Some(mut request) = self.devtools_state.screenshot_request.lock().unwrap().take() else {
@@ -9294,6 +9340,7 @@ impl Tree {
     let glyphs = glyphs.to_vec();
     let images = images.to_vec();
     let layers = layers.to_vec();
+    let backdrops = backdrops.to_vec();
     let atlas = atlas.clone();
     let redactions = self.capture_redactions.clone();
     std::thread::spawn(move || {
@@ -9305,6 +9352,7 @@ impl Tree {
         &glyphs,
         &images,
         &layers,
+        &backdrops,
         &atlas,
         &redactions,
       ) {
@@ -9325,6 +9373,7 @@ impl Tree {
     rects: &[RectCmd],
     glyphs: &[GlyphCmd],
     layers: &[crate::layout::opacity_layer::LayerCmd],
+    backdrops: &[crate::layout::backdrop::BackdropCmd],
     atlas: &crate::layout::render_list::GlyphAtlas,
   ) {
     let Some(mut request) = self.devtools_state.screenshot_request.lock().unwrap().take() else {
@@ -9349,6 +9398,7 @@ impl Tree {
     let rects = rects.to_vec();
     let glyphs = glyphs.to_vec();
     let layers = layers.to_vec();
+    let backdrops = backdrops.to_vec();
     let atlas = atlas.clone();
     let redactions = self.capture_redactions.clone();
     std::thread::spawn(move || {
@@ -9359,6 +9409,7 @@ impl Tree {
         &rects,
         &glyphs,
         &layers,
+        &backdrops,
         &atlas,
         &redactions,
       ) {
@@ -9482,6 +9533,7 @@ fn save_devtools_screenshot(
   glyphs: &[GlyphCmd],
   #[cfg(feature = "raster")] images: &[crate::images::ImageCmd],
   layers: &[crate::layout::opacity_layer::LayerCmd],
+  backdrops: &[crate::layout::backdrop::BackdropCmd],
   atlas: &crate::layout::render_list::GlyphAtlas,
   redactions: &[crate::app::capture_redaction::RedactedArea],
 ) -> Result<(), image::ImageError> {
@@ -9539,7 +9591,7 @@ fn save_devtools_screenshot(
   // Faded subtrees paint into transparent layers of the capture's size,
   // composited once at their opacity (see `layout::opacity_layer`).
   let mut plan = crate::layout::opacity_layer::LayerPlan::default();
-  plan.build(draws.len(), |index| draws[index].0, layers);
+  plan.build(draws.len(), |index| draws[index].0, layers, backdrops);
   let mut finished: Vec<Option<Vec<u8>>> = vec![None; plan.targets().len()];
   for (target_index, target) in plan.targets().iter().enumerate() {
     let mut target_pixels = match target.layer {
@@ -9560,11 +9612,20 @@ fn save_devtools_screenshot(
             }
           }
         }
+        crate::layout::opacity_layer::LayerStep::Backdrop(index) => {
+          blur_screenshot_backdrop(&mut target_pixels, bounds, &backdrops[*index]);
+        }
         crate::layout::opacity_layer::LayerStep::Composite(child) => {
           let child_target = &plan.targets()[*child];
-          let (Some(layer), Some(layer_pixels)) = (child_target.layer, finished[*child].take()) else {
+          let (Some(layer), Some(mut layer_pixels)) = (child_target.layer, finished[*child].take()) else {
             continue;
           };
+          if let Some(blur) = layers[layer].blur {
+            blur_screenshot_layer(&mut layer_pixels, bounds.width, blur.sigma);
+            if let Some(clip) = blur.clip {
+              clip_screenshot_layer(&mut layer_pixels, bounds, &clip);
+            }
+          }
           composite_screenshot_layer(&mut target_pixels, &layer_pixels, bounds.width, layers[layer].opacity);
         }
       }
@@ -10132,6 +10193,145 @@ fn screenshot_point_in_corner(x: f32, y: f32, center_x: f32, center_y: f32, radi
   let dx = x - center_x;
   let dy = y - center_y;
   dx * dx + dy * dy <= radius * radius
+}
+
+/// Blurs a capture layer of straight-alpha RGBA rows `width` wide by a
+/// Gaussian of `sigma` pixels, as the render engines blur a layer with a
+/// [`LayerBlur`](crate::layout::opacity_layer::LayerBlur). Three box passes
+/// per axis stand in for the Gaussian. A capture layer is the capture's own
+/// size, so what lies outside the capture does not bleed into it.
+#[cfg(feature = "devtools")]
+fn blur_screenshot_layer(layer: &mut [u8], width: u32, sigma: f32) {
+  let width = width as usize;
+  if width == 0 || layer.len() < width * 4 {
+    return;
+  }
+  let height = layer.len() / (width * 4);
+  // The box whose three passes have the Gaussian's variance.
+  let radius = (((1.0 + 4.0 * sigma * sigma).sqrt() - 1.0) * 0.5).round() as usize;
+  if radius == 0 {
+    return;
+  }
+  // Colour is averaged premultiplied, or transparent pixels would darken it.
+  let mut front: Vec<[f32; 4]> = layer
+    .chunks_exact(4)
+    .map(|pixel| {
+      let alpha = f32::from(pixel[3]) / 255.0;
+      [
+        f32::from(pixel[0]) * alpha,
+        f32::from(pixel[1]) * alpha,
+        f32::from(pixel[2]) * alpha,
+        f32::from(pixel[3]),
+      ]
+    })
+    .collect();
+  let mut back = vec![[0.0_f32; 4]; front.len()];
+  let window = (radius * 2 + 1) as f32;
+  for _ in 0..3 {
+    for (length, lines, step, stride) in [(width, height, 1, width), (height, width, width, 1)] {
+      for line in 0..lines {
+        let at = |index: usize| line * stride + index * step;
+        let mut sum = [0.0_f32; 4];
+        for index in 0..=radius.min(length - 1) {
+          for channel in 0..4 {
+            sum[channel] += front[at(index)][channel];
+          }
+        }
+        for index in 0..length {
+          back[at(index)] = sum.map(|value| value / window);
+          if index >= radius {
+            for channel in 0..4 {
+              sum[channel] -= front[at(index - radius)][channel];
+            }
+          }
+          if index + radius + 1 < length {
+            for channel in 0..4 {
+              sum[channel] += front[at(index + radius + 1)][channel];
+            }
+          }
+        }
+      }
+      std::mem::swap(&mut front, &mut back);
+    }
+  }
+  for (pixel, blurred) in layer.chunks_exact_mut(4).zip(&front) {
+    let alpha = blurred[3].clamp(0.0, 255.0);
+    let straight = if alpha > 0.0 { 255.0 / alpha } else { 0.0 };
+    for channel in 0..3 {
+      pixel[channel] = (blurred[channel] * straight).round().clamp(0.0, 255.0) as u8;
+    }
+    pixel[3] = alpha.round() as u8;
+  }
+}
+
+/// Blurs what a capture target holds inside a backdrop blur's box, as the
+/// render engines do for a [`BackdropCmd`](crate::layout::backdrop::BackdropCmd):
+/// `pixels` (straight alpha, the capture's size) are blurred as a whole, and
+/// the result replaces them where the node's rounded box covers them. What
+/// lies outside the capture does not bleed in.
+#[cfg(feature = "devtools")]
+fn blur_screenshot_backdrop(
+  pixels: &mut [u8],
+  bounds: DevtoolsScreenshotBounds,
+  backdrop: &crate::layout::backdrop::BackdropCmd,
+) {
+  let Some(region) = crate::layout::backdrop::BackdropRegion::new(
+    backdrop,
+    [bounds.x as i32, bounds.y as i32],
+    [bounds.width, bounds.height],
+  ) else {
+    return;
+  };
+  let mut blurred = pixels.to_vec();
+  blur_screenshot_layer(&mut blurred, bounds.width, backdrop.sigma);
+  let shown = region.layer.bounds;
+  for world_y in shown.y..shown.y + shown.height {
+    for world_x in shown.x..shown.x + shown.width {
+      let center = (world_x as f32 + 0.5, world_y as f32 + 0.5);
+      let coverage = region.mask.coverage(center.0, center.1)
+        * region.clip.map_or(1.0, |clip| clip.coverage(center.0, center.1))
+        * region.layer.opacity;
+      if coverage <= 0.0 {
+        continue;
+      }
+      let index = ((world_y - bounds.y) * bounds.width + (world_x - bounds.x)) as usize * 4;
+      if index + 3 >= pixels.len() {
+        continue;
+      }
+      // Mixed premultiplied, so a transparent side adds no colour.
+      let (old_alpha, new_alpha) = (f32::from(pixels[index + 3]), f32::from(blurred[index + 3]));
+      let alpha = old_alpha + (new_alpha - old_alpha) * coverage;
+      for channel in 0..3 {
+        let old = f32::from(pixels[index + channel]) * old_alpha;
+        let new = f32::from(blurred[index + channel]) * new_alpha;
+        let mixed = old + (new - old) * coverage;
+        pixels[index + channel] = if alpha > 0.0 {
+          (mixed / alpha).round().clamp(0.0, 255.0) as u8
+        } else {
+          0
+        };
+      }
+      pixels[index + 3] = alpha.round().clamp(0.0, 255.0) as u8;
+    }
+  }
+}
+
+/// Cuts a capture layer (straight alpha, the capture's size) to a rounded
+/// clip: the clip a blurred layer's node is under.
+#[cfg(feature = "devtools")]
+fn clip_screenshot_layer(
+  layer: &mut [u8],
+  bounds: DevtoolsScreenshotBounds,
+  clip: &crate::layout::opacity_layer::RoundedBox,
+) {
+  for (index, pixel) in layer.chunks_exact_mut(4).enumerate() {
+    if pixel[3] == 0 {
+      continue;
+    }
+    let (x, y) = (index as u32 % bounds.width, index as u32 / bounds.width);
+    let coverage = clip.coverage((bounds.x + x) as f32 + 0.5, (bounds.y + y) as f32 + 0.5);
+    pixel[3] = (f32::from(pixel[3]) * coverage).round() as u8;
+  }
 }
 
 #[cfg(feature = "devtools")]
