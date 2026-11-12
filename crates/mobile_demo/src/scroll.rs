@@ -26,7 +26,7 @@ const PAGES: usize = 5;
 const STRIP_BEFORE: usize = 3;
 const INNER_LIST_BEFORE: usize = 8;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, lurq::DevtoolsInspectable)]
 struct Status {
   taps: u32,
   last_tap: Option<String>,
