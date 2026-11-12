@@ -33,6 +33,9 @@ pub(super) struct OverlayLayers {
   /// The node that declares each layer built, in the same order, where it
   /// has an id.
   pub(super) origins: Vec<Option<NodeId>>,
+  /// What places each layer built by its anchor, in the same order; `None`
+  /// for a select menu or a modal, which are placed otherwise.
+  pub(super) placings: Vec<Option<super::OverlayPlacing>>,
   /// The anchors of the overlays not drawn because their anchor is out of view.
   hidden_anchors: Vec<OwnedElementRef>,
 }

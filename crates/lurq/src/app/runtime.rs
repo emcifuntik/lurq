@@ -848,9 +848,12 @@ pub struct Tree {
   /// The closed layers the overlay host still draws, while their exit
   /// animations play: see [`leaving_layers`].
   leaving_layers: Vec<leaving_layers::LeavingLayer>,
-  /// The roots of the layers that began to leave in this pass, until input is
-  /// taken out of them.
+  /// The roots of the layers and of the children that began to leave, until
+  /// input is taken out of them.
   layers_left: Vec<NodeId>,
+  /// The removed children the tree still draws where they were, while their
+  /// exit animations play: see [`leaving_layers`].
+  leaving_children: Vec<leaving_layers::LeavingLayer>,
   /// The anchors of the dropdowns in the tree, open or closed, while the
   /// overlay host is up: a press on one switches dropdowns.
   dropdown_anchors: Vec<OwnedElementRef>,
@@ -1242,6 +1245,7 @@ impl Tree {
       overlay_layer_origins: Vec::new(),
       leaving_layers: Vec::new(),
       layers_left: Vec::new(),
+      leaving_children: Vec::new(),
       dropdown_anchors: Vec::new(),
       ime_keys: ime::ImeKeys::default(),
       next_secondary_window_id: 1,
@@ -1625,8 +1629,11 @@ impl Tree {
   /// idle screen is a bug (stale runs for unmounted nodes are pruned at the end
   /// of each full pass).
   pub fn has_active_timeline(&self) -> bool {
-    // A layer on its way out is dropped by a pass, so passes go on until it is.
-    self.transition_engine.has_active || self.animation_engine.has_active || !self.leaving_layers.is_empty()
+    // A layer or a child on its way out is dropped by a pass, so passes go on until it is.
+    self.transition_engine.has_active
+      || self.animation_engine.has_active
+      || !self.leaving_layers.is_empty()
+      || !self.leaving_children.is_empty()
   }
 
   /// When the running animations and transitions next draw something else, as of the last pass: the end of a
@@ -1645,7 +1652,12 @@ impl Tree {
     }
     let transition = self.transition_engine.next_change();
     let animation = self.animation_engine.next_change();
-    let layer_dropped = self.leaving_layers.iter().map(|layer| layer.until).min();
+    let layer_dropped = self
+      .leaving_layers
+      .iter()
+      .chain(&self.leaving_children)
+      .map(|layer| layer.until)
+      .min();
     transition.into_iter().chain(animation).chain(layer_dropped).min()
   }
 
@@ -2250,6 +2262,7 @@ impl Tree {
         detach_canvases_not_carried(old_canvases, Some(root));
         root.assign_tree_ids(&self.id_gen);
       }
+      self.begin_leaving_children();
       self.tree_rebuilt_since_layout = true;
       self.cached_render_list = None;
       self.refresh_interaction_state();
@@ -2281,6 +2294,7 @@ impl Tree {
     detach_canvases_not_carried(old_canvases, Some(&node));
     node.assign_tree_ids(&self.id_gen);
     self.root = Some(node);
+    self.begin_leaving_children();
     self.root_component = None;
     self.root_ctx = None;
     self.last_layout = None;
@@ -6577,6 +6591,7 @@ impl Tree {
     if let Some(root) = &mut self.root {
       root.assign_tree_ids(&self.id_gen);
     }
+    self.begin_leaving_children();
     self.tree_rebuilt_since_layout = true;
     self.cached_render_list = None;
     self.needs_redraw = true;
@@ -6652,6 +6667,7 @@ impl Tree {
     self.rebuild_if_dirty();
     self.apply_focus_request();
     self.rebuild_if_dirty();
+    self.drop_leaving_children(self.now());
     self.sync_dynamic_content();
     #[cfg(all(feature = "image", feature = "resources"))]
     let image_resources_changed = self.resolve_resource_images(app);
@@ -6802,6 +6818,7 @@ impl Tree {
         theme_changed,
         now,
       );
+      self.begin_leaving_children();
       self.release_input_in_leaving_layers();
       // Focus/blur callbacks may mutate App services; the glyph lock used to
       // construct the overlay host must be released before dispatching them.
@@ -6989,6 +7006,14 @@ impl Tree {
     let old_origins = std::mem::take(&mut self.overlay_layer_origins);
     let mut dropdown_anchors = std::mem::take(&mut base_overlay_index.dropdown_anchors);
     old_parts.claim(&mut overlays, &layers.origins, 0, &old_origins);
+    self.place_again_with_leaving_children(
+      &mut overlays,
+      &layers.placings,
+      viewport,
+      glyph_engine,
+      constraints,
+      theme_changed,
+    );
 
     let mut overlay_index = 0;
     while overlay_index < overlays.len() {
@@ -7032,6 +7057,14 @@ impl Tree {
 
       let first = overlays.len();
       old_parts.claim(&mut nested_overlays, &layers.origins[first..], first, &old_origins);
+      self.place_again_with_leaving_children(
+        &mut nested_overlays,
+        &layers.placings[first..],
+        viewport,
+        glyph_engine,
+        constraints,
+        theme_changed,
+      );
       overlays.append(&mut nested_overlays);
       overlay_index += 1;
     }
@@ -7075,6 +7108,39 @@ impl Tree {
     self.overlay_layer_origins = layers.origins;
     self.dropdown_anchors = dropdown_anchors;
     focus_return
+  }
+
+  /// Places again the overlays among `overlays` that took a leaving child over from the layer they
+  /// continue: each was measured and put by its anchor before it had the child, which is in its flow.
+  fn place_again_with_leaving_children(
+    &mut self,
+    overlays: &mut [Node],
+    placings: &[Option<OverlayPlacing>],
+    viewport: Size,
+    glyph_engine: &mut crate::app::glyph_engine::GlyphEngine,
+    constraints: Constraints,
+    theme_changed: bool,
+  ) {
+    for (overlay, placing) in overlays.iter_mut().zip(placings) {
+      let Some(placing) = placing else {
+        continue;
+      };
+      if !overlay.holds_leaving_child() {
+        continue;
+      }
+      let (placed, _) = place_overlay(
+        std::mem::take(overlay),
+        *placing,
+        viewport,
+        glyph_engine,
+        &self.layout_engine,
+        constraints,
+        theme_changed,
+        #[cfg(feature = "perf_profile")]
+        &mut self.profiling,
+      );
+      *overlay = placed;
+    }
   }
 
   fn sync_dynamic_content(&mut self) {
@@ -7671,6 +7737,7 @@ fn build_overlays_from_layout_index(
         overlays.push(menu);
         layers.anchors.push(None);
         layers.origins.push(origin);
+        layers.placings.push(None);
       }
       OverlayLayoutRecord::Overlay {
         reuse_key,
@@ -7702,7 +7769,7 @@ fn build_overlays_from_layout_index(
         let dismiss_on_outside_click = spec.dismiss_on_outside_click;
         let outside_press = spec.outside_press;
         let dismiss_on_escape = spec.dismiss_on_escape;
-        let (mut overlay, bounds) = build_overlay_node(
+        let (mut overlay, bounds, placing) = build_overlay_node(
           spec,
           anchor,
           viewport,
@@ -7731,6 +7798,7 @@ fn build_overlays_from_layout_index(
         overlays.push(overlay);
         layers.anchors.push(Some(layer_anchor));
         layers.origins.push(origin);
+        layers.placings.push(Some(placing));
       }
       OverlayLayoutRecord::Modal {
         reuse_key,
@@ -7780,6 +7848,7 @@ fn build_overlays_from_layout_index(
         overlays.push(modal);
         layers.anchors.push(owner);
         layers.origins.push(origin);
+        layers.placings.push(None);
       }
     }
   }
@@ -7854,7 +7923,7 @@ fn build_overlay_node(
   constraints: Constraints,
   theme_changed: bool,
   #[cfg(feature = "perf_profile")] profiling: &mut crate::app::profiler::producer::WindowProfiler,
-) -> (Node, ElementRect) {
+) -> (Node, ElementRect, OverlayPlacing) {
   let mut node = spec.node;
   if spec.match_anchor_width {
     node = node.width(Dimension::Px(anchor.width));
@@ -7863,12 +7932,64 @@ fn build_overlay_node(
     node = node.hit_test(spec.hit_test);
   }
 
+  let placing = OverlayPlacing {
+    anchor,
+    placement: spec.placement,
+    offset_x: spec.offset_x,
+    offset_y: spec.offset_y,
+    collision: spec.collision,
+  };
+  let (node, bounds) = place_overlay(
+    node,
+    placing,
+    viewport,
+    glyph_engine,
+    layout_engine,
+    constraints,
+    theme_changed,
+    #[cfg(feature = "perf_profile")]
+    profiling,
+  );
+  (node, bounds, placing)
+}
+
+/// What places an overlay by its anchor, besides its own size.
+#[derive(Clone, Copy)]
+pub(super) struct OverlayPlacing {
+  anchor: ElementRect,
+  placement: Placement,
+  offset_x: f32,
+  offset_y: f32,
+  collision: CollisionStrategy,
+}
+
+/// Measures `node`, an overlay's content, and puts it by its anchor at that size. Run again on a layer that
+/// was placed, it measures the layer as it is now.
+#[allow(clippy::too_many_arguments)]
+fn place_overlay(
+  node: Node,
+  placing: OverlayPlacing,
+  viewport: Size,
+  glyph_engine: &mut crate::app::glyph_engine::GlyphEngine,
+  layout_engine: &LayoutEngine,
+  constraints: Constraints,
+  theme_changed: bool,
+  #[cfg(feature = "perf_profile")] profiling: &mut crate::app::profiler::producer::WindowProfiler,
+) -> (Node, ElementRect) {
+  let OverlayPlacing {
+    anchor,
+    placement,
+    offset_x,
+    offset_y,
+    collision,
+  } = placing;
   let measure_constraints = Constraints::loose(Size::new(
     constraints.max_width.min(viewport.width).max(0.0),
     constraints.max_height.min(viewport.height).max(0.0),
   ));
   let pending_runtime_layout_dirty = has_pending_layout_dirty_recursive(&node);
-  let measure_node = node.clone_for_reuse();
+  // Measured as its content sizes it, not at the size an earlier placing gave it.
+  let measure_node = node.clone_for_reuse().statically_positioned();
   let measured = crate::app::profiler::producer::layout_compute(
     #[cfg(feature = "perf_profile")]
     profiling,
@@ -7878,20 +7999,9 @@ fn build_overlay_node(
     invalidate_layout_cache_recursive(&node);
   }
   let overlay_size = measured.size;
-  let placement = resolve_overlay_collision(
-    spec.placement,
-    anchor,
-    overlay_size,
-    viewport,
-    spec.offset_x,
-    spec.offset_y,
-    spec.collision,
-  );
-  let (x, y) = overlay_position(anchor, overlay_size, placement, spec.offset_x, spec.offset_y);
-  let (x, y) = if matches!(
-    spec.collision,
-    CollisionStrategy::Clamp | CollisionStrategy::FlipThenClamp
-  ) {
+  let placement = resolve_overlay_collision(placement, anchor, overlay_size, viewport, offset_x, offset_y, collision);
+  let (x, y) = overlay_position(anchor, overlay_size, placement, offset_x, offset_y);
+  let (x, y) = if matches!(collision, CollisionStrategy::Clamp | CollisionStrategy::FlipThenClamp) {
     clamp_overlay_position(x, y, overlay_size, viewport)
   } else {
     (x, y)
@@ -10794,8 +10904,11 @@ fn replace_live_component_root(node: &mut Node, mut replacement: Box<Node>, id_g
   reset_element_ref_flags_recursive(node);
   replacement.preserve_runtime_state_from(node);
   #[cfg(feature = "canvas")]
-  detach_canvases_not_carried(canvas_bindings(node), Some(&replacement));
+  let old_canvases = canvas_bindings(node);
+  // The children that are leaving go over to the replacement here, their canvases with them.
   replacement.preserve_ids_from(node);
+  #[cfg(feature = "canvas")]
+  detach_canvases_not_carried(old_canvases, Some(&replacement));
   node.free_ids(id_gen);
   replacement.assign_ids(id_gen);
   *node = *replacement;

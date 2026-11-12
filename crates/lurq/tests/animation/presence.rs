@@ -832,3 +832,399 @@ fn a_component_that_renders_again_does_not_reach_into_the_layer_it_left() {
   stage.at(500);
   assert_close(&stage.opacities(PANEL_A), &[]);
 }
+
+// ---------------------------------------------------------------------------
+// Children of a container with presence.
+
+const ITEM_A: Color = Color::new(200, 130, 30, 255);
+const ITEM_B: Color = Color::new(30, 200, 130, 255);
+const ITEM_C: Color = Color::new(130, 30, 200, 255);
+const SHRINK: u16 = 74;
+
+impl Stage {
+  /// Where each rectangle painted in `color` starts from the top.
+  fn tops(&self, color: Color) -> Vec<f32> {
+    self
+      .quads()
+      .iter()
+      .filter(|quad| matches!(&quad.content, QuadContent::Rect { color: fill, .. } if *fill == color))
+      .map(|quad| quad.y)
+      .collect()
+  }
+}
+
+fn list_item(key: &str, color: Color) -> Rect {
+  Rect::new(120.0, 40.0)
+    .background(color)
+    .exit_animation(exit())
+    .key(key.to_owned())
+}
+
+/// A column of the items A, B and C, each 40 tall, with B there while `shown` says so.
+fn list(shown: &Signal<bool>, presence: bool) -> Stage {
+  let shown = shown.clone();
+  Stage::new(move || {
+    let mut column = Column::new().child(list_item("a", ITEM_A));
+    if presence {
+      column = column.presence();
+    }
+    if shown.get() {
+      column = column.child(list_item("b", ITEM_B));
+    }
+    column.child(list_item("c", ITEM_C)).into()
+  })
+}
+
+#[test]
+fn a_child_removed_from_a_container_with_presence_stays_until_its_exit_animation_ends() {
+  let shown = Signal::new(true);
+  let mut stage = list(&shown, true);
+  assert_eq!(stage.tops(ITEM_C), [80.0]);
+
+  shown.set(false);
+  stage.at(0);
+  assert_close(&stage.opacities(ITEM_B), &[1.0]);
+  assert_eq!(stage.tops(ITEM_B), [40.0], "where it was among its siblings");
+  assert_eq!(
+    stage.tops(ITEM_C),
+    [80.0],
+    "and in flow: the one after it has not moved"
+  );
+
+  stage.at(100);
+  assert_close(&stage.opacities(ITEM_B), &[0.5]);
+  assert!(stage.tree.has_active_timeline());
+
+  stage.at(200);
+  assert_close(&stage.opacities(ITEM_B), &[]);
+  assert_eq!(stage.tops(ITEM_C), [40.0], "gone, and the one after it takes its place");
+  assert!(!stage.tree.has_active_timeline());
+}
+
+#[test]
+fn without_presence_a_removed_child_is_gone_with_the_render_that_removes_it() {
+  let shown = Signal::new(true);
+  let mut stage = list(&shown, false);
+
+  shown.set(false);
+  stage.at(0);
+
+  assert_close(&stage.opacities(ITEM_B), &[]);
+  assert_eq!(stage.tops(ITEM_C), [40.0]);
+  assert!(!stage.tree.has_active_timeline());
+}
+
+#[test]
+fn a_child_with_no_key_is_not_kept() {
+  let shown = Signal::new(true);
+  let mut stage = Stage::new({
+    let shown = shown.clone();
+    move || {
+      let mut column = Column::new()
+        .presence()
+        .child(Rect::new(120.0, 40.0).background(ITEM_A));
+      if shown.get() {
+        column = column.child(Rect::new(120.0, 40.0).background(ITEM_B).exit_animation(exit()));
+      }
+      column.into()
+    }
+  });
+
+  shown.set(false);
+  stage.at(0);
+
+  assert_close(&stage.opacities(ITEM_B), &[]);
+}
+
+#[test]
+fn a_render_while_a_child_leaves_keeps_it_leaving() {
+  let shown = Signal::new(true);
+  let tick = Signal::new(0);
+  let mut stage = Stage::new({
+    let (shown, tick) = (shown.clone(), tick.clone());
+    move || {
+      let _ = tick.get();
+      let mut column = Column::new().presence().child(list_item("a", ITEM_A));
+      if shown.get() {
+        column = column.child(list_item("b", ITEM_B));
+      }
+      column.child(list_item("c", ITEM_C)).into()
+    }
+  });
+  shown.set(false);
+  stage.at(0);
+  stage.at(50);
+
+  tick.set(1);
+  stage.at(50);
+  assert_close(&stage.opacities(ITEM_B), &[0.75]);
+  assert_eq!(stage.tops(ITEM_B), [40.0]);
+  assert_eq!(stage.tops(ITEM_C), [80.0]);
+
+  tick.set(2);
+  stage.at(100);
+  assert_close(&stage.opacities(ITEM_B), &[0.5]);
+
+  stage.at(200);
+  assert_close(&stage.opacities(ITEM_B), &[]);
+  assert_eq!(stage.tops(ITEM_C), [40.0]);
+}
+
+#[test]
+fn a_leaving_child_takes_no_input_and_is_not_found() {
+  let shown = Signal::new(true);
+  let clicks = Arc::new(AtomicUsize::new(0));
+  let mut stage = Stage::new({
+    let (shown, clicks) = (shown.clone(), clicks.clone());
+    move || {
+      let clicks = clicks.clone();
+      let mut column = Column::new().presence();
+      if shown.get() {
+        column = column.child(
+          Button::new("Row")
+            .id("row")
+            .size(120.0, 40.0)
+            .tab_index(0)
+            .exit_animation(exit())
+            .on_click(move |_| {
+              clicks.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+      }
+      column
+        .child(Button::new("Next").id("next").size(120.0, 40.0).tab_index(0))
+        .into()
+    }
+  });
+  stage.tree.get_element_by_id_mut("row").unwrap().focus();
+  stage.at(0);
+  assert_eq!(stage.focused_id().as_deref(), Some("row"));
+
+  shown.set(false);
+  stage.at(0);
+  stage.at(100);
+  assert!(stage.tree.get_element_by_id("row").is_none());
+  assert_eq!(stage.focused_id(), None, "the focus it had is let go");
+
+  pointer_click(&mut stage.tree, 60.0, 20.0, MouseButton::Left);
+  stage.at(100);
+  assert_eq!(clicks.load(Ordering::SeqCst), 0);
+
+  stage.tab();
+  stage.at(100);
+  assert_eq!(stage.focused_id().as_deref(), Some("next"));
+}
+
+#[test]
+fn a_child_added_again_while_it_leaves_is_a_new_one() {
+  let shown = Signal::new(true);
+  let mut stage = list(&shown, true);
+  shown.set(false);
+  stage.at(0);
+  stage.at(100);
+
+  shown.set(true);
+  stage.at(100);
+  assert_close(&stage.opacities(ITEM_B), &[0.5, 1.0]);
+
+  stage.at(200);
+  assert_close(&stage.opacities(ITEM_B), &[1.0]);
+  assert_eq!(stage.tops(ITEM_C), [80.0]);
+}
+
+#[test]
+fn an_exit_animation_of_its_height_lets_the_siblings_close_the_gap() {
+  let shown = Signal::new(true);
+  let mut stage = Stage::new({
+    let shown = shown.clone();
+    move || {
+      let mut column = Column::new().presence().child(list_item("a", ITEM_A));
+      if shown.get() {
+        column = column.child(
+          Rect::new(120.0, 40.0)
+            .background(ITEM_B)
+            .exit_animation(Animation::new(KeyframesId::new(SHRINK)).duration_ms(200).linear())
+            .key("b"),
+        );
+      }
+      column.child(list_item("c", ITEM_C)).into()
+    }
+  });
+  stage.tree.register_keyframes(
+    Keyframes::new(KeyframesId::new(SHRINK))
+      .frame(0.0, |frame| {
+        frame.set(AnimatableProperty::Height, AnimatableValue::Float(40.0));
+      })
+      .frame(1.0, |frame| {
+        frame.set(AnimatableProperty::Height, AnimatableValue::Float(0.0));
+      }),
+  );
+
+  shown.set(false);
+  stage.at(0);
+  assert_eq!(stage.tops(ITEM_C), [80.0]);
+  stage.at(100);
+  assert_eq!(stage.tops(ITEM_C), [60.0], "half of its height is left");
+  stage.at(150);
+  assert_eq!(stage.tops(ITEM_C), [50.0]);
+  stage.at(200);
+  assert_eq!(stage.tops(ITEM_C), [40.0]);
+}
+
+#[test]
+fn the_sibling_after_a_leaving_child_keeps_its_own_state() {
+  let shown = Signal::new(true);
+  let tick = Signal::new(0);
+  let mut stage = Stage::new({
+    let (shown, tick) = (shown.clone(), tick.clone());
+    move || {
+      let _ = tick.get();
+      let mut column = Column::new().presence();
+      if shown.get() {
+        column = column.child(list_item("b", ITEM_B));
+      }
+      // A scroll container with no key and no id: it is matched by its place among its siblings.
+      column
+        .child(
+          ScrollVertical::new(
+            Column::new()
+              .child(Rect::new(120.0, 30.0))
+              .child(Rect::new(120.0, 100.0).background(ITEM_C)),
+          )
+          .size(120.0, 60.0),
+        )
+        .into()
+    }
+  });
+  // The child before it is removed and leaves; the scroll container is scrolled while it does.
+  shown.set(false);
+  stage.at(0);
+  stage.tree.scroll(60.0, 70.0, 0.0, -30.0, ScrollPhase::Scroll);
+  stage.at(0);
+  assert_eq!(stage.tops(ITEM_C), [40.0], "scrolled by 30: 40 + 30 - 30");
+
+  // A render while the child leaves matches the container with itself, not with the child that is leaving
+  // in the place before it.
+  tick.set(1);
+  stage.at(50);
+  assert_eq!(stage.tops(ITEM_C), [40.0], "still scrolled");
+
+  tick.set(2);
+  stage.at(200);
+  assert_eq!(
+    stage.tops(ITEM_C),
+    [0.0],
+    "and after: it moved up by 40, scrolled as it was"
+  );
+}
+
+/// The list as a component of its own, which renders again by itself when `open` changes.
+struct ListInside;
+
+impl Component for ListInside {
+  type Props = HostProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let mut column = Column::new().presence().child(list_item("a", ITEM_A));
+    if ctx.props::<HostProps>().open.get() {
+      column = column.child(list_item("b", ITEM_B));
+    }
+    column.child(list_item("c", ITEM_C))
+  }
+}
+
+struct ListHost;
+
+impl Component for ListHost {
+  type Props = HostProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<HostProps>().clone();
+    Column::new()
+      .child(Rect::new(120.0, 10.0))
+      .child(ctx.mount::<ListInside>(props))
+  }
+}
+
+#[test]
+fn a_child_removed_by_a_component_that_renders_by_itself_leaves_too() {
+  let (shown, tick) = (Signal::new(true), Signal::new(0));
+  let mut stage = Stage::with_root::<ListHost>(HostProps {
+    open: shown.clone(),
+    tick,
+  });
+  assert_eq!(stage.tops(ITEM_C), [90.0]);
+
+  shown.set(false);
+  stage.at(0);
+  stage.at(100);
+  assert_close(&stage.opacities(ITEM_B), &[0.5]);
+  assert_eq!(stage.tops(ITEM_C), [90.0]);
+
+  stage.at(200);
+  assert_close(&stage.opacities(ITEM_B), &[]);
+  assert_eq!(stage.tops(ITEM_C), [50.0]);
+}
+
+#[test]
+fn a_child_removed_from_a_list_in_a_popup_leaves_too() {
+  let shown = Signal::new(true);
+  let anchor = ElementRef::new();
+  let mut stage = Stage::new({
+    let shown = shown.clone();
+    move || {
+      let mut menu = Column::new().presence().child(list_item("a", ITEM_A));
+      if shown.get() {
+        menu = menu.child(list_item("b", ITEM_B));
+      }
+      Column::new()
+        .child(Rect::new(150.0, 30.0).ref_element(anchor.clone()))
+        .child(Popup::new(anchor.clone(), menu))
+        .into()
+    }
+  });
+  assert_close(&stage.opacities(ITEM_B), &[1.0]);
+
+  shown.set(false);
+  stage.at(0);
+  stage.at(100);
+  assert_close(&stage.opacities(ITEM_B), &[0.5]);
+
+  stage.at(200);
+  assert_close(&stage.opacities(ITEM_B), &[]);
+}
+
+#[test]
+fn a_child_removed_from_a_list_in_a_dialog_leaves_too() {
+  let shown = Signal::new(true);
+  let mut stage = Stage::new({
+    let shown = shown.clone();
+    move || {
+      let mut tasks = Column::new().presence().child(list_item("a", ITEM_A));
+      if shown.get() {
+        tasks = tasks.child(list_item("b", ITEM_B));
+      }
+      let tasks = tasks.child(list_item("c", ITEM_C));
+      Column::new().child(Modal::new(tasks).target(Root)).into()
+    }
+  });
+  assert_eq!(stage.tops(ITEM_C), [80.0]);
+
+  shown.set(false);
+  stage.at(0);
+  stage.at(100);
+  assert_close(&stage.opacities(ITEM_B), &[0.5]);
+  assert_eq!(stage.tops(ITEM_C), [80.0]);
+
+  stage.at(200);
+  assert_close(&stage.opacities(ITEM_B), &[]);
+  assert_eq!(stage.tops(ITEM_C), [40.0]);
+}

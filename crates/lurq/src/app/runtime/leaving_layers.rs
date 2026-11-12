@@ -19,11 +19,19 @@
 //!
 //! A layer hidden because its anchor went out of view does not leave: it is
 //! still open, and comes back with its anchor.
+//!
+//! **Children.** A child removed from a container with presence leaves the
+//! same way, where it was among its siblings and in flow. Reconciling a
+//! render with the tree keeps its node (`Node::take_leaving_children`) and
+//! notes it; the tree then starts its exit animations and makes it something
+//! it only paints, as a layer, and removes it in the first pass after the
+//! longest of them ends.
 
 use std::time::Instant;
 
 use super::{
-  OverlayHostReuse, Tree, find_node_by_id, overlay_layers::OverlayLayers, reset_element_ref_flags_recursive,
+  OverlayHostReuse, Tree, find_node_by_id, find_node_by_id_mut, overlay_layers::OverlayLayers,
+  reset_element_ref_flags_recursive,
 };
 use crate::{core::NodeId, node::Node};
 
@@ -106,8 +114,75 @@ impl Tree {
     self.leaving_layers.iter().any(|layer| now >= layer.until)
   }
 
-  /// Lets go of the focus, the hover and the press that are in a layer that
-  /// began to leave in this pass: what is only painted holds none of them.
+  /// Starts the exit animations of the children that reconciling a render
+  /// with the tree just kept, and makes each something the tree only paints.
+  /// One whose animations take no time is removed at once.
+  pub(super) fn begin_leaving_children(&mut self) {
+    let began = crate::node::presence::take_began_leaving();
+    if began.is_empty() {
+      return;
+    }
+    let now = self.now();
+    let Some(root) = self.root.as_mut() else {
+      return;
+    };
+    for id in began {
+      // A child whose container was itself replaced went with it.
+      let Some(node) = find_node_by_id_mut(root, id) else {
+        continue;
+      };
+      let animations = &mut self.animation_engine;
+      let until = node
+        .begin_exit(&mut |node| animations.forget_node(node))
+        .and_then(|lasts| now.checked_add(lasts));
+      let Some(until) = until else {
+        if let Some(mut removed) = remove_child_by_id(root, id) {
+          removed.free_ids(&self.id_gen);
+        }
+        continue;
+      };
+      reset_element_ref_flags_recursive(node);
+      node.turn_into_leaving_layer();
+      self.leaving_children.push(LeavingLayer { root: id, until });
+      self.layers_left.push(id);
+    }
+    self.cached_render_list = None;
+    self.needs_redraw = true;
+  }
+
+  /// Removes the leaving children whose time is up at `now` from the tree,
+  /// which lays out again without them.
+  pub(super) fn drop_leaving_children(&mut self, now: Instant) {
+    if !self.leaving_children.iter().any(|child| now >= child.until) {
+      return;
+    }
+    let (due, leaving): (Vec<_>, Vec<_>) = std::mem::take(&mut self.leaving_children)
+      .into_iter()
+      .partition(|child| now >= child.until);
+    self.leaving_children = leaving;
+    let mut removed_any = false;
+    for child in due {
+      // One whose container is gone went with it.
+      let removed = self.root.as_mut().and_then(|root| remove_child_by_id(root, child.root));
+      let Some(mut removed) = removed else {
+        continue;
+      };
+      #[cfg(feature = "canvas")]
+      super::detach_canvases_not_carried(super::canvas_bindings(&removed), self.root.as_ref());
+      removed.free_ids(&self.id_gen);
+      removed_any = true;
+    }
+    if removed_any {
+      self.tree_rebuilt_since_layout = true;
+      self.cached_render_list = None;
+      self.needs_redraw = true;
+      // Paths into the tree count children, and the ones after a removed child moved up.
+      self.reapply_interaction_state();
+    }
+  }
+
+  /// Lets go of the focus, the hover and the press that are in a layer or a
+  /// child that began to leave: what is only painted holds none of them.
   pub(super) fn release_input_in_leaving_layers(&mut self) {
     let left = std::mem::take(&mut self.layers_left);
     if left.is_empty() {
@@ -117,11 +192,10 @@ impl Tree {
       return;
     };
     let inside = |id: &NodeId| {
-      root
-        .children()
+      left
         .iter()
-        .filter(|layer| left.contains(&layer.node_id()))
-        .any(|layer| find_node_by_id(layer, *id).is_some())
+        .filter_map(|leaving| find_node_by_id(root, *leaving))
+        .any(|leaving| find_node_by_id(leaving, *id).is_some())
     };
     let loses_focus = self.focused_node.iter().chain(&self.focused_event_node).any(inside);
     let hover_path = self.hover_path.iter().copied().filter(|id| !inside(id)).collect();
@@ -185,4 +259,14 @@ pub(super) fn stack_layers(overlays: Vec<Node>, leaving: Vec<(usize, Node)>, lay
     };
   }
   stack
+}
+
+/// Takes the node `id` out of the children of the node it is a child of, somewhere under `node`, whose
+/// layout is no longer the cached one.
+fn remove_child_by_id(node: &mut Node, id: NodeId) -> Option<Node> {
+  if let Some(index) = node.children.iter().position(|child| child.node_id() == id) {
+    node.layout_cache.invalidate();
+    return Some(node.children.remove(index));
+  }
+  node.children.iter_mut().find_map(|child| remove_child_by_id(child, id))
 }

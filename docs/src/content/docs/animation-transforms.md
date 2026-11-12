@@ -209,10 +209,38 @@ no exit animation in it is gone with the pass that closes it, as before.
 - Opening the layer again while it leaves mounts it anew: the new one enters over the one still leaving.
 - A popup that is hidden because its anchor scrolled out of view is still open, so it does not leave: it is gone at
   once and comes back with its anchor.
-- An exit animation on an element that is in no layer never plays: an element removed from a `Row` or a `Column` is
-  gone with the render that removes it.
+- Outside a layer an exit animation plays for a child of a container with `.presence()`: see
+  [Children of a container](#children-of-a-container). Anywhere else an element that is removed is gone with the
+  render that removes it.
 - Exit animations are keyframe animations, so [reduced motion](#reduced-motion) leaves them to the app: use a fade,
   or none, where `ctx.reduced_motion()` is set.
+
+### Children of a container
+
+`.presence()` on a container keeps a child that a render removes from it until the child's exit animation ends:
+
+```rust
+let mut list = Column::new().presence();
+for task in &tasks {
+  list = list.child(
+    Row::new()
+      .key(task.id.clone())
+      .exit_animation(Animation::new(FADE_OUT).duration_ms(150))
+      .child(Text::new(&task.title)),
+  );
+}
+```
+
+- The child has to have a key or an id (`.key(...)`, `.id(...)`) and an `.exit_animation(...)` of its own. Children
+  without a key are matched by their place, where one that was removed and one whose content changed look the same.
+- It stays where it was among its siblings and in flow: the ones after it do not move until it is gone. An exit
+  animation of its `Height` or `Width` to zero lets them close the gap as it leaves.
+- Like a leaving layer it is only painted: no pointer, focus or Tab, and no lookup finds it. A child of the same key
+  added again while it leaves is a new one, beside it.
+- The elements inside it leave with their own exit animations too, and the child is gone when the longest ends.
+- It works wherever the container is: in the page, in a component that renders by itself, in a popup or a dialog.
+- A container without `.presence()` drops a removed child at once, whatever the child's animations. A list that
+  mounts only the rows in view, like `VirtualizedList`, removes rows as they scroll out, so it has none.
 
 Two layers are told apart by where they are declared. A popup that the press closing another one opens is another
 layer: it enters while the first leaves. Two layers declared at the same place in turn (`if a { popup_a } else {

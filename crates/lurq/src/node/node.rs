@@ -666,6 +666,7 @@ pub(crate) trait NodeUpdate {
   fn transition(&mut self, spec: Transition);
   fn animation(&mut self, spec: Animation);
   fn exit_animation(&mut self, spec: Animation);
+  fn presence(&mut self, presence: bool);
   fn scrollbar(&mut self, style: ScrollBarStyle);
   fn scrollbar_hovered(&mut self, f: impl Fn(ScrollBarStyle) -> ScrollBarStyle + Send + Sync + 'static);
   fn culling(&mut self, enabled: bool);
@@ -888,6 +889,8 @@ pub(crate) struct RareStyle {
   pub(crate) outline: Option<crate::node::outline::Outline>,
   /// The node and its subtree take no input; see [`Node::disabled`].
   pub(crate) disabled: bool,
+  /// A child removed from the node stays until its exit animation ends; see `node/presence.rs`.
+  pub(crate) presence: bool,
   /// Where the node sticks in the scroll container it is in. Here, and not in `Position`, because every
   /// node holds a `Position` and few stick.
   pub(crate) sticky: Option<crate::layout::layout_kind::Sticky>,
@@ -1963,6 +1966,10 @@ impl NodeUpdate for Node {
     self.set_exit_animation(spec);
   }
 
+  fn presence(&mut self, presence: bool) {
+    self.rare_style.presence = presence;
+  }
+
   fn scrollbar(&mut self, style: ScrollBarStyle) {
     self.scrollbar_style.set(Some(Box::new(style)));
   }
@@ -2887,6 +2894,13 @@ impl Node {
 
   pub fn offset(mut self, x: f32, y: f32) -> Self {
     self.offset = Some(Offset::new(x, y));
+    self.layout_cache.invalidate();
+    self
+  }
+
+  /// The node in flow again, at the size its content gives it.
+  pub(crate) fn statically_positioned(mut self) -> Self {
+    self.position = Position::Static;
     self.layout_cache.invalidate();
     self
   }
@@ -5170,37 +5184,38 @@ impl Node {
       }
     }
 
-    let positional = self
-      .children
-      .iter()
-      .zip(&old.children)
-      .all(|(child, old_child)| child.can_preserve_runtime_state_from(old_child));
-    let mut child_layout_signatures_match = true;
+    // The children that are leaving `old` are continued by no child: the rest are matched as if they were
+    // not there. With one among them the layout is not the cached one, which has it.
+    let without_leaving = old.children_to_match();
+    let old_len = without_leaving.as_ref().map_or(old.children.len(), Vec::len);
+    let old_child = |index: usize| -> &Node {
+      match &without_leaving {
+        Some(children) => children[index],
+        None => &old.children[index],
+      }
+    };
+    let matched_len = self.children.len().min(old_len);
+    let positional =
+      (0..matched_len).all(|index| self.children[index].can_preserve_runtime_state_from(old_child(index)));
+    let mut child_layout_signatures_match = without_leaving.is_none();
     if positional {
-      for (child, old_child) in self.children.iter_mut().zip(&old.children) {
-        child_layout_signatures_match &= child.preserve_runtime_state_and_layout_signature_from(old_child);
+      for index in 0..matched_len {
+        child_layout_signatures_match &=
+          self.children[index].preserve_runtime_state_and_layout_signature_from(old_child(index));
       }
     } else {
       // Reordered children preserve state by identity, but cache signatures
       // still describe their positions. Compare those before copying state.
-      child_layout_signatures_match = self.child_layout_signatures_match(old);
-      let mut claimed = vec![false; old.children.len()];
+      child_layout_signatures_match = without_leaving.is_none() && self.child_layout_signatures_match(old);
+      let mut claimed = vec![false; old_len];
       for index in 0..self.children.len() {
         let child = &self.children[index];
-        let matched =
-          old
-            .children
-            .get(index)
-            .filter(|old_child| !claimed[index] && child.can_preserve_runtime_state_from(old_child))
-            .map(|_| index)
-            .or_else(|| {
-              old.children.iter().enumerate().find_map(|(offset, old_child)| {
-                (!claimed[offset] && child.identity_matches(old_child)).then_some(offset)
-              })
-            });
+        let matched = (index < old_len && !claimed[index] && child.can_preserve_runtime_state_from(old_child(index)))
+          .then_some(index)
+          .or_else(|| (0..old_len).find(|offset| !claimed[*offset] && child.identity_matches(old_child(*offset))));
         if let Some(offset) = matched {
           claimed[offset] = true;
-          self.children[index].preserve_runtime_state_from(&old.children[offset]);
+          self.children[index].preserve_runtime_state_from(old_child(offset));
         }
       }
     }
@@ -5452,11 +5467,23 @@ impl Node {
   }
 
   pub(crate) fn preserve_ids_from(&mut self, old: &mut Node) {
-    if self.can_reuse_id_from(old) && old.node_id.is_assigned() {
+    // The element `old` was goes on as this node, or this node only stands where it stood.
+    let continues = self.can_reuse_id_from(old);
+    if continues && old.node_id.is_assigned() {
       self.node_id = old.node_id;
       old.node_id = NodeId::UNASSIGNED;
     }
+    // What is leaving the element goes on being drawn in it, and is no child for a new one to continue.
+    let leaving = if continues {
+      old.take_leaving_children(self)
+    } else {
+      Vec::new()
+    };
+    self.preserve_child_ids_from(old);
+    self.keep_leaving_children(leaving);
+  }
 
+  fn preserve_child_ids_from(&mut self, old: &mut Node) {
     // Keyed/slotted children can move between renders (a windowed or reordered
     // list). Match them by identity so node ids follow the element. Unchanged
     // positions need no claimed-child buffer, even for identified children.

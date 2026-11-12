@@ -1167,10 +1167,19 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// The animation the element plays when the layer it is in closes: an
-      /// `Overlay`, a `Popup` or a `Modal`. The layer's content stays on
-      /// screen, taking no input, until the longest exit animation in it
-      /// ends.
+      /// Keeps a child that is removed from the element where it was until the child's exit animation
+      /// ends. Only a child with a key or an id and an `.exit_animation(...)` of its own is kept.
+      pub fn presence(mut self) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::presence(node, true));
+        self
+      }
+
+      /// The animation the element leaves with. In an `Overlay`, a `Popup`
+      /// or a `Modal` it plays when the layer closes, and the layer's content
+      /// stays on screen, taking no input, until the longest exit animation
+      /// in it ends. On a child with a key or an id of a container with
+      /// `.presence()`, it plays when a render removes the child, which
+      /// stays where it was until it ends.
       pub fn exit_animation(mut self, spec: $crate::animation::Animation) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::exit_animation(node, spec));
         self
