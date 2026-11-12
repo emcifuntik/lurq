@@ -170,8 +170,35 @@ One gesture scrolls one container, the innermost that has room in the finger's d
   the finger goes back up. `set_dismisses_keyboard(true)` is `OnDrag`.
 - **Momentum** can be changed for the whole window with `Tree::set_touch_momentum(TouchMomentum { .. })`:
   the deceleration rate, and the slowest and fastest speeds. The defaults are the platform's.
+- **By pages.** `ScrollState::set_paging(true)` has a finger scroll a list a page at a time, a page being as
+  long as the list's viewport: let go, the list goes to the nearest page; thrown, to the next one that way,
+  and never further than the page beside the one the finger started on. `ScrollState::page()` says which
+  page it is at. A wheel and a scroll bar scroll such a list as any other.
 
 `VirtualizedList` scrolls the same way.
+
+### Pinch to zoom
+
+`ZoomScroll` goes around content of a size the app says, a photo or a map: two fingers pinch it larger and
+smaller about their middle and carry it with them, a double tap goes in at the point tapped and back out,
+and one finger scrolls what is shown.
+
+```rust
+ZoomScroll::mount(
+  ctx,
+  ZoomScrollProps::new(photo_width, photo_height).range(fit, 4.0).zoom(self.zoom.clone()),
+  Image::new(photo).size(photo_width, photo_height),
+)
+```
+
+- The list fills what it is put in. `range` is the smallest and the largest scale, 1 and 4 unless set;
+  content shown smaller than the list lies in its middle.
+- `zoom(signal)` is the scale, to read and to set; `scroll(state)` is the list's `ScrollState`.
+  `double_tap(None)` leaves a double tap to the content.
+- The content is laid out once, at its own size, and drawn scaled: text in it is not laid out anew for the
+  size it is shown at.
+- A pinch stops at the smallest and the largest scale, where the platform's gives and springs back, and a
+  double tap changes the scale at once, with no move.
 
 ### Pull to refresh
 

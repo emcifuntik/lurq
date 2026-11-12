@@ -433,51 +433,16 @@ impl ManagedWindow {
     None
   }
 
-  /// Gives the tree what a touch came to; see [`touch`]. `false` when the actions scrolled and the last scroll
-  /// moved nothing.
+  /// A finger's scroll just ended; see [`page_after_scroll`].
+  #[cfg(target_os = "ios")]
+  fn page_after_scroll(&mut self) {
+    page_after_scroll(&mut self.tree, &mut self.touch, &mut self.cursor_pos);
+  }
+
+  /// Gives the tree what a touch came to; see [`apply_touch_actions`].
   #[cfg(target_os = "ios")]
   fn apply_touch_actions(&mut self, actions: Vec<touch::TouchAction>, momentum: bool) -> bool {
-    use touch::TouchAction;
-    let mut moved = true;
-    for action in actions {
-      match action {
-        TouchAction::Move { x, y } => {
-          self.cursor_pos = (x, y);
-          self.tree.touch_pointer_move(x as f32, y as f32);
-        }
-        TouchAction::Press { x, y } => {
-          self.cursor_pos = (x, y);
-          self.tree.touch_press(x as f32, y as f32);
-        }
-        TouchAction::Release { x, y } => {
-          self.cursor_pos = (x, y);
-          self.tree.touch_release(x as f32, y as f32);
-        }
-        TouchAction::Tap { x, y } => {
-          self.cursor_pos = (x, y);
-          self.tree.touch_tap(x as f32, y as f32, touch::TAP_HIGHLIGHT);
-        }
-        TouchAction::LongPress { x, y } => {
-          if self.tree.touch_long_press(x as f32, y as f32) {
-            self.touch.long_press_taken();
-          }
-        }
-        TouchAction::CancelPress { x, y } => self.tree.touch_cancel_press(x as f32, y as f32),
-        TouchAction::Settle => self.tree.touch_scroll_settle(),
-        TouchAction::ScrollTarget { x, y, dx, dy } => {
-          self.tree.touch_scroll_begin(x as f32, y as f32, dx as f32, dy as f32);
-        }
-        TouchAction::Scroll { x, y, dx, dy, phase } => {
-          let scrolled = self
-            .tree
-            .touch_scroll(x as f32, y as f32, dx as f32, dy as f32, phase, momentum);
-          if matches!(phase, ScrollPhase::Scroll) {
-            moved = scrolled;
-          }
-        }
-      }
-    }
-    moved
+    apply_touch_actions(&mut self.tree, &mut self.touch, &mut self.cursor_pos, actions, momentum)
   }
 
   fn create_window(&mut self, event_loop: &ActiveEventLoop, app: &mut App) {
@@ -1158,7 +1123,11 @@ impl ManagedWindow {
           if route == crate::app::runtime::TouchRoute::Gesture {
             // Two fingers pinch or rotate: what the first one did as the pointer ends without a click.
             let actions = self.touch.abandon();
+            let lifted = touch::ends_scroll(&actions);
             self.apply_touch_actions(actions, false);
+            if lifted {
+              self.page_after_scroll();
+            }
           }
           self.apply_window_commands(event_loop);
           self.check_redraw();
@@ -1177,7 +1146,11 @@ impl ManagedWindow {
           springing,
           |(x, y)| tree.touch_scrolls_at(x as f32, y as f32),
         );
+        let lifted = matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) && touch::ends_scroll(&actions);
         self.apply_touch_actions(actions, false);
+        if lifted {
+          self.page_after_scroll();
+        }
       }
       // UIKit draws a view from `drawRect:`, which is where winit sends this event from, and drops a
       // `setNeedsDisplay` made inside it: a redraw the pass asks for (a second layout pass, an animation's next
@@ -1765,6 +1738,74 @@ impl WinitSlowScope {
   fn new(name: &'static str, detail: &'static str) -> Self {
     Self {
       name,
+/// A finger's scroll of a window's content just ended. A list that scrolls by pages has no momentum: it goes
+/// on to a page, from how fast the finger lifted.
+#[cfg(target_os = "ios")]
+fn page_after_scroll(tree: &mut Tree, pointer: &mut touch::TouchPointer, cursor_pos: &mut (f64, f64)) {
+  if !tree.touch_scroll_pages() {
+    return;
+  }
+  let velocity = match pointer.end_fling() {
+    Some((end, velocity)) => {
+      apply_touch_actions(tree, pointer, cursor_pos, vec![end], false);
+      velocity
+    }
+    None => (0.0, 0.0),
+  };
+  tree.touch_scroll_page(velocity.0 as f32, velocity.1 as f32, Instant::now());
+}
+
+/// Gives a window's tree what a touch on the window came to; see [`touch`]. `false` when the actions scrolled
+/// and the last scroll moved nothing.
+#[cfg(target_os = "ios")]
+fn apply_touch_actions(
+  tree: &mut Tree,
+  pointer: &mut touch::TouchPointer,
+  cursor_pos: &mut (f64, f64),
+  actions: Vec<touch::TouchAction>,
+  momentum: bool,
+) -> bool {
+  use touch::TouchAction;
+  let mut moved = true;
+  for action in actions {
+    match action {
+      TouchAction::Move { x, y } => {
+        *cursor_pos = (x, y);
+        tree.touch_pointer_move(x as f32, y as f32);
+      }
+      TouchAction::Press { x, y } => {
+        *cursor_pos = (x, y);
+        tree.touch_press(x as f32, y as f32);
+      }
+      TouchAction::Release { x, y } => {
+        *cursor_pos = (x, y);
+        tree.touch_release(x as f32, y as f32);
+      }
+      TouchAction::Tap { x, y } => {
+        *cursor_pos = (x, y);
+        tree.touch_tap(x as f32, y as f32, touch::TAP_HIGHLIGHT);
+      }
+      TouchAction::LongPress { x, y } => {
+        if tree.touch_long_press(x as f32, y as f32) {
+          pointer.long_press_taken();
+        }
+      }
+      TouchAction::CancelPress { x, y } => tree.touch_cancel_press(x as f32, y as f32),
+      TouchAction::Settle => tree.touch_scroll_settle(),
+      TouchAction::ScrollTarget { x, y, dx, dy } => {
+        tree.touch_scroll_begin(x as f32, y as f32, dx as f32, dy as f32);
+      }
+      TouchAction::Scroll { x, y, dx, dy, phase } => {
+        let scrolled = tree.touch_scroll(x as f32, y as f32, dx as f32, dy as f32, phase, momentum);
+        if matches!(phase, ScrollPhase::Scroll) {
+          moved = scrolled;
+        }
+      }
+    }
+  }
+  moved
+}
+
       detail,
       started_at: Instant::now(),
     }

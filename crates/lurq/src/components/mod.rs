@@ -49,6 +49,7 @@ mod video;
 mod virtualized_list;
 mod window_chrome;
 mod window_controls;
+pub(crate) mod zoom;
 
 pub use button::Button;
 #[cfg(feature = "canvas")]
@@ -119,6 +120,7 @@ pub use window_chrome::{
 pub use window_controls::{
   TrafficLightColors, WindowControlColors, WindowControlContent, WindowControlKind, WindowControlStyle, WindowControls,
 };
+pub use zoom::{ZoomScroll, ZoomScrollProps};
 
 pub use crate::{
   app::ctx::{CollisionStrategy, Modal, ModalTarget, OpenState, OutsidePress, Overlay, Parent, Placement, Root},

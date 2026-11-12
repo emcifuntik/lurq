@@ -7,16 +7,22 @@ use lurq::{
     ctx::Ctx,
     events::{ScrollEvent, ScrollPhase},
   },
-  components::{Column, Row, ScrollHorizontal, ScrollVertical},
+  components::{Column, Row, ScrollHorizontal, ScrollVertical, ZoomScroll, ZoomScrollProps},
   core::Signal,
-  layout::{Alignment, layout_kind::Justify, text_style::FontWeight},
+  layout::{
+    Alignment,
+    layout_kind::{Justify, ScrollState},
+    text_style::FontWeight,
+  },
   node::{Element, color::Color},
 };
 
 use crate::ui::{ACCENT, BG, BORDER, FILL, PRIMARY, SURFACE, TAP_TARGET, TEXT, caption, label, text};
 
 const ROWS: usize = 120;
-/// The rows the sideways strip and the inner list come before.
+/// The rows the strip of pages, the sideways strip and the inner list come before.
+const PAGES_BEFORE: usize = 1;
+const PAGES: usize = 5;
 const STRIP_BEFORE: usize = 3;
 const INNER_LIST_BEFORE: usize = 8;
 
@@ -30,20 +36,31 @@ struct Status {
 
 pub(crate) struct ScrollScreen {
   status: Signal<Status>,
+  /// The strip that scrolls by pages.
+  paged: ScrollState,
 }
 
 impl Component for ScrollScreen {
   type Props = ();
 
   fn create(ctx: &mut Ctx) -> Self {
+    let paged = ScrollState::new();
+    paged.set_paging(true);
     Self {
       status: ctx.signal(Status::default()),
+      paged,
     }
   }
 
-  fn render(&self, _ctx: &mut Ctx) -> impl Into<Element> {
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    // A page is as wide as the list that shows it: the window, less the page's padding at both sides.
+    let page_width = ctx.window().logical_width() - 32.0;
     let mut list = Column::new().spacing(8.0).padding(16.0).width(FILL);
     for index in 0..ROWS {
+      if index == PAGES_BEFORE {
+        list = list.child(self.pages(page_width));
+        list = list.child(self.zoomed(ctx));
+      }
       if index == STRIP_BEFORE {
         list = list.child(self.strip());
       }
@@ -131,6 +148,85 @@ impl ScrollScreen {
         "Sideways: a horizontal drag scrolls this, a vertical one the page",
       ))
       .child(ScrollHorizontal::new(cards).width(FILL))
+      .width(FILL)
+      .into()
+  }
+
+  /// A strip that scrolls a page at a time.
+  fn pages(&self, width: f32) -> Element {
+    let mut pages = Row::new();
+    for index in 0..PAGES {
+      pages = pages.child(
+        Column::new()
+          .align_items(Alignment::Center)
+          .justify(Justify::Center)
+          .child(text(&format!("Page {}", index + 1), 20.0, FontWeight::Bold, TEXT).nowrap())
+          .size(width, 120.0)
+          .background(if index % 2 == 0 { PRIMARY } else { ACCENT }),
+      );
+    }
+    Column::new()
+      .spacing(6.0)
+      .child(caption(
+        "By pages: let go, it goes to the nearest; thrown, to the next and no further",
+      ))
+      .child(
+        ScrollHorizontal::new(pages)
+          .with_scroll_state(self.paged.clone())
+          .width(FILL)
+          .rounded(10.0),
+      )
+      .width(FILL)
+      .into()
+  }
+
+  /// A board two fingers pinch larger and smaller.
+  fn zoomed(&self, ctx: &mut Ctx) -> Element {
+    const SQUARE: f32 = 60.0;
+    const ACROSS: usize = 6;
+    const DOWN: usize = 4;
+    let mut board = Column::new();
+    for row in 0..DOWN {
+      let mut squares = Row::new();
+      for column in 0..ACROSS {
+        squares = squares.child(
+          Column::new()
+            .align_items(Alignment::Center)
+            .justify(Justify::Center)
+            .child(
+              text(
+                &format!("{}{}", (b'A' + column as u8) as char, row + 1),
+                13.0,
+                FontWeight::Bold,
+                TEXT,
+              )
+              .nowrap(),
+            )
+            .size(SQUARE, SQUARE)
+            .background(if (row + column) % 2 == 0 { PRIMARY } else { SURFACE }),
+        );
+      }
+      board = board.child(squares);
+    }
+    let (width, height) = (SQUARE * ACROSS as f32, SQUARE * DOWN as f32);
+    Column::new()
+      .spacing(6.0)
+      .child(caption(
+        "Pinch: two fingers make the board larger about their middle; a double tap goes in and out",
+      ))
+      .child(
+        Column::new()
+          .child(ZoomScroll::mount(
+            ctx,
+            ZoomScrollProps::new(width, height).range(0.5, 4.0),
+            board,
+          ))
+          .height(240.0)
+          .width(FILL)
+          .background("#111c30")
+          .border_inside(1.0, Color::from_hex(BORDER))
+          .rounded(10.0),
+      )
       .width(FILL)
       .into()
   }

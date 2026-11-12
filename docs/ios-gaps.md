@@ -85,7 +85,11 @@ inside its input.
   to pull and swipe on: only their tests have run. The spinner is drawn by lurq, not the platform's; an
   action does not stretch as the row is pulled past it; and opening one row does not close another unless
   the app ties them with `SwipeRowProps::open`.
-- Not there at all: paging, pinch to zoom inside a scroll.
+- **Paging** (`ScrollState::set_paging`) and **pinch to zoom** (`ZoomScroll`) are there, written without a
+  device to try them on: only their tests have run, and a double tap in a simulator. How fast a lift throws
+  a list at its next page (200 pt/s) and the spring that takes it there were set by eye. A pinch stops at the
+  ends of its range where the platform's gives and springs back; a double tap changes the scale with no
+  move; and what is zoomed is drawn scaled, its text not laid out anew.
 
 ## The platform
 

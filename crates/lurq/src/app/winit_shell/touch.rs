@@ -518,6 +518,20 @@ fn scroll(anchor: (f64, f64), delta: (f64, f64), phase: ScrollPhase) -> TouchAct
   }
 }
 
+/// Whether the actions end a scroll: of a finger, or of its momentum.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(super) fn ends_scroll(actions: &[TouchAction]) -> bool {
+  actions.iter().any(|action| {
+    matches!(
+      action,
+      TouchAction::Scroll {
+        phase: ScrollPhase::End,
+        ..
+      }
+    )
+  })
+}
+
 /// The middle of the fingers; there is at least one.
 fn middle(fingers: &[(u64, (f64, f64))]) -> (f64, f64) {
   let count = fingers.len().max(1) as f64;
