@@ -743,6 +743,7 @@ impl ManagedWindow {
           .as_ref()
           .map_or(0.0, |probe| probe.overlap(logical_height)) as f32;
         safe_area.bottom = safe_area.bottom.max(keyboard);
+        safe_area.keyboard = keyboard;
         if keyboard != self.keyboard_overlap {
           self.keyboard_overlap = keyboard;
           // It is coming up, or changed its height: the input being typed into stays in view, frame by frame as
@@ -2234,6 +2235,7 @@ fn safe_area_insets(window: &Window) -> crate::app::window::SafeAreaInsets {
     right,
     bottom,
     left,
+    keyboard: 0.0,
   }
 }
 
