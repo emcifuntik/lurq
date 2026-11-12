@@ -2349,6 +2349,12 @@ impl GlyphEngine {
       entry.buffer.set_scroll(cosmic_text::Scroll::default());
     } else {
       set_buffer_text(&mut entry.buffer, text, attrs, style.text_align);
+      // Shape and wrap each paragraph here, as the pass below would, so a
+      // profile tells shaping from wrapping for short text too.
+      #[cfg(feature = "perf_profile")]
+      for index in 0..entry.buffer.lines.len() {
+        self.layout_plain_paragraph(&mut entry.buffer, index);
+      }
     }
     #[cfg(feature = "perf_profile")]
     let finalize_start = Instant::now();
