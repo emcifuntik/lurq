@@ -27,12 +27,10 @@ and the menu to copy and paste (`UITextInteraction`); the highlight is painted b
 where UIKit says the selection is. A triple tap selects a paragraph, and a long text scrolls
 inside its input.
 
-- **Password AutoFill.** Nothing is offered over a masked input. The system looks for a login and a password
-  as two inputs and is shown one view, which every text input shares; and it offers saved passwords only to
-  an app with an associated domain. Which of the two stops it here was not checked. Flutter keeps a hidden
-  view for each input of an "autofill group"; lurq would need the same, and a way for an app to say which
-  inputs go together.
-- **Saving a password** after a login: not done, for the same reasons.
+- **Password AutoFill.** The view that types says it is a text field while its input hides what is typed,
+  which is what UIKit offers saved passwords to, and a text field that is not seen stands for each other
+  input of the login, for the platform to fill the name beside the password. Written without a device to try
+  it on: not checked. Saving a password after a login needs the app's associated domain and was not tried.
 - **A code from a message** (`ContentKind::OneTimeCode`): set, not checked. It needs a real message.
 - **A hardware keyboard:** its keys are passed to the tree, and shortcuts take Command. Written with no
   keyboard to try it on: nothing of it was checked.

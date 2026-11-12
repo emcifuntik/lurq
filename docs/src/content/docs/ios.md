@@ -251,7 +251,20 @@ TextInput::new(email)
 focus from the one being typed into. A screen of inputs gives a way to put it away, such as a list that
 dismisses the keyboard when scrolled (above).
 
-Saved passwords are not offered yet.
+### Saved passwords
+
+Over an input that hides what is typed (`mask()`), or says it is for a password, the keyboard offers the
+person's saved logins. One that is chosen fills the input, and the other inputs of the login with it: every
+text input in the tree whose `content` is `Username`, `Email`, `Password`, `NewPassword` or `OneTimeCode`.
+
+```rust
+TextInput::new(name).single_line().content(ContentKind::Username)
+TextInput::new(password).single_line().mask().content(ContentKind::Password)
+```
+
+Which logins are offered first, and whether the system offers to save a new one, depends on the app's
+associated domains (`webcredentials:` in its entitlements, and the domain's `apple-app-site-association`):
+that is the app's to set up, and nothing of lurq's.
 
 ## The app and the system
 

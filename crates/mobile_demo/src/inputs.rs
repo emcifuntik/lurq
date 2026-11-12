@@ -17,6 +17,7 @@ use crate::ui::{
 pub(crate) struct InputsScreen {
   single: Signal<String>,
   secret: Signal<String>,
+  login: Signal<String>,
   email: Signal<String>,
   code: Signal<String>,
   notes: Signal<String>,
@@ -31,6 +32,7 @@ impl Component for InputsScreen {
     Self {
       single: ctx.signal(String::new()),
       secret: ctx.signal(String::new()),
+      login: ctx.signal(String::new()),
       email: ctx.signal(String::new()),
       code: ctx.signal(String::new()),
       notes: ctx.signal("Two lines to start with.\nSelect a word, move the caret, paste.".to_owned()),
@@ -59,9 +61,23 @@ impl Component for InputsScreen {
         self.single.get().chars().count(),
         self.single.get()
       )))
+      // A login: a name and a password. Over the password the keyboard offers the saved ones, and one that
+      // is chosen fills both fields.
       .child(field(
-        "Password",
-        TextInput::new(self.secret.clone()).placeholder("Hidden").single_line().mask(),
+        "User name: one half of a saved login",
+        TextInput::new(self.login.clone())
+          .placeholder("Name")
+          .single_line()
+          .content(ContentKind::Username)
+          .return_key(ReturnKey::Next),
+      ))
+      .child(field(
+        "Password: the keyboard offers the saved ones",
+        TextInput::new(self.secret.clone())
+          .placeholder("Hidden")
+          .single_line()
+          .mask()
+          .content(ContentKind::Password),
       ))
       .child(field(
         "Email: its own keyboard, and Next on the Return key",

@@ -1070,8 +1070,46 @@ fn text_input_class() -> &'static AnyClass {
     sel!(autocorrectionType) => correction_type as extern "C-unwind" fn(_, _) -> _,
     sel!(spellCheckingType) => correction_type as extern "C-unwind" fn(_, _) -> _,
     sel!(textContentType) => text_content_type as extern "C-unwind" fn(_, _) -> _,
+    sel!(isKindOfClass:) => is_kind_of_class as extern "C-unwind" fn(_, _, _) -> _,
+    sel!(forwardingTargetForSelector:) => forwarding_target as extern "C-unwind" fn(_, _, _) -> _,
   }
   builder.register()
+}
+
+// Saved passwords: UIKit offers them only to a `UITextField`, which it asks the focused view whether it
+// is. While the input typed into hides what is typed, the view says it is one, and what UIKit then asks of
+// a text field that this view has no answer to goes to a text field that is not seen. The filling itself comes
+// through `UITextInput`, as typing does.
+
+/// The text field that answers for the view; made when first asked for, and kept.
+static FIELD_STAND_IN: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
+
+fn field_stand_in() -> *mut AnyObject {
+  let field = FIELD_STAND_IN.load(Ordering::Acquire);
+  if !field.is_null() {
+    return field;
+  }
+  let field: Retained<AnyObject> = unsafe { msg_send![class!(UITextField), new] };
+  let field = Retained::into_raw(field);
+  FIELD_STAND_IN.store(field, Ordering::Release);
+  field
+}
+
+fn is_secure() -> bool {
+  traits().is_some_and(|traits| traits.secure)
+}
+
+extern "C-unwind" fn is_kind_of_class(this: &AnyObject, _cmd: Sel, class: *const AnyClass) -> Bool {
+  let is: Bool = unsafe { msg_send![super(this, class!(UIView)), isKindOfClass: class] };
+  Bool::new(is.as_bool() || (is_secure() && std::ptr::eq(class, class!(UITextField))))
+}
+
+extern "C-unwind" fn forwarding_target(_this: &AnyObject, _cmd: Sel, _selector: Sel) -> *mut AnyObject {
+  if is_secure() {
+    field_stand_in()
+  } else {
+    std::ptr::null_mut()
+  }
 }
 
 /// What UIKit is told changed when the tree's input is not what the copy says.
@@ -1086,6 +1124,16 @@ enum Changed {
 /// The view the keyboard types into. Main thread only.
 pub(super) struct TextInput {
   view: Retained<AnyObject>,
+  /// Text fields that are not seen, one for each other input a saved login may fill: the platform looks for
+  /// a field for the name beside the one for the password, and fills both.
+  peers: Vec<Peer>,
+}
+
+struct Peer {
+  id: crate::core::NodeId,
+  field: Retained<AnyObject>,
+  /// What the field and the tree's input both said at the last turn.
+  value: String,
 }
 
 impl TextInput {
@@ -1103,7 +1151,10 @@ impl TextInput {
       let interaction: Retained<AnyObject> = msg_send![class!(UITextInteraction), textInteractionForMode: 0isize];
       let _: () = msg_send![&*interaction, setTextInput: &*view];
       let _: () = msg_send![&*view, addInteraction: &*interaction];
-      Self { view }
+      Self {
+        view,
+        peers: Vec::new(),
+      }
     }
   }
 
@@ -1154,6 +1205,7 @@ impl TextInput {
         tree.keyboard_was_put_away();
       }
     }
+    self.sync_peers(tree);
     let traits = tree.keyboard_traits();
     let snapshot = tree.text_input_snapshot();
     let (Some(traits), Some(snapshot)) = (traits, snapshot) else {
@@ -1353,6 +1405,77 @@ impl TextInput {
         (Changed::Selection, false) => msg_send![delegate, selectionDidChange: &*self.view],
         (Changed::Place, _) => return,
       };
+    }
+  }
+
+  /// Keeps a text field for each other input of a login, and takes into the tree what the platform filled
+  /// one in with.
+  fn sync_peers(&mut self, tree: &mut Tree) {
+    let wanted = tree.autofill_peers();
+    self.peers.retain(|peer| {
+      let kept = wanted.iter().any(|wanted| wanted.id == peer.id);
+      if !kept {
+        let _: () = unsafe { msg_send![&*peer.field, removeFromSuperview] };
+      }
+      kept
+    });
+    for wanted in &wanted {
+      if self.peers.iter().any(|peer| peer.id == wanted.id) {
+        continue;
+      }
+      unsafe {
+        let field: Retained<AnyObject> = msg_send![class!(UITextField), new];
+        // In the window, where the platform looks for it, and neither seen nor touched.
+        let frame = CGRect {
+          origin: CGPoint { x: 0.0, y: 0.0 },
+          size: CGSize {
+            width: 1.0,
+            height: 1.0,
+          },
+        };
+        let _: () = msg_send![&*field, setFrame: frame];
+        let _: () = msg_send![&*field, setAlpha: 0.01f64];
+        let _: () = msg_send![&*field, setUserInteractionEnabled: false];
+        let content = match wanted.content {
+          ContentKind::Email => UITextContentTypeEmailAddress,
+          ContentKind::Username => UITextContentTypeUsername,
+          ContentKind::Password => UITextContentTypePassword,
+          ContentKind::NewPassword => UITextContentTypeNewPassword,
+          ContentKind::OneTimeCode => UITextContentTypeOneTimeCode,
+          _ if wanted.secure => UITextContentTypePassword,
+          _ => std::ptr::null_mut(),
+        };
+        let _: () = msg_send![&*field, setTextContentType: content];
+        let _: () = msg_send![&*field, setSecureTextEntry: wanted.secure];
+        let superview: Option<Retained<AnyObject>> = msg_send![&*self.view, superview];
+        if let Some(superview) = superview {
+          // Under the view that types, as a form's fields are one after another.
+          let _: () = msg_send![&*superview, insertSubview: &*field, belowSubview: &*self.view];
+        }
+        // The field starts as the input is: the first turn sets it.
+        self.peers.push(Peer {
+          id: wanted.id,
+          field,
+          value: String::from("\u{0}"),
+        });
+      }
+    }
+    for peer in &mut self.peers {
+      let Some(wanted) = wanted.iter().find(|wanted| wanted.id == peer.id) else {
+        continue;
+      };
+      let said = unsafe {
+        let text: *mut AnyObject = msg_send![&*peer.field, text];
+        string_of(text).unwrap_or_default()
+      };
+      if peer.value != "\u{0}" && said != peer.value {
+        // The platform wrote in the field: a saved login's other half.
+        tree.autofill(peer.id, &said);
+        peer.value = said;
+      } else if wanted.value != peer.value {
+        let _: () = unsafe { msg_send![&*peer.field, setText: ns_string(&wanted.value)] };
+        peer.value.clone_from(&wanted.value);
+      }
     }
   }
 

@@ -22,7 +22,10 @@ use super::{Tree, find_node_by_id, find_node_by_path};
 use crate::{
   app::events::{ImeCursorArea, ImeEvent, KeyboardEvent},
   core::NodeId,
-  node::node_kind::{NodeKind, TextInputState},
+  node::{
+    node::Node,
+    node_kind::{ContentKind, NodeKind, TextInputState},
+  },
 };
 
 /// `KeyboardEvent::key` of a key the input method takes (Windows
@@ -84,6 +87,16 @@ pub struct TextInputGeometry {
 
 /// How many caret places a snapshot carries.
 const SNAPSHOT_CARETS: usize = 4096;
+
+/// A text input the platform may fill in together with the focused one: see [`Tree::autofill_peers`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutofillPeer {
+  pub id: NodeId,
+  pub content: ContentKind,
+  /// The input hides what is typed into it.
+  pub secure: bool,
+  pub value: String,
+}
 
 impl Tree {
   /// The focused text input's text, selection and caret; `None` when no text input has focus.
@@ -347,6 +360,84 @@ impl Tree {
       .as_ref()
       .and_then(|root| find_node_by_id(root, id))
       .is_some_and(|node| matches!(node.node_kind(), NodeKind::TextInput { .. }))
+  }
+
+  /// The other text inputs the platform may fill in together with the focused one, when that one is for a
+  /// login: every input in the tree that says it is for a name to log in with, a password or a code. A saved
+  /// login is two values, and the platform looks for a field for each.
+  pub fn autofill_peers(&self) -> Vec<AutofillPeer> {
+    let credential = |content: ContentKind| {
+      matches!(
+        content,
+        ContentKind::Username
+          | ContentKind::Email
+          | ContentKind::Password
+          | ContentKind::NewPassword
+          | ContentKind::OneTimeCode
+      )
+    };
+    let Some(root) = self.root.as_ref() else {
+      return Vec::new();
+    };
+    if !self
+      .focused_text_input_state()
+      .is_some_and(|state| credential(state.content()) || state.is_masked())
+    {
+      return Vec::new();
+    }
+    fn collect(
+      node: &Node,
+      focused: Option<NodeId>,
+      credential: &dyn Fn(ContentKind) -> bool,
+      out: &mut Vec<AutofillPeer>,
+    ) {
+      if let NodeKind::TextInput { state, .. } = node.node_kind()
+        && Some(node.node_id()) != focused
+        && (credential(state.content()) || state.is_masked())
+      {
+        out.push(AutofillPeer {
+          id: node.node_id(),
+          content: state.content(),
+          secure: state.is_masked(),
+          value: state.value(),
+        });
+      }
+      for child in node.children() {
+        collect(child, focused, credential, out);
+      }
+    }
+    let mut peers = Vec::new();
+    collect(root, self.focused_node, &credential, &mut peers);
+    peers
+  }
+
+  /// The platform filled a text input in: its whole value is replaced, as typing over all of it does, and
+  /// its `on_input` handlers run.
+  pub fn autofill(&mut self, id: NodeId, value: &str) {
+    self.rebuild_if_dirty();
+    let Some(state) = self
+      .root
+      .as_ref()
+      .and_then(|root| find_node_by_id(root, id))
+      .and_then(|node| match node.node_kind() {
+        NodeKind::TextInput { state, .. } => Some(state.clone()),
+        _ => None,
+      })
+    else {
+      return;
+    };
+    if state.value() == value {
+      return;
+    }
+    let event = self.commit_keyboard_event(value);
+    state.select_all();
+    if value.is_empty() {
+      state.backspace(&event);
+    } else {
+      state.insert(value, &event);
+    }
+    self.needs_redraw = true;
+    self.apply_reactive_updates_after_event();
   }
 
   fn focused_text_input_state(&self) -> Option<TextInputState> {
