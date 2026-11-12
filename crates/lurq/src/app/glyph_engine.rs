@@ -39,7 +39,7 @@ pub(crate) use letter_spacing::with_letter_spacing;
 use reflow::ReflowRange;
 use shaped_texts::{SHORT_TEXT_BYTES, ShapedTexts};
 pub(crate) use span_boxes::SpanBox;
-use text_cache::{GlyphPlacement, TextCache};
+use text_cache::{GlyphPlacement, SeededFingerprints, TextCache};
 
 use crate::{
   app::profile_types::GlyphEngineProfile,
@@ -487,8 +487,10 @@ pub(crate) struct GlyphEngine {
   rich_glyph_layout_cache: HashMap<u64, Vec<(RichTextCacheKey, Vec<CachedRichGlyph>)>>,
   transformed_glyph_layout_cache: HashMap<CacheKey, Vec<CachedTransformedGlyph>>,
   atlas_packer: AtlasPacker,
-  atlas_entries: HashMap<GlyphCacheKey, PackedGlyph>,
-  transformed_atlas_entries: HashMap<TransformedGlyphKey, PackedGlyph>,
+  /// Where each rasterised glyph is in the atlas; asked for every glyph of
+  /// every text laid out to be painted.
+  atlas_entries: HashMap<GlyphCacheKey, PackedGlyph, SeededFingerprints>,
+  transformed_atlas_entries: HashMap<TransformedGlyphKey, PackedGlyph, SeededFingerprints>,
   buffer_pool: Vec<Buffer>,
   // Full-height layouts of documents (`SHORT_TEXT_BYTES` and longer) shared by
   // measurement, ink bounds, and clipped painting.
@@ -539,8 +541,8 @@ impl GlyphEngine {
       rich_glyph_layout_cache: HashMap::new(),
       transformed_glyph_layout_cache: HashMap::new(),
       atlas_packer: AtlasPacker::new(),
-      atlas_entries: HashMap::new(),
-      transformed_atlas_entries: HashMap::new(),
+      atlas_entries: HashMap::with_hasher(SeededFingerprints::new()),
+      transformed_atlas_entries: HashMap::with_hasher(SeededFingerprints::new()),
       buffer_pool: Vec::new(),
       plain_buffers: Vec::new(),
       shaped_texts: ShapedTexts::new(SHAPED_TEXT_CACHE_BYTES),

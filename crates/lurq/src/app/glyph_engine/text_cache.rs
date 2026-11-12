@@ -97,6 +97,25 @@ impl Hasher for FingerprintHasher {
   }
 }
 
+/// Builds [`FingerprintHasher`]s with one seed: the hasher of a map whose
+/// keys are small and looked up for every glyph, such as the atlas's.
+#[derive(Clone, Copy)]
+pub(super) struct SeededFingerprints(u64);
+
+impl SeededFingerprints {
+  pub(super) fn new() -> Self {
+    Self(fingerprint_seed())
+  }
+}
+
+impl BuildHasher for SeededFingerprints {
+  type Hasher = FingerprintHasher;
+
+  fn build_hasher(&self) -> FingerprintHasher {
+    FingerprintHasher::new(self.0)
+  }
+}
+
 /// The hasher of a map whose keys are fingerprints: the key is its own hash.
 #[derive(Default)]
 pub(super) struct FingerprintIsHash(u64);
