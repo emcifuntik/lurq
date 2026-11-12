@@ -159,6 +159,8 @@ fn style(size: f32, weight: FontWeight, color: &str) -> TextStyle {
 }
 
 /// A style of each font face the screen draws with: regular and bold.
+// The GPU probe shares this file and prepares no fonts.
+#[allow(dead_code)]
 pub fn font_styles() -> [TextStyle; 2] {
   [
     style(BODY_SIZE, FontWeight::Normal, "#0f172a"),
