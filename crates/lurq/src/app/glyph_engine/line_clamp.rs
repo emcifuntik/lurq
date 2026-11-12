@@ -27,14 +27,15 @@ impl GlyphEngine {
     line: usize,
   ) -> Option<usize> {
     let buffer = self.full_text_buffer(text, style, max_width, true);
-    let mut runs = buffer.layout_runs();
-    let last = runs.nth(line.checked_sub(1)?).map(|run| {
-      // A run's glyphs index its paragraph; an empty line ends where it starts.
-      let end = run.glyphs.iter().map(|glyph| glyph.end).max();
-      (run.line_i, end)
-    });
-    let more = runs.next().is_some();
-    drop(runs);
+    let (last, more) = {
+      let mut runs = buffer.layout_runs();
+      let last = runs.nth(line.checked_sub(1)?).map(|run| {
+        // A run's glyphs index its paragraph; an empty line ends where it starts.
+        let end = run.glyphs.iter().map(|glyph| glyph.end).max();
+        (run.line_i, end)
+      });
+      (last, runs.next().is_some())
+    };
     self.retain_plain_buffer(buffer);
     let (paragraph, end) = last.filter(|_| more)?;
     let range = LineIter::new(text).nth(paragraph)?.0;

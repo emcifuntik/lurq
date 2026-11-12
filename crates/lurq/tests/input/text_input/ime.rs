@@ -307,11 +307,11 @@ fn masked_input_takes_no_composition() {
 
 #[test]
 fn cursor_area_is_where_a_moved_input_is_painted() {
-  let mut plain = Fixture::new("ab", |input| input);
+  let plain = Fixture::new("ab", |input| input);
   plain.tree.painted_quads();
   let laid_out = plain.tree.ime_cursor_area().expect("painted focused input");
 
-  let mut moved = Fixture::new("ab", |input| {
+  let moved = Fixture::new("ab", |input| {
     input.transform(lurq::node::transform::Transform2D::translate(40.0, 300.0))
   });
   moved.tree.painted_quads();

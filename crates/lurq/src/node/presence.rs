@@ -162,11 +162,6 @@ impl Node {
     self.animation.as_deref()?.play.as_ref()
   }
 
-  #[cfg(test)]
-  pub(crate) fn exit_animation_value(&self) -> Option<&Animation> {
-    self.animation.as_deref()?.exit.as_ref()
-  }
-
   /// Whether the node or one below it plays a keyframe animation or leaves
   /// with one.
   pub(crate) fn has_keyframe_animation(&self) -> bool {

@@ -458,12 +458,7 @@ impl Component for ClickableSpinner {
     Row::new().child(
       Rect::new(40.0, 40.0)
         .background("#2563eb")
-        .animation(
-          Animation::new(TURN)
-            .duration_ms(1000)
-            .easing(clicks.easing.clone())
-            .infinite(),
-        )
+        .animation(Animation::new(TURN).duration_ms(1000).easing(clicks.easing).infinite())
         .on_click(move |_| clicks.at.lock().expect("one thread").push(clicks.clock.now())),
     )
   }

@@ -56,12 +56,11 @@ impl Component for Page {
         .child(Text::new("in the sheet"))
         .child(Spacer::new().width(100.0).height(180.0)),
     );
-    let page = Column::new()
+    Column::new()
       .size(Dimension::Pct(100.0), Dimension::Pct(100.0))
       .background(PAGE)
       .child(Text::new("the page"))
-      .child(sheet);
-    page
+      .child(sheet)
   }
 }
 

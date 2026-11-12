@@ -321,9 +321,9 @@ pub(crate) fn size_tracks(
       let unit = (0..count)
         .filter_map(|index| Some(sizes[index] / share(index)?))
         .fold(0.0, f32::max);
-      for index in 0..count {
+      for (index, size) in sizes.iter_mut().enumerate() {
         if let Some(share) = share(index) {
-          sizes[index] = unit * share;
+          *size = unit * share;
         }
       }
     }
