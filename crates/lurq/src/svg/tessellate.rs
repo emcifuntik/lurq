@@ -50,7 +50,7 @@ fn tessellate_group(
   for child in group.children() {
     match child {
       usvg::Node::Group(g) => {
-        let group_opacity = opacity * g.opacity().get() as f32;
+        let group_opacity = opacity * g.opacity().get();
         tessellate_group(g, data, sx, sy, group_opacity, vertices, indices);
       }
       usvg::Node::Path(path) => {
@@ -73,11 +73,11 @@ fn tessellate_path(
   let lyon_path = usvg_path_to_lyon(path);
   let transform_scale = path_transform_scale(path.abs_transform());
 
-  if let Some(ref fill) = path.fill() {
+  if let Some(fill) = path.fill() {
     let color = if let Some(override_color) = data.fill_override() {
       color_to_linear(override_color, opacity)
     } else {
-      paint_to_color(&fill.paint(), opacity * fill.opacity().get() as f32)
+      paint_to_color(fill.paint(), opacity * fill.opacity().get())
     };
 
     let mut geometry: VertexBuffers<SvgVertex, u32> = VertexBuffers::new();
@@ -98,14 +98,14 @@ fn tessellate_path(
     }
   }
 
-  if let Some(ref stroke) = path.stroke() {
+  if let Some(stroke) = path.stroke() {
     let color = if let Some(override_color) = data.stroke_override() {
       color_to_linear(override_color, opacity)
     } else {
-      paint_to_color(&stroke.paint(), opacity * stroke.opacity().get() as f32)
+      paint_to_color(stroke.paint(), opacity * stroke.opacity().get())
     };
 
-    let line_width = stroke.width().get() as f32 * transform_scale * ((sx + sy) * 0.5);
+    let line_width = stroke.width().get() * transform_scale * ((sx + sy) * 0.5);
 
     let mut geometry: VertexBuffers<SvgVertex, u32> = VertexBuffers::new();
     let mut tessellator = StrokeTessellator::new();

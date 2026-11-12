@@ -158,7 +158,7 @@ where
   }
 
   fn update_node(&mut self, f: impl FnOnce(&mut Node)) {
-    f(&mut *self.node);
+    f(&mut self.node);
   }
 
   pub fn height(mut self, height: impl Into<crate::node::dimension::Dimension>) -> Self {

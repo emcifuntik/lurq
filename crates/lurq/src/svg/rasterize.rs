@@ -109,7 +109,7 @@ fn rasterize_group(
   for child in group.children() {
     match child {
       usvg::Node::Group(group) => {
-        rasterize_group(group, data, pixmap, sx, sy, opacity * group.opacity().get() as f32);
+        rasterize_group(group, data, pixmap, sx, sy, opacity * group.opacity().get());
       }
       usvg::Node::Path(path) => {
         rasterize_path(path, data, pixmap, sx, sy, opacity);
@@ -123,14 +123,14 @@ fn rasterize_path(path: &usvg::Path, data: &SvgData, pixmap: &mut tiny_skia::Pix
   let transform = path.abs_transform().post_scale(sx, sy);
 
   if let Some(fill) = path.fill() {
-    let fill_opacity = opacity * fill.opacity().get() as f32;
+    let fill_opacity = opacity * fill.opacity().get();
     if let Some(paint) = raster_paint(data.fill_override(), fill.paint(), fill_opacity) {
       pixmap.fill_path(path.data(), &paint, fill_rule(fill.rule()), transform, None);
     }
   }
 
   if let Some(stroke) = path.stroke() {
-    let stroke_opacity = opacity * stroke.opacity().get() as f32;
+    let stroke_opacity = opacity * stroke.opacity().get();
     if let Some(paint) = raster_paint(data.stroke_override(), stroke.paint(), stroke_opacity) {
       let mut tiny_stroke = stroke.to_tiny_skia();
       tiny_stroke.width *= (sx + sy) * 0.5;

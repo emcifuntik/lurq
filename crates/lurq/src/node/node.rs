@@ -2650,7 +2650,7 @@ impl Node {
 
   pub fn select_style(mut self, style: crate::node::SelectStyle) -> Self {
     let trigger = style.resolved_trigger(false, false, false);
-    if let Some(padding) = trigger.padding.clone() {
+    if let Some(padding) = trigger.padding {
       self = self.padding_custom(padding);
     }
     if let Some(min_width) = trigger.min_width {
@@ -2700,7 +2700,7 @@ impl Node {
       self = self.opacity(opacity);
     }
     if let Some(padding) = &part.padding {
-      self = self.padding_custom(padding.clone());
+      self = self.padding_custom(*padding);
     }
     if let Some(min_width) = part.min_width {
       self = self.min_width(min_width);

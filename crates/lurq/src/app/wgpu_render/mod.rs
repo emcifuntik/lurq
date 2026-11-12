@@ -2404,7 +2404,7 @@ impl RenderEngine for WgpuRenderEngine {
                     });
                     pass.set_bind_group(0, &*clip_bind_group, &[]);
                   } else {
-                    pass.set_bind_group(0, &*bind_group, &[]);
+                    pass.set_bind_group(0, bind_group, &[]);
                   }
                 }
                 CachedImageTexture::Nv12 {

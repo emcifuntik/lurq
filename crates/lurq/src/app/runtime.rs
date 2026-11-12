@@ -3233,7 +3233,7 @@ impl Tree {
           let h = quad.height * scale;
           // Quad opacity rides the image command, not the raster: a faded
           // icon shares the cache entry with its opaque siblings.
-          let raster = crate::svg::rasterize::rasterize(&data, w, h);
+          let raster = crate::svg::rasterize::rasterize(data, w, h);
           let image_transform = quad.transform.matrix_2x2();
           let image_transform_origin = quad
             .transform_origin
