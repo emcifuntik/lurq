@@ -4,7 +4,7 @@ use crate::{
   node::{CheckboxStyle, SliderPartStyle, dimension::Dimension, padding::Padding, spacing_value::SpacingValue},
 };
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct FormTheme {
   pub field: FormFieldTheme,
   pub input: FormInputTheme,
@@ -155,18 +155,6 @@ impl FormSliderStyle {
 
   pub fn thumb_focused_style(&self) -> SliderPartStyle {
     SliderPartStyle::new().border_inside(BorderSize::Sm, &self.thumb_border_focus)
-  }
-}
-
-impl Default for FormTheme {
-  fn default() -> Self {
-    Self {
-      field: FormFieldTheme::default(),
-      input: FormInputTheme::default(),
-      checkbox: FormCheckboxStyle::default(),
-      slider: FormSliderStyle::default(),
-      button: FormButtonTheme::default(),
-    }
   }
 }
 

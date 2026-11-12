@@ -787,17 +787,12 @@ pub enum ButtonKind {
   Submit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum BackgroundSize {
+  #[default]
   Stretch,
   Cover,
   Contain,
-}
-
-impl Default for BackgroundSize {
-  fn default() -> Self {
-    Self::Stretch
-  }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

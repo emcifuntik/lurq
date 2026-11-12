@@ -133,11 +133,12 @@ impl From<Signal<bool>> for OpenState {
   }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Placement {
   TopStart,
   Top,
   TopEnd,
+  #[default]
   BottomStart,
   Bottom,
   BottomEnd,
@@ -149,24 +150,13 @@ pub enum Placement {
   RightEnd,
 }
 
-impl Default for Placement {
-  fn default() -> Self {
-    Self::BottomStart
-  }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CollisionStrategy {
   None,
   Clamp,
   Flip,
+  #[default]
   FlipThenClamp,
-}
-
-impl Default for CollisionStrategy {
-  fn default() -> Self {
-    Self::FlipThenClamp
-  }
 }
 
 /// What a left press outside an open popup does besides closing it, for
