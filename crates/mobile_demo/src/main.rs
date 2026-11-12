@@ -14,6 +14,7 @@ mod inputs;
 mod more;
 mod scroll;
 mod sheets;
+mod system;
 mod touch;
 mod ui;
 mod virtual_list;
@@ -24,6 +25,7 @@ use lurq::{
     component::Component,
     ctx::Ctx,
     events::{HistoryDirection, HistorySwipeEvent},
+    theme::{PaletteColor, ThemePalette},
     wgpu_render::WgpuRenderEngine,
     window::Orientation,
     winit_shell::WinitWindow,
@@ -116,6 +118,7 @@ fn routes() -> Routes {
       .route("/scroll", |ctx| {
         screen(ctx, "/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
       })
+      .route("/system", |ctx| screen(ctx, "/system", system::system))
       .route("/sheets", |ctx| {
         screen(ctx, "/sheets", |ctx| ctx.mount::<sheets::SheetsScreen>(()))
       })
@@ -185,7 +188,7 @@ fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) 
     .padding_left(safe_area.left)
     .padding_right(safe_area.right)
     // The home screen's list goes on under the bar of tabs, and shows through it: it pads its own content.
-    .padding_bottom(if path == "/" { 0.0 } else { safe_area.bottom })
+    .padding_bottom(if matches!(path, "/" | "/system") { 0.0 } else { safe_area.bottom })
     .into()
 }
 
@@ -207,6 +210,16 @@ fn main() {
       handle.token()
     );
   }
+  // A palette for each appearance: the theme is in the system's, and the System screen shows it.
+  let mut dark = ThemePalette::default();
+  for (role, color) in [
+    (PaletteColor::SurfaceBase, "#1c1c1e"),
+    (PaletteColor::Border, "#38383a"),
+    (PaletteColor::TextPrimary, "#ffffff"),
+  ] {
+    dark.set(role, Color::from_hex(color));
+  }
+  app.theme().set_palettes(ThemePalette::default(), dark);
   tree.mount_root::<MobileDemo>(&mut app, ());
   let window = WinitWindow::new(app, tree)
     .with_title("lurq mobile demo")

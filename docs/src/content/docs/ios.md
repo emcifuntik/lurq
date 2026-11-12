@@ -223,6 +223,14 @@ ctx.window().on_app_event(move |event| match event {
 | `Shortcut(kind)` | The app was opened by one of its home screen shortcuts |
 | `Rotated(orientation)` | The way the content is turned: at the start, and whenever it changes |
 
+### What the person set for the system
+
+The appearance, the text size, bold text, reduced motion and the rest of what a person sets for every app are
+in `ctx.window().system`, and are read again whenever the app comes back from the settings or the control
+centre. The theme follows the appearance, the text size (Dynamic Type) and bold text by itself, and the stack,
+the bars and the sheets follow reduced motion and transparency. See
+[The System's Settings](../theme/#the-systems-settings).
+
 ### Turning
 
 A phone held on its side turns the app with it, with no status bar, and the safe area follows. Which ways the

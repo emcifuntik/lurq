@@ -700,6 +700,7 @@ mod tests {
       is_decorated: false,
       is_focused: true,
       safe_area: Default::default(),
+      system: Default::default(),
     }
   }
 

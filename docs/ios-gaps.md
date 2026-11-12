@@ -98,15 +98,23 @@ inside its input.
 
 ## Appearance and accessibility
 
-None of what a person sets for the whole system reaches a lurq app. Not done:
+What a person sets for the whole system reaches a lurq app (`ctx.window().system`), and the theme, the stack,
+the bars and the sheets follow it. Tried in a simulator: the appearance and the text size, changed while the
+app runs. Not checked on a device, and bold text, reduced motion and reduced transparency not checked at all.
 
-- **Light and dark appearance:** the app is not told which the system is in, nor that it changed, and the
-  theme does not follow it.
-- **Dynamic Type:** text keeps its size whatever text size the person chose.
-- **Bold Text:** text keeps its weight.
-- **Increase Contrast, Reduce Transparency, Differentiate Without Color, Button Shapes, On/Off Labels.**
-- **Reduce Motion:** the stack's screens and every animation move as always. The platform cross-fades in
-  their place.
+- **Dynamic Type** is the theme's typography alone, as on the platform: a size an app gives itself does not
+  change unless it asks (`theme.scaled`). The navigation bar's and the bar of tabs' own text does not grow,
+  and neither does a large title, which the platform's does. The styles of a form and of Markdown carry sizes
+  of their own, which do not follow.
+- **Light and dark:** a theme follows with a palette for each. The demo app is dark in both.
+- **Bold Text** is the typography's weights; text with a weight of the app's own keeps it, where the
+  platform makes every text heavier.
+- **Reduce Motion:** the stack fades. A sheet still comes up from the bottom, and a text input's caret, a
+  scroll's momentum and an app's own transitions are as always.
+- **Increase Contrast, Differentiate Without Color, Button Shapes, On/Off Labels** are told and nothing in
+  lurq acts on them.
+- **A change while the app is in front and nothing happens** (the appearance at sunset) is taken at the next
+  touch or frame, not at once.
 - **VoiceOver, Switch Control, Voice Control:** the screen is one opaque view to them. Nothing in it has a
   label, a role or a value, and nothing can be reached or activated.
 - **Larger accessibility sizes, Zoom, Smart Invert:** not checked.
