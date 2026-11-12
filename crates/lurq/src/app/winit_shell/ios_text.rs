@@ -1141,6 +1141,19 @@ impl TextInput {
           .collect(),
       );
     }
+    // The platform put the keyboard away itself, as it does when a finger takes it down with it: the view is
+    // no longer the one that types, and the input is left.
+    let typing = MIRROR
+      .lock()
+      .unwrap()
+      .as_ref()
+      .is_some_and(|mirror| mirror.traits.is_some());
+    if typing {
+      let first: bool = unsafe { msg_send![&*self.view, isFirstResponder] };
+      if !first {
+        tree.keyboard_was_put_away();
+      }
+    }
     let traits = tree.keyboard_traits();
     let snapshot = tree.text_input_snapshot();
     let (Some(traits), Some(snapshot)) = (traits, snapshot) else {

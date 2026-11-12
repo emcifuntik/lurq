@@ -37,8 +37,9 @@ inside its input.
 - **A hardware keyboard:** its keys are passed to the tree, and shortcuts take Command. Written with no
   keyboard to try it on: nothing of it was checked.
 - **Putting the keyboard away.** A tap outside an input leaves it up, and a list set to
-  (`ScrollState::set_dismisses_keyboard`) puts it away when a finger starts to scroll it. The platform can also
-  have the keyboard follow the finger down as the list is dragged; that is not done.
+  (`ScrollState::set_keyboard_dismissal`) puts it away when a finger starts to scroll it, or has it follow the
+  finger down. The following is UIKit's own, borrowed: a scroll view that is not seen, whose pan gesture is
+  put on the window's view. Written without a device to try it on: not checked.
 - **Emoji in transformed text** (rotated, scaled) draw nothing: only the plain path draws them through Core
   Text.
 

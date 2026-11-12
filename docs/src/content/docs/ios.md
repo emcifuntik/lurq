@@ -164,8 +164,10 @@ One gesture scrolls one container, the innermost that has room in the finger's d
   the content, shown while it scrolls.
 - **A tap on the status bar** scrolls the outermost vertical list to its top.
   `ScrollState::set_scrolls_to_top(false)` leaves a list out of it.
-- **The keyboard** stays up when a list is scrolled, unless the list says otherwise:
-  `ScrollState::set_dismisses_keyboard(true)` puts it away when a finger starts to scroll.
+- **The keyboard** stays up when a list is scrolled, unless the list says otherwise with
+  `ScrollState::set_keyboard_dismissal(..)`: `KeyboardDismissal::OnDrag` puts it away when a finger starts
+  to scroll, and `Interactive` has it go down with the finger once the finger reaches it, and come back if
+  the finger goes back up. `set_dismisses_keyboard(true)` is `OnDrag`.
 - **Momentum** can be changed for the whole window with `Tree::set_touch_momentum(TouchMomentum { .. })`:
   the deceleration rate, and the slowest and fastest speeds. The defaults are the platform's.
 

@@ -110,9 +110,10 @@ impl Component for InputsScreen {
         push_log(&keys, format!("key “{}” ({})", event.key, event.code));
       });
 
-    // A tap outside an input leaves the keyboard up; scrolling the screen puts it away.
+    // A tap outside an input leaves the keyboard up; a finger that scrolls the screen down onto the keyboard
+    // takes it down with it, and back up if it goes back.
     if let Some(scroll) = StackOutlet::screen_scroll(ctx) {
-      scroll.set_dismisses_keyboard(true);
+      scroll.set_keyboard_dismissal(lurq::layout::layout_kind::KeyboardDismissal::Interactive);
     }
     StackOutlet::large_title_scroll(ctx, content)
       .size(FILL, FILL)

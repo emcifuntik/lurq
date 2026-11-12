@@ -50,6 +50,19 @@ pub enum LayoutKind {
   },
 }
 
+/// What a finger that scrolls a list does to a phone's on-screen keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum KeyboardDismissal {
+  /// Nothing: the keyboard stays up.
+  #[default]
+  None,
+  /// The keyboard goes away when the finger starts to scroll.
+  OnDrag,
+  /// The keyboard goes down with the finger once the finger reaches it, and comes back if the finger goes
+  /// back up: the platform's own, where there is a platform to do it. Elsewhere it is nothing.
+  Interactive,
+}
+
 #[derive(Clone)]
 pub struct ScrollState {
   inner: Arc<Mutex<ScrollStateInner>>,
@@ -115,8 +128,8 @@ struct ScrollStateInner {
   overscroll_y: f32,
   /// See [`ScrollState::set_scrolls_to_top`].
   scrolls_to_top: bool,
-  /// See [`ScrollState::set_dismisses_keyboard`].
-  dismisses_keyboard: bool,
+  /// See [`ScrollState::set_keyboard_dismissal`].
+  keyboard_dismissal: KeyboardDismissal,
   pending_scroll_x: Option<PendingScroll>,
   pending_scroll_y: Option<PendingScroll>,
   max_scroll_x: f32,
@@ -181,7 +194,7 @@ impl ScrollState {
         overscroll_x: 0.0,
         overscroll_y: 0.0,
         scrolls_to_top: true,
-        dismisses_keyboard: false,
+        keyboard_dismissal: KeyboardDismissal::None,
         pending_scroll_x: None,
         pending_scroll_y: None,
         max_scroll_x: 0.0,
@@ -234,11 +247,25 @@ impl ScrollState {
   /// the focus from the text input being typed into; it does not unless set. A tap outside a text input leaves
   /// the keyboard up, so a screen of inputs that scrolls wants this, or a control that puts it away.
   pub fn set_dismisses_keyboard(&self, dismisses_keyboard: bool) {
-    self.inner.lock().unwrap().dismisses_keyboard = dismisses_keyboard;
+    self.set_keyboard_dismissal(if dismisses_keyboard {
+      KeyboardDismissal::OnDrag
+    } else {
+      KeyboardDismissal::None
+    });
   }
 
   pub fn dismisses_keyboard(&self) -> bool {
-    self.inner.lock().unwrap().dismisses_keyboard
+    self.keyboard_dismissal() == KeyboardDismissal::OnDrag
+  }
+
+  /// What a finger that scrolls this container does to a phone's on-screen keyboard; see
+  /// [`KeyboardDismissal`]. Nothing, unless set.
+  pub fn set_keyboard_dismissal(&self, dismissal: KeyboardDismissal) {
+    self.inner.lock().unwrap().keyboard_dismissal = dismissal;
+  }
+
+  pub fn keyboard_dismissal(&self) -> KeyboardDismissal {
+    self.inner.lock().unwrap().keyboard_dismissal
   }
 
   /// How far the content is drawn past its ends, along each axis: negative before the start, positive beyond
