@@ -111,6 +111,9 @@ app runs. Not checked on a device, and bold text, reduced motion and reduced tra
   platform makes every text heavier.
 - **Reduce Motion:** the stack fades. A sheet still comes up from the bottom, and a text input's caret, a
   scroll's momentum and an app's own transitions are as always.
+- **The Liquid Glass setting** (clear or tinted) is not followed. No API tells it. UIKit keeps it in its own
+  defaults (`UIViewGlassTintAmount` in `com.apple.UIKit`), which an app can read and which was seen to change
+  with the setting on an iPhone 17, but the name is in no documentation and lurq does not lean on it.
 - **Increase Contrast, Differentiate Without Color, Button Shapes, On/Off Labels** are told and nothing in
   lurq acts on them.
 - **A change while the app is in front and nothing happens** (the appearance at sunset) is taken at the next
