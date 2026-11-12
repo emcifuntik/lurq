@@ -75,6 +75,76 @@ Modal::new(content).open(open.clone()).target(panel_ref);
 - Signal-backed modals close on `Escape` by default.
 - An open modal traps Tab and Shift+Tab: they cycle the topmost modal's stops (elements with `tab_index(0)` or higher, and form controls) and never reach the page behind it, with or without a form. A form inside the modal cycles inside it. See [Modal Focus Trap](../focus-navigation/#modal-focus-trap).
 
+## Sheets
+
+Added after **lurq 0.60.0**. A `Sheet` is content that comes up from the bottom of the window over everything in
+it, as a phone's apps show a choice or a short task. It is a component of its own, mounted anywhere in the tree
+and taking no room there, and it is up while its signal is set:
+
+```rust
+use lurq::components::{Sheet, SheetDetent, SheetProps, SheetStyle};
+
+let sheet = Sheet::mount(
+  ctx,
+  SheetProps::new(self.open.clone())
+    .detents([SheetDetent::Medium, SheetDetent::Large])
+    .style(SheetStyle::new().grabber(true)),
+  content,
+);
+```
+
+- **It comes up and goes down with a move**, a spring, and the window behind dims. It stays in the tree until it
+  has gone down.
+- **It is put away** by clearing the signal, by Escape, by a press beside it, and by a finger that drags it down
+  far enough or throws it down. `SheetProps::dismissable(false)` leaves only the signal.
+- **It stands at its detents**: `Content` (as high as its content, the default), `Medium` (half the window),
+  `Large` (the whole window under the status bar), `Fraction(share)` and `Height(pixels)`. It comes up at the
+  first, a finger moves it between them, and it goes to the nearest to where the finger threw it.
+  `SheetProps::detent(signal)` says which it is at, by its place in the list, and sends it to another.
+- **Content that scrolls** is named with `SheetProps::scroll(state)`, the `ScrollState` of its list: a finger
+  going up moves the sheet to its highest before the list scrolls, and one going down takes the sheet only when
+  the list is at its top.
+- **The content is clear of the home indicator and the keyboard**: it is padded by the safe area, and the
+  sheet rises by the keyboard's height, as far as its highest place.
+- Like a `Modal`, it traps Tab.
+
+Several sheets in one component are told apart with `Sheet::mount_keyed`.
+
+`SheetStyle` is how it looks and moves; `SheetStyle::dark()` has the platform's dark colors.
+
+| Field | Starts as | |
+| --- | --- | --- |
+| `background` | white | The sheet's own color |
+| `corner_radius` | 20 | Of its top corners |
+| `backdrop`, `dim` | black, 0.3 | What is drawn over the window behind, and how much of it shows |
+| `grabber` | `false` | The bar at the top that says it can be dragged |
+| `grabber_color`, `grabber_width`, `grabber_height`, `grabber_top` | 36 by 5, 5 under the edge | |
+| `top_margin` | 10 | How far under the status bar the highest sheet stops |
+| `max_width` | none | In a wider window the sheet stands in the middle |
+| `duration` | 500 ms | Of every move |
+| `throw` | 0.15 | How many seconds of a finger's speed ahead the sheet is taken to be going |
+
+### The window behind
+
+Behind a sheet at its full height a phone's apps draw back: the app gets smaller, its top goes under the status
+bar's room and its corners round. `SheetHost` around the whole of the app's content does that, for every sheet
+mounted in the content. It makes its content itself, as a route's is made in its outlet:
+
+```rust
+fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+  let router = self.router.clone();
+  SheetHost::mount(ctx, move |ctx| Router::mount(ctx, router.clone()))
+}
+```
+
+The app draws back as far as the sheet has come from its next height down, with the sheet and with the finger
+that has it. A sheet that never takes all the room only dims the app, and so does every sheet without a host.
+`SheetHost::mount_with` takes a `SheetHostStyle`: `scale` (0.92), `corner_radius` (12) and the `background`
+seen around the app (black).
+
+A sheet that draws all of itself has a clear `background`, no `corner_radius` and no grabber: the content is
+then the whole sheet, and the moves, the heights and the finger are still the component's.
+
 ## Popups And Outside Presses
 
 `Popup` (and its alias `Popover`) layers content next to an anchor element. With a signal-backed open state it closes on `Escape` and on a left press outside it:

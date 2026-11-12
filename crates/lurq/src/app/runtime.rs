@@ -5600,6 +5600,12 @@ impl Tree {
   }
 
   fn apply_focus_request_inner(&mut self, discard_missing: bool) {
+    if self.root_ctx.as_ref().is_some_and(Ctx::take_blur_request) {
+      self.blur_focus();
+    }
+    if self.root_ctx.as_ref().is_some_and(Ctx::take_scroll_to_top_request) {
+      self.touch_scroll_to_top(Instant::now());
+    }
     let Some(reference) = self.root_ctx.as_ref().and_then(Ctx::focus_request) else {
       return;
     };

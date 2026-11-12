@@ -217,6 +217,22 @@ impl RouterHandle {
     true
   }
 
+  /// Goes back several entries at once, as far as there are entries: the screens between are passed over
+  /// and not shown. Tells whether it moved.
+  pub fn back_by(&self, steps: usize) -> bool {
+    let new_path = {
+      let mut history = self.inner.history.lock();
+      let steps = steps.min(history.cursor);
+      if steps == 0 {
+        return false;
+      }
+      history.cursor -= steps;
+      history.entries[history.cursor].path.clone()
+    };
+    self.inner.current_path.set(new_path);
+    true
+  }
+
   pub fn forward(&self) -> bool {
     let new_path = {
       let mut history = self.inner.history.lock();

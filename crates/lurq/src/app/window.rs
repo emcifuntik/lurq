@@ -156,6 +156,9 @@ pub struct SafeAreaInsets {
   pub right: f32,
   pub bottom: f32,
   pub left: f32,
+  /// How much more `bottom` is for the on-screen keyboard being up: 0 with the keyboard down. What stands at
+  /// the bottom of the window, as a sheet does, rises by it.
+  pub keyboard: f32,
 }
 
 impl WindowInfo {

@@ -48,12 +48,23 @@ inside its input.
 
 - **The way back's arrow** is the platform's symbol with the `raster` feature; without it, a drawing after
   it.
-- **The move** is a spring of 500 ms that starts at the finger's speed; the platform's own spring was not
-  measured against it.
-- **The bar** is opaque and its content does not scroll under it; there is no large title, no search field
-  and no material.
-- **A way back with no room even for `Back`** keeps the word; the platform leaves the arrow alone.
-- **Sheets and tabs:** not there.
+- **The bar** is over a screen's list, which shows through it blurred; the platform's material also
+  brightens and saturates what is behind it, and the newest system's bar is glass that bends it. The
+  toolbar at the bottom and the list a long press on the way back opens are not blurred.
+- **How things move** in the stack (the spring's length, how far a large title grows and the way it takes to
+  a way back) was set by eye and not measured against the platform; `StackMotion` changes the numbers.
+- **A search field** is the field alone: no scopes under it, no suggestions, and it does not come and go
+  with a move of its own when it takes the bar's place.
+- **Sheets** are there (`Sheet`, and `SheetHost` for the app that draws back behind one), with these
+  differences from the platform's: a sheet is never one the window behind can still be used under; there is
+  no stack of screens inside a sheet with a bar of its own; the corners of the app drawn back are rounded at
+  once and not little by little; and the numbers (the radii, the dim, the spring, how small the app gets)
+  were set by eye.
+- **Tabs** are there (`Tabs`, `TabOutlet`, `TabBar`), with these differences from the platform's: the bar is
+  the plain one across the bottom, not the floating glass one of the newest system with a lens a finger
+  drags between tabs; it does not get smaller as the content scrolls; the picture of a tab that is chosen
+  does not spring; there is no tab for searching, no "More" tab for those that do not fit, no accessory over
+  the bar, and no sidebar in a wide window. Its sizes were set by eye in a simulator.
 
 ## Touch
 
@@ -77,14 +88,34 @@ inside its input.
   no status bar. Now and then, turned back upright, the window shows a frame drawn for half its height until
   something asks for another; the shell asks for one when the window's size is not the last frame's, which
   made it rarer and did not end it. Not looked into further.
-- **Light and dark appearance, Dynamic Type, VoiceOver:** not done.
+- **Face ID and Touch ID.** An app cannot ask the person to prove who they are, to open the app or a part of
+  it (`LocalAuthentication`), nor keep a secret behind it in the keychain. Not done. An app that asks needs
+  `NSFaceIDUsageDescription` in its `Info.plist`.
 - **Features of lurq other than touch and text** have not been run on iOS: `resources` (the network; `ring`
   did not build without Xcode), `persistent_storage`, `image`, `svg`, `markdown`, the developer tools.
 - **Haptics** (`ctx.window().haptic(..)`) were written without a device to feel them; no crash was reported,
   and nobody confirmed the tap itself.
 
+## Appearance and accessibility
+
+None of what a person sets for the whole system reaches a lurq app. Not done:
+
+- **Light and dark appearance:** the app is not told which the system is in, nor that it changed, and the
+  theme does not follow it.
+- **Dynamic Type:** text keeps its size whatever text size the person chose.
+- **Bold Text:** text keeps its weight.
+- **Increase Contrast, Reduce Transparency, Differentiate Without Color, Button Shapes, On/Off Labels.**
+- **Reduce Motion:** the stack's screens and every animation move as always. The platform cross-fades in
+  their place.
+- **VoiceOver, Switch Control, Voice Control:** the screen is one opaque view to them. Nothing in it has a
+  label, a role or a value, and nothing can be reached or activated.
+- **Larger accessibility sizes, Zoom, Smart Invert:** not checked.
+
 ## Performance
 
-- **Single frames of up to 20 ms** against 8.3 ms at 120 Hz, a few a second at worst, measured while
-  scrolling on an iPhone 17. Not looked into; it is expected on the desktop too.
-- `frame_pacing_tests` measure the wall clock and fail now and then, on `master` as well.
+- **Late frames.** While a finger drags content or an animation runs, 2 to 5 frames in a hundred come a
+  refresh late on an iPhone 17; it was a third of them before the display link was left running between
+  frames. Whether a desktop has late frames of its own was not looked into.
+- Six tests fail when every test target is run together, on `master` as well, and pass run alone
+  (`window_chrome` twice, `generic_family_serif`, `give_way_drop_below`, `dpi_scaled_wrapped_text`,
+  `building_a_tree_allocates_no_box_or_watch_per_node`). Not looked into.

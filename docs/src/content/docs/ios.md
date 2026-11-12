@@ -87,6 +87,7 @@ Column::new()
 
 The on-screen keyboard counts: while it is up `safe_area.bottom` is its height, frame by frame as it rises, so
 content padded by the safe area ends above it. The focused text input is scrolled into view as it does.
+`safe_area.keyboard` is how much of `bottom` the keyboard adds, 0 with it down.
 
 ## Touch
 
@@ -145,6 +146,13 @@ is no haptic engine.
 `StackOutlet` moves between the router's screens as the platform's apps do: a push comes in from the right, a
 finger from the left edge drags the top screen back, the screens under stay alive, and a navigation bar shows
 the title and the way back. See [A Stack Of Screens](../routing/#a-stack-of-screens).
+
+`TabOutlet` puts several such stacks side by side under a bar of tabs, each kept as it was left. See
+[Tabs](../routing/#tabs). Under the bar a screen pads its content by `ctx.safe_area()`, which leaves out what
+the bar already covers.
+
+`Sheet` brings content up from the bottom over the screens and the bar: it stands at its heights, and a finger
+drags it between them and away. See [Sheets](../modals/#sheets).
 
 ## Scrolling
 

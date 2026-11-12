@@ -15,7 +15,14 @@
 //! with the title of the screen under it. A screen says what the bar shows with
 //! [`Ctx::navigation_item`](crate::app::ctx::Ctx::navigation_item). The titles move with the screens.
 
-use std::{any::Any, sync::Arc, time::Duration};
+use std::{
+  any::Any,
+  sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+  },
+  time::{Duration, Instant},
+};
 
 use parking_lot::Mutex;
 
@@ -25,14 +32,14 @@ use crate::{
   app::{
     component::Component,
     ctx::{Ctx, Timeout},
-    events::{EdgePanEvent, GesturePhase, ScreenEdge},
+    events::{EdgePanEvent, GesturePhase, LongPressEvent, ScreenEdge},
     window::SafeAreaInsets,
   },
-  components::{Column, Row, Stack, Text},
+  components::{Column, KeyboardKind, ReturnKey, Row, ScrollVertical, Stack, Text, TextInput, TextOverflow},
   core::{ElementRef, Signal},
   layout::{
-    Alignment,
-    layout_kind::Justify,
+    Alignment, StackAlignment,
+    layout_kind::{Justify, ScrollState},
     text_style::{FontWeight, TextStyle},
   },
   node::{Element, color::Color, dimension::Dimension, transform::Transform2D},
@@ -42,29 +49,53 @@ use crate::{
   },
 };
 
-/// How long a screen takes to come in or go out. It follows a spring ([`Easing::Spring`]), which starts at the
-/// speed a finger let the screen go with.
-const MOVE: Duration = Duration::from_millis(500);
+/// How a [`StackOutlet`]'s screens and bar move. The values it starts with were set by eye beside the
+/// platform's, not measured against it; an app that knows better gives its own with
+/// [`StackOutletProps::motion`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StackMotion {
+  /// How long a screen takes to come in or go out. It follows a spring ([`Easing::Spring`]), which starts at
+  /// the speed a finger let the screen go with. Taken when the outlet is made.
+  pub duration: Duration,
+  /// How far the screen under gives way while one is over it, as a share of the width.
+  pub parallax: f32,
+  /// How dark the screen under gets, from 0 to 1.
+  pub dim: f32,
+  /// How far across a finger from the edge takes the top screen for it to go back when lifted, as a share of
+  /// the width.
+  pub back_share: f32,
+  /// The speed of the finger that takes the screen back from anywhere, in logical pixels a second.
+  pub back_speed: f32,
+  /// How long the bar's title and color take to come and go as a large title scrolls out of view and back.
+  pub title_fade: Duration,
+  /// How much larger a large title gets as its content is pulled down: 1.1 is a tenth larger.
+  pub large_title_growth: f32,
+  /// The pull, in logical pixels, that takes it there.
+  pub large_title_pull: f32,
+}
+
+impl Default for StackMotion {
+  fn default() -> Self {
+    Self {
+      duration: Duration::from_millis(500),
+      parallax: 0.3,
+      dim: 0.1,
+      back_share: 0.5,
+      back_speed: 500.0,
+      title_fade: Duration::from_millis(200),
+      large_title_growth: 1.1,
+      large_title_pull: 150.0,
+    }
+  }
+}
+
 /// A frame is painted with the screens where the move starts before they are sent on their way: a transition
 /// goes from what was last painted.
 const BEGIN: Duration = Duration::from_millis(1);
-/// When the screens are taken to have arrived.
-const SETTLE: Duration = Duration::from_millis(550);
-/// How far the screen under gives way, as a share of the width, and how dark it gets.
-const PARALLAX: f32 = 0.3;
-const DIM: f32 = 0.1;
-/// How far across a finger from the edge takes the screen for it to go back when lifted, as a share of the
-/// width, and the speed that takes it back from anywhere, in logical pixels per second.
-const BACK_SHARE: f32 = 0.5;
-const BACK_SPEED: f32 = 500.0;
+/// How long after a move's duration the screens are taken to have arrived.
+const SETTLE_AFTER: Duration = Duration::from_millis(50);
 /// No finger is dragging the top screen.
 const NO_DRAG: f32 = -1.0;
-/// The bar's height, and its height in a window too low for that: a phone held on its side.
-const BAR_HEIGHT: f32 = 44.0;
-const LOW_BAR_HEIGHT: f32 = 32.0;
-const LOW_WINDOW: f32 = 480.0;
-/// What the way back says when the title of the screen under has no room, or there is none.
-const BACK: &str = "Back";
 /// The way back's arrow, its stroke, and the space between it and the label.
 const CHEVRON_WIDTH: f32 = 11.0;
 const CHEVRON_HEIGHT: f32 = 20.0;
@@ -77,11 +108,16 @@ const CHEVRON_POINT_SIZE: f32 = 17.0;
 /// title.
 const BACK_LEADING: f32 = 9.0 + CHEVRON_WIDTH + BACK_SPACING;
 const BACK_GAP: f32 = 8.0;
+const MENU_MOVE: Duration = Duration::from_millis(250);
+const MENU_DIM: f32 = 0.2;
+const MENU_OPENING: Duration = Duration::from_millis(400);
+/// About how wide the word for going back is in the bar's text, until it is laid out.
+const BACK_WIDTH: f32 = 40.0;
 const FILL: Dimension = Dimension::Pct(100.0);
 
 /// The bar a [`StackOutlet`] draws over its screens, and its colors. The bar is as high as a phone's, 44
 /// logical pixels under the safe area's top.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NavigationBar {
   pub background: Color,
   /// The way back, and what a screen puts at the bar's trailing end by default.
@@ -89,26 +125,82 @@ pub struct NavigationBar {
   pub title: Color,
   /// The line under the bar.
   pub border: Color,
+  /// How much a screen's content is blurred where it shows through the bar: the content of a screen whose
+  /// list goes under the bar ([`StackOutlet::large_title_scroll`]), where the bar's `background` is not all
+  /// there. 0 is no blur.
+  pub blur: f32,
+  /// How high the bar is, and how high in a window lower than `low_window`: a phone held on its side, which
+  /// has no large titles either.
+  pub height: f32,
+  pub low_height: f32,
+  pub low_window: f32,
+  /// The title in the bar.
+  pub title_size: f32,
+  pub title_weight: FontWeight,
+  /// The bar's other text: the way back, a search field, the list of the screens under.
+  pub text_size: f32,
+  /// A large title: its text, the room it takes, and how far it and a search field stand in from the sides.
+  pub large_title_size: f32,
+  pub large_title_weight: FontWeight,
+  pub large_title_height: f32,
+  pub inset: f32,
+  /// What the way back says when the title of the screen under has no room, or there is none: the word for
+  /// going back, in the app's language.
+  pub back: String,
+  /// Whether a long press on the way back lists the screens under, and how wide the list is.
+  pub back_menu: bool,
+  pub back_menu_width: f32,
+  /// A prompt over the title: its text and the room it takes.
+  pub prompt_size: f32,
+  pub prompt_height: f32,
+  /// How high a screen's toolbar is.
+  pub toolbar_height: f32,
+  /// A search field: how high it is, and its color and its placeholder's, in place of ones made from
+  /// `title`.
+  pub search_height: f32,
+  pub search_background: Option<Color>,
+  pub search_placeholder: Option<Color>,
 }
 
 impl NavigationBar {
-  /// A light bar.
+  /// A light bar, sized as the platform's.
   pub fn new() -> Self {
     Self {
-      background: Color::from_hex("#f9f9f9"),
+      background: Color::new(249, 249, 249, 224),
       tint: Color::from_hex("#007aff"),
       title: Color::from_hex("#000000"),
       border: Color::from_hex("#c6c6c8"),
+      blur: 40.0,
+      height: 44.0,
+      low_height: 32.0,
+      low_window: 480.0,
+      title_size: 17.0,
+      title_weight: FontWeight::SemiBold,
+      text_size: 17.0,
+      large_title_size: 34.0,
+      large_title_weight: FontWeight::Bold,
+      large_title_height: 52.0,
+      inset: 16.0,
+      back: "Back".to_owned(),
+      back_menu: true,
+      back_menu_width: 250.0,
+      prompt_size: 13.0,
+      prompt_height: 22.0,
+      toolbar_height: 44.0,
+      search_height: 36.0,
+      search_background: None,
+      search_placeholder: None,
     }
   }
 
   /// A dark bar.
   pub fn dark() -> Self {
     Self {
-      background: Color::from_hex("#1c1c1e"),
+      background: Color::new(28, 28, 30, 204),
       tint: Color::from_hex("#0a84ff"),
       title: Color::from_hex("#ffffff"),
       border: Color::from_hex("#38383a"),
+      ..Self::new()
     }
   }
 
@@ -131,6 +223,23 @@ impl NavigationBar {
     self.border = color;
     self
   }
+
+  pub fn blur(mut self, radius: f32) -> Self {
+    self.blur = radius;
+    self
+  }
+
+  /// The word for going back; see the field.
+  pub fn back(mut self, word: impl Into<String>) -> Self {
+    self.back = word.into();
+    self
+  }
+
+  /// Whether a long press on the way back lists the screens under.
+  pub fn back_menu(mut self, enabled: bool) -> Self {
+    self.back_menu = enabled;
+    self
+  }
 }
 
 impl Default for NavigationBar {
@@ -151,6 +260,50 @@ pub struct NavigationItem {
   pub trailing: Option<Element>,
   pub title_view: Option<Element>,
   pub bar_hidden: bool,
+  pub hides_tab_bar: bool,
+  pub large_title: bool,
+  pub prompt: Option<String>,
+  pub toolbar: Option<Element>,
+  pub search: Option<NavigationSearch>,
+  pub large_title_view: Option<Element>,
+  pub search_view: Option<Element>,
+}
+
+/// A search field at the top of a screen's content, under its title: [`NavigationItem::search`]. It scrolls
+/// away with the content. While it is typed into it takes the bar's place: the bar and a large title go, and
+/// a way to cancel comes beside the field, which clears it and puts the keyboard away.
+#[derive(Clone)]
+pub struct NavigationSearch {
+  /// What is typed, for the screen to read and to set.
+  pub text: Signal<String>,
+  pub placeholder: String,
+  /// What the way to cancel says.
+  pub cancel: String,
+}
+
+impl NavigationSearch {
+  pub fn new(text: Signal<String>) -> Self {
+    Self {
+      text,
+      placeholder: "Search".to_owned(),
+      cancel: "Cancel".to_owned(),
+    }
+  }
+
+  pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+    self.placeholder = placeholder.into();
+    self
+  }
+
+  pub fn cancel(mut self, cancel: impl Into<String>) -> Self {
+    self.cancel = cancel.into();
+    self
+  }
+
+  /// What tells one search field from another.
+  fn key(&self) -> (usize, &str, &str) {
+    (self.text.id(), &self.placeholder, &self.cancel)
+  }
 }
 
 impl NavigationItem {
@@ -163,6 +316,13 @@ impl NavigationItem {
       trailing: None,
       title_view: None,
       bar_hidden: false,
+      hides_tab_bar: false,
+      large_title: false,
+      prompt: None,
+      toolbar: None,
+      search: None,
+      large_title_view: None,
+      search_view: None,
     }
   }
 
@@ -207,6 +367,69 @@ impl NavigationItem {
     self
   }
 
+  /// Takes the bar of tabs under the stack ([`TabOutlet`](super::TabOutlet)) out of view while this screen
+  /// is the top one: the bar goes with the screen that comes in over it, and comes back with the one under.
+  pub fn hides_tab_bar(mut self, hides: bool) -> Self {
+    self.hides_tab_bar = hides;
+    self
+  }
+
+  /// Shows the title large, at the top of the screen's content, where it scrolls away with the content; the
+  /// bar's own title comes in once it has. The screen puts its content in
+  /// [`StackOutlet::large_title_scroll`], which draws the large title over it and scrolls the two.
+  pub fn large_title(mut self, large: bool) -> Self {
+    self.large_title = large;
+    self
+  }
+
+  /// A line of small text over the title, for which the bar grows.
+  pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
+    self.prompt = Some(prompt.into());
+    self
+  }
+
+  /// What is across the bottom of the outlet while this screen is the top one, over the home indicator's
+  /// room and in the bar's color: a row of the screen's controls. The screen itself ends above it, and has
+  /// no bottom of the safe area to keep clear of. Shown as [`trailing`](Self::trailing) is.
+  pub fn toolbar(mut self, element: impl Into<Element>) -> Self {
+    self.toolbar = Some(element.into());
+    self
+  }
+
+  /// A search field at the top of the screen's content, which
+  /// [`StackOutlet::large_title_scroll`] draws; see [`NavigationSearch`].
+  pub fn search(mut self, search: NavigationSearch) -> Self {
+    self.search = Some(search);
+    self
+  }
+
+  /// What [`StackOutlet::large_title_scroll`] draws in the large title's place: a title of the screen's own
+  /// making, which scrolls away with the content as the outlet's does. It is not carried to a way back when
+  /// a screen is pushed over this one. Asks for a large title too.
+  pub fn large_title_view(mut self, element: impl Into<Element>) -> Self {
+    self.large_title_view = Some(element.into());
+    self.large_title = true;
+    self
+  }
+
+  /// What [`StackOutlet::large_title_scroll`] draws in the search field's place: a field of the screen's own.
+  /// It says when it is searched in with [`StackOutlet::searching`], for the bar and a large title to give
+  /// it their place.
+  pub fn search_view(mut self, element: impl Into<Element>) -> Self {
+    self.search_view = Some(element.into());
+    self
+  }
+
+  /// Whether the item holds an element of the screen's, which cannot be told from the one it held before.
+  fn has_elements(&self) -> bool {
+    self.leading.is_some()
+      || self.trailing.is_some()
+      || self.title_view.is_some()
+      || self.toolbar.is_some()
+      || self.large_title_view.is_some()
+      || self.search_view.is_some()
+  }
+
   fn same_as(&self, other: &Self) -> bool {
     self.title == other.title
       && self.back_title == other.back_title
@@ -215,6 +438,13 @@ impl NavigationItem {
       && self.trailing.is_some() == other.trailing.is_some()
       && self.title_view.is_some() == other.title_view.is_some()
       && self.bar_hidden == other.bar_hidden
+      && self.hides_tab_bar == other.hides_tab_bar
+      && self.large_title == other.large_title
+      && self.prompt == other.prompt
+      && self.toolbar.is_some() == other.toolbar.is_some()
+      && self.large_title_view.is_some() == other.large_title_view.is_some()
+      && self.search_view.is_some() == other.search_view.is_some()
+      && self.search.as_ref().map(NavigationSearch::key) == other.search.as_ref().map(NavigationSearch::key)
   }
 }
 
@@ -224,18 +454,50 @@ pub(crate) struct NavigationSlot {
   item: Arc<Mutex<NavigationItem>>,
   /// The outlet reads this in its render, to be rendered again when an item changes.
   changed: Signal<u64>,
+  /// What scrolls the screen's content under a large title, and how far a finger has pulled that content
+  /// down past its top, which the large title grows with.
+  scroll: ScrollState,
+  pull: Signal<f32>,
+  /// See [`LayerBar`].
+  large: ElementRef,
+  flying: Signal<bool>,
+  /// How much a large title grows, and over what pull ([`StackMotion`]).
+  growth: (f32, f32),
+  /// The bar's colors and sizes: the outlet's, or a plain bar's where the outlet has none of its own.
+  style: Arc<NavigationBar>,
+  /// The screen's search field has the focus.
+  searching: Signal<bool>,
+  /// See [`LayerBar`].
+  top: Signal<f32>,
+  under: Arc<AtomicBool>,
+  /// The outlet draws a screen's toolbar: it has a bar of its own.
+  toolbars: bool,
+  /// Whether the screen has a toolbar, and whether it hides the bar of tabs: what it keeps clear of at the
+  /// bottom follows.
+  bottom: Signal<(bool, bool)>,
 }
 
 impl NavigationSlot {
   pub(crate) fn set(&self, item: NavigationItem) {
     let same = {
       let mut current = self.item.lock();
-      let same = current.same_as(&item);
+      // An element the screen gave cannot be told from the one it gave before: the bar is drawn anew for
+      // every render of a screen that gives one, to show it as it now is.
+      let same = current.same_as(&item) && !item.has_elements();
       *current = item;
       same
     };
     if !same {
       self.changed.update(|version| *version += 1);
+    }
+    // What the screen's holder is made by, apart: it is not made again for every render of a screen that
+    // gives an element, which would render the screen again, and so without end.
+    let bottom = {
+      let item = self.item.lock();
+      (item.toolbar.is_some() && !item.bar_hidden, item.hides_tab_bar)
+    };
+    if self.bottom.get_untracked() != bottom {
+      self.bottom.set(bottom);
     }
   }
 }
@@ -258,6 +520,12 @@ pub struct NavigationBarState {
   pub width: f32,
   pub safe_area: SafeAreaInsets,
   pub navigator: Navigator,
+  /// What the way back says on each screen under the top one, the nearest first: what the outlet's own bar
+  /// lists on a long press. `navigator.back_by(n)` goes to the n-th of them.
+  pub under_titles: Vec<String>,
+  /// The window is too low for large titles, as a phone held on its side is; the outlet's own bar is lower
+  /// then too.
+  pub low: bool,
 }
 
 /// A screen's part in a [`NavigationBarState`].
@@ -267,6 +535,12 @@ pub struct NavigationBarScreen {
   /// What the way back from this screen says: the title of the screen under it, or what that screen gave
   /// for it. `None` on the bottom screen.
   pub back_label: Option<String>,
+  /// The screen's large title is in view in its content: the outlet's own bar shows no title then, and no
+  /// color of its own.
+  pub large_title_in_view: bool,
+  /// The screen is searching: its search field is typed into or holds text. The outlet's own bar gives its
+  /// place to the field then.
+  pub searching: bool,
 }
 
 /// Draws a bar from the state of the stack. It is called at each render of the outlet.
@@ -282,6 +556,7 @@ enum Bar {
 pub struct StackOutletProps {
   bar: Option<Bar>,
   background: Option<Color>,
+  motion: StackMotion,
 }
 
 impl PartialEq for StackOutletProps {
@@ -292,7 +567,7 @@ impl PartialEq for StackOutletProps {
       (Some(Bar::Custom(a)), Some(Bar::Custom(b))) => Arc::ptr_eq(a, b),
       _ => false,
     };
-    same_bar && self.background == other.background
+    same_bar && self.background == other.background && self.motion == other.motion
   }
 }
 
@@ -325,6 +600,12 @@ impl StackOutletProps {
     self
   }
 
+  /// How the screens and the bar move, in place of [`StackMotion::default`].
+  pub fn motion(mut self, motion: StackMotion) -> Self {
+    self.motion = motion;
+    self
+  }
+
   /// What is behind each screen. A screen that paints no background of its own shows the one under it
   /// through while it moves.
   pub fn background(mut self, color: Color) -> Self {
@@ -345,15 +626,62 @@ struct Layer {
 }
 
 /// What a screen keeps of its part of the bar from one render to the next.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct LayerBar {
   item: Arc<Mutex<NavigationItem>>,
   /// The title as it is laid out in the bar, and the way back's whole label laid out unseen: how wide each is
   /// says whether the label has room beside the title (`after_layout`).
   title: ElementRef,
   back_probe: ElementRef,
-  /// The label does not fit, and the way back says only that it goes back.
-  short_back: bool,
+  /// How much of the way back's label there is room for.
+  label_fit: LabelFit,
+  /// What scrolls the screen's content under a large title, and whether that title has scrolled out of view
+  /// (`after_layout`).
+  scroll: ScrollState,
+  title_gone: Arc<AtomicBool>,
+  pull: Signal<f32>,
+  /// The large title as it is laid out in the content, and the way back's label as it is laid out in the bar:
+  /// the two places a title goes between as a screen is pushed over this one or taken off it.
+  large: ElementRef,
+  label: ElementRef,
+  /// The large title is on its way between the two, drawn by the outlet: the screen's own is not shown.
+  flying: Signal<bool>,
+  /// The word for going back, laid out unseen for its width.
+  short_probe: ElementRef,
+  /// The screen's search field has the focus.
+  searching: Signal<bool>,
+  /// How much of the screen the bar is over, from the top: as the outlet last rendered it, and as the
+  /// screen was told (`after_layout`).
+  top_now: Arc<Mutex<f32>>,
+  top: Signal<f32>,
+  /// The screen's list goes on under the bar and keeps its content clear of it itself
+  /// ([`StackOutlet::large_title_scroll`]): the outlet does not keep the screen clear.
+  under: Arc<AtomicBool>,
+  /// See [`NavigationSlot`].
+  bottom: Signal<(bool, bool)>,
+}
+
+impl Default for LayerBar {
+  fn default() -> Self {
+    Self {
+      item: Arc::default(),
+      title: ElementRef::default(),
+      back_probe: ElementRef::default(),
+      label_fit: LabelFit::Whole,
+      scroll: ScrollState::new(),
+      title_gone: Arc::default(),
+      pull: Signal::new(0.0),
+      large: ElementRef::default(),
+      label: ElementRef::default(),
+      flying: Signal::new(false),
+      short_probe: ElementRef::default(),
+      searching: Signal::new(false),
+      top_now: Arc::default(),
+      top: Signal::new(0.0),
+      under: Arc::default(),
+      bottom: Signal::new((false, false)),
+    }
+  }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -380,9 +708,15 @@ struct Shown {
   width: f32,
   /// A move was set up by the last render and waits for its frame to send the screens on their way.
   begin_due: bool,
+  /// How high a large title is, as the outlet's bar last had it.
+  large_title_height: f32,
   /// The speed a finger let the front screen go with, towards where it is going, as a share of the way left
-  /// per [`MOVE`]; 0 for a move no finger started.
+  /// per the move's duration; 0 for a move no finger started.
   velocity: f64,
+  /// How far out of view the bar of tabs under the stack is for its screens, and the bar's part of the
+  /// outlet's context, which is told so after layout.
+  tab_bar: super::tabs::BarMove,
+  tab_link: Option<super::tabs::TabBarLink>,
 }
 
 pub struct StackOutlet {
@@ -393,6 +727,10 @@ pub struct StackOutlet {
   drag: Signal<f32>,
   begin: Timeout,
   settle: Timeout,
+  /// The outlet as it is laid out: where its corner is in the window.
+  origin: ElementRef,
+  /// The list of the screens under the top one, which a long press on the way back opens.
+  menu: BackMenu,
 }
 
 impl Component for StackOutlet {
@@ -405,7 +743,10 @@ impl Component for StackOutlet {
       motion: Motion::None,
       width: 0.0,
       begin_due: false,
+      large_title_height: 0.0,
       velocity: 0.0,
+      tab_bar: super::tabs::BarMove::SHOWN,
+      tab_link: None,
     }));
     let changed = Signal::new(0u64);
     let drag = Signal::new(NO_DRAG);
@@ -419,7 +760,8 @@ impl Component for StackOutlet {
         changed.update(|version| *version += 1);
       }
     });
-    let settle = ctx.create_timeout(SETTLE, {
+    let duration = ctx.props::<StackOutletProps>().motion.duration;
+    let settle = ctx.create_timeout(duration + SETTLE_AFTER, {
       let (shown, changed) = (shown.clone(), changed.clone());
       move || {
         {
@@ -437,11 +779,17 @@ impl Component for StackOutlet {
       drag,
       begin,
       settle,
+      origin: ElementRef::default(),
+      menu: BackMenu {
+        open: Signal::new(false),
+        opened_at: Arc::default(),
+      },
     }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     let props = ctx.props::<StackOutletProps>().clone();
+    let motion = props.motion;
     let depth = ctx.use_context::<OutletDepth>().unwrap_or(OutletDepth(0)).0 + 1;
     let Some(navigator) = ctx.use_context::<Navigator>() else {
       return ctx.children().first().cloned().unwrap_or_else(Element::new);
@@ -450,6 +798,7 @@ impl Component for StackOutlet {
     let _ = navigator.path().get();
     let _ = self.changed.get();
     let drag = self.drag.get();
+    let menu_open = self.menu.open.get();
 
     // The screens: the entries at the history's end that have a route at this outlet.
     let mut entries = Vec::new();
@@ -465,16 +814,21 @@ impl Component for StackOutlet {
       return ctx.children().first().cloned().unwrap_or_else(Element::new);
     }
 
+    // What a bar of tabs under the stack already keeps clear is not the stack's to keep clear again.
+    let safe_area = ctx.safe_area();
     let window = ctx.window();
-    let (width, safe_area) = (window.logical_width(), window.safe_area);
-    let bar_height = if window.logical_height() < LOW_WINDOW {
-      LOW_BAR_HEIGHT
-    } else {
-      BAR_HEIGHT
-    };
+    let width = window.logical_width();
+    // A window too low for it has no large titles, as a phone on its side has none.
+    let style = Arc::new(match &props.bar {
+      Some(Bar::Standard(bar)) => bar.clone(),
+      _ => NavigationBar::new(),
+    });
+    let low = window.logical_height() < style.low_window;
+    let bar_height = if low { style.low_height } else { style.height };
 
     let mut shown = self.shown.lock();
     shown.width = width;
+    shown.large_title_height = style.large_title_height;
     let before: Vec<u64> = shown.layers.iter().map(|layer| layer.entry.id).collect();
     let after: Vec<u64> = entries.iter().map(|(entry, _)| entry.id).collect();
     if before != after {
@@ -544,7 +898,7 @@ impl Component for StackOutlet {
 
     // Every node that moves has its transition from its first frame, which is what lets one start from where
     // the node was painted; put where a finger has it, the transition takes no time.
-    let pace = if moving { MOVE } else { Duration::ZERO };
+    let pace = if moving { motion.duration } else { Duration::ZERO };
     let curve = Easing::Spring {
       velocity: shown.velocity,
     };
@@ -553,6 +907,30 @@ impl Component for StackOutlet {
     let mut screens = Stack::new().size(FILL, FILL).clip();
     for layer in shown.layers.iter().chain(shown.leaving.iter()) {
       let id = Some(layer.entry.id);
+      // How much of the screen the bar is over. The screen is told before it is rendered, so that a list of
+      // its own starts clear of the bar in its first frame; what the screen then says of itself (no bar, a
+      // prompt) is taken up after it.
+      let top_of = |layer: &Layer| {
+        let (bar_hidden, prompted) = {
+          let item = layer.bar.item.lock();
+          (item.bar_hidden, item.prompt.is_some())
+        };
+        match &props.bar {
+          Some(Bar::Standard(_)) if !bar_hidden => {
+            let items = if layer.bar.searching.get() {
+              0.0
+            } else {
+              bar_height + if prompted { style.prompt_height } else { 0.0 }
+            };
+            safe_area.top + items + 0.5
+          }
+          _ => 0.0,
+        }
+      };
+      let before = top_of(layer);
+      if layer.bar.top.get_untracked() != before {
+        layer.bar.top.set(before);
+      }
       let content = ctx.mount_keyed_offstage::<StackLayer>(
         &layer.entry.id.to_string(),
         StackLayerProps {
@@ -564,22 +942,43 @@ impl Component for StackOutlet {
           slot: NavigationSlot {
             item: layer.bar.item.clone(),
             changed: self.changed.clone(),
+            scroll: layer.bar.scroll.clone(),
+            pull: layer.bar.pull.clone(),
+            large: layer.bar.large.clone(),
+            flying: layer.bar.flying.clone(),
+            growth: (motion.large_title_growth, motion.large_title_pull),
+            style: style.clone(),
+            searching: layer.bar.searching.clone(),
+            top: layer.bar.top.clone(),
+            under: layer.bar.under.clone(),
+            toolbars: matches!(props.bar, Some(Bar::Standard(_))),
+            bottom: layer.bar.bottom.clone(),
           },
         },
         id == front || id == back,
       );
+      // The bar is over the screens. A screen whose list goes on under it keeps its own content clear; any
+      // other is kept clear here, by as much as its bar is high.
+      let top = top_of(layer);
+      *layer.bar.top_now.lock() = top;
+      let clear = if layer.bar.under.load(Ordering::Acquire) {
+        0.0
+      } else {
+        top
+      };
       // Every screen has its holder, shown or not, in the order of the stack: a node keeps its identity, and
       // with it where it was last painted, by its place among its siblings.
       let offset = if id == front {
         out * width
       } else if id == back {
-        -PARALLAX * width * (1.0 - out)
+        -motion.parallax * width * (1.0 - out)
       } else {
         0.0
       };
       let mut holder = Stack::new()
         .key(format!("stack-screen-{}", layer.entry.id))
         .size(FILL, FILL)
+        .padding_top(clear)
         .child(content)
         .transform(Transform2D::translate(offset, 0.0));
       if let Some(background) = props.background {
@@ -589,7 +988,7 @@ impl Component for StackOutlet {
         let shade = Row::new()
           .size(FILL, FILL)
           .background(Color::from_hex("#000000"))
-          .opacity(DIM * (1.0 - out))
+          .opacity(motion.dim * (1.0 - out))
           .pointer_events_none();
         holder = holder.child(shade.transition(fade.clone()));
       }
@@ -623,7 +1022,7 @@ impl Component for StackOutlet {
             drag.set(event.translation.max(0.0));
           }
           GesturePhase::End => {
-            let far = event.translation > shown.width * BACK_SHARE || event.velocity > BACK_SPEED;
+            let far = event.translation > shown.width * motion.back_share || event.velocity > motion.back_speed;
             // The speed the screen goes on with: the finger's, towards where the screen is going, over the
             // way it has left.
             let (towards, left) = if far {
@@ -632,7 +1031,7 @@ impl Component for StackOutlet {
               (-event.velocity, event.translation)
             };
             shown.velocity = if left > 1.0 {
-              f64::from(towards.max(0.0) * MOVE.as_secs_f32() / left)
+              f64::from(towards.max(0.0) * motion.duration.as_secs_f32() / left)
             } else {
               0.0
             };
@@ -652,6 +1051,22 @@ impl Component for StackOutlet {
       }
     });
 
+    // The bar of tabs under the stack goes with a screen that hides it, as far as that screen is in.
+    {
+      let hides = |id: Option<u64>| {
+        shown
+          .layers
+          .iter()
+          .chain(shown.leaving.iter())
+          .find(|layer| Some(layer.entry.id) == id)
+          .map(|layer| if layer.bar.item.lock().hides_tab_bar { 1.0 } else { 0.0 })
+      };
+      let front_hides: f32 = hides(front).unwrap_or(0.0);
+      let hidden = front_hides * (1.0 - out) + hides(back).unwrap_or(front_hides) * out;
+      shown.tab_bar = super::tabs::BarMove { hidden, pace, curve };
+      shown.tab_link = ctx.use_context::<super::tabs::TabBarLink>();
+    }
+
     let Some(bar) = props.bar else {
       return screens.into();
     };
@@ -661,11 +1076,15 @@ impl Component for StackOutlet {
         let layers: Vec<&Layer> = shown.layers.iter().chain(shown.leaving.iter()).collect();
         let screen_of = |id: Option<u64>| {
           let index = layers.iter().position(|layer| Some(layer.entry.id) == id)?;
+          let layer = layers[index];
+          let item = layer.bar.item.lock().clone();
           Some(NavigationBarScreen {
-            item: layers[index].bar.item.lock().clone(),
+            large_title_in_view: item.large_title && !low && !layer.bar.title_gone.load(Ordering::Acquire),
+            searching: layer.bar.searching.get(),
+            item,
             back_label: index
               .checked_sub(1)
-              .map(|under| back_label_of(&layers[under].bar.item.lock())),
+              .map(|under| back_label_of(&layers[under].bar.item.lock(), &style.back)),
           })
         };
         let Some(top) = screen_of(front) else {
@@ -680,6 +1099,14 @@ impl Component for StackOutlet {
           width,
           safe_area,
           navigator: navigator.clone(),
+          under_titles: shown
+            .layers
+            .iter()
+            .rev()
+            .skip(1)
+            .map(|layer| back_label_of(&layer.bar.item.lock(), &style.back))
+            .collect(),
+          low,
         };
         drop(shown);
         return Column::new()
@@ -697,32 +1124,166 @@ impl Component for StackOutlet {
       let layer = layers[index];
       let back_label = index
         .checked_sub(1)
-        .map(|under| back_label_of(&layers[under].bar.item.lock()));
+        .map(|under| back_label_of(&layers[under].bar.item.lock(), &style.back));
+      // Taken and let go here: a lock taken inside the struct below would be held to its end.
+      let item = layer.bar.item.lock().clone();
+      let title_shown = !item.large_title || low || layer.bar.title_gone.load(Ordering::Acquire);
       Some(BarPart {
-        item: layer.bar.item.lock().clone(),
+        item,
         back_label,
-        short_back: layer.bar.short_back,
+        label_fit: layer.bar.label_fit,
         title: layer.bar.title.clone(),
         back_probe: layer.bar.back_probe.clone(),
+        title_shown,
+        title_fade: motion.title_fade,
+        // The bar less, at each side, the least a way back takes: its arrow and the word for it.
+        title_room: (width - safe_area.left - safe_area.right - 2.0 * (BACK_LEADING + BACK_WIDTH + BACK_GAP)).max(0.0),
+        label: layer.bar.label.clone(),
+        label_hidden: false,
+        short_probe: layer.bar.short_probe.clone(),
+        searching: layer.bar.searching.get(),
       })
     };
-    let (back_part, front_part) = (part_of(back), part_of(front));
-    // How much of the bar there is: all of it, or none over a screen that hides it, and between the two as
-    // one such screen gives way to another.
-    let shows = |part: &Option<BarPart>| part.as_ref().map(|part| if part.item.bar_hidden { 0.0 } else { 1.0 });
-    let front_shows = shows(&front_part).unwrap_or(1.0);
-    let shown_share = front_shows * (1.0 - out) + shows(&back_part).unwrap_or(front_shows) * out;
-    let mut items = Stack::new().width(FILL).height(bar_height);
+    let (back_part, mut front_part) = (part_of(back), part_of(front));
+    // The screens under the top one, the nearest first: what a long press on the way back lists.
+    let menu_titles: Vec<String> = shown
+      .layers
+      .iter()
+      .rev()
+      .skip(1)
+      .map(|layer| back_label_of(&layer.bar.item.lock(), &style.back))
+      .collect();
+
+    // A large title in view on the screen behind goes to the front screen's way back as that screen comes
+    // in, and back as it goes out: one title, drawn here over both, between the two places.
+    let layer_of = |id: Option<u64>| layers.iter().copied().find(|layer| Some(layer.entry.id) == id);
+    let flight = match (layer_of(back), layer_of(front), &back_part, &front_part) {
+      (Some(under), Some(over), Some(under_part), Some(over_part))
+        if under_part.item.large_title
+          && under_part.item.large_title_view.is_none()
+          && !low
+          && !under.bar.title_gone.load(Ordering::Acquire)
+          && !under_part.item.bar_hidden
+          && !over_part.item.bar_hidden
+          && over_part.item.leading.is_none()
+          && over_part.back_label.is_some()
+          && under.bar.large.is_attached() =>
+      {
+        let origin = self.origin.rect();
+        let large = under.bar.large.rect();
+        let label = over.bar.label.rect();
+        // Until the label is laid out, at the push's first frame, it is taken to be where the title is: the
+        // title is all there is to see then.
+        let label = if over.bar.label.is_attached() && label.2 > 0.0 {
+          label
+        } else {
+          (
+            large.0,
+            large.1,
+            large.2 * bar.text_size / bar.large_title_size,
+            large.3 * bar.text_size / bar.large_title_size,
+          )
+        };
+        (large.2 > 0.0 && large.3 > 0.0).then(|| Flight {
+          title: under_part.item.title.clone(),
+          says: match over_part.label_fit {
+            LabelFit::Whole => over_part.back_label.clone().unwrap_or_default(),
+            LabelFit::Short => bar.back.clone(),
+            LabelFit::Arrow => String::new(),
+          },
+          large: (large.0 - origin.0, large.1 - origin.1, large.2, large.3),
+          label: (label.0 - origin.0, label.1 - origin.1, label.2, label.3),
+        })
+      }
+      _ => None,
+    };
+    for layer in &layers {
+      let flying = flight.is_some() && Some(layer.entry.id) == back;
+      if layer.bar.flying.get_untracked() != flying {
+        layer.bar.flying.set(flying);
+      }
+    }
+    if let (Some(_), Some(part)) = (&flight, &mut front_part) {
+      part.label_hidden = true;
+    }
+    let overlay = Stack::new().size(FILL, FILL).pointer_events_none();
+    let overlay = match &flight {
+      Some(flight) => flight.draw(overlay, &bar, out, pace, curve),
+      None => overlay,
+    };
+    // Between two screens, what the bar has of each is between theirs, as far as the front one is out: its
+    // height, its color, the line under it and the toolbar come and go with the screens, and with a finger,
+    // and not after them.
+    let between = |of: &dyn Fn(&BarPart) -> f32| {
+      let front = front_part.as_ref().map_or(1.0, of);
+      front * (1.0 - out) + back_part.as_ref().map_or(front, of) * out
+    };
+    // Whether there is a bar at all, how much of it is over the status bar's room (none while a screen
+    // searches: the field takes the bar's place), the room a prompt takes, and whether it has its color.
+    let shown_share = between(&|part| if part.item.bar_hidden { 0.0 } else { 1.0 });
+    let bar_share = between(&|part| if part.searching { 0.0 } else { 1.0 });
+    let prompt_share = between(&|part| if part.item.prompt.is_some() { 1.0 } else { 0.0 });
+    let lined = between(&|part| if part.title_shown { 1.0 } else { 0.0 });
+    let toolbar_share = between(&|part| {
+      if part.item.toolbar.is_some() && !part.item.bar_hidden {
+        1.0
+      } else {
+        0.0
+      }
+    });
+    let (line_pace, line_curve) = if moving {
+      (pace, curve)
+    } else if back.is_some() {
+      (Duration::ZERO, curve)
+    } else {
+      (motion.title_fade, Easing::EASE)
+    };
+    let fade = |opacity: f32| {
+      move |element: Row| {
+        element
+          .opacity(opacity)
+          .transition(Transition::opacity().duration(pace).easing(curve))
+      }
+    };
+    let toolbar_of = |part: &Option<BarPart>, opacity: f32, front: bool| {
+      let tools = part.as_ref()?.item.toolbar.clone()?;
+      let row = Row::new()
+        .width(FILL)
+        .height(bar.toolbar_height)
+        .align_items(Alignment::Center)
+        .padding_horizontal(16.0)
+        .child(tools);
+      let row = if front { row } else { row.pointer_events_none() };
+      Some(fade(opacity)(row))
+    };
+    let mut tools = Stack::new().width(FILL).height(bar.toolbar_height);
+    for tool in [
+      toolbar_of(&back_part, out, false),
+      toolbar_of(&front_part, 1.0 - out, true),
+    ]
+    .into_iter()
+    .flatten()
+    {
+      tools = tools.child(tool);
+    }
+
+    let items_height = bar_height + bar.prompt_height * prompt_share;
+    let mut items = Stack::new()
+      .width(FILL)
+      .height(items_height)
+      .stack_align(StackAlignment::BottomStart);
     if let Some(part) = back_part {
       items = items.child(bar_item(
         &bar,
         &navigator,
         part,
         out,
-        -(1.0 - out) * width * PARALLAX,
+        -(1.0 - out) * width * motion.parallax,
         pace,
         curve,
         false,
+        &self.menu,
+        bar_height,
       ));
     }
     if let Some(part) = front_part {
@@ -735,31 +1296,144 @@ impl Component for StackOutlet {
         pace,
         curve,
         true,
+        &self.menu,
+        bar_height,
       ));
     }
     drop(shown);
 
-    Column::new()
-      .size(FILL, FILL)
+    // The bar, over the top of the screens: what is under it shows through, blurred, where the bar's color
+    // lets it.
+    let over = Column::new()
+      .width(FILL)
       .child(
         Column::new()
           .width(FILL)
-          .height((safe_area.top + bar_height) * shown_share)
+          .height((safe_area.top + items_height * bar_share) * shown_share)
           .clip()
-          .transition(Transition::height().duration(pace).easing(curve))
+          // Over a large title still in view the bar has no color of its own: it is one with what is behind
+          // the screens.
+          .background(Color::new(
+            bar.background.r(),
+            bar.background.g(),
+            bar.background.b(),
+            (f32::from(bar.background.a()) * lined).round() as u8,
+          ))
+          .backdrop_blur(bar.blur * lined)
+          .transition(Transition::height().duration(line_pace).easing(line_curve))
+          .transition(Transition::background_color().duration(line_pace).easing(line_curve))
+          .transition(Transition::backdrop_blur().duration(line_pace).easing(line_curve))
           .child(
             Column::new()
               .width(FILL)
               .padding_top(safe_area.top)
               .padding_left(safe_area.left)
               .padding_right(safe_area.right)
-              .background(bar.background)
               .child(items),
           ),
       )
-      .child(Row::new().width(FILL).height(0.5 * shown_share).background(bar.border))
+      .child(
+        Row::new()
+          .width(FILL)
+          .height(0.5 * shown_share)
+          .background(bar.border)
+          .opacity(lined * bar_share)
+          .transition(Transition::opacity().duration(line_pace).easing(line_curve)),
+      );
+    let content = Column::new()
+      .size(FILL, FILL)
       .child(Column::new().width(FILL).flex(1.0).child(screens))
-      .into()
+      // A screen's toolbar: across the bottom, over the home indicator's room, in the bar's color.
+      .child(
+        Column::new()
+          .width(FILL)
+          .height((bar.toolbar_height + safe_area.bottom + 0.5) * toolbar_share)
+          .clip()
+          .transition(Transition::height().duration(line_pace).easing(line_curve))
+          .background(bar.background)
+          .child(Row::new().width(FILL).height(0.5).background(bar.border))
+          .child(
+            Column::new()
+              .width(FILL)
+              .padding_left(safe_area.left)
+              .padding_right(safe_area.right)
+              .child(tools),
+          ),
+      );
+    let mut whole = Stack::new()
+      .size(FILL, FILL)
+      .ref_element(self.origin.clone())
+      .stack_align(StackAlignment::TopStart)
+      .child(content)
+      .child(over)
+      .child(overlay);
+    if bar.back_menu && !menu_titles.is_empty() {
+      // The list of the screens under, over everything: a tap on a screen's name goes back to it, and a tap
+      // anywhere else puts the list away. It is always there, unseen and untouched while closed, so that it
+      // comes and goes with a move of its own.
+      let opening = Transition::all()
+        .duration(MENU_MOVE)
+        .easing(Easing::Spring { velocity: 0.0 });
+      let mut list = Column::new()
+        .width(bar.back_menu_width)
+        .background(bar.background)
+        .border_inside(0.5, bar.border)
+        .rounded(13.0)
+        .clip()
+        .absolute_position(safe_area.left + 8.0, safe_area.top + bar_height + 4.0)
+        .opacity(if menu_open { 1.0 } else { 0.0 })
+        .transform(Transform2D::scale_uniform(if menu_open { 1.0 } else { 0.8 }))
+        .transition(opening);
+      for (steps, title) in menu_titles.iter().enumerate() {
+        let (navigator, open) = (navigator.clone(), self.menu.open.clone());
+        let steps = steps + 1;
+        if steps > 1 {
+          list = list.child(Row::new().width(FILL).height(0.5).background(bar.border));
+        }
+        list = list.child(
+          Row::new()
+            .width(FILL)
+            .height(bar.height)
+            .align_items(Alignment::Center)
+            .padding_horizontal(bar.inset)
+            .child(
+              Text::styled(
+                title,
+                TextStyle {
+                  font_size: bar.text_size,
+                  color: bar.title,
+                  ..TextStyle::default()
+                },
+              )
+              .nowrap(),
+            )
+            .on_click(move |_| {
+              open.set(false);
+              navigator.back_by(steps);
+            }),
+        );
+      }
+      let close = self.menu.clone();
+      let layer = Stack::new()
+        .size(FILL, FILL)
+        .child(
+          Row::new()
+            .size(FILL, FILL)
+            .background(Color::from_hex("#000000"))
+            .opacity(if menu_open { MENU_DIM } else { 0.0 })
+            .transition(Transition::opacity().duration(MENU_MOVE))
+            .on_click(move |_| {
+              // The list came up under the finger that opened it, whose lift is not a tap beside the list.
+              let just_opened = close.opened_at.lock().is_some_and(|at| at.elapsed() < MENU_OPENING);
+              if !just_opened {
+                close.open.set(false);
+              }
+            }),
+        )
+        .child(list);
+      whole = whole.child(if menu_open { layer } else { layer.pointer_events_none() });
+    }
+    whole.into()
   }
 
   fn after_layout(&self) {
@@ -767,9 +1441,20 @@ impl Component for StackOutlet {
     if std::mem::take(&mut shown.begin_due) {
       self.begin.restart();
     }
+    if let Some(link) = &shown.tab_link
+      && link.0.get_untracked() != shown.tab_bar
+    {
+      link.0.set(shown.tab_bar);
+    }
+    for layer in shown.layers.iter().chain(shown.leaving.iter()) {
+      let top = *layer.bar.top_now.lock();
+      if layer.bar.top.get_untracked() != top {
+        layer.bar.top.set(top);
+      }
+    }
     // Whether each way back has room for its label beside the title, now that both are laid out. The title
     // is in the middle of the bar, so the label has half of what the title leaves.
-    let width = shown.width;
+    let (width, large_title_height) = (shown.width, shown.large_title_height);
     let shown = &mut *shown;
     let mut changed = false;
     for layer in shown.layers.iter_mut().chain(shown.leaving.iter_mut()) {
@@ -777,8 +1462,30 @@ impl Component for StackOutlet {
         continue;
       }
       let room = (width - layer.bar.title.width()) / 2.0 - BACK_LEADING - BACK_GAP;
-      let short = layer.bar.back_probe.width() > room;
-      changed |= std::mem::replace(&mut layer.bar.short_back, short) != short;
+      let short = if layer.bar.short_probe.is_attached() {
+        layer.bar.short_probe.width()
+      } else {
+        BACK_WIDTH
+      };
+      let fit = if layer.bar.back_probe.width() <= room {
+        LabelFit::Whole
+      } else if short <= room {
+        LabelFit::Short
+      } else {
+        LabelFit::Arrow
+      };
+      changed |= std::mem::replace(&mut layer.bar.label_fit, fit) != fit;
+    }
+    // Whether each large title has scrolled out of view, all but its last few points: the bar's own title
+    // comes in then. Looked at after every layout, which every scroll ends in, however it was scrolled.
+    for layer in shown.layers.iter().chain(shown.leaving.iter()) {
+      let gone = layer.bar.scroll.scroll_y() > large_title_height - 8.0;
+      changed |= layer.bar.title_gone.swap(gone, Ordering::AcqRel) != gone;
+      // And how far the content is pulled down past its top: the large title is drawn anew for it.
+      let pull = (-layer.bar.scroll.overscroll().1).max(0.0);
+      if (layer.bar.pull.get_untracked() - pull).abs() > 0.25 {
+        layer.bar.pull.set(pull);
+      }
     }
     if changed {
       self.changed.update(|version| *version += 1);
@@ -786,12 +1493,95 @@ impl Component for StackOutlet {
   }
 }
 
+/// How much of a way back's label the bar has room for, beside the title.
+#[derive(Clone, Copy, PartialEq)]
+enum LabelFit {
+  /// The title of the screen under.
+  Whole,
+  /// The word for going back.
+  Short,
+  /// Neither: the arrow alone.
+  Arrow,
+}
+
 /// What the way back to a screen says.
-fn back_label_of(under: &NavigationItem) -> String {
+fn back_label_of(under: &NavigationItem, back: &str) -> String {
   match &under.back_title {
     Some(title) => title.clone(),
-    None if under.title.is_empty() => BACK.to_owned(),
+    None if under.title.is_empty() => back.to_owned(),
     None => under.title.clone(),
+  }
+}
+
+/// The list a long press on the way back opens: whether it is open, and when it opened, since the finger
+/// that opened it is then still down and its lift is not a tap.
+#[derive(Clone)]
+struct BackMenu {
+  open: Signal<bool>,
+  opened_at: Arc<Mutex<Option<Instant>>>,
+}
+
+/// A large title on its way between the content of the screen behind and the way back of the screen in
+/// front: where it is at each end, in the outlet, and what it says there.
+struct Flight {
+  title: String,
+  says: String,
+  large: (f32, f32, f32, f32),
+  label: (f32, f32, f32, f32),
+}
+
+impl Flight {
+  /// Adds the title to `overlay`, `out` of the way from the label to the content: the large one, which
+  /// shrinks and fades as it nears the label, and the label, which grows and fades as it nears the content.
+  fn draw(&self, overlay: Stack, bar: &NavigationBar, out: f32, pace: Duration, curve: Easing) -> Stack {
+    let between = |at_label: f32, at_large: f32| at_label + (at_large - at_label) * out;
+    let centre = (
+      between(self.label.0 + self.label.2 / 2.0, self.large.0 + self.large.2 / 2.0),
+      between(self.label.1 + self.label.3 / 2.0, self.large.1 + self.large.3 / 2.0),
+    );
+    let part = |says: &str, size: f32, weight: FontWeight, color: Color, laid: (f32, f32), scale: f32, opacity: f32| {
+      Text::styled(
+        says,
+        TextStyle {
+          font_size: size,
+          weight,
+          color,
+          ..TextStyle::default()
+        },
+      )
+      .nowrap()
+      // Laid out at the outlet's corner, scaled about its middle and then put where it goes.
+      .transform(
+        Transform2D::translate(centre.0 - laid.0 / 2.0, centre.1 - laid.1 / 2.0).then(&Transform2D::scale_uniform(scale)),
+      )
+      .opacity(opacity)
+      .transition(Transition::transform().duration(pace).easing(curve))
+      .transition(Transition::opacity().duration(pace).easing(curve))
+    };
+    let ratio = if self.large.3 > 0.0 && self.label.3 > 0.0 {
+      self.label.3 / self.large.3
+    } else {
+      bar.text_size / bar.large_title_size
+    };
+    overlay
+      .child(part(
+        &self.title,
+        bar.large_title_size,
+        bar.large_title_weight,
+        bar.title,
+        (self.large.2, self.large.3),
+        between(ratio, 1.0),
+        out,
+      ))
+      .child(part(
+        &self.says,
+        bar.text_size,
+        FontWeight::Normal,
+        bar.tint,
+        (self.label.2, self.label.3),
+        between(1.0, 1.0 / ratio),
+        1.0 - out,
+      ))
   }
 }
 
@@ -800,9 +1590,21 @@ struct BarPart {
   item: NavigationItem,
   /// What the way back says when there is room; `None` on the screen at the bottom, which has none.
   back_label: Option<String>,
-  short_back: bool,
+  label_fit: LabelFit,
   title: ElementRef,
   back_probe: ElementRef,
+  /// The title is in the bar: always, but for a large title that is still in view in the content.
+  title_shown: bool,
+  title_fade: Duration,
+  /// The most room the title has: what it does not fit in, it gives up with an ellipsis.
+  title_room: f32,
+  /// The way back's label as it is laid out, and whether it is left out of view: while the outlet carries
+  /// the title of the screen under to it or away.
+  label: ElementRef,
+  label_hidden: bool,
+  short_probe: ElementRef,
+  /// The screen's search field is being typed into: it has the bar's place.
+  searching: bool,
 }
 
 /// One screen's part of the bar: its title in the middle, the way back before it and what the screen put at
@@ -816,12 +1618,18 @@ fn bar_item(
   pace: Duration,
   curve: Easing,
   front: bool,
+  menu: &BackMenu,
+  bar_height: f32,
 ) -> Element {
   let text = |content: &str, weight: FontWeight, color: Color| {
     Text::styled(
       content,
       TextStyle {
-        font_size: 17.0,
+        font_size: if weight == bar.title_weight {
+          bar.title_size
+        } else {
+          bar.text_size
+        },
         weight,
         color,
         ..TextStyle::default()
@@ -831,18 +1639,27 @@ fn bar_item(
   };
   let middle: Element = match &part.item.title_view {
     Some(view) => view.clone(),
-    None => text(&part.item.title, FontWeight::SemiBold, bar.title).into(),
+    None => text(&part.item.title, bar.title_weight, bar.title)
+      .max_width(part.title_room)
+      .text_overflow(TextOverflow::Elipsis)
+      .into(),
   };
   let title = Row::new()
     .size(FILL, FILL)
     .align_items(Alignment::Center)
     .justify(Justify::Center)
     .pointer_events_none()
-    .child(Row::new().ref_element(part.title.clone()).child(middle))
+    .child(
+      Row::new()
+        .ref_element(part.title.clone())
+        .child(middle)
+        .opacity(if part.title_shown { 1.0 } else { 0.0 })
+        .transition(Transition::opacity().duration(part.title_fade)),
+    )
     .transform(Transform2D::translate(shift, 0.0))
     .transition(Transition::transform().duration(pace).easing(curve));
 
-  let mut whole = Stack::new().size(FILL, FILL).child(title);
+  let mut whole = Stack::new().width(FILL).height(bar_height).child(title);
   let mut sides = Row::new().size(FILL, FILL).align_items(Alignment::Center);
   if let Some(leading) = &part.item.leading {
     sides = sides.child(
@@ -853,7 +1670,11 @@ fn bar_item(
     );
   } else if let Some(label) = &part.back_label {
     let navigator = navigator.clone();
-    let says = if part.short_back { BACK } else { label.as_str() };
+    let says = match part.label_fit {
+      LabelFit::Whole => label.as_str(),
+      LabelFit::Short => bar.back.as_str(),
+      LabelFit::Arrow => "",
+    };
     sides = sides.child(
       Row::new()
         .id("navigation-back")
@@ -863,12 +1684,39 @@ fn bar_item(
         .padding_right(12.0)
         .spacing(BACK_SPACING)
         .child(chevron(bar.tint))
-        .child(text(says, FontWeight::Normal, bar.tint))
-        .on_click(move |_| {
-          navigator.back();
+        .child(
+          text(says, FontWeight::Normal, bar.tint)
+            .ref_element(part.label.clone())
+            .opacity(if part.label_hidden { 0.0 } else { 1.0 }),
+        )
+        .on_click({
+          let menu = menu.clone();
+          move |_| {
+            // The lift of the press that opened the list is not a tap.
+            if !menu.open.get_untracked() {
+              navigator.back();
+            }
+          }
+        })
+        .on_long_press({
+          let menu = menu.clone();
+          let enabled = bar.back_menu;
+          move |_: LongPressEvent| {
+            if enabled {
+              *menu.opened_at.lock() = Some(Instant::now());
+              menu.open.set(true);
+            }
+          }
         }),
     );
-    // The whole label, laid out and not seen, for its width.
+    // The word for going back, and the whole label, laid out and not seen, for their widths.
+    whole = whole.child(
+      Row::new().opacity(0.0).pointer_events_none().child(
+        Row::new()
+          .ref_element(part.short_probe.clone())
+          .child(text(&bar.back, FontWeight::Normal, bar.tint)),
+      ),
+    );
     whole =
       whole.child(
         Row::new().opacity(0.0).pointer_events_none().child(
@@ -888,7 +1736,31 @@ fn bar_item(
     );
   }
 
-  let mut whole = whole.child(sides).opacity(opacity);
+  let main = whole.child(sides);
+  // A prompt stands over the title, in the bar's own room for it.
+  let mut whole = Column::new().width(FILL);
+  if let Some(prompt) = &part.item.prompt {
+    whole = whole.child(
+      Row::new()
+        .width(FILL)
+        .height(bar.prompt_height)
+        .align_items(Alignment::End)
+        .justify(Justify::Center)
+        .pointer_events_none()
+        .child(
+          Text::styled(
+            prompt,
+            TextStyle {
+              font_size: bar.prompt_size,
+              color: bar.title,
+              ..TextStyle::default()
+            },
+          )
+          .nowrap(),
+        ),
+    );
+  }
+  let mut whole = whole.child(main).opacity(opacity);
   if !front {
     whole = whole.pointer_events_none();
   }
@@ -939,6 +1811,87 @@ fn chevron(color: Color) -> Element {
 }
 
 impl StackOutlet {
+  /// A screen's content under its large title ([`NavigationItem::large_title`]), the two scrolling as one: the
+  /// title goes up out of view with the content, and the bar's own title comes in when it has. Call it in the
+  /// screen's `render`, after `ctx.navigation_item`. Outside a stack, or for a screen whose item asks for no
+  /// large title, it is the content in a list that scrolls.
+  pub fn large_title_scroll(ctx: &mut Ctx, content: impl Into<Element>) -> ScrollVertical {
+    let Some(slot) = ctx.use_context::<NavigationSlot>() else {
+      return ScrollVertical::new(content.into());
+    };
+    let item = slot.item.lock().clone();
+    let style = slot.style.clone();
+    // While the search field is typed into, it stands where the bar was and there is no large title.
+    let searching = (item.search.is_some() || item.search_view.is_some()) && slot.searching.get();
+    let mut over = Column::new().width(FILL);
+    // A window too low for it, a phone on its side, has the title in the bar alone.
+    let tall = ctx.window().logical_height() >= style.low_window;
+    if let (Some(view), true) = (&item.large_title_view, item.large_title && tall) {
+      // The screen's own title, in the same place and with no height while the screen searches.
+      over = over.child(
+        Row::new()
+          .width(FILL)
+          .ref_element(slot.large.clone())
+          .height(if searching { Dimension::Px(0.0) } else { Dimension::Auto })
+          .clip()
+          .child(view.clone()),
+      );
+    } else if item.large_title && tall {
+      // Still there while the screen searches, with no height: taken out, the field under it would be
+      // another element, and the one being typed into would be gone.
+      over = over.child(ctx.mount_keyed::<LargeTitle>(
+        "navigation-large-title",
+        LargeTitleProps {
+          title: item.title.clone(),
+          style: style.clone(),
+          pull: slot.pull.clone(),
+          large: slot.large.clone(),
+          flying: slot.flying.clone(),
+          growth: slot.growth,
+          folded: searching,
+        },
+      ));
+    }
+    if let Some(view) = &item.search_view {
+      over = over.child(Row::new().width(FILL).child(view.clone()));
+    } else if let Some(search) = &item.search {
+      over = over.child(ctx.mount_keyed::<SearchField>(
+        "navigation-search",
+        SearchFieldProps {
+          search: search.clone(),
+          style: style.clone(),
+          searching: slot.searching.clone(),
+        },
+      ));
+    }
+    // The list goes on under the bar, and under a bar of tabs: its content is what keeps clear of them.
+    if !slot.under.swap(true, Ordering::AcqRel) {
+      slot.changed.update(|version| *version += 1);
+    }
+    let bottom = ctx.safe_area().bottom;
+    ScrollVertical::new(
+      Column::new()
+        .width(FILL)
+        .padding_top(slot.top.get())
+        .padding_bottom(bottom)
+        .child(over.child(content.into())),
+    )
+    .with_scroll_state(slot.scroll.clone())
+  }
+
+  /// Whether this screen is searching, to read and to set; `None` outside a stack. The outlet's own search
+  /// field sets it. A field of the screen's own ([`NavigationItem::search_view`]) sets it itself, when it is
+  /// given the focus and when its search is cancelled.
+  pub fn searching(ctx: &mut Ctx) -> Option<Signal<bool>> {
+    ctx.use_context::<NavigationSlot>().map(|slot| slot.searching)
+  }
+
+  /// The state of the list [`large_title_scroll`](Self::large_title_scroll) makes for this screen, to set it
+  /// up or to scroll it; `None` outside a stack.
+  pub fn screen_scroll(ctx: &mut Ctx) -> Option<ScrollState> {
+    ctx.use_context::<NavigationSlot>().map(|slot| slot.scroll)
+  }
+
   /// A stack of screens with no bar.
   pub fn mount(ctx: &mut Ctx) -> Element {
     ctx.mount::<Self>(StackOutletProps::default())
@@ -946,6 +1899,224 @@ impl StackOutlet {
 
   pub fn mount_with(ctx: &mut Ctx, props: StackOutletProps) -> Element {
     ctx.mount::<Self>(props)
+  }
+}
+
+#[derive(Clone)]
+struct SearchFieldProps {
+  search: NavigationSearch,
+  style: Arc<NavigationBar>,
+  searching: Signal<bool>,
+}
+
+impl PartialEq for SearchFieldProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.search.key() == other.search.key() && self.style == other.style && self.searching.id() == other.searching.id()
+  }
+}
+
+#[cfg(feature = "devtools")]
+impl crate::app::component::DevtoolsInspectable for SearchFieldProps {
+  fn write_info(&self, _buffer: &mut Vec<crate::app::component::ComponentInfo>) {}
+}
+
+/// A screen's search field: a rounded field with a magnifying glass, and beside it, while it is typed into,
+/// the way to cancel.
+struct SearchField {
+  /// Counts the taps on the way to cancel, and the last of them the field has acted on.
+  cancelled: Signal<u64>,
+  acted: Mutex<u64>,
+  focused: Signal<bool>,
+}
+
+impl Component for SearchField {
+  type Props = SearchFieldProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self {
+      cancelled: Signal::new(0),
+      acted: Mutex::new(0),
+      focused: Signal::new(false),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<SearchFieldProps>().clone();
+    // The search goes on while the field has the focus, and after, while something is typed in it: until it
+    // is cancelled. The outlet and the screen are told when that changes.
+    let searching = self.focused.get() || !props.search.text.get().is_empty();
+    if props.searching.get_untracked() != searching {
+      props.searching.set(searching);
+    }
+    // A tap on the way to cancel puts the keyboard away: the field loses the focus after this render.
+    let cancelled = self.cancelled.get();
+    if std::mem::replace(&mut *self.acted.lock(), cancelled) != cancelled {
+      ctx.blur();
+    }
+    let bar = &props.style;
+    let faint = |alpha: u8| Color::new(bar.title.r(), bar.title.g(), bar.title.b(), alpha);
+    let (ground, placeholder) = (
+      bar.search_background.unwrap_or(faint(30)),
+      bar.search_placeholder.unwrap_or(faint(150)),
+    );
+    let style = |color: Color| TextStyle {
+      font_size: bar.text_size,
+      color,
+      ..TextStyle::default()
+    };
+    let (focused, blurred) = (self.focused.clone(), self.focused.clone());
+    let field = Row::new()
+      .flex(1.0)
+      .height(bar.search_height)
+      .align_items(Alignment::Center)
+      .padding_horizontal(8.0)
+      .spacing(6.0)
+      .rounded(10.0)
+      .background(ground)
+      .child(magnifier(placeholder))
+      .child(
+        TextInput::new(props.search.text.clone())
+          .placeholder(&props.search.placeholder)
+          .placeholder_style(style(placeholder))
+          .text_style(style(bar.title))
+          .single_line()
+          .keyboard(KeyboardKind::Search)
+          .return_key(ReturnKey::Search)
+          .flex(1.0)
+          .on_focus(move || focused.set(true))
+          .on_blur(move || blurred.set(false)),
+      );
+    let mut row = Row::new()
+      .id("navigation-search")
+      .width(FILL)
+      .align_items(Alignment::Center)
+      .padding_horizontal(bar.inset)
+      .padding_top(if searching { 8.0 } else { 0.0 })
+      .padding_bottom(8.0)
+      .spacing(12.0)
+      .child(field);
+    if searching {
+      let (text, cancelled) = (props.search.text.clone(), self.cancelled.clone());
+      row = row.child(
+        Row::new()
+          .id("navigation-search-cancel")
+          .height(bar.search_height)
+          .align_items(Alignment::Center)
+          .child(Text::styled(&props.search.cancel, style(bar.tint)).nowrap())
+          .on_click(move |_| {
+            text.set(String::new());
+            cancelled.update(|count| *count += 1);
+          }),
+      );
+    }
+    row
+  }
+}
+
+/// A magnifying glass: the platform's symbol where there is one to ask, and otherwise a ring with a handle.
+fn magnifier(color: Color) -> Element {
+  #[cfg(all(target_os = "ios", feature = "raster"))]
+  if let Some(symbol) = crate::app::ios_symbol::symbol("magnifyingglass", 15.0, color) {
+    return crate::components::Image::new(symbol.image)
+      .width(symbol.width)
+      .height(symbol.height)
+      .into();
+  }
+  Stack::new()
+    .width(16.0)
+    .height(16.0)
+    .child(
+      Row::new()
+        .width(11.0)
+        .height(11.0)
+        .rounded(5.5)
+        .border_inside(1.6, color)
+        .absolute_position(1.0, 1.0),
+    )
+    .child(
+      Row::new()
+        .width(6.0)
+        .height(1.6)
+        .rounded(0.8)
+        .background(color)
+        .absolute_position(9.5, 11.5)
+        .transform(Transform2D::rotate_deg(45.0)),
+    )
+    .into()
+}
+
+#[derive(Clone)]
+struct LargeTitleProps {
+  title: String,
+  style: Arc<NavigationBar>,
+  pull: Signal<f32>,
+  large: ElementRef,
+  flying: Signal<bool>,
+  growth: (f32, f32),
+  /// The title takes no room: the screen is searching.
+  folded: bool,
+}
+
+impl PartialEq for LargeTitleProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.title == other.title
+      && self.style == other.style
+      && self.pull.id() == other.pull.id()
+      && self.growth == other.growth
+      && self.folded == other.folded
+  }
+}
+
+#[cfg(feature = "devtools")]
+impl crate::app::component::DevtoolsInspectable for LargeTitleProps {
+  fn write_info(&self, _buffer: &mut Vec<crate::app::component::ComponentInfo>) {}
+}
+
+/// A screen's large title. It grows a little as the content is pulled down past its top, from its leading
+/// edge, as the platform's does: a component of its own, so that only it is rendered for each point pulled.
+struct LargeTitle;
+
+impl Component for LargeTitle {
+  type Props = LargeTitleProps;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<LargeTitleProps>().clone();
+    let (growth, pull) = props.growth;
+    let grown = if pull > 0.0 {
+      1.0 + props.pull.get().min(pull) / pull * (growth - 1.0)
+    } else {
+      1.0
+    };
+    Row::new()
+      .width(FILL)
+      .height(if props.folded {
+        0.0
+      } else {
+        props.style.large_title_height
+      })
+      .clip()
+      .align_items(Alignment::Center)
+      .padding_horizontal(props.style.inset)
+      .child(
+        Text::styled(
+          &props.title,
+          TextStyle {
+            font_size: props.style.large_title_size * grown,
+            weight: props.style.large_title_weight,
+            color: props.style.title,
+            ..TextStyle::default()
+          },
+        )
+        .nowrap()
+        .id("navigation-large-title")
+        .ref_element(props.large.clone())
+        // While the outlet carries the title to or from a way back, this one is not seen.
+        .opacity(if props.flying.get() { 0.0 } else { 1.0 }),
+      )
   }
 }
 
@@ -986,6 +2157,17 @@ impl Component for StackLayer {
     ctx.provide(RouterMatches(props.matches.clone()));
     ctx.provide(OutletDepth(props.depth));
     ctx.provide(StackState(props.state.clone()));
+    // What the screen says of itself it says in its own render, after this one: this one is run again when
+    // that changes what the screen keeps clear of.
+    let (has_toolbar, hides_tab_bar) = props.slot.bottom.get();
+    let toolbar = props.slot.toolbars && has_toolbar;
+    if toolbar {
+      // The screen ends where its toolbar starts, and the toolbar is clear of what is under it.
+      ctx.provide_if_changed(crate::app::ctx::BottomBarInset::Under);
+    } else if hides_tab_bar {
+      // A screen that hides the bar of tabs has no bar over its content to keep clear of.
+      ctx.provide_if_changed(crate::app::ctx::BottomBarInset::Over(0.0));
+    }
     ctx.provide(props.slot.clone());
     match props.matches.get(props.depth) {
       Some(route_match) => render_route_match(ctx, route_match),

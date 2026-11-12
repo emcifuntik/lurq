@@ -177,8 +177,12 @@ impl KeyboardProbe {
     }
   }
 
-  /// How much of a window `height` points high the keyboard covers now, in points. With no keyboard the guide
-  /// rests at the bottom safe area, which is no cover of the keyboard's: the shell takes the larger of the two.
+  /// How much of a window `height` points high the keyboard covers now, in points; 0 with no keyboard.
+  ///
+  /// With no keyboard the guide rests at the bottom safe area of the view it is in, which is no cover of the
+  /// keyboard's. That is winit's view, whose safe area UIKit does not turn with the device: on a phone on its
+  /// side the guide rests where the home indicator's room ended upright, higher than it ends now, and taken
+  /// for a keyboard that hid what goes away for one.
   pub(super) fn overlap(&self, height: f64) -> f64 {
     unsafe {
       let layer: Retained<AnyObject> = msg_send![&*self.probe, layer];
@@ -191,7 +195,16 @@ impl KeyboardProbe {
       if frame.origin.y < 1.0 {
         return 0.0;
       }
-      (height - frame.origin.y).clamp(0.0, height)
+      let covered = (height - frame.origin.y).clamp(0.0, height);
+      let parent: Option<Retained<AnyObject>> = msg_send![&*self.probe, superview];
+      let rests = match &parent {
+        Some(parent) => {
+          let insets: UIEdgeInsets = msg_send![&**parent, safeAreaInsets];
+          insets.bottom
+        }
+        None => 0.0,
+      };
+      if covered <= rests + 0.5 { 0.0 } else { covered }
     }
   }
 }

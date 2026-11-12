@@ -1,6 +1,7 @@
 #[cfg(feature = "image")]
 mod decoded_image;
 mod dnd;
+mod sheet;
 mod virtualized_list;
 mod virtualized_list_anchoring;
 mod virtualized_list_bootstrap;

@@ -42,6 +42,11 @@ impl Navigator {
     self.handle.back()
   }
 
+  /// Goes back several entries at once; see [`RouterHandle::back_by`].
+  pub fn back_by(&self, steps: usize) -> bool {
+    self.handle.back_by(steps)
+  }
+
   pub fn forward(&self) -> bool {
     self.handle.forward()
   }

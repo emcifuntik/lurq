@@ -2,7 +2,8 @@
 
 use lurq::{
   app::ctx::Ctx,
-  components::{Column, Link, Row, ScrollVertical, Spacer},
+  components::{Column, Link, Row, Spacer, StackOutlet},
+  core::Signal,
   layout::{Alignment, text_style::FontWeight},
   node::{Element, color::Color},
 };
@@ -38,6 +39,11 @@ pub(crate) const SCREENS: &[Screen] = &[
     checks: "Ten thousand uneven rows mounted as they come into view: momentum, the ends, the way to the top",
   },
   Screen {
+    path: "/sheets",
+    title: "Sheets",
+    checks: "Content that comes up from the bottom: its heights, a finger that drags it, a list inside it",
+  },
+  Screen {
     path: "/inputs",
     title: "Inputs",
     checks: "The on-screen keyboard, what it types into a field, and a field it would cover",
@@ -51,10 +57,22 @@ pub(crate) fn title_of(path: &str) -> &'static str {
     .map_or("lurq on iOS", |screen| screen.title)
 }
 
+/// What is typed into the home screen's search field.
+pub(crate) fn sought() -> Signal<String> {
+  static SOUGHT: std::sync::OnceLock<Signal<String>> = std::sync::OnceLock::new();
+  SOUGHT.get_or_init(|| Signal::new(String::new())).clone()
+}
+
 pub(crate) fn home(ctx: &mut Ctx) -> Element {
+  // The stack's own list goes on under the bars and keeps this content clear of them.
   let mut list = Column::new().spacing(10.0).padding(16.0).width(FILL);
   list = list.child(caption("Each screen checks one thing iOS does differently."));
-  for screen in SCREENS {
+  // What is typed into the search field over the list leaves the screens that say it.
+  let sought = sought().get().to_lowercase();
+  for screen in SCREENS
+    .iter()
+    .filter(|screen| screen.title.to_lowercase().contains(&sought) || screen.checks.to_lowercase().contains(&sought))
+  {
     list = list.child(screen_row(ctx, screen));
   }
   // What the system said of the app: leave it and come back, or open `lurqdemo://anything` in a browser.
@@ -64,7 +82,10 @@ pub(crate) fn home(ctx: &mut Ctx) -> Element {
   } else {
     format!("App events, the latest first: {}", said.join(", "))
   }));
-  ScrollVertical::new(list).flex(1.0).background(BG).into()
+  StackOutlet::large_title_scroll(ctx, list)
+    .flex(1.0)
+    .background(BG)
+    .into()
 }
 
 fn screen_row(ctx: &mut Ctx, screen: &Screen) -> Element {

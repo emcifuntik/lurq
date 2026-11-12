@@ -742,6 +742,8 @@ impl ManagedWindow {
           .keyboard_probe
           .as_ref()
           .map_or(0.0, |probe| probe.overlap(logical_height)) as f32;
+        // With no keyboard its guide rests at the bottom safe area: what it covers over that is the keyboard's.
+        safe_area.keyboard = (keyboard - safe_area.bottom).max(0.0);
         safe_area.bottom = safe_area.bottom.max(keyboard);
         if keyboard != self.keyboard_overlap {
           self.keyboard_overlap = keyboard;
@@ -2234,6 +2236,7 @@ fn safe_area_insets(window: &Window) -> crate::app::window::SafeAreaInsets {
     right,
     bottom,
     left,
+    keyboard: 0.0,
   }
 }
 
