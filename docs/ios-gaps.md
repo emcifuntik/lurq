@@ -93,9 +93,9 @@ inside its input.
   no status bar. Now and then, turned back upright, the window shows a frame drawn for half its height until
   something asks for another; the shell asks for one when the window's size is not the last frame's, which
   made it rarer and did not end it. Not looked into further.
-- **Face ID and Touch ID.** An app cannot ask the person to prove who they are, to open the app or a part of
-  it (`LocalAuthentication`), nor keep a secret behind it in the keychain. Not done. An app that asks needs
-  `NSFaceIDUsageDescription` in its `Info.plist`.
+- **Face ID and Touch ID** (`app::biometry`): an app asks the person to prove who they are. Written without
+  a device to try it on. Keeping a secret behind it in the keychain is not done, and a Mac's Touch ID is not
+  asked, though it has the same framework.
 - **Features of lurq other than touch and text** have not been run on iOS: `resources` (the network; `ring`
   did not build without Xcode), `persistent_storage`, `image`, `svg`, `markdown`, the developer tools.
 - **Haptics** (`ctx.window().haptic(..)`) were written without a device to feel them; no crash was reported,

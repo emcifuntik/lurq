@@ -281,6 +281,34 @@ centre. The theme follows the appearance, the text size (Dynamic Type) and bold 
 the bars and the sheets follow reduced motion and transparency. See
 [The System's Settings](../theme/#the-systems-settings).
 
+### Face ID and Touch ID
+
+`lurq::app::biometry` asks the person to prove who they are, before an app opens or shows a part of itself.
+
+```rust
+use lurq::app::biometry::{self, AuthPolicy, Biometry};
+
+if biometry::available() != Biometry::None { /* offer the lock */ }
+
+let unlocked = self.unlocked.clone();
+biometry::authenticate("Open your notes", AuthPolicy::BiometryOrPasscode, move |answer| {
+  unlocked.set(answer.is_ok());
+});
+```
+
+- The system shows its own prompt. The answer comes to the callback on a thread of the system's: set a signal
+  from it.
+- `AuthPolicy::BiometryOrPasscode` falls back to the device's passcode; `BiometryOnly` does not.
+- The error says why not: `Cancelled`, `Failed`, `Unavailable`, `LockedOut` or `Other(text)`.
+- The app's `Info.plist` says why it asks, or the system ends the app at the first ask:
+
+```xml
+<key>NSFaceIDUsageDescription</key>
+<string>To open your notes.</string>
+```
+
+Off a phone there is nothing to ask: `available()` is `Biometry::None` and the answer is `Unavailable` at once.
+
 ### Turning
 
 A phone held on its side turns the app with it, with no status bar, and the safe area follows. Which ways the

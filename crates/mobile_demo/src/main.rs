@@ -8,6 +8,7 @@
 //! `ios/MobileDemo.xcodeproj` wraps it in an app bundle for a simulator or a phone: its only build phase runs
 //! `ios/build-rust.sh`, which builds this binary with cargo, and Xcode signs the result.
 
+mod auth;
 mod gestures;
 mod home;
 mod inputs;
@@ -138,6 +139,9 @@ fn routes() -> Routes {
         screen(ctx, "/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
       })
       .route("/system", |ctx| screen(ctx, "/system", system::system))
+      .route("/auth", |ctx| {
+        screen(ctx, "/auth", |ctx| ctx.mount::<auth::AuthScreen>(()))
+      })
       .route("/lists", |ctx| {
         screen(ctx, "/lists", |ctx| ctx.mount::<lists::ListsScreen>(()))
       })

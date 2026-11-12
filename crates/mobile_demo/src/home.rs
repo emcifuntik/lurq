@@ -49,6 +49,11 @@ pub(crate) const SCREENS: &[Screen] = &[
     checks: "Pull down to load the list anew, and swipe a row aside for what can be done with it",
   },
   Screen {
+    path: "/auth",
+    title: "Face ID",
+    checks: "The person proves who they are with their face or finger before something is shown",
+  },
+  Screen {
     path: "/system",
     title: "System",
     checks: "The appearance, text size, bold text and reduced motion the person set, and what follows them",
