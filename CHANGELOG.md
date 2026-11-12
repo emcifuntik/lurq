@@ -4,6 +4,7 @@
 
 Added:
 
+- `Transition::foreground()`, `Transition::outline()` and `Transition::box_shadow()`, with `AnimatableProperty::Foreground`, `Outline` and `BoxShadow`, and `Transition::all()` includes them: the color of the text under an element, its outline and its box shadows animate, in transitions and in keyframe animations (`AnimatableValue::Outline`, `AnimatableValue::Shadows` with `ShadowList`). An outline grows in from nothing and fades back to it, so a focus ring can come and go smoothly. They are paint only: animating them lays nothing out. See [animation](docs/src/content/docs/animation-transforms.md).
 - `App::load_hinted_font(data)` loads a font whose glyphs are drawn grid-fitted: at the nearest whole pixel size and position, with the font's TrueType hints applied along both axes. It is for an icon font hinted for it; text stays unhinted, so a letter looks the same wherever on the line it falls. The font has to ask for native ClearType in its `prep` program for its hints along x to count. A glyph under a transform, or in a text that is not snapped to pixels, is drawn unhinted like any other. See [resources](docs/src/content/docs/resources-media.md#hinted-fonts).
 - `examples/icon_hinting.rs` draws lurq's icon font twice at each size, loaded as any font is and loaded hinted, to compare; `--capture <file.png>` saves the window's frame.
 - `Text::max_lines(n)`: a wrapped text takes at most `n` lines and ends in an ellipsis on the last one when it had more, as CSS `line-clamp`. See [layout](docs/src/content/docs/layout.md#line-limit).
@@ -20,6 +21,8 @@ Added:
 
 Behaviour changes:
 
+- A transition of a color given as a `PaletteColor` role now runs. The value a node is heading to was read from concrete colors only, so a background or border set to a role changed at once whatever its transition said. A role whose color changes with the theme runs the transition as well.
+- `AnimatableProperty` has three new variants and `AnimatableValue` two: code that matches either without a wildcard arm must add them.
 - `TextStyle` and `MarkdownTextStyle` have a new public field, `strikethrough`: code that builds one with every field named must add it (`..TextStyle::default()` takes care of it).
 - Markdown draws `~~struck~~` text with a line through it: `ThemeMarkdown::strikethrough` now sets a strikethrough by default. Set it to `MarkdownInlineStyle::default()` for the old look.
 - A plain `Text` whose style has an `underline` now draws it.

@@ -4742,6 +4742,17 @@ impl Node {
     self.hit_test
   }
 
+  /// The value a running transition or animation gives `prop` this frame.
+  pub(crate) fn animation_override(
+    &self,
+    prop: crate::animation::AnimatableProperty,
+  ) -> Option<crate::animation::AnimatableValue> {
+    self
+      .animation_overrides
+      .iter()
+      .find_map(|(overridden, value)| (*overridden == prop).then_some(*value))
+  }
+
   fn animation_override_color(&self) -> Option<Color> {
     self
       .animation_overrides
@@ -5232,7 +5243,12 @@ impl Node {
     self.animation_overrides.iter().any(|(prop, _)| {
       !matches!(
         prop,
-        AnimatableProperty::Opacity | AnimatableProperty::Blur | AnimatableProperty::BackdropBlur
+        AnimatableProperty::Opacity
+          | AnimatableProperty::Blur
+          | AnimatableProperty::BackdropBlur
+          | AnimatableProperty::Foreground
+          | AnimatableProperty::Outline
+          | AnimatableProperty::BoxShadow
       )
     })
   }

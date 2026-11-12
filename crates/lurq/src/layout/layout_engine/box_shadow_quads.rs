@@ -18,8 +18,19 @@ use crate::{
   },
 };
 
+/// The shadows a running transition or animation draws for `node` this frame.
+fn animated_shadows(node: &Node) -> Option<crate::animation::ShadowList> {
+  match node.animation_override(crate::animation::AnimatableProperty::BoxShadow) {
+    Some(crate::animation::AnimatableValue::Shadows(shadows)) => Some(shadows),
+    _ => None,
+  }
+}
+
 impl LayoutEngine {
   pub(super) fn has_inset_box_shadow(&self, node: &Node) -> bool {
+    if let Some(shadows) = animated_shadows(node) {
+      return shadows.as_slice().iter().any(|shadow| shadow.inset);
+    }
     node
       .effective_box_shadow()
       .is_some_and(|value| value.shadows(&self.shadows.borrow()).iter().any(|shadow| shadow.inset))
@@ -29,6 +40,13 @@ impl LayoutEngine {
   /// culling keeps a node whose shadow is visible although its box is not.
   #[inline(never)]
   pub(super) fn box_shadow_outset(&self, node: &Node) -> f32 {
+    if let Some(shadows) = animated_shadows(node) {
+      return shadows
+        .as_slice()
+        .iter()
+        .map(|shadow| shadow.outset())
+        .fold(0.0, f32::max);
+    }
     let Some(value) = node.effective_box_shadow() else {
       return 0.0;
     };
@@ -58,6 +76,12 @@ impl LayoutEngine {
     clip: ClipRect,
     quads: &mut Vec<Quad>,
   ) {
+    if let Some(shadows) = animated_shadows(node) {
+      self.push_animated_shadow_quads(
+        shadows, node, result, abs_x, abs_y, inset, opacity, transform, clip, quads,
+      );
+      return;
+    }
     let Some(value) = node.effective_box_shadow() else {
       return;
     };
@@ -74,6 +98,59 @@ impl LayoutEngine {
       None
     };
     self.push_shadow_list(value, rect, border, inset, opacity, transform, clip, quads);
+  }
+
+  /// Pushes the outer or inset shadows of a list a transition or an animation is moving.
+  #[allow(clippy::too_many_arguments)]
+  fn push_animated_shadow_quads(
+    &self,
+    shadows: crate::animation::ShadowList,
+    node: &Node,
+    result: &LayoutResult,
+    abs_x: f32,
+    abs_y: f32,
+    inset: bool,
+    opacity: f32,
+    transform: Transform2D,
+    clip: ClipRect,
+    quads: &mut Vec<Quad>,
+  ) {
+    let drawn = |shadow: &&crate::node::box_shadow::ResolvedBoxShadow| shadow.inset == inset && shadow.color.a() > 0;
+    if !shadows.as_slice().iter().any(|shadow| drawn(&shadow)) {
+      return;
+    }
+    let rect = ShadowRect {
+      x: abs_x,
+      y: abs_y,
+      width: result.size.width,
+      height: result.size.height,
+      radius: node.get_border_radius(&self.radii.borrow()),
+    };
+    let rect = if inset {
+      let border = node.get_resolved_border(&self.palette.borrow(), &self.border_sizes.borrow());
+      match border {
+        Some(border) => rect.inside_border(Some([border.top, border.right, border.bottom, border.left])),
+        None => rect,
+      }
+    } else {
+      rect
+    };
+    let (x, y, quad_transform, transform_origin) = transformed_quad_frame(rect.x, rect.y, transform);
+    for shadow in shadows.as_slice().iter().rev().filter(drawn) {
+      quads.push(Quad {
+        x,
+        y,
+        width: rect.width,
+        height: rect.height,
+        opacity,
+        transform: quad_transform,
+        transform_origin,
+        content: QuadContent::BoxShadow(*shadow),
+        border_radius: rect.radius,
+        border: None,
+        clip,
+      });
+    }
   }
 
   /// Pushes the outer or inset shadows of `value` for a box that is not a

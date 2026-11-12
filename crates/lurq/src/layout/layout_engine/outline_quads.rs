@@ -24,6 +24,12 @@ use crate::{
 
 impl LayoutEngine {
   fn resolved_outline(&self, node: &Node) -> Option<ResolvedOutline> {
+    // A transition or an animation of the outline draws its own this frame: a ring on its way in or out.
+    if let Some(crate::animation::AnimatableValue::Outline(animated)) =
+      node.animation_override(crate::animation::AnimatableProperty::Outline)
+    {
+      return animated.filter(|outline| outline.width > 0.0 && outline.color.a() > 0);
+    }
     node
       .effective_outline()?
       .resolve(&self.palette.borrow(), &self.border_sizes.borrow())

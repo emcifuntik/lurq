@@ -1,6 +1,13 @@
-use crate::node::{
-  color::Color,
-  transform::{Decomposed, Transform2D, decompose},
+use std::sync::Arc;
+
+use crate::{
+  app::theme::{ThemeBorderSizes, ThemePalette, ThemeShadows},
+  node::{
+    box_shadow::ResolvedBoxShadow,
+    color::Color,
+    outline::ResolvedOutline,
+    transform::{Decomposed, Transform2D, decompose},
+  },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -26,6 +33,13 @@ pub enum AnimatableProperty {
   /// logical pixels.
   BackdropBlur,
   Transform,
+  /// The color of the text in the node and under it (`Node::foreground`).
+  Foreground,
+  /// The node's outline (`Node::outline`): its width, offset and color as
+  /// one value, so a ring grows in from nothing and fades back to it.
+  Outline,
+  /// The node's box shadows (`Node::box_shadow`).
+  BoxShadow,
 }
 
 macro_rules! property_accessors {
@@ -47,6 +61,116 @@ pub enum AnimatableValue {
   Color(Color),
   Float(f32),
   Transform(Decomposed),
+  /// An outline, or none.
+  Outline(Option<ResolvedOutline>),
+  /// A list of box shadows.
+  Shadows(ShadowList),
+}
+
+/// The box shadows of a node as one animated value: at most
+/// [`ShadowList::MAX`] of them, with their colors resolved, first on top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowList {
+  len: u8,
+  shadows: [ResolvedBoxShadow; ShadowList::MAX],
+}
+
+const NO_SHADOW: ResolvedBoxShadow = ResolvedBoxShadow {
+  offset_x: 0.0,
+  offset_y: 0.0,
+  blur: 0.0,
+  spread: 0.0,
+  color: Color::new(0, 0, 0, 0),
+  inset: false,
+};
+
+impl ShadowList {
+  /// How many shadows a list that animates holds. A node whose shadows are more than these changes them at once.
+  pub const MAX: usize = 4;
+
+  pub fn new(shadows: &[ResolvedBoxShadow]) -> Self {
+    let mut list = [NO_SHADOW; Self::MAX];
+    let len = shadows.len().min(Self::MAX);
+    list[..len].copy_from_slice(&shadows[..len]);
+    Self {
+      len: len as u8,
+      shadows: list,
+    }
+  }
+
+  pub fn as_slice(&self) -> &[ResolvedBoxShadow] {
+    &self.shadows[..usize::from(self.len)]
+  }
+
+  /// Shadow by shadow, as CSS does: one with no partner comes from, or goes
+  /// to, nothing where it is. A shadow inside the box cannot turn into one
+  /// outside it by degrees, so such a list changes at once, halfway.
+  fn lerp(&self, to: &Self, t: f32) -> Self {
+    let (from, to_list) = (self.as_slice(), to.as_slice());
+    let len = from.len().max(to_list.len());
+    let turns =
+      (0..len).any(|index| matches!((from.get(index), to_list.get(index)), (Some(a), Some(b)) if a.inset != b.inset));
+    if turns {
+      return if t >= 0.5 { *to } else { *self };
+    }
+    let nothing_of = |shadow: &ResolvedBoxShadow| ResolvedBoxShadow {
+      color: Color::new(shadow.color.r(), shadow.color.g(), shadow.color.b(), 0),
+      inset: shadow.inset,
+      ..NO_SHADOW
+    };
+    let mut shadows = [NO_SHADOW; Self::MAX];
+    for (index, slot) in shadows.iter_mut().enumerate().take(len) {
+      let (a, b) = match (from.get(index), to_list.get(index)) {
+        (Some(a), Some(b)) => (*a, *b),
+        (Some(a), None) => (*a, nothing_of(a)),
+        (None, Some(b)) => (nothing_of(b), *b),
+        (None, None) => continue,
+      };
+      let mix = |a: f32, b: f32| a + (b - a) * t;
+      *slot = ResolvedBoxShadow {
+        offset_x: mix(a.offset_x, b.offset_x),
+        offset_y: mix(a.offset_y, b.offset_y),
+        blur: mix(a.blur, b.blur).max(0.0),
+        spread: mix(a.spread, b.spread),
+        color: lerp_color(a.color, b.color, t),
+        inset: b.inset,
+      };
+    }
+    Self {
+      len: len as u8,
+      shadows,
+    }
+  }
+}
+
+/// Between two outlines every value moves; to and from no outline the line
+/// keeps its offset and color and its width and opacity go to nothing.
+fn lerp_outline(from: Option<ResolvedOutline>, to: Option<ResolvedOutline>, t: f32) -> Option<ResolvedOutline> {
+  let nothing_of = |outline: ResolvedOutline| ResolvedOutline {
+    width: 0.0,
+    color: Color::new(outline.color.r(), outline.color.g(), outline.color.b(), 0),
+    offset: outline.offset,
+  };
+  let (a, b) = match (from, to) {
+    (Some(a), Some(b)) => (a, b),
+    (Some(a), None) => (a, nothing_of(a)),
+    (None, Some(b)) => (nothing_of(b), b),
+    (None, None) => return None,
+  };
+  Some(ResolvedOutline {
+    width: (a.width + (b.width - a.width) * t).max(0.0),
+    color: lerp_color(a.color, b.color, t),
+    offset: a.offset + (b.offset - a.offset) * t,
+  })
+}
+
+/// What reading the value a node is heading to needs of the theme: the roles
+/// its colors, widths and shadows may be given as.
+#[derive(Clone, Default)]
+pub(crate) struct TargetTheme {
+  pub(crate) palette: ThemePalette,
+  pub(crate) border_sizes: ThemeBorderSizes,
+  pub(crate) shadows: Arc<ThemeShadows>,
 }
 
 impl AnimatableValue {
@@ -55,6 +179,8 @@ impl AnimatableValue {
       (AnimatableValue::Color(a), AnimatableValue::Color(b)) => AnimatableValue::Color(lerp_color(*a, *b, t)),
       (AnimatableValue::Float(a), AnimatableValue::Float(b)) => AnimatableValue::Float(a + (b - a) * t),
       (AnimatableValue::Transform(a), AnimatableValue::Transform(b)) => AnimatableValue::Transform(a.lerp(b, t)),
+      (AnimatableValue::Outline(a), AnimatableValue::Outline(b)) => AnimatableValue::Outline(lerp_outline(*a, *b, t)),
+      (AnimatableValue::Shadows(a), AnimatableValue::Shadows(b)) => AnimatableValue::Shadows(a.lerp(b, t)),
       _ => {
         if t >= 0.5 {
           *to
@@ -114,19 +240,54 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
   )
 }
 
-pub(crate) fn read_target(node: &crate::node::Node, prop: AnimatableProperty) -> Option<AnimatableValue> {
+/// The value of `prop` the node is heading to, with colors, widths and
+/// shadows given as theme roles resolved against `theme`.
+pub(crate) fn read_target(
+  node: &crate::node::Node,
+  prop: AnimatableProperty,
+  theme: &TargetTheme,
+) -> Option<AnimatableValue> {
+  // These read one value of the winning state style and build no merged style.
+  match prop {
+    AnimatableProperty::Foreground => {
+      return node
+        .effective_foreground()
+        .and_then(|color| color.resolve(&theme.palette))
+        .map(AnimatableValue::Color);
+    }
+    AnimatableProperty::Outline => {
+      return Some(AnimatableValue::Outline(
+        node
+          .effective_outline()
+          .and_then(|outline| outline.resolve(&theme.palette, &theme.border_sizes)),
+      ));
+    }
+    AnimatableProperty::BoxShadow => {
+      let shadows: Vec<_> = node.effective_box_shadow().map_or_else(Vec::new, |value| {
+        value
+          .shadows(&theme.shadows)
+          .iter()
+          .filter_map(|shadow| shadow.resolve(&theme.palette))
+          .collect()
+      });
+      // A list too long to animate whole changes at once, rather than lose shadows on the way.
+      return (shadows.len() <= ShadowList::MAX).then(|| AnimatableValue::Shadows(ShadowList::new(&shadows)));
+    }
+    _ => {}
+  }
   let style = node.target_style();
   match prop {
+    AnimatableProperty::Foreground | AnimatableProperty::Outline | AnimatableProperty::BoxShadow => None,
     AnimatableProperty::BackgroundColor => style
       .color
       .or_else(|| <Option<_> as Clone>::clone(&node.color))
-      .and_then(|color| color.as_color())
+      .and_then(|color| color.resolve(&theme.palette))
       .map(AnimatableValue::Color),
     AnimatableProperty::BorderColor => style
       .border
       .or_else(|| node.border.as_deref().cloned())
       .and_then(|b| b.color())
-      .and_then(|color| color.as_color())
+      .and_then(|color| color.resolve(&theme.palette))
       .map(AnimatableValue::Color),
     AnimatableProperty::BorderWidthTop => style
       .border

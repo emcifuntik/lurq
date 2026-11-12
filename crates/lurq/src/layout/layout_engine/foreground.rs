@@ -14,9 +14,16 @@ impl LayoutEngine {
   /// afterwards.
   pub(super) fn enter_foreground_scope(&self, node: &Node) -> Option<Color> {
     let inherited = self.foreground.get();
-    let own = node
-      .effective_foreground()
-      .and_then(|color| color.resolve(&self.palette.borrow()));
+    // A transition or an animation of the foreground draws its own color this frame.
+    let animated = match node.animation_override(crate::animation::AnimatableProperty::Foreground) {
+      Some(crate::animation::AnimatableValue::Color(color)) => Some(color),
+      _ => None,
+    };
+    let own = animated.or_else(|| {
+      node
+        .effective_foreground()
+        .and_then(|color| color.resolve(&self.palette.borrow()))
+    });
     if own.is_some() {
       self.foreground.set(own);
     }

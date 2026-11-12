@@ -6,4 +6,5 @@ mod multiple_properties;
 mod no_transition_without_spec;
 mod node_without_transition_is_unaffected;
 mod opacity_and_offset;
+mod paint_values;
 mod respects_easing;

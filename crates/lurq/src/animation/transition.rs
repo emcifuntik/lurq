@@ -7,10 +7,10 @@ use super::{
   animation::step_time,
   easing::Easing,
   interpolate::{
-    AnimatableProperty, AnimatableValue, clear_overrides, property_accessors, read_target, write_property,
+    AnimatableProperty, AnimatableValue, TargetTheme, clear_overrides, property_accessors, read_target, write_property,
   },
 };
-use crate::core::NodeId;
+use crate::{app::theme::Theme, core::NodeId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TransitionProperty {
@@ -95,6 +95,9 @@ property_accessors!(Transition {
   Blur => blur,
   BackdropBlur => backdrop_blur,
   Transform => transform,
+  Foreground => foreground,
+  Outline => outline,
+  BoxShadow => box_shadow,
 });
 
 const ALL_PROPERTIES: &[AnimatableProperty] = &[
@@ -116,6 +119,9 @@ const ALL_PROPERTIES: &[AnimatableProperty] = &[
   AnimatableProperty::Blur,
   AnimatableProperty::BackdropBlur,
   AnimatableProperty::Transform,
+  AnimatableProperty::Foreground,
+  AnimatableProperty::Outline,
+  AnimatableProperty::BoxShadow,
 ];
 
 struct TransitionRun {
@@ -153,6 +159,9 @@ pub struct TransitionEngine {
   seen: HashSet<NodeId>,
   next_change: Option<Instant>,
   pub has_active: bool,
+  /// The theme the values nodes head to are read against, and the theme and version it was copied from.
+  theme: TargetTheme,
+  theme_seen: Option<(Theme, u64)>,
 }
 
 impl TransitionEngine {
@@ -163,7 +172,28 @@ impl TransitionEngine {
       seen: HashSet::new(),
       next_change: None,
       has_active: false,
+      theme: TargetTheme::default(),
+      theme_seen: None,
     }
+  }
+
+  /// Takes the palette, border sizes and shadows of `theme`, which colors, widths and shadows given as roles
+  /// are read against. Copies nothing while the theme and its version are the ones last taken.
+  pub(crate) fn set_theme(&mut self, theme: &Theme) {
+    let version = theme.version();
+    if self
+      .theme_seen
+      .as_ref()
+      .is_some_and(|(seen, seen_version)| *seen_version == version && seen.same_theme(theme))
+    {
+      return;
+    }
+    self.theme = TargetTheme {
+      palette: theme.palette().clone(),
+      border_sizes: theme.border_sizes().clone(),
+      shadows: theme.shared_shadows(),
+    };
+    self.theme_seen = Some((theme.clone(), version));
   }
 
   pub(crate) fn clear_state(&mut self) {
@@ -258,7 +288,7 @@ impl TransitionEngine {
       .collect();
 
     for (prop, duration, delay, easing) in &properties {
-      let current = match read_target(node, *prop) {
+      let current = match read_target(node, *prop, &self.theme) {
         Some(v) => v,
         None => continue,
       };

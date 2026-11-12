@@ -54,6 +54,21 @@ Transition builders include:
 | `Transition::blur()` | Animate the [blur](../blur/) radius |
 | `Transition::backdrop_blur()` | Animate the [backdrop blur](../blur/#frosted-glass) radius |
 | `Transition::transform()` | Animate `Transform2D` |
+| `Transition::foreground()` | Animate the [foreground](../styling-events/#foreground): the color of the text in the element and under it |
+| `Transition::outline()` | Animate the [outline](../styling-events/#outline): its width, offset and color together |
+| `Transition::box_shadow()` | Animate the [box shadows](../styling-events/#box-shadows) |
+
+Colors, border widths and shadows given as theme roles (`PaletteColor`, `BorderSize`, `ShadowStyle`) are read against
+the theme, so they animate like concrete values; a role whose value changes, when the theme changes, runs the
+transition too.
+
+- The foreground, the outline and the box shadow are painted only: a transition of them lays nothing out.
+- An outline that appears grows in from no width and no opacity at its own offset and color, and one that goes away
+  fades back the same way, so a focus ring with `Transition::outline()` comes and goes smoothly even though the element
+  has no outline at rest.
+- Box shadows animate shadow by shadow, as in CSS: one with no partner in the other list comes from, or goes to,
+  nothing where it is. A list in which a shadow turns from outer to inset changes halfway, and a list of more than four
+  shadows changes at once.
 
 `duration(...)`, `duration_ms(...)`, `delay(...)`, `delay_ms(...)`, `easing(...)`, and `linear()` configure timing.
 

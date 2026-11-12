@@ -17,12 +17,13 @@ pub struct Outline {
   pub offset: f32,
 }
 
-/// An outline with its width and color resolved against the theme.
+/// An outline with its width and color resolved against the theme: what is
+/// painted, and what a transition or an animation of the outline moves.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ResolvedOutline {
-  pub(crate) width: f32,
-  pub(crate) color: Color,
-  pub(crate) offset: f32,
+pub struct ResolvedOutline {
+  pub width: f32,
+  pub color: Color,
+  pub offset: f32,
 }
 
 impl Outline {
