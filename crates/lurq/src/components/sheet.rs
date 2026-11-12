@@ -243,8 +243,11 @@ struct State {
   /// How far the fingers had gone when they took the sheet, and where the sheet was then; `None` when no
   /// finger has it.
   held: Option<f32>,
-  /// How high the content was last laid out, when the sheet is as high as its content.
+  /// How high the content was last laid out, when the sheet is as high as its content, less what it was
+  /// padded by at the bottom then: the padding changes with the keyboard, frame by frame, and the sheet with
+  /// it in the same frame.
   content_height: f32,
+  padded_by: f32,
   /// Where the sheet's top is at each detent, and where it is when down, as last rendered.
   tops: Vec<f32>,
   room: f32,
@@ -316,8 +319,7 @@ fn height_of(detent: SheetDetent, room: f32, large: f32, bottom: f32, keyboard: 
     SheetDetent::Large => large,
     SheetDetent::Fraction(share) => large * share.clamp(0.0, 1.0) + keyboard,
     SheetDetent::Height(height) => height + bottom,
-    // The content is padded by the keyboard's height.
-    SheetDetent::Content => content,
+    SheetDetent::Content => content + bottom,
   };
   height.clamp(0.0, large.max(0.0))
 }
@@ -333,6 +335,7 @@ impl Component for Sheet {
       at: 0,
       held: None,
       content_height: 0.0,
+      padded_by: 0.0,
       tops: Vec::new(),
       room: 0.0,
       receded: Receded::NONE,
@@ -405,6 +408,8 @@ impl Component for Sheet {
       (false, Phase::Entering { .. } | Phase::Open | Phase::Moving) => {
         state.phase = Phase::Leaving;
         state.held = None;
+        // What was typed into in the sheet is no longer: the keyboard goes down with the sheet.
+        ctx.blur();
         self.begin.cancel();
         self.settle.restart();
       }
@@ -480,6 +485,7 @@ impl Component for Sheet {
       0.0
     };
     let fits_content = props.detents[at] == SheetDetent::Content;
+    state.padded_by = safe_area.bottom;
     // A sheet that takes all the room sends the window behind back, by as much of the way from its next
     // height down, or from the bottom, as it has come.
     let reaches = highest >= large - 1.0 && large > 0.0;
@@ -670,7 +676,7 @@ impl Component for Sheet {
     }
     let mut changed = false;
     if self.content.is_attached() {
-      let height = self.content.rect().3;
+      let height = (self.content.rect().3 - state.padded_by).max(0.0);
       if (state.content_height - height).abs() > 0.25 {
         state.content_height = height;
         changed = true;
