@@ -9,11 +9,33 @@ Added:
 - `AnimatableProperty::Blur` and `AnimatableProperty::BackdropBlur`, `Transition::blur()` and `Transition::backdrop_blur()`: the radii animate in transitions and keyframe animations, and `Transition::all()` includes them. Like opacity, a blur that is animating keeps the node's layout cache.
 - `layout::opacity_layer::RoundedBox`: a rounded box in the window, possibly turned or scaled, with its bounds and its coverage of a pixel. A blurred layer carries the rounded clip it is cut to as one (`LayerBlur::clip`).
 - `examples/layer_blur_capture_check.rs` renders a scene of blurred nodes and frosted glass through layout and both native backends and compares the captures.
+- `App::warm_text_styles(styles)` prepares the fonts the given styles are drawn with. The first text of each family, weight and slant makes cosmic-text score every font face on the system, 4 to 11 ms a combination on a Windows desktop, on the frame that first shows it; this does it when asked instead. It blocks that long, and `App` is `Send`: call it on a clone of the app on a thread of your own, after loading fonts, while the window is created. On the `text_chat` screen the first frame is 2.5 ms with a regular and a bold style prepared and 17.2 ms without (19.7 ms before this round's other changes). Nothing calls it by default.
+- `benches/text_chat.rs`: a chat screen of short texts (about 40 messages in a `VirtualizedList`, a channel list, a member list and an input; 206 texts a frame) drawn one scripted frame at a time: cold first and second frame, idle, hover, a wheel step through 10,000 messages, a channel switch, a 2 px resize, a typed character and a change of scale factor. Built with `perf_profile,counting_allocator` and run with `LURQ_CHAT_METRICS=<csv>` it writes a row per frame instead, with the phases, the cache counters, the allocations and the sizes of the text caches. `examples/text_chat_gpu_probe.rs` runs the same frames through the wgpu and DX12 renderers and saves captures whose hashes `scripts/compare-text-chat-captures.py` compares between two builds; `scripts/summarize-text-chat.py` gives medians over runs with their spread. See [Chat Screen Text Optimization](docs/src/content/docs/text-chat-optimization.md).
+
+Performance (the chat screen of `text_chat`, 1280 × 2160, release build, Windows, Ryzen 9 7950X and RTX 5090; median of the runs taken at the end, master → this branch; every scenario, phase and the method are in [Chat Screen Text Optimization](docs/src/content/docs/text-chat-optimization.md)):
+
+- Texts painted one after another share a draw in both native renderers when they are under the same clip or, in the window, under clips that cut nothing off them: 210 → 9 draw calls for the screen's 206 texts, and 245 → 117 µs of DX12 encoding a frame.
+- A frame that rasterises a new glyph no longer copies the glyph atlas (twice 4 MiB at 1024 × 1024): the second frame of a new window 2.9 → 1.6 ms.
+- A plain text's size, extents, carets and glyphs are one cache entry found with one fast hash of the text, in place of five caches hashed with SipHash, one of them after copying the text. A frame that changes no text: 198 → 159 µs, with 620 → 414 allocations. The cache drops what no pass used for 16 passes and never empties at once: before, every 43rd frame or so of a fast scroll laid out all visible text again (99th percentile of a scroll frame 3.4 → 1.6 ms).
+- A plain text under 1,024 bytes is shaped once and laid out again for a new width, size, wrapping or scale factor: a frame of a window being resized 1.67 → 0.49 ms, the first frame at a new scale factor 4.7 → 1.7 ms.
+- A word shaped in one text is not shaped again in the next (cosmic-text's `shape-run-cache`): a channel not seen before 3.4 → 2.0 ms, a wheel step through 10,000 messages 1.46 → 1.18 ms.
+- A text painted before costs one cache lookup and one write per glyph a frame, and the atlas finds a glyph with the fast hash.
 
 Behaviour changes:
 
 - `LayerCmd` has a new public field, `blur: Option<LayerBlur>`, `RenderList` a new public field, `backdrops: Vec<BackdropCmd>`, `AnimatableProperty` two new variants and `QuadContent` a new variant, `Backdrop`: code that builds a `LayerCmd` or a `RenderList` with every field named, or matches `AnimatableProperty` or `QuadContent` without a wildcard arm, must add them. A custom `RenderEngine` that ignores `RenderList::backdrops` draws the frame without its backdrop blurs. A custom `RenderEngine` that paints `RenderList::layers` should paint a blurred layer for `LayerCmd::painted()` (larger than `bounds`, and possibly outside the window) and blur it by `LayerBlur::sigma`; one that ignores the field draws the layer unblurred, clipped to `bounds`.
 - A layer around a blurred one covers the blur's spread, so `LayerCmd::bounds` of a faded group can be larger than its own rects and glyphs.
+- A glyph whose ink reaches into the clip from a line of text that lies outside it is now painted whenever its text is, for plain texts under 1,024 bytes. Before, it was painted only if the text had first been painted unclipped, and dropped if the text was first painted while the clip cut it.
+- Plain texts under 1,024 bytes stay shaped in a cache of their own, up to 4 MiB a glyph engine, beside the 48 MiB cache that now holds documents only. `GlyphEngineProfile::plain_cache_bytes` and `plain_cache_budget` cover both, so the budget reads 4 MiB higher. The text caches of the chat screen hold 3.2 MB for its settled frame where they held 1.8 MB.
+- `RenderProfile::draw_calls` is lower for a frame of several texts; the pixels are the same.
+
+Dependencies:
+
+- cosmic-text is built with its `shape-run-cache` feature. Its cache of shaped words is trimmed by the glyph engine (every 256 passes or newly laid out texts, and emptied when fonts change) and is not part of `GlyphEngineProfile`'s byte counts.
+
+Internal:
+
+- `render::glyph_batch` decides which glyph runs share a draw, for both renderers; `glyph_engine::text_cache` and `glyph_engine::shaped_texts` are the two caches of plain text. GPU readback tests draw a scene of clipped, rounded, cut and overlapping texts batched and run by run through wgpu and DX12 and compare the frames pixel for pixel.
 
 ## 0.60.0 — 2026-11-11
 
