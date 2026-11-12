@@ -77,9 +77,11 @@ fn set_palette_color_updates_variant() {
 #[test]
 fn set_palette_replaces_named_palette() {
   let t = Theme::new();
-  let mut palette = ThemePalette::default();
-  palette.accent = Color::from_hex("#abcdef");
-  palette.surface_base = Color::from_hex("#101010");
+  let palette = ThemePalette {
+    accent: Color::from_hex("#abcdef"),
+    surface_base: Color::from_hex("#101010"),
+    ..ThemePalette::default()
+  };
 
   t.set_palette(palette);
 
@@ -252,14 +254,16 @@ fn set_typography_style_updates_variant() {
 #[test]
 fn set_typography_replaces_named_typography() {
   let t = Theme::new();
-  let mut typography = ThemeTypography::default();
-  typography.caption = TextStyle {
-    font_size: 11.0,
-    ..TextStyle::default()
-  };
-  typography.title = TextStyle {
-    font_size: 30.0,
-    ..TextStyle::default()
+  let typography = ThemeTypography {
+    caption: TextStyle {
+      font_size: 11.0,
+      ..TextStyle::default()
+    },
+    title: TextStyle {
+      font_size: 30.0,
+      ..TextStyle::default()
+    },
+    ..ThemeTypography::default()
   };
 
   t.set_typography(typography);

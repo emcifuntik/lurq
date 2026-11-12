@@ -140,9 +140,11 @@ fn rasterize_path(path: &usvg::Path, data: &SvgData, pixmap: &mut tiny_skia::Pix
 }
 
 fn raster_paint(override_color: Option<Color>, paint: &usvg::Paint, opacity: f32) -> Option<tiny_skia::Paint<'static>> {
-  let mut tiny_paint = tiny_skia::Paint::default();
-  tiny_paint.anti_alias = true;
-  tiny_paint.force_hq_pipeline = true;
+  let mut tiny_paint = tiny_skia::Paint {
+    anti_alias: true,
+    force_hq_pipeline: true,
+    ..tiny_skia::Paint::default()
+  };
 
   if let Some(color) = override_color {
     tiny_paint.set_color_rgba8(

@@ -73,8 +73,10 @@ fn markdown_inline_code_font_features_shape_their_span() {
       [include_bytes!("../assets/ligature_probe/LurqLigatureProbe-Regular.ttf").to_vec()],
       std::iter::empty::<(&str, &str)>(),
     );
-    let mut markdown = ThemeMarkdown::default();
-    markdown.inline_code = MarkdownInlineStyle::default();
+    let mut markdown = ThemeMarkdown {
+      inline_code: MarkdownInlineStyle::default(),
+      ..ThemeMarkdown::default()
+    };
     markdown.inline_code.text.font_features = inline_code_features;
     app.theme().set_markdown(markdown);
     let mut tree = Tree::new();
@@ -379,8 +381,10 @@ fn markdown_component_renders_code_block_box() {
 
 #[test]
 fn markdown_component_uses_theme_markdown_overrides() {
-  let mut markdown = ThemeMarkdown::default();
-  markdown.strong = MarkdownInlineStyle::new();
+  let mut markdown = ThemeMarkdown {
+    strong: MarkdownInlineStyle::new(),
+    ..ThemeMarkdown::default()
+  };
   markdown.strong.text.color = Some(Color::from_hex("#dc2626"));
 
   let mut app = App::new();

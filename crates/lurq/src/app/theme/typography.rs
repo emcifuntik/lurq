@@ -207,11 +207,12 @@ impl From<ThemeTypography> for ThemeFonts {
 
 impl From<ThemeFonts> for ThemeTypography {
   fn from(fonts: ThemeFonts) -> Self {
-    let mut typography = Self::default();
-    typography.body = fonts.body;
-    typography.heading = fonts.heading;
-    typography.mono = fonts.mono;
-    typography
+    Self {
+      body: fonts.body,
+      heading: fonts.heading,
+      mono: fonts.mono,
+      ..Self::default()
+    }
   }
 }
 
