@@ -508,14 +508,23 @@ fn a_wheel_does_not_reach_the_handlers_of_a_disabled_element() {
 
 #[test]
 fn the_scrollbar_of_a_container_in_a_disabled_element_can_be_dragged() {
-  use lurq::layout::layout_kind::{ScrollAxis, ScrollState};
+  use lurq::layout::{
+    layout_kind::{ScrollAxis, ScrollState},
+    scrollbar::{ScrollBarStyle, ScrollBarVisibility},
+  };
 
   let state = ScrollState::new();
   let mut tree = Tree::new();
+  // A bar that stays: a phone's default is an indicator, which is hidden until the content scrolls.
+  let bar = ScrollBarStyle {
+    visible: ScrollBarVisibility::Auto,
+    ..ScrollBarStyle::default()
+  };
   tree.set_root(
     Column::new().disabled(true).child(
       ScrollVertical::new(Spacer::new().height(600.0))
         .with_scroll_state(state.clone())
+        .scrollbar(bar)
         .size(120.0, 120.0),
     ),
   );
