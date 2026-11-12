@@ -144,6 +144,9 @@ impl SheetStyle {
   }
 }
 
+/// What makes a sheet's content when the sheet builds it itself.
+type SheetContent = Arc<dyn Fn(&mut Ctx) -> Element + Send + Sync>;
+
 #[derive(Clone)]
 pub struct SheetProps {
   open: Signal<bool>,
@@ -153,7 +156,7 @@ pub struct SheetProps {
   dismissable: bool,
   scroll: Option<ScrollState>,
   /// What makes the content, for a sheet whose content is made in it ([`Sheet::mount_with`]).
-  content: Option<Arc<dyn Fn(&mut Ctx) -> Element + Send + Sync>>,
+  content: Option<SheetContent>,
 }
 
 impl PartialEq for SheetProps {
@@ -779,7 +782,7 @@ impl Default for SheetHostStyle {
 #[derive(Clone)]
 pub struct SheetHostProps {
   style: SheetHostStyle,
-  content: Arc<dyn Fn(&mut Ctx) -> Element + Send + Sync>,
+  content: SheetContent,
 }
 
 impl PartialEq for SheetHostProps {
