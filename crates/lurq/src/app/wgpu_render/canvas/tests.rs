@@ -20,7 +20,7 @@ pub(super) fn device() -> (Device, Queue) {
 }
 fn take(canvas: &CanvasHandle, renderer: &mut Renderer, device: &Device, queue: &Queue) -> CanvasSnapshot {
   let readback = canvas.snapshot();
-  renderer.process(device, queue, &[canvas.clone()]);
+  renderer.process(device, queue, std::slice::from_ref(canvas));
   readback
     .wait_timeout(Duration::from_secs(15))
     .expect("readback completed")
@@ -37,7 +37,7 @@ fn gpu_canvas_pixels_ordering_clips_resize_and_asset_reuse() {
   let (device, queue) = device();
   let mut renderer = Renderer::new(&device, &queue);
   let gpu = CanvasHandle::test_surface(1024, 600, 1., false);
-  renderer.process(&device, &queue, &[gpu.clone()]);
+  renderer.process(&device, &queue, std::slice::from_ref(&gpu));
   assert_eq!(gpu.status().gpu_bytes, 0, "blank canvases allocate lazily");
   let cpu = CanvasHandle::test_surface(1024, 600, 1., true);
   let image = ImageData::from_rgba(
@@ -105,7 +105,7 @@ fn gpu_canvas_pixels_ordering_clips_resize_and_asset_reuse() {
   let before = gpu.status().gpu;
   let d = gpu.context_2d();
   d.draw_image_scaled(&image, 0., 0., 20., 20.).unwrap();
-  renderer.process(&device, &queue, &[gpu.clone()]);
+  renderer.process(&device, &queue, std::slice::from_ref(&gpu));
   assert_eq!(gpu.status().gpu.uploaded_bytes, before.uploaded_bytes);
   // Snapshot barriers survive a later full clear. The result captures its own revision.
   d.clear();
@@ -117,7 +117,7 @@ fn gpu_canvas_pixels_ordering_clips_resize_and_asset_reuse() {
   d.fill_rect(0., 0., 1024., 600.);
   let blue = gpu.snapshot();
   assert_eq!(gpu.snapshot().try_take().unwrap().unwrap_err(), CanvasError::QueueFull);
-  renderer.process(&device, &queue, &[gpu.clone()]);
+  renderer.process(&device, &queue, std::slice::from_ref(&gpu));
   assert_eq!(
     pixel(&red.wait_timeout(Duration::from_secs(15)).unwrap().unwrap(), 100, 100),
     [255, 0, 0, 128]
@@ -129,7 +129,7 @@ fn gpu_canvas_pixels_ordering_clips_resize_and_asset_reuse() {
   let before = gpu.status().gpu;
   d.set_fill_style("#fff");
   d.fill_rect(20., 20., 64., 64.);
-  renderer.process(&device, &queue, &[gpu.clone()]);
+  renderer.process(&device, &queue, std::slice::from_ref(&gpu));
   assert_eq!(gpu.status().gpu.tiles - before.tiles, 1);
   assert_eq!(gpu.status().gpu.uploaded_bytes, before.uploaded_bytes);
   gpu.test_resize(2048, 1200, true);
@@ -157,7 +157,7 @@ fn canvas_gpu_performance() {
     let d = canvas.context_2d();
     d.set_fill_style("#182434");
     d.fill_rect(0., 0., w as f32 / scale, h as f32 / scale);
-    renderer.process(&device, &queue, &[canvas.clone()]);
+    renderer.process(&device, &queue, std::slice::from_ref(&canvas));
     device.poll(PollType::wait_indefinitely()).unwrap();
     d.set_fill_style("#60a5fa80");
     for full in [false, true] {
@@ -172,7 +172,7 @@ fn canvas_gpu_performance() {
         } else {
           d.fill_rect(20., 20., 64., 64.);
         }
-        renderer.process(&device, &queue, &[canvas.clone()]);
+        renderer.process(&device, &queue, std::slice::from_ref(&canvas));
         let cpu = start.elapsed();
         device.poll(PollType::wait_indefinitely()).unwrap();
         if index >= 4 {
