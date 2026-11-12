@@ -433,51 +433,16 @@ impl ManagedWindow {
     None
   }
 
-  /// Gives the tree what a touch came to; see [`touch`]. `false` when the actions scrolled and the last scroll
-  /// moved nothing.
+  /// A finger's scroll just ended; see [`page_after_scroll`].
+  #[cfg(target_os = "ios")]
+  fn page_after_scroll(&mut self) {
+    page_after_scroll(&mut self.tree, &mut self.touch, &mut self.cursor_pos);
+  }
+
+  /// Gives the tree what a touch came to; see [`apply_touch_actions`].
   #[cfg(target_os = "ios")]
   fn apply_touch_actions(&mut self, actions: Vec<touch::TouchAction>, momentum: bool) -> bool {
-    use touch::TouchAction;
-    let mut moved = true;
-    for action in actions {
-      match action {
-        TouchAction::Move { x, y } => {
-          self.cursor_pos = (x, y);
-          self.tree.touch_pointer_move(x as f32, y as f32);
-        }
-        TouchAction::Press { x, y } => {
-          self.cursor_pos = (x, y);
-          self.tree.touch_press(x as f32, y as f32);
-        }
-        TouchAction::Release { x, y } => {
-          self.cursor_pos = (x, y);
-          self.tree.touch_release(x as f32, y as f32);
-        }
-        TouchAction::Tap { x, y } => {
-          self.cursor_pos = (x, y);
-          self.tree.touch_tap(x as f32, y as f32, touch::TAP_HIGHLIGHT);
-        }
-        TouchAction::LongPress { x, y } => {
-          if self.tree.touch_long_press(x as f32, y as f32) {
-            self.touch.long_press_taken();
-          }
-        }
-        TouchAction::CancelPress { x, y } => self.tree.touch_cancel_press(x as f32, y as f32),
-        TouchAction::Settle => self.tree.touch_scroll_settle(),
-        TouchAction::ScrollTarget { x, y, dx, dy } => {
-          self.tree.touch_scroll_begin(x as f32, y as f32, dx as f32, dy as f32);
-        }
-        TouchAction::Scroll { x, y, dx, dy, phase } => {
-          let scrolled = self
-            .tree
-            .touch_scroll(x as f32, y as f32, dx as f32, dy as f32, phase, momentum);
-          if matches!(phase, ScrollPhase::Scroll) {
-            moved = scrolled;
-          }
-        }
-      }
-    }
-    moved
+    apply_touch_actions(&mut self.tree, &mut self.touch, &mut self.cursor_pos, actions, momentum)
   }
 
   fn create_window(&mut self, event_loop: &ActiveEventLoop, app: &mut App) {
@@ -1158,7 +1123,11 @@ impl ManagedWindow {
           if route == crate::app::runtime::TouchRoute::Gesture {
             // Two fingers pinch or rotate: what the first one did as the pointer ends without a click.
             let actions = self.touch.abandon();
+            let lifted = touch::ends_scroll(&actions);
             self.apply_touch_actions(actions, false);
+            if lifted {
+              self.page_after_scroll();
+            }
           }
           self.apply_window_commands(event_loop);
           self.check_redraw();
@@ -1177,7 +1146,11 @@ impl ManagedWindow {
           springing,
           |(x, y)| tree.touch_scrolls_at(x as f32, y as f32),
         );
+        let lifted = matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) && touch::ends_scroll(&actions);
         self.apply_touch_actions(actions, false);
+        if lifted {
+          self.page_after_scroll();
+        }
       }
       // UIKit draws a view from `drawRect:`, which is where winit sends this event from, and drops a
       // `setNeedsDisplay` made inside it: a redraw the pass asks for (a second layout pass, an animation's next
@@ -1217,6 +1190,95 @@ struct ManagedSecondaryWindow {
   frames: FrameSource,
   ime: ime::ImeSync,
   file_drag: FileDragShell,
+  /// The finger that is the window's pointer; see [`touch`].
+  #[cfg(target_os = "ios")]
+  touch: touch::TouchPointer,
+}
+
+/// What a further window of the app is on a tablet or on a display plugged in: a window in a scene of its
+/// own, which UIKit makes and the person or the system may close.
+#[cfg(target_os = "ios")]
+impl ManagedSecondaryWindow {
+  /// winit's view in the window.
+  fn ui_view(&self) -> Option<std::ptr::NonNull<std::ffi::c_void>> {
+    match self.window.as_ref()?.window_handle().ok()?.as_raw() {
+      RawWindowHandle::UiKit(handle) => Some(handle.ui_view),
+      _ => None,
+    }
+  }
+
+  /// Whether the scene the window was shown in is gone, by the person's doing or the system's.
+  fn scene_closed(&self) -> bool {
+    self.ui_view().is_some_and(ios::other_scene_closed)
+  }
+
+  /// The app closes the window: its scene goes with it.
+  fn leave_scene(&self) {
+    if let Some(view) = self.ui_view() {
+      ios::leave_other_scene(view);
+    }
+  }
+
+  /// When the finger on the window, or what it left moving, next needs the loop.
+  fn next_touch_deadline(&self, tree: &Tree) -> Option<Instant> {
+    self
+      .touch
+      .next_deadline()
+      .into_iter()
+      .chain(tree.touch_animating().then(|| Instant::now() + touch::SPRING_STEP))
+      .min()
+  }
+
+  /// A touch on the window: the first finger is its pointer, as on the app's first window.
+  fn handle_touch(&mut self, tree: &mut Tree, touch: winit::event::Touch) {
+    let scale = f64::from(tree.scale_factor());
+    let phase = match touch.phase {
+      TouchPhase::Started => crate::app::events::TouchPhase::Start,
+      TouchPhase::Moved => crate::app::events::TouchPhase::Move,
+      TouchPhase::Ended => crate::app::events::TouchPhase::End,
+      TouchPhase::Cancelled => crate::app::events::TouchPhase::Cancel,
+    };
+    let force = touch.force.map(|force| force.normalized() as f32);
+    let (x, y) = (touch.location.x, touch.location.y);
+    let route = tree.touch_event(touch.id, phase, x as f32, y as f32, force);
+    let actions = match route {
+      crate::app::runtime::TouchRoute::Pointer => {
+        self.touch.set_momentum(tree.touch_momentum());
+        let springing = touch.phase == TouchPhase::Started && tree.touch_scroll_catch();
+        self.touch.touch(
+          touch.id,
+          touch.phase,
+          (x, y),
+          Instant::now(),
+          scale,
+          springing,
+          |(x, y)| tree.touch_scrolls_at(x as f32, y as f32),
+        )
+      }
+      // Two fingers pinch or rotate: what the first one did as the pointer ends without a click.
+      crate::app::runtime::TouchRoute::Gesture => self.touch.abandon(),
+      _ => return,
+    };
+    let lifted = touch::ends_scroll(&actions)
+      && (route != crate::app::runtime::TouchRoute::Pointer
+        || matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled));
+    apply_touch_actions(tree, &mut self.touch, &mut self.cursor_pos, actions, false);
+    if lifted {
+      page_after_scroll(tree, &mut self.touch, &mut self.cursor_pos);
+    }
+  }
+
+  /// What time brings a finger on the window: its press, its momentum, and content springing back.
+  fn tick_touch(&mut self, tree: &mut Tree, now: Instant) {
+    let actions = self.touch.tick(now);
+    if !apply_touch_actions(tree, &mut self.touch, &mut self.cursor_pos, actions, true)
+      && let Some((end, velocity)) = self.touch.end_fling()
+    {
+      apply_touch_actions(tree, &mut self.touch, &mut self.cursor_pos, vec![end], true);
+      tree.touch_scroll_bounce(velocity.0 as f32, velocity.1 as f32, now);
+    }
+    tree.touch_tick(now);
+  }
 }
 
 impl ManagedSecondaryWindow {
@@ -1237,6 +1299,8 @@ impl ManagedSecondaryWindow {
       frames: FrameSource::default(),
       ime: ime::ImeSync::default(),
       file_drag: FileDragShell::default(),
+      #[cfg(target_os = "ios")]
+      touch: touch::TouchPointer::default(),
     }
   }
 
@@ -1283,7 +1347,7 @@ impl ManagedSecondaryWindow {
       attrs
     };
     let window = event_loop.create_window(attrs).unwrap();
-    let size = window.inner_size();
+    let size = surface_size(&window);
     let metadata = secondary_window_metadata(&window);
     tree.set_scale_factor(window.scale_factor() as f32);
     tree.resize(size.width, size.height);
@@ -1291,6 +1355,11 @@ impl ManagedSecondaryWindow {
       tree.set_window_position(position.x, position.y);
     }
     self.window = Some(window);
+    // A window of UIKit's is seen in a scene: one the system has ready for it, or one it is asked for now.
+    #[cfg(target_os = "ios")]
+    if let Some(view) = self.ui_view() {
+      ios::join_other_scene(view);
+    }
     self.sync_window_state(tree);
     let presented = show_after_first_present && self.present_now(app, tree);
     if show_after_first_present {
@@ -1456,9 +1525,23 @@ impl ManagedSecondaryWindow {
 
   fn present_now(&mut self, app: &mut App, tree: &mut Tree) -> bool {
     if let Some(w) = &self.window {
-      let size = w.inner_size();
+      let size = surface_size(w);
       tree.set_scale_factor(w.scale_factor() as f32);
       tree.resize(size.width, size.height);
+      // The tree is as large as the window, and is told what of that is clear of the screen's edges: the
+      // window's own, as it is in a scene of its own. No keyboard comes up over it: nothing in it is typed
+      // into.
+      #[cfg(target_os = "ios")]
+      if let Ok(RawWindowHandle::UiKit(handle)) = w.window_handle().map(|handle| handle.as_raw()) {
+        let (top, right, bottom, left) = ios::own_safe_area(handle.ui_view);
+        tree.window().set_safe_area(crate::app::window::SafeAreaInsets {
+          top,
+          right,
+          bottom,
+          left,
+          keyboard: 0.0,
+        });
+      }
       self.frames.settle();
       let started = Instant::now();
       #[cfg(feature = "perf_profile")]
@@ -1489,6 +1572,8 @@ impl ManagedSecondaryWindow {
     let now = Instant::now();
     tree.tick_timers();
     tree.tick_futures();
+    #[cfg(target_os = "ios")]
+    self.tick_touch(tree, now);
     self.file_drag.flush(tree, self.window.as_ref(), self.cursor_pos);
     let window = self.window.as_ref();
     self.frames.request_timeline_frame(tree, window, now);
@@ -1518,16 +1603,19 @@ impl ManagedSecondaryWindow {
       WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
         tree.set_scale_factor(scale_factor as f32);
         if let Some(w) = &self.window {
-          let size = w.inner_size();
+          let size = surface_size(w);
           tree.resize(size.width, size.height);
           self.request_redraw();
         }
       }
       WindowEvent::Resized(size) => {
+        // On iOS the event's size is the safe area's, and the tree is as large as the window.
+        #[cfg(target_os = "ios")]
+        let size = self.window.as_ref().map_or(size, surface_size);
         tree.resize(size.width, size.height);
         self.sync_window_state(tree);
         // Paint inside the event, as the main window does, so a live resize is not stretched.
-        let current = self.window.as_ref().is_some_and(|w| w.inner_size() == size);
+        let current = self.window.as_ref().is_some_and(|w| surface_size(w) == size);
         if !current || size.width == 0 || size.height == 0 || !self.present_now(app, tree) {
           self.request_redraw();
         }
@@ -1635,6 +1723,8 @@ impl ManagedSecondaryWindow {
         self.apply_cursor(tree);
         self.check_redraw(tree);
       }
+      #[cfg(target_os = "ios")]
+      WindowEvent::Touch(touch) => self.handle_touch(tree, touch),
       WindowEvent::RedrawRequested => {
         let presented = self.present_now(app, tree);
         self.apply_window_commands(tree);
@@ -1646,6 +1736,74 @@ impl ManagedSecondaryWindow {
     self.check_redraw(tree);
     false
   }
+}
+
+/// A finger's scroll of a window's content just ended. A list that scrolls by pages has no momentum: it goes
+/// on to a page, from how fast the finger lifted.
+#[cfg(target_os = "ios")]
+fn page_after_scroll(tree: &mut Tree, pointer: &mut touch::TouchPointer, cursor_pos: &mut (f64, f64)) {
+  if !tree.touch_scroll_pages() {
+    return;
+  }
+  let velocity = match pointer.end_fling() {
+    Some((end, velocity)) => {
+      apply_touch_actions(tree, pointer, cursor_pos, vec![end], false);
+      velocity
+    }
+    None => (0.0, 0.0),
+  };
+  tree.touch_scroll_page(velocity.0 as f32, velocity.1 as f32, Instant::now());
+}
+
+/// Gives a window's tree what a touch on the window came to; see [`touch`]. `false` when the actions scrolled
+/// and the last scroll moved nothing.
+#[cfg(target_os = "ios")]
+fn apply_touch_actions(
+  tree: &mut Tree,
+  pointer: &mut touch::TouchPointer,
+  cursor_pos: &mut (f64, f64),
+  actions: Vec<touch::TouchAction>,
+  momentum: bool,
+) -> bool {
+  use touch::TouchAction;
+  let mut moved = true;
+  for action in actions {
+    match action {
+      TouchAction::Move { x, y } => {
+        *cursor_pos = (x, y);
+        tree.touch_pointer_move(x as f32, y as f32);
+      }
+      TouchAction::Press { x, y } => {
+        *cursor_pos = (x, y);
+        tree.touch_press(x as f32, y as f32);
+      }
+      TouchAction::Release { x, y } => {
+        *cursor_pos = (x, y);
+        tree.touch_release(x as f32, y as f32);
+      }
+      TouchAction::Tap { x, y } => {
+        *cursor_pos = (x, y);
+        tree.touch_tap(x as f32, y as f32, touch::TAP_HIGHLIGHT);
+      }
+      TouchAction::LongPress { x, y } => {
+        if tree.touch_long_press(x as f32, y as f32) {
+          pointer.long_press_taken();
+        }
+      }
+      TouchAction::CancelPress { x, y } => tree.touch_cancel_press(x as f32, y as f32),
+      TouchAction::Settle => tree.touch_scroll_settle(),
+      TouchAction::ScrollTarget { x, y, dx, dy } => {
+        tree.touch_scroll_begin(x as f32, y as f32, dx as f32, dy as f32);
+      }
+      TouchAction::Scroll { x, y, dx, dy, phase } => {
+        let scrolled = tree.touch_scroll(x as f32, y as f32, dx as f32, dy as f32, phase, momentum);
+        if matches!(phase, ScrollPhase::Scroll) {
+          moved = scrolled;
+        }
+      }
+    }
+  }
+  moved
 }
 
 fn secondary_window_metadata(window: &Window) -> SecondaryWindowMetadata {
@@ -1803,6 +1961,8 @@ impl WinitHandler {
 
   fn close_secondary_at_position(&mut self, position: usize) {
     let index = self.secondaries[position].index();
+    #[cfg(target_os = "ios")]
+    self.secondaries[position].leave_scene();
     if self.main.tree.close_secondary_window(index) {
       self.main.request_redraw();
     }
@@ -2066,6 +2226,8 @@ impl ApplicationHandler for WinitHandler {
       }
       let index = self.secondaries[position].index();
       let mut closed = false;
+      #[cfg(target_os = "ios")]
+      let drawn = matches!(event, WindowEvent::RedrawRequested);
       if let Some(secondary) = self.main.tree.secondary_window_mut(index) {
         self.secondaries[position].handle_event(&mut self.app, event_loop, event, secondary.tree_mut());
         closed = self.secondaries[position].close_requested();
@@ -2074,6 +2236,23 @@ impl ApplicationHandler for WinitHandler {
         self.close_secondary_at_position(position);
       } else {
         self.apply_secondary_window_requests(event_loop);
+        // UIKit draws a view from `drawRect:`, which is where winit sends the redraw from, and drops a redraw
+        // asked for inside it: the frame the pass asked for is taken as not coming, and the loop takes another
+        // turn and asks from there, as for the main window.
+        #[cfg(target_os = "ios")]
+        if drawn
+          && let Some(secondary_window) = self.secondaries.iter_mut().find(|secondary| secondary.index() == index)
+        {
+          secondary_window.frames.settle();
+          if self
+            .main
+            .tree
+            .secondary_window(index)
+            .is_some_and(|secondary| secondary.tree().needs_redraw())
+          {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+          }
+        }
       }
     }
   }
@@ -2151,6 +2330,11 @@ impl ApplicationHandler for WinitHandler {
         let secondary_window = &mut self.secondaries[position];
         secondary_window.tick(secondary.tree_mut());
         closed = secondary_window.apply_window_commands(secondary.tree_mut());
+        // The person closed the window's scene, or its display was unplugged.
+        #[cfg(target_os = "ios")]
+        {
+          closed |= secondary_window.scene_closed();
+        }
       }
 
       if closed {
@@ -2208,10 +2392,22 @@ impl ApplicationHandler for WinitHandler {
       .filter_map(ManagedSecondaryWindow::next_file_drag_poll)
       .chain(self.main.next_file_drag_poll())
       .min();
+    #[cfg(target_os = "ios")]
+    let next_secondary_touch = self
+      .secondaries
+      .iter()
+      .filter_map(|secondary_window| {
+        let secondary = self.main.tree.secondary_window(secondary_window.index())?;
+        secondary_window.next_touch_deadline(secondary.tree())
+      })
+      .min();
+    #[cfg(not(target_os = "ios"))]
+    let next_secondary_touch: Option<Instant> = None;
     let next_timer = trees()
       .filter_map(Tree::next_timer_at)
       .chain(next_file_drag_poll)
       .chain(self.main.next_touch_deadline())
+      .chain(next_secondary_touch)
       .min();
 
     let wait = LoopWait::of(

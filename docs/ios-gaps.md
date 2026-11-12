@@ -13,7 +13,13 @@ makes the scene's delegate and puts winit's window into the scene. The app has t
 `UISceneDelegateClassName` set to `LurqSceneDelegate`); winit starts the app with no delegate of its own that
 could say so in code. Going to the background and back, and the lock screen, were tried on a device.
 
-- **One scene.** A second window of the app, on an iPad or an outer display, is not there.
+- **Further windows** (`WindowOpener`) are scenes of their own: beside the first on a tablet, or on a display
+  plugged in (`AppEvent::WindowAsked`). In a simulated tablet a window was opened by the app, pressed and
+  scrolled by synthetic input, and closed by the app. Not checked: a finger in such a window, a window the
+  person asks the system for or closes there, and a display, which no simulator could be given from a
+  terminal: `docs/ios-ipad-checks.md` lists what to try. What such a window does not have: a keyboard (a text input in it is not typed into), the
+  keyboard's share of the safe area, a safe area that turns with the device, the status bar's tap, and the
+  display's own pace for its frames.
 - **What the app is opened with:** a link of the app's own scheme reaches it (`AppEvent::OpenUrl`), tried on a
   device. A universal link and a home screen shortcut: not checked.
 
@@ -85,7 +91,11 @@ inside its input.
   to pull and swipe on: only their tests have run. The spinner is drawn by lurq, not the platform's; an
   action does not stretch as the row is pulled past it; and opening one row does not close another unless
   the app ties them with `SwipeRowProps::open`.
-- Not there at all: paging, pinch to zoom inside a scroll.
+- **Paging** (`ScrollState::set_paging`) and **pinch to zoom** (`ZoomScroll`) are there, written without a
+  device to try them on: only their tests have run, and a double tap in a simulator. How fast a lift throws
+  a list at its next page (200 pt/s) and the spring that takes it there were set by eye. A pinch stops at the
+  ends of its range where the platform's gives and springs back; a double tap changes the scale with no
+  move; and what is zoomed is drawn scaled, its text not laid out anew.
 
 ## The platform
 
@@ -93,9 +103,10 @@ inside its input.
   no status bar. Now and then, turned back upright, the window shows a frame drawn for half its height until
   something asks for another; the shell asks for one when the window's size is not the last frame's, which
   made it rarer and did not end it. Not looked into further.
-- **Face ID and Touch ID** (`app::biometry`): an app asks the person to prove who they are. Written without
-  a device to try it on. Keeping a secret behind it in the keychain is not done, and a Mac's Touch ID is not
-  asked, though it has the same framework.
+- **Face ID and Touch ID** (`app::biometry`): an app asks the person to prove who they are, and keeps a
+  secret in the keychain behind the same check. Written without a device to try it on: the secret was kept,
+  read and forgotten in a simulator, which asks for no face. A Mac's Touch ID is not asked, and its keychain
+  not used, though it has the same frameworks.
 - **Features of lurq other than touch and text** have not been run on iOS: `resources` (the network; `ring`
   did not build without Xcode), `persistent_storage`, `image`, `svg`, `markdown`, the developer tools.
 - **Haptics** (`ctx.window().haptic(..)`) were written without a device to feel them; no crash was reported,
