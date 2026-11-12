@@ -3886,17 +3886,18 @@ impl LayoutEngine {
     resolved_width: Option<f32>,
     resolved_height: Option<f32>,
   ) {
-    if let Some(intrinsic) = node.intrinsic_size {
-      if intrinsic.width > 0.0 && intrinsic.height > 0.0 {
-        if let (Some(w), None) = (resolved_width, resolved_height) {
-          let h = w * intrinsic.height / intrinsic.width;
-          constraints.min_height = h;
-          constraints.max_height = h;
-        } else if let (None, Some(h)) = (resolved_width, resolved_height) {
-          let w = h * intrinsic.width / intrinsic.height;
-          constraints.min_width = w;
-          constraints.max_width = w;
-        }
+    if let Some(intrinsic) = node.intrinsic_size
+      && intrinsic.width > 0.0
+      && intrinsic.height > 0.0
+    {
+      if let (Some(w), None) = (resolved_width, resolved_height) {
+        let h = w * intrinsic.height / intrinsic.width;
+        constraints.min_height = h;
+        constraints.max_height = h;
+      } else if let (None, Some(h)) = (resolved_width, resolved_height) {
+        let w = h * intrinsic.width / intrinsic.height;
+        constraints.min_width = w;
+        constraints.max_width = w;
       }
     }
   }
@@ -4046,14 +4047,14 @@ impl LayoutEngine {
     child: &Node,
     constraints: Constraints,
   ) -> Arc<LayoutResult> {
-    if let Some(Some(child_override)) = child_overrides.and_then(|overrides| overrides.get(index)) {
-      if child_override.constraints == constraints {
-        // The override was laid out before this parent layout began, which
-        // may have laid the child out again under other constraints since.
-        Self::restore_text_layout_tree(child, &child_override.result);
-        child.layout_cache.record_reuse(constraints, &child_override.result);
-        return child_override.result.clone();
-      }
+    if let Some(Some(child_override)) = child_overrides.and_then(|overrides| overrides.get(index))
+      && child_override.constraints == constraints
+    {
+      // The override was laid out before this parent layout began, which
+      // may have laid the child out again under other constraints since.
+      Self::restore_text_layout_tree(child, &child_override.result);
+      child.layout_cache.record_reuse(constraints, &child_override.result);
+      return child_override.result.clone();
     }
 
     self.layout_node(glyph_engine, child, constraints)

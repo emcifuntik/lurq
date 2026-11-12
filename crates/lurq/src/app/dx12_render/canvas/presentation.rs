@@ -103,10 +103,10 @@ impl Renderer {
     }
   }
   pub(super) unsafe fn abort_for_resize(&mut self, state: &mut Dx12State, canvas: &CanvasHandle) {
-    if let Some((_, front)) = self.frames.end_replacement(&mut self.fronts, canvas.surface_id()) {
-      if let Some(back) = self.surfaces.insert(canvas.surface_id(), front) {
-        self.retire_back(state, canvas.surface_id(), back);
-      }
+    if let Some((_, front)) = self.frames.end_replacement(&mut self.fronts, canvas.surface_id())
+      && let Some(back) = self.surfaces.insert(canvas.surface_id(), front)
+    {
+      self.retire_back(state, canvas.surface_id(), back);
     }
   }
   pub(super) unsafe fn account_presentation(&self, state: &Dx12State, canvas: &CanvasHandle) {

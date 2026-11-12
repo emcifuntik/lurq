@@ -357,12 +357,12 @@ impl AnimationEngine {
     crate::core::layout_dirty::visit();
     let mut needs_layout = false;
     let node_id = node.node_id();
-    if node_id.is_assigned() {
-      if let Some(spec) = node.playing_animation() {
-        self.seen.insert(node_id);
-        let spec = Animation::clone(spec);
-        needs_layout = self.process_node(node, &spec, now);
-      }
+    if node_id.is_assigned()
+      && let Some(spec) = node.playing_animation()
+    {
+      self.seen.insert(node_id);
+      let spec = Animation::clone(spec);
+      needs_layout = self.process_node(node, &spec, now);
     }
 
     for child in &mut node.children {

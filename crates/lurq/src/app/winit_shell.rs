@@ -1283,10 +1283,8 @@ impl ManagedSecondaryWindow {
     self.window = Some(window);
     self.sync_window_state(tree);
     let presented = show_after_first_present && self.present_now(app, tree);
-    if show_after_first_present {
-      if let Some(window) = &self.window {
-        window.set_visible(true);
-      }
+    if show_after_first_present && let Some(window) = &self.window {
+      window.set_visible(true);
     }
     if !presented {
       self.request_redraw();

@@ -3911,27 +3911,26 @@ impl Tree {
 
     if button == MouseButton::Left
       && let ClickDispatchTarget::Node(click_target_id) = click_target
-    {
-      if self.click_tracker.pending_matches(
+      && self.click_tracker.pending_matches(
         now,
         position,
         button,
         click_target_id,
         self.double_click_distance.unwrap_or(DOUBLE_CLICK_DISTANCE),
         self.double_click_interval.unwrap_or(DOUBLE_CLICK_INTERVAL),
-      ) {
-        self.click_tracker.take_pending();
-        self.dispatch_mouse_with_click_target(
-          x,
-          y,
-          button,
-          MouseEventKind::DoubleClick,
-          modifiers,
-          Some(click_target_id),
-        );
-        self.apply_reactive_updates_after_event();
-        return;
-      }
+      )
+    {
+      self.click_tracker.take_pending();
+      self.dispatch_mouse_with_click_target(
+        x,
+        y,
+        button,
+        MouseEventKind::DoubleClick,
+        modifiers,
+        Some(click_target_id),
+      );
+      self.apply_reactive_updates_after_event();
+      return;
     }
 
     self.flush_pending_click();
@@ -4914,37 +4913,36 @@ impl Tree {
         if let Some((node, rect)) = hits
           .iter()
           .find(|(node, _)| matches!(node.node_kind(), NodeKind::TextInput { .. }))
+          && let NodeKind::TextInput { state, .. } = node.node_kind()
         {
-          if let NodeKind::TextInput { state, .. } = node.node_kind() {
-            if !evt.shift && !evt.ctrl {
-              self.selectable_text_anchor = None;
-              clear_selectable_text_selections(root);
-            }
-            let padding = self
-              .layout_engine
-              .resolved_padding_for_size(node, Size::new(rect.width, rect.height));
-            let content_height = (rect.height - padding.top - padding.bottom).max(0.0);
-            let vertical_offset = padding.top + text_input_vertical_offset(state, content_height);
-            state.begin_selection_at_point(
-              rect.local_x - rect.x - padding.left,
-              rect.local_y - rect.y - vertical_offset,
-            );
-            pending_text_selection_drag = Some(TextSelectionDrag {
-              kind: TextSelectionDragKind::Input {
-                target_id: node.node_id(),
-                state: state.clone(),
-              },
-              x: rect.x + padding.left,
-              y: rect.y + vertical_offset,
-              transform: rect.transform,
-            });
-            pending_focus = Some(FocusTarget {
-              input_id: node.node_id(),
-              event_id: node.node_id(),
-            });
-            reset_text_input_caret_blink = true;
-            builtin_needs_redraw = true;
+          if !evt.shift && !evt.ctrl {
+            self.selectable_text_anchor = None;
+            clear_selectable_text_selections(root);
           }
+          let padding = self
+            .layout_engine
+            .resolved_padding_for_size(node, Size::new(rect.width, rect.height));
+          let content_height = (rect.height - padding.top - padding.bottom).max(0.0);
+          let vertical_offset = padding.top + text_input_vertical_offset(state, content_height);
+          state.begin_selection_at_point(
+            rect.local_x - rect.x - padding.left,
+            rect.local_y - rect.y - vertical_offset,
+          );
+          pending_text_selection_drag = Some(TextSelectionDrag {
+            kind: TextSelectionDragKind::Input {
+              target_id: node.node_id(),
+              state: state.clone(),
+            },
+            x: rect.x + padding.left,
+            y: rect.y + vertical_offset,
+            transform: rect.transform,
+          });
+          pending_focus = Some(FocusTarget {
+            input_id: node.node_id(),
+            event_id: node.node_id(),
+          });
+          reset_text_input_caret_blink = true;
+          builtin_needs_redraw = true;
         }
 
         let pointer_on_slider = hits
@@ -4954,45 +4952,44 @@ impl Tree {
         if pending_text_selection_drag.is_none()
           && !pointer_on_slider
           && let Some((node, rect)) = selectable_text_drag_start_endpoint(root, result, lx, ly)
+          && let Some((state, value)) = selectable_text_state_and_value(node)
         {
-          if let Some((state, value)) = selectable_text_state_and_value(node) {
-            let text_x = rect.local_x - rect.x;
-            let text_y = rect.local_y - rect.y;
-            let caret = state.caret_index_at_point(&value, text_x, text_y);
-            let extended = evt
-              .shift
-              .then_some(self.selectable_text_anchor)
-              .flatten()
-              .and_then(|anchor| anchor.extend_to(root, node.node_id(), caret));
-            let kind = match extended {
-              Some(kind) => kind,
-              None => {
-                let preserve_existing = evt.ctrl;
-                if !preserve_existing {
-                  clear_selectable_text_selections_except(root, Some(node.node_id()));
-                }
-                state.set_selection_indices(&value, caret, caret);
-                self.selectable_text_anchor = Some(SelectableTextAnchor {
-                  node_id: node.node_id(),
-                  index: caret,
-                });
-                TextSelectionDragKind::Text {
-                  start_id: node.node_id(),
-                  anchor: caret,
-                  state,
-                  value,
-                  preserve_existing,
-                }
+          let text_x = rect.local_x - rect.x;
+          let text_y = rect.local_y - rect.y;
+          let caret = state.caret_index_at_point(&value, text_x, text_y);
+          let extended = evt
+            .shift
+            .then_some(self.selectable_text_anchor)
+            .flatten()
+            .and_then(|anchor| anchor.extend_to(root, node.node_id(), caret));
+          let kind = match extended {
+            Some(kind) => kind,
+            None => {
+              let preserve_existing = evt.ctrl;
+              if !preserve_existing {
+                clear_selectable_text_selections_except(root, Some(node.node_id()));
               }
-            };
-            pending_text_selection_drag = Some(TextSelectionDrag {
-              kind,
-              x: rect.x,
-              y: rect.y,
-              transform: rect.transform,
-            });
-            builtin_needs_redraw = true;
-          }
+              state.set_selection_indices(&value, caret, caret);
+              self.selectable_text_anchor = Some(SelectableTextAnchor {
+                node_id: node.node_id(),
+                index: caret,
+              });
+              TextSelectionDragKind::Text {
+                start_id: node.node_id(),
+                anchor: caret,
+                state,
+                value,
+                preserve_existing,
+              }
+            }
+          };
+          pending_text_selection_drag = Some(TextSelectionDrag {
+            kind,
+            x: rect.x,
+            y: rect.y,
+            transform: rect.transform,
+          });
+          builtin_needs_redraw = true;
         }
 
         if pending_text_selection_drag.is_none()
@@ -5010,45 +5007,44 @@ impl Tree {
           && let Some((node, rect)) = hits
             .iter()
             .find(|(node, _)| matches!(node.node_kind(), NodeKind::Slider { .. }))
+          && let NodeKind::Slider { state } = node.node_kind()
         {
-          if let NodeKind::Slider { state } = node.node_kind() {
-            let (track_rect, thumb_rect) = state.part_rects(
-              rect.x,
-              rect.y,
-              rect.width,
-              rect.height,
-              true,
-              DEFAULT_SLIDER_THUMB_MIN_SIZE,
-            );
-            let travel_width = track_rect.width - thumb_rect.width;
-            let (drag_x, drag_width) = if travel_width > 0.0 {
-              (track_rect.x + thumb_rect.width * 0.5, travel_width)
-            } else {
-              (track_rect.x, track_rect.width)
-            };
-            // A mouse's press brings the thumb under the pointer. A finger's does not, as a slider of the platform's:
-            // the thumb goes with the finger from where it is, wherever on the slider the finger landed.
-            let drag_x = if self.touch_pointer.down {
-              drag_x + lx - (thumb_rect.x + thumb_rect.width * 0.5)
-            } else {
-              drag_x
-            };
-            let drag = SliderDrag {
-              target_id: node.node_id(),
-              binding_id: state.value_id(),
-              state: state.clone(),
-              x: drag_x,
-              width: drag_width,
-              on_finish: node.events.on_blur.clone(),
-            };
-            drag.update(lx);
-            pending_slider_drag = Some(drag);
-            pending_focus = Some(FocusTarget {
-              input_id: node.node_id(),
-              event_id: node.node_id(),
-            });
-            builtin_needs_redraw = true;
-          }
+          let (track_rect, thumb_rect) = state.part_rects(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            true,
+            DEFAULT_SLIDER_THUMB_MIN_SIZE,
+          );
+          let travel_width = track_rect.width - thumb_rect.width;
+          let (drag_x, drag_width) = if travel_width > 0.0 {
+            (track_rect.x + thumb_rect.width * 0.5, travel_width)
+          } else {
+            (track_rect.x, track_rect.width)
+          };
+          // A mouse's press brings the thumb under the pointer. A finger's does not, as a slider of the platform's:
+          // the thumb goes with the finger from where it is, wherever on the slider the finger landed.
+          let drag_x = if self.touch_pointer.down {
+            drag_x + lx - (thumb_rect.x + thumb_rect.width * 0.5)
+          } else {
+            drag_x
+          };
+          let drag = SliderDrag {
+            target_id: node.node_id(),
+            binding_id: state.value_id(),
+            state: state.clone(),
+            x: drag_x,
+            width: drag_width,
+            on_finish: node.events.on_blur.clone(),
+          };
+          drag.update(lx);
+          pending_slider_drag = Some(drag);
+          pending_focus = Some(FocusTarget {
+            input_id: node.node_id(),
+            event_id: node.node_id(),
+          });
+          builtin_needs_redraw = true;
         }
       } else if let Some((node, rect)) = hits
         .iter()
@@ -5083,58 +5079,58 @@ impl Tree {
           reset_text_input_caret_blink = true;
           builtin_needs_redraw = true;
         }
-      } else if let Some((node, rect)) = hits.iter().find(|(node, _)| is_selectable_text_node(node)) {
-        if let Some((state, value)) = selectable_text_state_and_value(node) {
-          let text_click_count = self.text_click_tracker.record(
-            Instant::now(),
-            (evt.x, evt.y),
-            button,
-            node.node_id(),
-            text_click_distance,
-            text_click_interval,
-          );
-          if !evt.shift && !evt.ctrl {
-            clear_selectable_text_selections_except(root, Some(node.node_id()));
-          }
-          match text_click_count {
-            1 => state.clear_selection_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
-            2 => state.select_word_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
-            _ => state.select_line_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
-          }
-          if let Some(index) = state.selection_anchor() {
-            self.selectable_text_anchor = Some(SelectableTextAnchor {
-              node_id: node.node_id(),
-              index,
-            });
-          }
-          builtin_needs_redraw = true;
+      } else if let Some((node, rect)) = hits.iter().find(|(node, _)| is_selectable_text_node(node))
+        && let Some((state, value)) = selectable_text_state_and_value(node)
+      {
+        let text_click_count = self.text_click_tracker.record(
+          Instant::now(),
+          (evt.x, evt.y),
+          button,
+          node.node_id(),
+          text_click_distance,
+          text_click_interval,
+        );
+        if !evt.shift && !evt.ctrl {
+          clear_selectable_text_selections_except(root, Some(node.node_id()));
         }
+        match text_click_count {
+          1 => state.clear_selection_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
+          2 => state.select_word_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
+          _ => state.select_line_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
+        }
+        if let Some(index) = state.selection_anchor() {
+          self.selectable_text_anchor = Some(SelectableTextAnchor {
+            node_id: node.node_id(),
+            index,
+          });
+        }
+        builtin_needs_redraw = true;
       }
       if let Some(target) = dispatch_builtin_pointer(&hits, lx, is_left_click) {
         pending_focus = Some(target);
         builtin_needs_redraw = true;
       }
-      if hits.is_empty() && is_left_click {
-        if let Some((node, rect)) = find_slider_by_y_recursive(root, result, 0.0, 0.0, ly) {
-          if let NodeKind::Slider { state } = node.node_kind() {
-            let (track_rect, thumb_rect) = state.part_rects(
-              rect.x,
-              rect.y,
-              rect.width,
-              rect.height,
-              node.is_style_hovered(),
-              DEFAULT_SLIDER_THUMB_MIN_SIZE,
-            );
-            let ratio = state.pointer_ratio(lx, track_rect, thumb_rect);
-            state.set_from_ratio(ratio);
-            state.clear_drag_ratio();
-            pending_focus = Some(FocusTarget {
-              input_id: node.node_id(),
-              event_id: node.node_id(),
-            });
-            builtin_needs_redraw = true;
-          }
-        }
+      if hits.is_empty()
+        && is_left_click
+        && let Some((node, rect)) = find_slider_by_y_recursive(root, result, 0.0, 0.0, ly)
+        && let NodeKind::Slider { state } = node.node_kind()
+      {
+        let (track_rect, thumb_rect) = state.part_rects(
+          rect.x,
+          rect.y,
+          rect.width,
+          rect.height,
+          node.is_style_hovered(),
+          DEFAULT_SLIDER_THUMB_MIN_SIZE,
+        );
+        let ratio = state.pointer_ratio(lx, track_rect, thumb_rect);
+        state.set_from_ratio(ratio);
+        state.clear_drag_ratio();
+        pending_focus = Some(FocusTarget {
+          input_id: node.node_id(),
+          event_id: node.node_id(),
+        });
+        builtin_needs_redraw = true;
       }
     }
 
@@ -7193,13 +7189,13 @@ impl Tree {
       }
     }
 
-    if let Some(key) = node.background_resource_image.clone() {
-      if let Some(img) = Self::resolve_image_resource(&key, loader, image_cache) {
-        let current_id = node.background_image.as_deref().map(crate::images::ImageData::id);
-        if current_id != Some(img.id()) {
-          node.background_image.set(Some(Box::new(img)));
-          layout_dirty = true;
-        }
+    if let Some(key) = node.background_resource_image.clone()
+      && let Some(img) = Self::resolve_image_resource(&key, loader, image_cache)
+    {
+      let current_id = node.background_image.as_deref().map(crate::images::ImageData::id);
+      if current_id != Some(img.id()) {
+        node.background_image.set(Some(Box::new(img)));
+        layout_dirty = true;
       }
     }
 
@@ -9327,37 +9323,38 @@ impl SelectHandle<'_> {
 /// final layout must equal `-scroll` from its own state. A mismatch means a
 /// stale cached layout leaked through the incremental relayout paths.
 fn verify_scroll_offsets(node: &Node, result: &crate::layout::layout_result::LayoutResult) {
-  if let LayoutKind::ScrollModifier { state, .. } = node.layout_kind() {
-    if let Some(child) = result.children.first() {
-      let expected_y = -state.scroll_y();
-      let expected_x = -state.scroll_x();
-      if (child.offset.y - expected_y).abs() > 0.5 || (child.offset.x - expected_x).abs() > 0.5 {
-        tracing::warn!(
-          target: "lurq::layout",
-          "stale scroll offset in final layout: offset=({:.1},{:.1}) expected=({expected_x:.1},{expected_y:.1}) content_h={:.1}",
-          child.offset.x,
-          child.offset.y,
-          child.result.size.height,
-        );
-      }
+  if let LayoutKind::ScrollModifier { state, .. } = node.layout_kind()
+    && let Some(child) = result.children.first()
+  {
+    let expected_y = -state.scroll_y();
+    let expected_x = -state.scroll_x();
+    if (child.offset.y - expected_y).abs() > 0.5 || (child.offset.x - expected_x).abs() > 0.5 {
+      tracing::warn!(
+        target: "lurq::layout",
+        "stale scroll offset in final layout: offset=({:.1},{:.1}) expected=({expected_x:.1},{expected_y:.1}) content_h={:.1}",
+        child.offset.x,
+        child.offset.y,
+        child.result.size.height,
+      );
     }
   }
   // A node with a large fixed pixel height (a virtualized list's spacer) must
   // be laid at exactly that height — a mismatch means the final layout served
   // a stale cached result for this subtree. Gated to giant spacers so
   // legitimately clamped fixed-size controls don't produce noise.
-  if let Some(crate::node::dimension::Dimension::Px(requested)) = node.frame.height {
-    if requested > 1000.0 && (result.size.height - requested).abs() > 0.5 {
-      tracing::warn!(
-        target: "lurq::layout",
-        "stale child geometry in final layout: laid_h={:.1} requested_h={requested:.1} (tag={} local_dirty={} descendant_dirty={} has_cached={})",
-        result.size.height,
-        node.tag_name(),
-        node.layout_cache.is_local_dirty(),
-        node.layout_cache.is_descendant_dirty(),
-        node.layout_cache.has_cached_result(),
-      );
-    }
+  if let Some(crate::node::dimension::Dimension::Px(requested)) = node.frame.height
+    && requested > 1000.0
+    && (result.size.height - requested).abs() > 0.5
+  {
+    tracing::warn!(
+      target: "lurq::layout",
+      "stale child geometry in final layout: laid_h={:.1} requested_h={requested:.1} (tag={} local_dirty={} descendant_dirty={} has_cached={})",
+      result.size.height,
+      node.tag_name(),
+      node.layout_cache.is_local_dirty(),
+      node.layout_cache.is_descendant_dirty(),
+      node.layout_cache.has_cached_result(),
+    );
   }
   for (child_layout, child) in result.children.iter().zip(node.children()) {
     verify_scroll_offsets(child, &child_layout.result);
@@ -9367,10 +9364,10 @@ fn verify_scroll_offsets(node: &Node, result: &crate::layout::layout_result::Lay
 /// Find the scroll node sharing `state`'s underlying scroll state — the
 /// stable identity of a scroll container across retained-tree rebuilds.
 fn find_scroll_node_id_by_state(node: &Node, state: &ScrollState) -> Option<NodeId> {
-  if let Some((node_state, _)) = node.scroll_container() {
-    if node_state.ptr_eq(state) {
-      return Some(node.node_id());
-    }
+  if let Some((node_state, _)) = node.scroll_container()
+    && node_state.ptr_eq(state)
+  {
+    return Some(node.node_id());
   }
   for child in node.children() {
     if let Some(found) = find_scroll_node_id_by_state(child, state) {
@@ -11636,13 +11633,11 @@ fn nearest_selectable_text<'a>(
       abs_y + child_layout.offset.y,
       x,
       y,
-    ) {
-      if best
-        .as_ref()
-        .is_none_or(|(best_distance, ..)| candidate.0 < *best_distance)
-      {
-        best = Some(candidate);
-      }
+    ) && best
+      .as_ref()
+      .is_none_or(|(best_distance, ..)| candidate.0 < *best_distance)
+    {
+      best = Some(candidate);
     }
   }
 

@@ -5178,10 +5178,9 @@ impl Node {
         ..
       },
     ) = (&mut self.layout_kind, &old.layout_kind)
+      && direction == old_direction
     {
-      if direction == old_direction {
-        *state = old_state.clone();
-      }
+      *state = old_state.clone();
     }
 
     // The children that are leaving `old` are continued by no child: the rest are matched as if they were
@@ -5788,25 +5787,25 @@ impl Node {
 
   pub(crate) fn state_style(&self) -> Style {
     let mut style = Style::new();
-    if self.style_state.is_focused() {
-      if let Some(focused) = &self.state_styles.focused {
-        style.merge_from(focused);
-      }
+    if self.style_state.is_focused()
+      && let Some(focused) = &self.state_styles.focused
+    {
+      style.merge_from(focused);
     }
     if self.style_state.is_focus_visible()
       && let Some(focus_visible) = &self.state_styles.focus_visible
     {
       style.merge_from(focus_visible);
     }
-    if self.style_state.is_hovered() {
-      if let Some(hovered) = &self.state_styles.hovered {
-        style.merge_from(hovered);
-      }
+    if self.style_state.is_hovered()
+      && let Some(hovered) = &self.state_styles.hovered
+    {
+      style.merge_from(hovered);
     }
-    if self.style_state.is_active() {
-      if let Some(active) = &self.state_styles.active {
-        style.merge_from(active);
-      }
+    if self.style_state.is_active()
+      && let Some(active) = &self.state_styles.active
+    {
+      style.merge_from(active);
     }
     if self.style_state.is_drag_over()
       && let Some(drag_over) = &self.state_styles.drag_over

@@ -311,40 +311,40 @@ impl TransitionEngine {
 
       let key = (node_id, *prop);
 
-      if let Some(prev) = self.prev_values.get(&key) {
-        if *prev != current {
-          let from = if let Some(running) = self.active.get(&key) {
-            let elapsed = now.duration_since(running.start_time);
-            if elapsed >= running.delay {
-              let raw = running.progress(elapsed - running.delay);
-              let t = running.easing.evaluate(raw.clamp(0.0, 1.0)) as f32;
-              running.from.lerp(&running.to, t)
-            } else {
-              running.from
-            }
+      if let Some(prev) = self.prev_values.get(&key)
+        && *prev != current
+      {
+        let from = if let Some(running) = self.active.get(&key) {
+          let elapsed = now.duration_since(running.start_time);
+          if elapsed >= running.delay {
+            let raw = running.progress(elapsed - running.delay);
+            let t = running.easing.evaluate(raw.clamp(0.0, 1.0)) as f32;
+            running.from.lerp(&running.to, t)
           } else {
-            *prev
-          };
+            running.from
+          }
+        } else {
+          *prev
+        };
 
-          // With motion reduced, what moves or resizes an element is there at once. A fade or a
-          // change of color is no motion and still runs.
-          let (duration, delay) = if self.reduced_motion && moves(*prop) {
-            (Duration::ZERO, Duration::ZERO)
-          } else {
-            (*duration, *delay)
-          };
-          self.active.insert(
-            key,
-            TransitionRun {
-              from,
-              to: current,
-              start_time: now,
-              duration,
-              delay,
-              easing: *easing,
-            },
-          );
-        }
+        // With motion reduced, what moves or resizes an element is there at once. A fade or a
+        // change of color is no motion and still runs.
+        let (duration, delay) = if self.reduced_motion && moves(*prop) {
+          (Duration::ZERO, Duration::ZERO)
+        } else {
+          (*duration, *delay)
+        };
+        self.active.insert(
+          key,
+          TransitionRun {
+            from,
+            to: current,
+            start_time: now,
+            duration,
+            delay,
+            easing: *easing,
+          },
+        );
       }
 
       self.prev_values.insert(key, current);

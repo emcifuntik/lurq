@@ -1010,10 +1010,10 @@ fn format_debug_fields(fields: &[ComponentInfo]) -> Option<String> {
 
   if fields.len() == 1 {
     let info = &fields[0];
-    if matches!(info.name(), "value" | "variant") {
-      if let Some(value) = info.formatted_value() {
-        return Some(value.to_owned());
-      }
+    if matches!(info.name(), "value" | "variant")
+      && let Some(value) = info.formatted_value()
+    {
+      return Some(value.to_owned());
     }
   }
 
@@ -1742,10 +1742,10 @@ impl Ctx {
     let client = self.query_client();
     let cursor = self.query_cursor;
     self.query_cursor += 1;
-    if let Some(observer) = self.query_slots.get(cursor) {
-      if observer.matches(&client, &query) {
-        return observer.handle::<D>();
-      }
+    if let Some(observer) = self.query_slots.get(cursor)
+      && observer.matches(&client, &query)
+    {
+      return observer.handle::<D>();
     }
     let (handle, observer) = client.observe(query, Instant::now());
     if cursor < self.query_slots.len() {
@@ -2626,11 +2626,10 @@ impl Ctx {
         slot.key.as_deref() == Some(key.as_str()) && slot.component.type_name() == ForEachSlot::TYPE_NAME
       })
       .map(|offset| cursor + offset)
+      && found != cursor
     {
-      if found != cursor {
-        let slot = self.children.remove(found);
-        self.children.insert(cursor, slot);
-      }
+      let slot = self.children.remove(found);
+      self.children.insert(cursor, slot);
     }
 
     let can_reuse = self.children.get(cursor).is_some_and(|slot| {

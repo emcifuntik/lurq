@@ -1605,28 +1605,28 @@ impl GlyphEngine {
       return;
     }
     let clipped_key = clip.and_then(|clip| ClippedCacheKey::new(key.clone(), origin_x, origin_y, clip));
-    if let Some(clipped_key) = clipped_key.as_ref() {
-      if let Some(cached) = self.clipped_glyph_layout_cache.get(clipped_key) {
-        self.glyph_hits += cached.len();
-        #[cfg(feature = "perf_profile")]
-        let append_start = Instant::now();
-        append_glyph_cmds_from_cached(
-          cached,
-          origin_x,
-          origin_y,
-          style,
-          atlas_w,
-          atlas_h,
-          snap_to_pixel,
-          clip,
-          out,
-        );
-        #[cfg(feature = "perf_profile")]
-        {
-          self.profile.append_cached += append_start.elapsed();
-        }
-        return;
+    if let Some(clipped_key) = clipped_key.as_ref()
+      && let Some(cached) = self.clipped_glyph_layout_cache.get(clipped_key)
+    {
+      self.glyph_hits += cached.len();
+      #[cfg(feature = "perf_profile")]
+      let append_start = Instant::now();
+      append_glyph_cmds_from_cached(
+        cached,
+        origin_x,
+        origin_y,
+        style,
+        atlas_w,
+        atlas_h,
+        snap_to_pixel,
+        clip,
+        out,
+      );
+      #[cfg(feature = "perf_profile")]
+      {
+        self.profile.append_cached += append_start.elapsed();
       }
+      return;
     }
 
     #[cfg(feature = "perf_profile")]
@@ -2351,17 +2351,17 @@ impl GlyphEngine {
       for index in work {
         let fingerprint = entry.paragraphs[index].fingerprint;
         let needs_shape = entry.buffer.lines[index].shape_opt().is_none();
-        if needs_shape {
-          if let Some(&prior) = duplicates.get(&fingerprint).filter(|&&prior| {
+        if needs_shape
+          && let Some(&prior) = duplicates.get(&fingerprint).filter(|&&prior| {
             let old = &entry.buffer.lines[prior];
             let new = &entry.buffer.lines[index];
             old.text() == new.text() && old.ending() == new.ending()
-          }) {
-            entry.buffer.lines[index] = entry.buffer.lines[prior].clone();
-            #[cfg(feature = "perf_profile")]
-            {
-              self.profile.plain_reused_lines += 1;
-            }
+          })
+        {
+          entry.buffer.lines[index] = entry.buffer.lines[prior].clone();
+          #[cfg(feature = "perf_profile")]
+          {
+            self.profile.plain_reused_lines += 1;
           }
         }
         let needs_layout = entry.buffer.lines[index].layout_opt().is_none();
@@ -3018,10 +3018,10 @@ fn plain_buffer_cache_budget() -> usize {
   // Diagnostic override for comparing budgets in the same dev profiling binary.
   // Ordinary builds, release builds, and unit tests always use the default.
   #[cfg(all(feature = "perf_profile", debug_assertions, not(test)))]
-  if let Ok(value) = std::env::var("LURQ_TEXT_CACHE_MIB") {
-    if let Ok(mib @ 1..=1024) = value.parse::<usize>() {
-      return mib * 1024 * 1024;
-    }
+  if let Ok(value) = std::env::var("LURQ_TEXT_CACHE_MIB")
+    && let Ok(mib @ 1..=1024) = value.parse::<usize>()
+  {
+    return mib * 1024 * 1024;
   }
   PLAIN_BUFFER_CACHE_BYTES
 }
@@ -3766,11 +3766,11 @@ fn coalesce_dirty_rects(mut rects: Vec<GlyphAtlasDirtyRect>) -> Vec<GlyphAtlasDi
       continue;
     }
 
-    if let Some(last) = merged.last_mut() {
-      if should_merge_dirty_rects(*last, rect) {
-        *last = union_dirty_rect(*last, rect);
-        continue;
-      }
+    if let Some(last) = merged.last_mut()
+      && should_merge_dirty_rects(*last, rect)
+    {
+      *last = union_dirty_rect(*last, rect);
+      continue;
     }
 
     merged.push(rect);
