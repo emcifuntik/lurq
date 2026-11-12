@@ -363,17 +363,14 @@ impl Tree {
   }
 
   /// The other text inputs the platform may fill in together with the focused one, when that one is for a
-  /// login: every input in the tree that says it is for a name to log in with, a password or a code. A saved
-  /// login is two values, and the platform looks for a field for each.
+  /// login: every input in the tree that says it is for a name to log in with or a password. A saved login is
+  /// two values, and the platform looks for a field for each. An input for a code that is sent is none of a
+  /// login's: the platform took one that lay next to the password's for the name's.
   pub fn autofill_peers(&self) -> Vec<AutofillPeer> {
     let credential = |content: ContentKind| {
       matches!(
         content,
-        ContentKind::Username
-          | ContentKind::Email
-          | ContentKind::Password
-          | ContentKind::NewPassword
-          | ContentKind::OneTimeCode
+        ContentKind::Username | ContentKind::Email | ContentKind::Password | ContentKind::NewPassword
       )
     };
     let Some(root) = self.root.as_ref() else {

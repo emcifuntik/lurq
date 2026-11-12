@@ -75,7 +75,7 @@ mod focus_visible;
 mod history_swipe;
 mod hover;
 mod ime;
-pub use ime::{KeyboardTraits, TextInputGeometry, TextInputSnapshot};
+pub use ime::{AutofillPeer, KeyboardTraits, TextInputGeometry, TextInputSnapshot};
 #[cfg(all(test, feature = "markdown"))]
 mod inline_link_copy_tests;
 #[cfg(feature = "markdown")]
