@@ -712,12 +712,10 @@ struct ElementRequests {
   scroll_to_top: bool,
 }
 
-/// The edges of the window a component keeps its descendants clear of itself: [`Ctx::safe_area`] is zero
-/// there for them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct InsetsTaken {
-  pub(crate) bottom: bool,
-}
+/// How much more than the window's safe area a component's descendants keep clear of at the bottom, for a
+/// bar the component draws over them there: [`Ctx::safe_area`] adds it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct BottomBarInset(pub(crate) f32);
 
 pub struct Ctx {
   dirty: Arc<AtomicBool>,
@@ -2211,16 +2209,14 @@ impl Ctx {
     std::mem::take(&mut self.element_requests.lock().scroll_to_top)
   }
 
-  /// How far in from each edge of the window this component's content stays clear of what is over the
-  /// window there: the window's [`safe_area`](crate::app::window::WindowInfo), less what a component around
-  /// this one already keeps clear, as a [`TabOutlet`](crate::components::TabOutlet) with its bar over the
-  /// home indicator's room does the bottom.
+  /// How far in from each edge of the window this component's content stays clear of what is over it there:
+  /// the window's [`safe_area`](crate::app::window::WindowInfo), and at the bottom also the bar a component
+  /// around this one draws over its content, as a [`TabOutlet`](crate::components::TabOutlet) does. Content
+  /// that scrolls under such a bar is padded by this inside its list, and shows through the bar.
   pub fn safe_area(&mut self) -> crate::app::window::SafeAreaInsets {
     let mut safe_area = self.window().safe_area;
-    if let Some(taken) = self.use_context::<InsetsTaken>() {
-      if taken.bottom {
-        safe_area.bottom = 0.0;
-      }
+    if let Some(bar) = self.use_context::<BottomBarInset>() {
+      safe_area.bottom += bar.0;
     }
     safe_area
   }

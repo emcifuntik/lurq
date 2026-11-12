@@ -250,6 +250,7 @@ pub struct NavigationItem {
   pub trailing: Option<Element>,
   pub title_view: Option<Element>,
   pub bar_hidden: bool,
+  pub hides_tab_bar: bool,
   pub large_title: bool,
   pub prompt: Option<String>,
   pub toolbar: Option<Element>,
@@ -305,6 +306,7 @@ impl NavigationItem {
       trailing: None,
       title_view: None,
       bar_hidden: false,
+      hides_tab_bar: false,
       large_title: false,
       prompt: None,
       toolbar: None,
@@ -352,6 +354,13 @@ impl NavigationItem {
   /// the status bar, and keeps clear of it by the safe area itself.
   pub fn bar_hidden(mut self, hidden: bool) -> Self {
     self.bar_hidden = hidden;
+    self
+  }
+
+  /// Takes the bar of tabs under the stack ([`TabOutlet`](super::TabOutlet)) out of view while this screen
+  /// is the top one: the bar goes with the screen that comes in over it, and comes back with the one under.
+  pub fn hides_tab_bar(mut self, hides: bool) -> Self {
+    self.hides_tab_bar = hides;
     self
   }
 
@@ -419,6 +428,7 @@ impl NavigationItem {
       && self.trailing.is_some() == other.trailing.is_some()
       && self.title_view.is_some() == other.title_view.is_some()
       && self.bar_hidden == other.bar_hidden
+      && self.hides_tab_bar == other.hides_tab_bar
       && self.large_title == other.large_title
       && self.prompt == other.prompt
       && self.toolbar.is_some() == other.toolbar.is_some()
@@ -663,6 +673,10 @@ struct Shown {
   /// The speed a finger let the front screen go with, towards where it is going, as a share of the way left
   /// per the move's duration; 0 for a move no finger started.
   velocity: f64,
+  /// How far out of view the bar of tabs under the stack is for its screens, and the bar's part of the
+  /// outlet's context, which is told so after layout.
+  tab_bar: super::tabs::BarMove,
+  tab_link: Option<super::tabs::TabBarLink>,
 }
 
 pub struct StackOutlet {
@@ -691,6 +705,8 @@ impl Component for StackOutlet {
       begin_due: false,
       large_title_height: 0.0,
       velocity: 0.0,
+      tab_bar: super::tabs::BarMove::SHOWN,
+      tab_link: None,
     }));
     let changed = Signal::new(0u64);
     let drag = Signal::new(NO_DRAG);
@@ -956,6 +972,22 @@ impl Component for StackOutlet {
         }
       }
     });
+
+    // The bar of tabs under the stack goes with a screen that hides it, as far as that screen is in.
+    {
+      let hides = |id: Option<u64>| {
+        shown
+          .layers
+          .iter()
+          .chain(shown.leaving.iter())
+          .find(|layer| Some(layer.entry.id) == id)
+          .map(|layer| if layer.bar.item.lock().hides_tab_bar { 1.0 } else { 0.0 })
+      };
+      let front_hides: f32 = hides(front).unwrap_or(0.0);
+      let hidden = front_hides * (1.0 - out) + hides(back).unwrap_or(front_hides) * out;
+      shown.tab_bar = super::tabs::BarMove { hidden, pace, curve };
+      shown.tab_link = ctx.use_context::<super::tabs::TabBarLink>();
+    }
 
     let Some(bar) = props.bar else {
       return screens.into();
@@ -1322,6 +1354,11 @@ impl Component for StackOutlet {
     let mut shown = self.shown.lock();
     if std::mem::take(&mut shown.begin_due) {
       self.begin.restart();
+    }
+    if let Some(link) = &shown.tab_link
+      && link.0.get_untracked() != shown.tab_bar
+    {
+      link.0.set(shown.tab_bar);
     }
     // Whether each way back has room for its label beside the title, now that both are laid out. The title
     // is in the middle of the bar, so the label has half of what the title leaves.
@@ -2016,6 +2053,12 @@ impl Component for StackLayer {
     ctx.provide(RouterMatches(props.matches.clone()));
     ctx.provide(OutletDepth(props.depth));
     ctx.provide(StackState(props.state.clone()));
+    // A screen that hides the bar of tabs has no bar over its content to keep clear of. What the screen says
+    // of itself it says in its own render, after this one: this one is run again for it.
+    let _ = props.slot.changed.get();
+    if props.slot.item.lock().hides_tab_bar {
+      ctx.provide_if_changed(crate::app::ctx::BottomBarInset(0.0));
+    }
     ctx.provide(props.slot.clone());
     match props.matches.get(props.depth) {
       Some(route_match) => render_route_match(ctx, route_match),

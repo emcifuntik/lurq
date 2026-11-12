@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use lurq::{
   app::{App, Tree, component::Component, ctx::Ctx, events::MouseButton, window::SafeAreaInsets},
-  components::{Column, TabBar, TabBarPlace, TabItem, TabOutlet, TabOutletProps, Tabs, Text},
+  components::{Column, NavigationItem, StackOutlet, TabBar, TabBarPlace, TabItem, TabOutlet, TabOutletProps, Tabs, Text},
   node::Element,
   router::Routes,
 };
@@ -71,10 +71,24 @@ impl Component for Root {
     home.replace("/");
     let other = ctx.router(Routes::new().route("/", |_| Text::new("other screen").into()));
     other.replace("/");
+    // A tab that is a stack of screens, one of which has the bar away.
+    let stacked = ctx.router(Routes::new().layout("/", StackOutlet::mount, |routes| {
+      routes
+        .route("/", |_| Text::new("stack's first").into())
+        .route("/whole", |ctx| {
+          ctx.navigation_item(NavigationItem::new("Whole").hides_tab_bar(true));
+          let bottom = ctx.safe_area().bottom;
+          Text::new(&format!("whole, clear of {bottom}")).into()
+        })
+    }));
+    stacked.replace("/");
     let tabs = Tabs::new();
     tabs
       .add("home", TabItem::new("Home"), home)
       .add("other", TabItem::new("Other").badge("3"), other);
+    if ctx.props::<Shared>().1 == Bar::Bottom {
+      tabs.add("stacked", TabItem::new("Stacked"), stacked);
+    }
     let props = ctx.props::<Shared>();
     *props.0.lock().unwrap() = Some(tabs.clone());
     Self { tabs, bar: props.1 }
@@ -167,8 +181,8 @@ fn a_press_on_a_tabs_place_shows_it() {
   assert!(shows(&mut tree, "3"), "the badge");
   assert!(top_of(&mut tree, "Other") > 700.0, "the bar is at the bottom");
 
-  // The second of two places, in the bar over the home indicator's room.
-  pointer_click(&mut tree, 300.0, 740.0, MouseButton::Left);
+  // The second of three places, in the bar over the home indicator's room.
+  pointer_click(&mut tree, 200.0, 740.0, MouseButton::Left);
   run_pass(&mut tree);
   assert_eq!(tabs.active(), "other");
   assert!(shows(&mut tree, "other screen"));
@@ -181,16 +195,18 @@ fn a_press_on_the_active_tabs_place_goes_back_to_its_first_screen() {
   run_pass(&mut tree);
   assert!(shows(&mut tree, "deeper screen"));
 
-  pointer_click(&mut tree, 100.0, 740.0, MouseButton::Left);
+  pointer_click(&mut tree, 60.0, 740.0, MouseButton::Left);
   run_pass(&mut tree);
   assert!(shows(&mut tree, "home screen"));
   assert_eq!(tabs.active(), "home");
 }
 
 #[test]
-fn under_a_bar_at_the_bottom_a_screen_has_nothing_to_keep_clear_of_there() {
+fn under_a_bar_at_the_bottom_a_screen_keeps_clear_of_the_bar_too() {
   let (mut tree, _tabs) = setup(Bar::Bottom);
-  assert!(shows(&mut tree, "clear of 0"));
+  run_pass(&mut tree);
+  // The home indicator's room, the bar and the line over it.
+  assert!(shows(&mut tree, "clear of 83.5"));
 
   let (mut tree, _tabs) = setup(Bar::None);
   assert!(shows(&mut tree, "clear of 34"));
@@ -204,9 +220,10 @@ fn under_a_bar_at_the_bottom_a_screen_has_nothing_to_keep_clear_of_there() {
 #[test]
 fn a_hidden_bar_gives_its_room_back() {
   let (mut tree, tabs) = setup(Bar::Bottom);
+  run_pass(&mut tree);
+  assert!(shows(&mut tree, "clear of 83.5"));
   tabs.set_bar_hidden(true);
   run_pass(&mut tree);
-  assert!(!shows(&mut tree, "Other"));
   assert!(shows(&mut tree, "clear of 34"));
 }
 
@@ -219,7 +236,6 @@ fn the_bar_goes_while_the_keyboard_is_up() {
     ..SafeAreaInsets::default()
   });
   run_pass(&mut tree);
-  assert!(!shows(&mut tree, "Other"));
   assert!(shows(&mut tree, "clear of 300"));
 }
 
@@ -240,4 +256,23 @@ fn an_app_draws_a_bar_of_its_own() {
   tabs.select("other");
   run_pass(&mut tree);
   assert!(shows(&mut tree, "2 tabs, other shown"));
+}
+
+#[test]
+fn a_screen_that_hides_the_bar_has_the_bars_room() {
+  let (mut tree, tabs) = setup(Bar::Bottom);
+  tabs.select("stacked");
+  run_pass(&mut tree);
+  tabs.router("stacked").unwrap().push("/whole");
+  for _ in 0..3 {
+    run_pass(&mut tree);
+    tree.tick_timers_at(std::time::Instant::now() + std::time::Duration::from_secs(2));
+  }
+  run_pass(&mut tree);
+  assert!(shows(&mut tree, "whole, clear of 34"), "no bar to keep clear of");
+
+  // The bar is out of view, under the window: a press where it was is the screen's.
+  pointer_click(&mut tree, 60.0, 740.0, MouseButton::Left);
+  run_pass(&mut tree);
+  assert_eq!(tabs.active(), "stacked");
 }

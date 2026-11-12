@@ -62,9 +62,10 @@ inside its input.
   once and not little by little; and the numbers (the radii, the dim, the spring, how small the app gets)
   were set by eye.
 - **Tabs** are there (`Tabs`, `TabOutlet`, `TabBar`), with these differences from the platform's: the bar is
-  the plain one across the bottom, not the floating glass one of the newest system, and there is no blur
-  behind it; a bar that is hidden or comes back does so at once, with no move; there is no "More" tab for
-  those that do not fit, and no sidebar in a wide window.
+  the plain one across the bottom, not the floating glass one of the newest system with a lens a finger
+  drags between tabs; it does not get smaller as the content scrolls; the picture of a tab that is chosen
+  does not spring; there is no tab for searching, no "More" tab for those that do not fit, no accessory over
+  the bar, and no sidebar in a wide window. Its sizes were set by eye in a simulator.
 
 ## Touch
 

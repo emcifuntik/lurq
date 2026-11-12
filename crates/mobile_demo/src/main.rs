@@ -85,7 +85,8 @@ impl Component for MobileDemo {
     let tabs = self.tabs.clone();
     SheetHost::mount(ctx, move |ctx| {
       let bar = TabBar::dark()
-        .background(Color::from_hex(SURFACE))
+        // Not all there: what scrolls under the bar shows through it, blurred.
+        .background(Color::new(30, 41, 59, 190))
         .border(Color::from_hex(BORDER))
         .tint(Color::from_hex(PRIMARY));
       TabOutlet::mount(ctx, TabOutletProps::new(tabs.clone()).bar(bar))
@@ -182,7 +183,8 @@ fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) 
     .size(FILL, FILL)
     .padding_left(safe_area.left)
     .padding_right(safe_area.right)
-    .padding_bottom(safe_area.bottom)
+    // The home screen's list goes on under the bar of tabs, and shows through it: it pads its own content.
+    .padding_bottom(if path == "/" { 0.0 } else { safe_area.bottom })
     .into()
 }
 

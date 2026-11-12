@@ -8,18 +8,25 @@
 //! phone's apps have it, or across the top. An app with a strip of tabs of its own draws that from the set and
 //! mounts the outlet with no bar.
 
-use std::sync::Arc;
+use std::{
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+  },
+  time::Duration,
+};
 
 use parking_lot::Mutex;
 
 use crate::{
+  animation::{Easing, Transition},
   app::{
     component::Component,
-    ctx::{Ctx, InsetsTaken},
+    ctx::{BottomBarInset, Ctx},
     window::SafeAreaInsets,
   },
   components::{Column, Router, Row, Stack, Text},
-  core::Signal,
+  core::{ElementRef, Signal},
   layout::{
     Alignment, StackAlignment,
     layout_kind::Justify,
@@ -84,7 +91,35 @@ struct Tab {
   key: String,
   item: TabItem,
   router: RouterHandle,
+  /// How far the tab's own screens have the bar out of view.
+  bar_move: Signal<BarMove>,
 }
+
+/// How far out of view a tab's screens have the bar, from 0 to 1, and how it gets there: a stack of screens
+/// says so as one that hides the bar comes in or goes out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BarMove {
+  pub(crate) hidden: f32,
+  pub(crate) pace: Duration,
+  pub(crate) curve: Easing,
+}
+
+impl BarMove {
+  pub(crate) const SHOWN: Self = Self {
+    hidden: 0.0,
+    pace: Duration::ZERO,
+    curve: Easing::Linear,
+  };
+}
+
+#[cfg(feature = "devtools")]
+impl crate::app::component::DevtoolsInspectable for BarMove {
+  fn write_info(&self, _buffer: &mut Vec<crate::app::component::ComponentInfo>) {}
+}
+
+/// A tab's part of the context: where its screens say how far they have the bar out of view.
+#[derive(Clone)]
+pub(crate) struct TabBarLink(pub(crate) Signal<BarMove>);
 
 struct TabsInner {
   tabs: Mutex<Vec<Tab>>,
@@ -128,6 +163,7 @@ pub struct TabEntry {
   pub item: TabItem,
   pub router: RouterHandle,
   pub active: bool,
+  bar_move: Signal<BarMove>,
 }
 
 impl Tabs {
@@ -159,13 +195,17 @@ impl Tabs {
     let key = key.into();
     let first = {
       let mut tabs = self.inner.tabs.lock();
-      let tab = Tab {
+      let mut tab = Tab {
         key: key.clone(),
         item,
         router,
+        bar_move: Signal::new(BarMove::SHOWN),
       };
       match tabs.iter().position(|tab| tab.key == key) {
-        Some(at) => tabs[at] = tab,
+        Some(at) => {
+          tab.bar_move = tabs[at].bar_move.clone();
+          tabs[at] = tab;
+        }
         None => {
           let index = index.min(tabs.len());
           tabs.insert(index, tab);
@@ -268,6 +308,7 @@ impl Tabs {
         item: tab.item.clone(),
         router: tab.router.clone(),
         active: tab.key == active,
+        bar_move: tab.bar_move.clone(),
       })
       .collect()
   }
@@ -324,8 +365,17 @@ pub struct TabBar {
   /// The active tab's picture and title, and the others'.
   pub tint: Color,
   pub color: Color,
-  /// How high the bar is, without the room of the home indicator or the status bar it also covers.
+  /// How much what is behind the bar is blurred where the bar's color lets it show: the content of a tab
+  /// that scrolls under a bar across the bottom. 0 is no blur.
+  pub blur: f32,
+  /// How high the bar is, without the room of the home indicator or the status bar it also covers; and in a
+  /// window lower than `low_window`, a phone on its side, where a picture and its title stand side by side.
   pub height: f32,
+  pub low_height: f32,
+  pub low_window: f32,
+  pub low_title_size: f32,
+  /// How long the bar takes to go out of view and to come back, for the keyboard or when it is told to.
+  pub hide_duration: Duration,
   pub title_size: f32,
   pub title_weight: FontWeight,
   /// The point size a tab's symbol is drawn at.
@@ -345,11 +395,16 @@ impl Default for TabBar {
   fn default() -> Self {
     Self {
       place: TabBarPlace::Bottom,
-      background: Color::from_hex("#F9F9F9"),
+      background: Color::new(249, 249, 249, 224),
       border: Color::new(60, 60, 67, 74),
       tint: Color::from_hex("#007AFF"),
       color: Color::from_hex("#999999"),
+      blur: 40.0,
       height: 49.0,
+      low_height: 32.0,
+      low_window: 480.0,
+      low_title_size: 12.0,
+      hide_duration: Duration::from_millis(250),
       title_size: 10.0,
       title_weight: FontWeight::Medium,
       symbol_size: 18.0,
@@ -371,7 +426,7 @@ impl TabBar {
   /// The platform's dark colors.
   pub fn dark() -> Self {
     Self {
-      background: Color::from_hex("#161616"),
+      background: Color::new(22, 22, 22, 204),
       border: Color::new(84, 84, 88, 153),
       tint: Color::from_hex("#0A84FF"),
       color: Color::from_hex("#8E8E93"),
@@ -394,6 +449,11 @@ impl TabBar {
     self
   }
 
+  pub fn blur(mut self, radius: f32) -> Self {
+    self.blur = radius;
+    self
+  }
+
   pub fn tint(mut self, color: Color) -> Self {
     self.tint = color;
     self
@@ -412,6 +472,8 @@ pub struct TabBarState {
   pub entries: Vec<TabEntry>,
   /// The window's, for the bar to keep its content clear of the home indicator.
   pub safe_area: SafeAreaInsets,
+  /// The window is too low for a bar of full height: a phone on its side.
+  pub low: bool,
 }
 
 /// Makes a bar of the app's own from the state of the tabs.
@@ -473,7 +535,10 @@ impl TabOutletProps {
 /// Shows the active tab of a [`Tabs`], and keeps the others as they were.
 pub struct TabOutlet {
   /// The last request to scroll to the top that was passed on.
-  to_top: std::sync::atomic::AtomicU64,
+  to_top: AtomicU64,
+  /// The bar as it is laid out, and how high that was: the tabs' content keeps clear of as much.
+  bar: ElementRef,
+  bar_height: Signal<f32>,
 }
 
 impl TabOutlet {
@@ -487,9 +552,13 @@ impl Component for TabOutlet {
 
   fn create(ctx: &mut Ctx) -> Self {
     let tabs = ctx.props::<TabOutletProps>().tabs.clone();
-    let to_top = std::sync::atomic::AtomicU64::new(tabs.inner.to_top.get_untracked());
+    let to_top = AtomicU64::new(tabs.inner.to_top.get_untracked());
     ctx.provide(tabs);
-    Self { to_top }
+    Self {
+      to_top,
+      bar: ElementRef::default(),
+      bar_height: Signal::new(0.0),
+    }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
@@ -499,31 +568,50 @@ impl Component for TabOutlet {
     let hidden = tabs.inner.bar_hidden.get();
     // The active tab chosen again at its first screen: the page goes to its top.
     let to_top = tabs.inner.to_top.get();
-    if self.to_top.swap(to_top, std::sync::atomic::Ordering::AcqRel) != to_top {
+    if self.to_top.swap(to_top, Ordering::AcqRel) != to_top {
       ctx.scroll_to_top();
     }
-    let safe_area = ctx.window().safe_area;
+    let window = ctx.window();
+    let safe_area = window.safe_area;
     let keyboard_up = safe_area.keyboard > 0.0;
-
-    let (place, shown) = match &props.bar {
-      None => (TabBarPlace::Bottom, false),
-      Some(Bar::Standard(bar)) => (bar.place, !hidden && !(bar.hides_with_keyboard && keyboard_up)),
-      Some(Bar::Custom(_, place)) => (*place, !hidden && !keyboard_up),
+    let low = match &props.bar {
+      Some(Bar::Standard(bar)) => window.logical_height() < bar.low_window,
+      _ => false,
     };
-    // Under a bar across the bottom the tab's content has nothing more to keep clear of there.
-    ctx.provide_if_changed(InsetsTaken {
-      bottom: shown && place == TabBarPlace::Bottom,
-    });
+
+    let (place, away, hide_duration) = match &props.bar {
+      None => (TabBarPlace::Bottom, true, Duration::ZERO),
+      Some(Bar::Standard(bar)) => (
+        bar.place,
+        hidden || (bar.hides_with_keyboard && keyboard_up),
+        bar.hide_duration,
+      ),
+      Some(Bar::Custom(_, place)) => (*place, hidden || keyboard_up, TabBar::default().hide_duration),
+    };
+    let over = props.bar.is_some() && place == TabBarPlace::Bottom;
+    // A bar across the bottom is over the tabs' content, which shows through it: the content keeps clear of
+    // the bar's height more than of the window's bottom, while the bar is there.
+    let bar_height = self.bar_height.get();
+    ctx.provide_if_changed(BottomBarInset(if over && !away {
+      (bar_height - safe_area.bottom).max(0.0)
+    } else {
+      0.0
+    }));
 
     let mut screens = Stack::new().size(FILL, FILL);
+    let mut moved = BarMove::SHOWN;
     for entry in &entries {
       let host = ctx.mount_keyed_offstage::<TabHost>(
         &entry.key,
         TabHostProps {
           router: entry.router.clone(),
+          bar_move: entry.bar_move.clone(),
         },
         entry.active,
       );
+      if entry.active {
+        moved = entry.bar_move.get();
+      }
       screens = screens.child(
         Stack::new()
           .key(format!("tab-{}", entry.key))
@@ -531,23 +619,58 @@ impl Component for TabOutlet {
           .child(host),
       );
     }
-    let screens = Column::new().width(FILL).flex(1.0).child(screens);
 
     let bar: Option<Element> = match &props.bar {
-      _ if !shown => None,
       None => None,
+      _ if away && !over => None,
       Some(Bar::Custom(builder, _)) => Some(builder(&TabBarState {
         tabs: tabs.clone(),
         entries: entries.clone(),
         safe_area,
+        low,
       })),
-      Some(Bar::Standard(bar)) => Some(standard_bar(bar, &tabs, &entries, safe_area)),
+      Some(Bar::Standard(bar)) => Some(standard_bar(bar, &tabs, &entries, safe_area, low)),
     };
-    let whole = Column::new().size(FILL, FILL);
+    let whole = Stack::new().size(FILL, FILL);
     match (bar, place) {
       (None, _) => whole.child(screens),
-      (Some(bar), TabBarPlace::Bottom) => whole.child(screens).child(bar),
-      (Some(bar), TabBarPlace::Top) => whole.child(bar).child(screens),
+      (Some(bar), TabBarPlace::Top) => whole.child(
+        Column::new()
+          .size(FILL, FILL)
+          .child(bar)
+          .child(Column::new().width(FILL).flex(1.0).child(screens)),
+      ),
+      (Some(bar), TabBarPlace::Bottom) => {
+        // Out of view the bar is under the window's bottom edge: all the way there for the keyboard or when
+        // told to, with a move of its own, and as far as a screen that hides it has come in, with that
+        // screen's move.
+        let (share, pace, curve) = if away {
+          (1.0, hide_duration, Easing::EASE)
+        } else if moved.pace.is_zero() && moved.hidden == 0.0 {
+          (0.0, hide_duration, Easing::EASE)
+        } else {
+          (moved.hidden, moved.pace, moved.curve)
+        };
+        let bar = Row::new()
+          .ref_element(self.bar.clone())
+          .width(FILL)
+          .child(bar)
+          .transform(Transform2D::translate(0.0, share * bar_height))
+          .transition(Transition::transform().duration(pace).easing(curve));
+        whole
+          .stack_align(StackAlignment::BottomStart)
+          .child(screens)
+          .child(if share >= 1.0 { bar.pointer_events_none() } else { bar })
+      }
+    }
+  }
+
+  fn after_layout(&self) {
+    if self.bar.is_attached() {
+      let height = self.bar.rect().3;
+      if (self.bar_height.get_untracked() - height).abs() > 0.25 {
+        self.bar_height.set(height);
+      }
     }
   }
 }
@@ -567,10 +690,10 @@ fn symbol(name: &str, size: f32, color: Color) -> Option<Element> {
   None
 }
 
-fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: SafeAreaInsets) -> Element {
+fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: SafeAreaInsets, low: bool) -> Element {
   let mut places = Row::new()
     .width(FILL)
-    .height(bar.height)
+    .height(if low { bar.low_height } else { bar.height })
     .justify(Justify::Center)
     .padding_left(safe_area.left)
     .padding_right(safe_area.right);
@@ -580,6 +703,11 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
     let picture = match (entry.active, &item.selected_icon, &item.selected_symbol) {
       (true, Some(icon), _) => Some(icon.clone()),
       (true, None, Some(name)) => symbol(name, bar.symbol_size, color),
+      // The filled one of the tab's symbol, where the platform has it, as its own bars take.
+      (true, None, None) => item
+        .symbol
+        .as_ref()
+        .and_then(|name| symbol(&format!("{name}.fill"), bar.symbol_size, color)),
       _ => None,
     }
     .or_else(|| item.icon.clone())
@@ -615,7 +743,7 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
     let title = Text::styled(
       &item.title,
       TextStyle {
-        font_size: bar.title_size,
+        font_size: if low { bar.low_title_size } else { bar.title_size },
         weight: bar.title_weight,
         color,
         ..TextStyle::default()
@@ -629,9 +757,18 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
         if let Some(badge) = badge {
           over = over.child(badge.transform(Transform2D::translate(bar.badge_size * 0.7, -bar.badge_size * 0.3)));
         }
-        content = content.child(over);
-        if !item.title.is_empty() {
-          content = content.child(title);
+        if low {
+          // In a low bar the title stands beside the picture.
+          let mut row = Row::new().align_items(Alignment::Center).spacing(6.0).child(over);
+          if !item.title.is_empty() {
+            row = row.child(title);
+          }
+          content = content.child(row);
+        } else {
+          content = content.child(over);
+          if !item.title.is_empty() {
+            content = content.child(title);
+          }
         }
       }
       (None, badge) => {
@@ -656,7 +793,10 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
     );
   }
   let line = Row::new().width(FILL).height(0.5).background(bar.border);
-  let column = Column::new().width(FILL).background(bar.background);
+  let column = Column::new()
+    .width(FILL)
+    .background(bar.background)
+    .backdrop_blur(bar.blur);
   match bar.place {
     TabBarPlace::Bottom => column.child(line).child(places).padding_bottom(safe_area.bottom),
     TabBarPlace::Top => column.padding_top(safe_area.top).child(places).child(line),
@@ -667,6 +807,7 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
 #[derive(Clone)]
 struct TabHostProps {
   router: RouterHandle,
+  bar_move: Signal<BarMove>,
 }
 
 impl PartialEq for TabHostProps {
@@ -686,7 +827,9 @@ struct TabHost;
 impl Component for TabHost {
   type Props = TabHostProps;
 
-  fn create(_ctx: &mut Ctx) -> Self {
+  fn create(ctx: &mut Ctx) -> Self {
+    let bar_move = ctx.props::<TabHostProps>().bar_move.clone();
+    ctx.provide(TabBarLink(bar_move));
     Self
   }
 

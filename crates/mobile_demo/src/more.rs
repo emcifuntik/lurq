@@ -19,13 +19,19 @@ pub(crate) fn routes() -> Routes {
 
 fn page(ctx: &mut Ctx, content: Column) -> Element {
   let safe_area = ctx.safe_area();
-  ScrollVertical::new(content.width(FILL).padding(16.0).spacing(12.0))
-    .size(FILL, FILL)
-    .background(BG)
-    .padding_left(safe_area.left)
-    .padding_right(safe_area.right)
-    .padding_bottom(safe_area.bottom)
-    .into()
+  // The list goes on under the bar of tabs, which it shows through: what keeps clear of the bar is its content.
+  ScrollVertical::new(
+    content
+      .width(FILL)
+      .padding(16.0)
+      .padding_bottom(16.0 + safe_area.bottom)
+      .spacing(12.0),
+  )
+  .size(FILL, FILL)
+  .background(BG)
+  .padding_left(safe_area.left)
+  .padding_right(safe_area.right)
+  .into()
 }
 
 fn first(ctx: &mut Ctx) -> Element {
@@ -79,11 +85,12 @@ fn first(ctx: &mut Ctx) -> Element {
 }
 
 fn deeper(ctx: &mut Ctx) -> Element {
-  ctx.navigation_item(NavigationItem::new("Deeper"));
+  // This screen has the whole window: the bar of tabs goes as it comes in, and comes back with the way back.
+  ctx.navigation_item(NavigationItem::new("Deeper").hides_tab_bar(true));
   page(
     ctx,
     Column::new().child(
-      caption("A tap on this tab's place in the bar goes back to the tab's first screen. So does the way back.")
+      caption("This screen hides the bar of tabs. Go back, slowly with a finger from the left edge, and the bar comes back with it.")
         .width(FILL),
     ),
   )

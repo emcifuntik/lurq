@@ -511,19 +511,33 @@ feature) and left out elsewhere. `badge` is a few characters at the picture's co
 | `place` | `Bottom` | `Bottom`, over the home indicator's room, or `Top`, under the status bar's |
 | `background`, `border` | the platform's light | `TabBar::dark()` has the dark ones |
 | `tint`, `color` | blue, grey | The active tab's picture and title, and the others' |
+| `blur` | 40 | How much the tab's content is blurred where it shows through the bar; see [Blur](../blur/) |
 | `height` | 49 | Without the room of the home indicator |
+| `low_height`, `low_window`, `low_title_size` | 32, 480, 12 | In a window lower than `low_window`, a phone on its side, the bar is lower and a title stands beside its picture |
 | `title_size`, `title_weight` | 10, medium | |
 | `symbol_size`, `spacing` | 18, 2 | |
 | `badge_background`, `badge_color`, `badge_size` | red, white, 13 | |
 | `item_max_width` | none | In a wider bar the places stand together in the middle |
 | `hides_with_keyboard` | `true` | The bar goes while the on-screen keyboard is up |
+| `hide_duration` | 250 ms | How long it takes to go and to come back |
+
+The active tab's picture is its `selected_symbol`; without one, the filled one of its `symbol` where the
+platform has it (`gear.fill` for `gear`).
+
+A screen of a stack that has the whole window says so with `NavigationItem::hides_tab_bar(true)`: the bar goes
+down as that screen comes in, comes back as it goes out, and follows a finger that drags the screen back.
 
 `TabOutletProps::bar_with(place, builder)` draws a bar of the app's own from a `TabBarState`: the set, the
 tabs in order and the window's safe area. A press on a place calls `Tabs::press`.
 
 ### The safe area under a bar
 
-A bar across the bottom covers the home indicator's room, so the screens over it have nothing more to keep
-clear of there. `ctx.safe_area()` says what is left for the component that asks: the window's safe area, with
-no bottom under such a bar. A screen pads its content by that and not by `ctx.window().safe_area`; while the
-bar is hidden or the keyboard is up the bottom is the window's again.
+A bar across the bottom is drawn over the tabs' content, which shows through it, blurred. `ctx.safe_area()`
+says what the component that asks keeps clear of: the window's safe area, and at the bottom the bar's height
+too while the bar is there. A screen pads by that and not by `ctx.window().safe_area`:
+
+- content that does not scroll is padded at the bottom of the screen;
+- a list is not padded itself: its content is, inside it, so that the rows go on under the bar and the last
+  one ends over it.
+
+For a screen that hides the bar, and while the keyboard is up, the bottom is the window's alone.

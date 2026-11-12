@@ -64,7 +64,13 @@ pub(crate) fn sought() -> Signal<String> {
 }
 
 pub(crate) fn home(ctx: &mut Ctx) -> Element {
-  let mut list = Column::new().spacing(10.0).padding(16.0).width(FILL);
+  // The list goes on under the bar of tabs: its last row ends over the bar.
+  let under = ctx.safe_area().bottom;
+  let mut list = Column::new()
+    .spacing(10.0)
+    .padding(16.0)
+    .padding_bottom(16.0 + under)
+    .width(FILL);
   list = list.child(caption("Each screen checks one thing iOS does differently."));
   // What is typed into the search field over the list leaves the screens that say it.
   let sought = sought().get().to_lowercase();
