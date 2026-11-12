@@ -532,8 +532,8 @@ Text::new(description).max_lines(2)
 - A text that fits in `n` lines is left as it is, and `0` is no limit.
 - It applies to a text that wraps in a bounded width. `nowrap()` and `TextOverflow::Elipsis`, which keep a text on one
   line, are not affected; use `TextOverflow::Elipsis` for a single line cut at its width.
-- The limit is found in the logical layout. At a fractional display scale the paint lays the text out in device pixels
-  and can wrap a word differently, so a cut text can then paint a line more than its box holds.
+- The limit holds for the text as it is painted, at any display scale: the text is cut so that neither the layout that
+  sizes it nor the one that paints it, in device pixels, needs more lines.
 
 ### Underline And Strikethrough
 

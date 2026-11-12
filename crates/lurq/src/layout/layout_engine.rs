@@ -50,6 +50,7 @@ pub(crate) mod input_token_layout;
 mod input_token_quads;
 #[cfg(feature = "perf_profile")]
 mod layout_trace;
+mod line_limit;
 mod opacity_groups;
 mod outline_quads;
 mod scrollbar_quads;
@@ -2810,7 +2811,7 @@ impl LayoutEngine {
       // A wrapped text with a limit of lines ends in an ellipsis on the last line it may take.
       TextOverflow::Clip => max_lines
         .filter(|_| effective_wrap && bounded_text_width(constraints.max_width))
-        .and_then(|lines| glyph_engine.text_clamped_to_lines(text, style, constraints.max_width, lines as usize)),
+        .and_then(|lines| self.text_cut_to_lines(glyph_engine, text, style, constraints, lines as usize)),
       TextOverflow::Elipsis => self.ellipsize_text(glyph_engine, text, style, constraints.max_width),
     };
     let layout_text = overflow_display_text.as_deref().unwrap_or(text);
