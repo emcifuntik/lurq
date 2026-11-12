@@ -839,7 +839,7 @@ impl GlyphEngine {
           glyph.font_weight,
           glyph.cache_key_flags,
         );
-        if !self.get_or_pack_glyph(key).is_some_and(|packed| packed.height > 0) {
+        if self.get_or_pack_glyph(key).is_none_or(|packed| packed.height == 0) {
           continue;
         }
         if first.is_none() {
@@ -3799,10 +3799,8 @@ fn horizontal_gap(a: GlyphAtlasDirtyRect, b: GlyphAtlasDirtyRect) -> u32 {
   let b_right = b.x.saturating_add(b.width);
   if a_right < b.x {
     b.x - a_right
-  } else if b_right < a.x {
-    a.x - b_right
   } else {
-    0
+    a.x.saturating_sub(b_right)
   }
 }
 

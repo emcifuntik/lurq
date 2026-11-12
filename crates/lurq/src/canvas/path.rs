@@ -337,7 +337,7 @@ impl Geometry {
     }))
   }
   pub fn bytes(&self) -> usize {
-    self.points().len() * std::mem::size_of::<Point>() + self.verbs().len() + std::mem::size_of::<GeometryData>()
+    std::mem::size_of_val(self.points()) + self.verbs().len() + std::mem::size_of::<GeometryData>()
   }
   pub fn has_curves(&self) -> bool {
     self.0.curves

@@ -1021,7 +1021,7 @@ fn fuzz_one(seed: u64) {
 
   let mut nonce = 0u64;
   let mut log: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-  let mut push_log = |log: &mut std::collections::VecDeque<String>, entry: String| {
+  let push_log = |log: &mut std::collections::VecDeque<String>, entry: String| {
     log.push_back(entry);
     if log.len() > 40 {
       log.pop_front();

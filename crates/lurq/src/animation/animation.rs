@@ -534,8 +534,8 @@ fn find_surrounding_frames(frames: &[KeyframeEntry], progress: f32) -> (usize, u
     return (0, 0);
   }
 
-  for i in 1..frames.len() {
-    if frames[i].offset >= progress {
+  for (i, frame) in frames.iter().enumerate().skip(1) {
+    if frame.offset >= progress {
       return (i - 1, i);
     }
   }

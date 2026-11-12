@@ -171,7 +171,7 @@ impl TextInput {
 
   /// Masks each value character with `•` (U+2022).
   pub fn mask(mut self) -> Self {
-    self.update_node(|node| crate::node::NodeUpdate::text_input_mask(node));
+    self.update_node(crate::node::NodeUpdate::text_input_mask);
     self
   }
 
@@ -202,7 +202,7 @@ impl TextInput {
   }
 
   pub fn unmask(mut self) -> Self {
-    self.update_node(|node| crate::node::NodeUpdate::text_input_unmask(node));
+    self.update_node(crate::node::NodeUpdate::text_input_unmask);
     self
   }
 

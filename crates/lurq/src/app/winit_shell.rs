@@ -597,7 +597,7 @@ impl ManagedWindow {
         }
         WindowCommand::SetFullScreen(full_screen) => {
           if let Some(window) = &self.window {
-            window.set_fullscreen(full_screen.then(|| Fullscreen::Borderless(None)));
+            window.set_fullscreen(full_screen.then_some(Fullscreen::Borderless(None)));
           }
           self.tree.window().set_full_screen(full_screen);
         }
@@ -1332,7 +1332,7 @@ impl ManagedSecondaryWindow {
         }
         WindowCommand::SetFullScreen(full_screen) => {
           if let Some(window) = &self.window {
-            window.set_fullscreen(full_screen.then(|| Fullscreen::Borderless(None)));
+            window.set_fullscreen(full_screen.then_some(Fullscreen::Borderless(None)));
           }
           tree.window().set_full_screen(full_screen);
         }

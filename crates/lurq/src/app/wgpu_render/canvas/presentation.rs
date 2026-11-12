@@ -24,9 +24,8 @@ impl Renderer {
     }
     let Some(mut back) = self
       .take_spare(id, metrics.pixel_width, metrics.pixel_height)
-      .map(|back| {
+      .inspect(|_| {
         canvas.presentation_event(PresentationEvent::Reuse);
-        back
       })
       .or_else(|| {
         if metrics.pixel_width > device.limits().max_texture_dimension_2d

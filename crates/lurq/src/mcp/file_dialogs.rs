@@ -139,10 +139,10 @@ impl FileDialogBroker {
     let gone: Vec<_> = state
       .pending
       .iter()
-      .filter_map(|(id, pending)| {
-        (pending.window.closing() || !windows.iter().any(|(_, window)| pending.window.matches(window)))
-          .then(|| id.clone())
+      .filter(|(_, pending)| {
+        pending.window.closing() || !windows.iter().any(|(_, window)| pending.window.matches(window))
       })
+      .map(|(id, _)| id.clone())
       .collect();
     let pending: Vec<_> = gone.into_iter().filter_map(|id| state.pending.remove(&id)).collect();
     drop(state);

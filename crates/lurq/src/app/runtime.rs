@@ -1889,7 +1889,7 @@ impl Tree {
   pub(crate) fn secondary_pick_mode(&self) -> bool {
     #[cfg(feature = "devtools")]
     {
-      return self.devtools_pick_mode();
+      self.devtools_pick_mode()
     }
     #[cfg(not(feature = "devtools"))]
     false
@@ -1899,7 +1899,7 @@ impl Tree {
   pub(crate) fn pick_secondary_node_at(&mut self, _x: f32, _y: f32) -> Option<Vec<usize>> {
     #[cfg(feature = "devtools")]
     {
-      return self.pick_devtools_node_at(_x, _y);
+      self.pick_devtools_node_at(_x, _y)
     }
     #[cfg(not(feature = "devtools"))]
     None
@@ -2250,7 +2250,7 @@ impl Tree {
       #[cfg(feature = "devtools")]
       set_component_debug_metadata(&mut node, ctx);
       if let Some(parts) = old_parts.as_mut() {
-        node.preserve_runtime_state_from(&mut parts.base);
+        node.preserve_runtime_state_from(&parts.base);
         node.preserve_ids_from(&mut parts.base);
       }
       self.root = Some(match old_parts {
@@ -2286,7 +2286,7 @@ impl Tree {
     let mut node = element.into().into_node();
     let old_parts = old_root.map(overlay_host_parts);
     if let Some(mut parts) = old_parts {
-      node.preserve_runtime_state_from(&mut parts.base);
+      node.preserve_runtime_state_from(&parts.base);
       node.preserve_ids_from(&mut parts.base);
       node = root_with_preserved_overlay_parts(node, parts, &self.id_gen);
     }
@@ -4304,7 +4304,7 @@ impl Tree {
   fn has_dirty_canvas(&self) -> bool {
     #[cfg(feature = "canvas")]
     {
-      return self.canvas_registry.iter().any(crate::canvas::CanvasHandle::dirty);
+      self.canvas_registry.iter().any(crate::canvas::CanvasHandle::dirty)
     }
     #[cfg(not(feature = "canvas"))]
     {
@@ -4413,9 +4413,7 @@ impl Tree {
   }
 
   fn take_matching_click_press(&mut self, position: (f32, f32), button: MouseButton) -> Option<ClickDispatchTarget> {
-    let Some(press) = self.click_press.take() else {
-      return None;
-    };
+    let press = self.click_press.take()?;
 
     if press.button != button {
       return None;
@@ -7636,7 +7634,7 @@ fn root_with_preserved_overlay_parts(base: Node, mut parts: OverlayHostParts, id
   let mut host = Node::stack(crate::layout::StackAlignment::TopStart, children);
   host.set_tag_name("OverlayHost");
   host.set_synthetic_role(SyntheticNodeRole::OverlayHost);
-  host.preserve_runtime_state_from(&mut old_host);
+  host.preserve_runtime_state_from(&old_host);
   host.preserve_ids_from(&mut old_host);
   old_host.free_ids(id_gen);
   host
@@ -9557,9 +9555,7 @@ impl Tree {
   }
 
   fn take_pending_devtools_frame_capture(&mut self) -> Option<RenderFrameCapture> {
-    let Some(mut request) = self.devtools_state.screenshot_request.lock().unwrap().take() else {
-      return None;
-    };
+    let mut request = self.devtools_state.screenshot_request.lock().unwrap().take()?;
 
     let Some(bounds) = self.devtools_screenshot_bounds(&request.node_path) else {
       if request.attempts < 2 {
@@ -10600,7 +10596,6 @@ fn clip_screenshot_layer(
   }
 }
 
-#[cfg(feature = "devtools")]
 /// Composites a layer painted like `pixels` (straight alpha, same size) over
 /// them at `opacity`.
 #[cfg(feature = "devtools")]
@@ -11916,7 +11911,7 @@ fn transformed_text_raster_scale(transform: Transform2D) -> f32 {
   let det = aa * bb - ab * ab;
   let discriminant = (trace * trace - 4.0 * det).max(0.0);
   let max_scale = ((trace + discriminant.sqrt()) * 0.5).max(1.0).sqrt();
-  max_scale.max(2.0).min(4.0).ceil()
+  max_scale.clamp(2.0, 4.0).ceil()
 }
 
 #[cfg(feature = "devtools")]

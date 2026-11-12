@@ -1851,7 +1851,7 @@ unsafe fn compile_shader(source: &[u8], entry: &'static [u8], target: &'static [
   D3DCompile(
     source.as_ptr().cast(),
     source.len(),
-    PCSTR(b"quad.hlsl\0".as_ptr()),
+    PCSTR(c"quad.hlsl".as_ptr().cast()),
     None,
     None,
     PCSTR(entry.as_ptr()),
@@ -2194,7 +2194,7 @@ fn input_element(
   step_rate: u32,
 ) -> D3D12_INPUT_ELEMENT_DESC {
   D3D12_INPUT_ELEMENT_DESC {
-    SemanticName: PCSTR(b"TEXCOORD\0".as_ptr()),
+    SemanticName: PCSTR(c"TEXCOORD".as_ptr().cast()),
     SemanticIndex: semantic_index,
     Format: format,
     InputSlot: slot,
@@ -3898,9 +3898,10 @@ impl Dx12State {
       return Ok(GlyphAtlasUploadStats::default());
     }
 
-    let recreate = self.glyph_atlas.as_ref().map_or(true, |texture| {
-      texture.width != atlas.width || texture.height != atlas.height
-    });
+    let recreate = self
+      .glyph_atlas
+      .as_ref()
+      .is_none_or(|texture| texture.width != atlas.width || texture.height != atlas.height);
     if recreate {
       let texture = create_rgba_texture(&self.device, atlas.width, atlas.height)?;
       let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
@@ -3933,7 +3934,7 @@ impl Dx12State {
     let needs_upload = self
       .glyph_atlas
       .as_ref()
-      .map_or(false, |texture| texture.version != atlas.version);
+      .is_some_and(|texture| texture.version != atlas.version);
     if !needs_upload {
       return Ok(GlyphAtlasUploadStats::default());
     }
