@@ -31,7 +31,44 @@ pub(crate) fn hit_test_tree<'a>(
   py: f32,
   hits: &mut Vec<(&'a Node, HitRect)>,
 ) {
-  hit_test_tree_with_transform(node, result, abs_x, abs_y, px, py, Transform2D::IDENTITY, true, hits);
+  hit_test_tree_with_transform(
+    node,
+    result,
+    abs_x,
+    abs_y,
+    px,
+    py,
+    Transform2D::IDENTITY,
+    true,
+    true,
+    hits,
+  );
+}
+
+/// Like [`hit_test_tree`], with what is inside a disabled element listed as
+/// if it were enabled: for tools that inspect the tree, not for input.
+#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
+pub(crate) fn hit_test_tree_inspecting<'a>(
+  node: &'a Node,
+  result: &LayoutResult,
+  abs_x: f32,
+  abs_y: f32,
+  px: f32,
+  py: f32,
+  hits: &mut Vec<(&'a Node, HitRect)>,
+) {
+  hit_test_tree_with_transform(
+    node,
+    result,
+    abs_x,
+    abs_y,
+    px,
+    py,
+    Transform2D::IDENTITY,
+    true,
+    false,
+    hits,
+  );
 }
 
 pub(crate) fn hit_test_tree_all<'a>(
@@ -43,7 +80,18 @@ pub(crate) fn hit_test_tree_all<'a>(
   py: f32,
   hits: &mut Vec<(&'a Node, HitRect)>,
 ) {
-  hit_test_tree_with_transform(node, result, abs_x, abs_y, px, py, Transform2D::IDENTITY, false, hits);
+  hit_test_tree_with_transform(
+    node,
+    result,
+    abs_x,
+    abs_y,
+    px,
+    py,
+    Transform2D::IDENTITY,
+    false,
+    true,
+    hits,
+  );
 }
 
 fn hit_test_tree_with_transform<'a>(
@@ -55,12 +103,14 @@ fn hit_test_tree_with_transform<'a>(
   py: f32,
   inherited_transform: Transform2D,
   occlude_stack_siblings: bool,
+  fold_disabled: bool,
   hits: &mut Vec<(&'a Node, HitRect)>,
 ) {
   let behavior = node.hit_test_behavior();
   if behavior == HitTestBehavior::None || result.dropped {
     return;
   }
+  let own_hits = hits.len();
 
   let rect = HitRect {
     x: abs_x,
@@ -111,6 +161,7 @@ fn hit_test_tree_with_transform<'a>(
           py,
           transform,
           occlude_stack_siblings,
+          fold_disabled,
           hits,
         );
         if hits.len() > hit_count {
@@ -128,13 +179,19 @@ fn hit_test_tree_with_transform<'a>(
           py,
           transform,
           occlude_stack_siblings,
+          fold_disabled,
           hits,
         );
       }
     }
   }
 
-  if inside && behavior == HitTestBehavior::Auto {
+  // A disabled element stands for everything in it: where the point is on it or on any of its content, it is the
+  // one hit, and the innermost. Input reads that as a target that takes nothing (`runtime::take_disabled_hit`).
+  if fold_disabled && node.is_disabled() && hits.len() > own_hits {
+    hits.truncate(own_hits);
+    hits.push((node, rect));
+  } else if inside && behavior == HitTestBehavior::Auto {
     hits.push((node, rect));
   }
 }

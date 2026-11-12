@@ -4137,11 +4137,21 @@ impl Tree {
   /// Moves focus off a node its Row/Column dropped to make room
   /// (`ShrinkLimit::Drop`): a dropped node is not drawn, so it must not keep
   /// taking keys.
+  /// Whether the node, or an element it is in, is disabled.
+  fn is_node_disabled(&self, id: NodeId) -> bool {
+    let Some(root) = &self.root else {
+      return false;
+    };
+    find_path_by_id(root, id).is_some_and(|path| tab_navigation::path_is_disabled(root, &path))
+  }
+
   fn blur_focus_in_dropped_child(&mut self) {
     let (Some(root), Some(path)) = (&self.root, &self.focused_path) else {
       return;
     };
-    if tab_navigation::path_is_dropped(root, &self.dropped_nodes, path) {
+    // Nor does a disabled element keep the focus it had.
+    if tab_navigation::path_is_dropped(root, &self.dropped_nodes, path) || tab_navigation::path_is_disabled(root, path)
+    {
       self.blur_focus();
     }
   }
@@ -4417,6 +4427,9 @@ impl Tree {
 
     let mut hits = Vec::new();
     hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+    if take_disabled_hit(&mut hits).is_some() {
+      return Vec::new();
+    }
     trim_hits_to_scrollbar(&mut hits, lx, ly);
     hits.into_iter().map(|(node, _)| node.node_id()).collect()
   }
@@ -4676,7 +4689,13 @@ impl Tree {
 
     let mut hits = Vec::new();
     hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+    // A press or click on a disabled element reaches nothing: not it, not what it covers and not the elements it is
+    // in, as a click on a disabled control of the web. A move still reaches those elements, which stay hovered.
+    let disabled_hit = take_disabled_hit(&mut hits);
     trim_hits_to_scrollbar(&mut hits, lx, ly);
+    let blocked = disabled_hit.is_some() && !matches!(evt.kind, MouseEventKind::Move);
+    // What stays hovered while the press itself has no target.
+    let hovered_hits = blocked.then(|| std::mem::take(&mut hits));
     // A scrollbar takes the pointer: nothing below it (text, inputs, sliders)
     // gets the built-in press or click behaviour.
     let on_scrollbar = hits
@@ -4833,7 +4852,7 @@ impl Tree {
       // Like HTML: a press where nothing can take focus blurs the focused
       // element. A press on a focusable element leaves focus to its own
       // focusing (on press or click); `focusable(false)` keeps focus.
-      blur_on_press = !on_menu && press_blurs_focus(&hits);
+      blur_on_press = !on_menu && !blocked && press_blurs_focus(&hits);
     }
 
     if !evt.default_prevented() && (is_left_click || is_left_down) && !on_scrollbar {
@@ -5177,9 +5196,10 @@ impl Tree {
       }
     }
 
-    let current_ids: Vec<NodeId> = hits.iter().map(|(n, _)| n.node_id()).collect();
+    let hover_hits = hovered_hits.as_ref().unwrap_or(&hits);
+    let current_ids: Vec<NodeId> = hover_hits.iter().map(|(n, _)| n.node_id()).collect();
 
-    if hover::move_hover(root, &self.hover_path, &hits) {
+    if hover::move_hover(root, &self.hover_path, hover_hits) {
       self.cached_render_list = None;
       self.needs_redraw = true;
     }
@@ -5203,8 +5223,8 @@ impl Tree {
     }
 
     self.hover_path = current_ids;
-    self.cursor = hovered_cursor(hits.iter().map(|(node, _)| *node));
-    if matches!(evt.kind, MouseEventKind::Down) {
+    self.cursor = hovered_cursor(disabled_hit.into_iter().chain(hover_hits.iter().map(|(node, _)| *node)));
+    if matches!(evt.kind, MouseEventKind::Down) && !blocked {
       self.active_path = self.hover_path.clone();
     }
     if builtin_needs_redraw {
@@ -5591,7 +5611,7 @@ impl Tree {
     hit_test_tree_all(root, result, 0.0, 0.0, x, y, &mut hits);
     hits
       .into_iter()
-      .find(|(node, _)| !node.events.on_drop.is_empty())
+      .find(|(node, _)| !node.is_disabled() && !node.events.on_drop.is_empty())
       .map(|(node, _)| (node.node_id(), node.events.on_drop.clone()))
   }
 
@@ -5649,6 +5669,9 @@ impl Tree {
       return;
     };
     if find_node_by_path(root, &input_path).is_some_and(Node::is_focus_disabled) {
+      return;
+    }
+    if tab_navigation::path_is_disabled(root, &input_path) {
       return;
     }
     // A node its Row/Column dropped (`ShrinkLimit::Drop`) is not drawn and
@@ -5727,6 +5750,8 @@ impl Tree {
       }));
     } else {
       hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+      // A wheel over a disabled element scrolls the containers the element is in.
+      take_disabled_hit(&mut hits);
     }
     let scroll_delta_can_be_consumed =
       scroll_delta_can_be_consumed_by_hits(&hits, evt.delta_x, evt.delta_y, gesture_dy);
@@ -6268,7 +6293,7 @@ impl Tree {
     let result = self.last_layout.as_ref()?;
     let scale = self.scale_factor();
     let mut hits = Vec::new();
-    hit_test_tree(root, result, 0.0, 0.0, x / scale, y / scale, &mut hits);
+    crate::app::hit_test::hit_test_tree_inspecting(root, result, 0.0, 0.0, x / scale, y / scale, &mut hits);
     let node = hits.first()?.0;
     find_path_by_id(root, node.node_id())
   }
@@ -8702,6 +8727,13 @@ impl<'t> ElementHandle<'t> {
     self.invalidate_render();
   }
 
+  /// Disables or enables the element and everything in it; see `Node::disabled`.
+  pub fn set_disabled(&mut self, disabled: bool) {
+    let Some(node) = self.node_mut() else { return };
+    NodeUpdate::disabled(node, disabled);
+    self.invalidate_render();
+  }
+
   /// Sets the line drawn around the element; see `Outline`.
   pub fn set_outline(&mut self, outline: crate::node::Outline) {
     let Some(node) = self.node_mut() else { return };
@@ -8740,6 +8772,9 @@ impl<'t> ElementHandle<'t> {
   /// buttons submit their form, like a real browser click. For
   /// pointer-fidelity clicks use [`Tree::mouse_down`] / [`Tree::mouse_up`].
   pub fn click(&mut self) {
+    if self.tree.is_node_disabled(self.node_id) {
+      return;
+    }
     let center = self.bounds().map(|bounds| bounds.center()).unwrap_or((0.0, 0.0));
     let Some(node) = self.node() else { return };
     let focusable = node.is_focusable();
@@ -10444,6 +10479,15 @@ fn set_node_hovered(node: &Node, hovered: bool) {
 /// The cursor of the innermost of the hovered `nodes` that sets one. A
 /// scrollbar under the pointer shows the default cursor, whatever cursor its
 /// node sets (a text input's text cursor, say).
+/// A disabled element under the pointer is the innermost hit: hit testing folds everything in it into it. Takes it
+/// off `hits`, which leaves the elements it is in, and returns it.
+fn take_disabled_hit<'a>(hits: &mut Vec<(&'a Node, crate::app::hit_test::HitRect)>) -> Option<&'a Node> {
+  hits
+    .first()
+    .is_some_and(|(node, _)| node.is_disabled())
+    .then(|| hits.remove(0).0)
+}
+
 fn hovered_cursor<'a>(mut nodes: impl Iterator<Item = &'a Node>) -> CursorIcon {
   nodes
     .find_map(|node| {

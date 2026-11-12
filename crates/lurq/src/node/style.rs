@@ -41,6 +41,8 @@ pub(crate) struct StateStyles {
   pub(crate) focus_visible: Option<Style>,
   /// While files from the OS are dragged over the node.
   pub(crate) drag_over: Option<Style>,
+  /// While the node is disabled. Paint only: it is no source of layout.
+  pub(crate) disabled: Option<Style>,
   layout_sources: LayoutStyleSources,
 }
 

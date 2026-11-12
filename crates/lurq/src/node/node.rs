@@ -577,6 +577,9 @@ pub(crate) trait NodeUpdate {
   fn focused(&mut self, f: impl FnOnce(Style) -> Style);
   fn focus_visible(&mut self, f: impl FnOnce(Style) -> Style);
   fn drag_over(&mut self, f: impl FnOnce(Style) -> Style);
+  fn disabled(&mut self, disabled: bool);
+  fn disabled_style(&mut self, style: Style);
+  fn when_disabled(&mut self, f: impl FnOnce(Style) -> Style);
   fn on_click(&mut self, f: impl IntoMouseEventHandler);
   fn off_click(&mut self, f: impl IntoMouseEventHandler);
   fn on_mouse_click(&mut self, button: MouseButton, f: impl IntoMouseEventHandler);
@@ -874,6 +877,8 @@ pub(crate) struct RareStyle {
   /// The text color the node gives itself and its subtree; see [`Node::foreground`].
   pub(crate) foreground: Option<TextColor>,
   pub(crate) outline: Option<crate::node::outline::Outline>,
+  /// The node and its subtree take no input; see [`Node::disabled`].
+  pub(crate) disabled: bool,
   pub(crate) caret_color: Option<TextColor>,
   pub(crate) selection_color: Option<TextColor>,
   pub(crate) caret_mode: Option<CaretMode>,
@@ -1433,6 +1438,21 @@ impl NodeUpdate for Node {
 
   fn drag_over(&mut self, f: impl FnOnce(Style) -> Style) {
     NodeUpdate::drag_over_style(self, f(Style::new()));
+  }
+
+  fn disabled(&mut self, disabled: bool) {
+    // Writing through the lazy box would allocate it for a node that is, and stays, enabled.
+    if self.rare_style.disabled != disabled {
+      self.rare_style.disabled = disabled;
+    }
+  }
+
+  fn disabled_style(&mut self, style: Style) {
+    self.state_styles.disabled = Some(style);
+  }
+
+  fn when_disabled(&mut self, f: impl FnOnce(Style) -> Style) {
+    NodeUpdate::disabled_style(self, f(Style::new()));
   }
 
   fn active(&mut self, f: impl FnOnce(Style) -> Style) {
@@ -3065,6 +3085,29 @@ impl Node {
     self.hovered_style(f(Style::new()))
   }
 
+  /// Takes the node and everything in it out of input: no press, click, tap
+  /// or gesture reaches them, none of them is hovered, pressed or focused,
+  /// and Tab passes them by. The node still covers what is behind it, and a
+  /// press on it reaches nothing, the elements it is in included; a pointer
+  /// that moves or scrolls over it still reaches those.
+  pub fn disabled(mut self, disabled: bool) -> Self {
+    NodeUpdate::disabled(&mut self, disabled);
+    self
+  }
+
+  /// Merged over the node's style, after every other state style, while the
+  /// node is disabled, by itself or by an element it is in. It changes
+  /// painting only: a frame, padding or flex in it is ignored.
+  pub fn disabled_style(mut self, style: Style) -> Self {
+    self.state_styles.disabled = Some(style);
+    self
+  }
+
+  /// Builder form of [`Self::disabled_style`].
+  pub fn when_disabled(self, f: impl FnOnce(Style) -> Style) -> Self {
+    self.disabled_style(f(Style::new()))
+  }
+
   pub fn drag_over(self, f: impl FnOnce(Style) -> Style) -> Self {
     self.drag_over_style(f(Style::new()))
   }
@@ -4378,11 +4421,16 @@ impl Node {
 
   /// What `pick` finds in the state style that wins for it: of the styles
   /// whose state the node is in that set the value, the one applied last
-  /// (drag-over, then active, hovered, focus-visible, focused). Builds no
+  /// (disabled, then drag-over, active, hovered, focus-visible, focused). Builds no
   /// merged style, and reads a state only for a style that sets the value.
   fn state_style_value<'a, T>(&'a self, pick: impl Fn(&'a Style) -> Option<T>) -> Option<T> {
     let states = &*self.state_styles;
     let state = &self.style_state;
+    if let Some(value) = states.disabled.as_ref().and_then(&pick)
+      && state.is_disabled()
+    {
+      return Some(value);
+    }
     if let Some(value) = states.drag_over.as_ref().and_then(&pick)
       && state.is_drag_over()
     {
@@ -4409,6 +4457,26 @@ impl Node {
       return Some(value);
     }
     None
+  }
+
+  /// The node was built disabled. An element it is in may disable it too:
+  /// see [`InteractionState::is_disabled`](crate::node::interaction_state::InteractionState::is_disabled).
+  pub(crate) fn is_disabled(&self) -> bool {
+    self.rare_style.disabled
+  }
+
+  /// Records whether the node is disabled, by itself or by an element it is
+  /// in, where its state styles and `Ctx::interaction` read it. Touches the
+  /// state only when it changes, so an enabled node allocates none.
+  pub(crate) fn sync_disabled_state(&self, disabled: bool) {
+    if self.style_state.is_disabled() != disabled {
+      self.style_state.set_disabled(disabled);
+    }
+    if let Some(interaction) = &self.interaction
+      && interaction.is_disabled() != disabled
+    {
+      interaction.set_disabled(disabled);
+    }
   }
 
   /// The foreground in effect: the winning state style's over the node's own.
@@ -5576,6 +5644,11 @@ impl Node {
       && let Some(drag_over) = &self.state_styles.drag_over
     {
       style.merge_from(drag_over);
+    }
+    if let Some(disabled) = &self.state_styles.disabled
+      && self.style_state.is_disabled()
+    {
+      style.merge_from(disabled);
     }
     style
   }

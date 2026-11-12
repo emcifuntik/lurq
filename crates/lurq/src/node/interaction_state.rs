@@ -14,6 +14,7 @@ struct InteractionStateInner {
   focused: bool,
   focus_visible: bool,
   drag_over: bool,
+  disabled: bool,
   layout_dirty: bool,
   layout_subscribers: crate::core::layout_dirty::LayoutSubscribers,
 }
@@ -76,6 +77,17 @@ impl InteractionState {
   /// and `on_file_drag_leave` has not), like a hover during a file drag.
   pub fn is_drag_over(&self) -> bool {
     self.inner.get().is_some_and(|inner| inner.lock().unwrap().drag_over)
+  }
+
+  /// The node takes no input: it is disabled (`.disabled(true)`), or an
+  /// element it is in is. Written when the node is painted, so it is known
+  /// from the first frame that draws the node after the change.
+  pub fn is_disabled(&self) -> bool {
+    self.inner.get().is_some_and(|inner| inner.lock().unwrap().disabled)
+  }
+
+  pub(crate) fn set_disabled(&self, val: bool) {
+    self.shared_inner().lock().unwrap().disabled = val;
   }
 
   pub(crate) fn set_drag_over(&self, val: bool) {
@@ -179,6 +191,7 @@ mod tests {
     assert!(!state.is_focused());
     assert!(!state.is_focus_visible());
     assert!(!state.is_drag_over());
+    assert!(!state.is_disabled());
     assert!(!state.has_layout_dirty());
     assert!(!state.take_layout_dirty());
     assert!(state.inner.get().is_none());

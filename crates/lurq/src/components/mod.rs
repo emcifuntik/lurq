@@ -564,6 +564,29 @@ macro_rules! impl_into_node {
         self
       }
 
+      /// Takes the element and everything in it out of input: no press,
+      /// click, tap or gesture reaches them, none of them is hovered,
+      /// pressed or focused, and Tab passes them by. The element still
+      /// covers what is behind it (see `Node::disabled`).
+      pub fn disabled(mut self, disabled: bool) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::disabled(node, disabled));
+        self
+      }
+
+      /// Merged over the element's style, after every other state style,
+      /// while it is disabled, by itself or by an element it is in. It
+      /// changes painting only.
+      pub fn disabled_style(mut self, style: $crate::node::Style) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::disabled_style(node, style));
+        self
+      }
+
+      /// Builder form of `disabled_style`.
+      pub fn when_disabled(mut self, f: impl FnOnce($crate::node::Style) -> $crate::node::Style) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::when_disabled(node, f));
+        self
+      }
+
       /// Builder form of `drag_over_style`.
       pub fn drag_over(mut self, f: impl FnOnce($crate::node::Style) -> $crate::node::Style) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::drag_over(node, f));

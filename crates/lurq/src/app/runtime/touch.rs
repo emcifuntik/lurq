@@ -182,6 +182,8 @@ impl Tree {
     };
     let mut hits = Vec::new();
     hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+    // A finger on a disabled element still scrolls the containers the element is in.
+    super::take_disabled_hit(&mut hits);
     trim_hits_to_scrollbar(&mut hits, lx, ly);
     // A bar that is always there is dragged at once. A scroll indicator, which comes and goes, is content to
     // a finger that moves, and is dragged by one that rested on it first, as the platform's.
@@ -221,6 +223,7 @@ impl Tree {
     };
     let mut hits = Vec::new();
     hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+    super::take_disabled_hit(&mut hits);
 
     let vertical = delta_y.abs() >= delta_x.abs();
     // The way the offset goes: a finger moving up or left brings later content.

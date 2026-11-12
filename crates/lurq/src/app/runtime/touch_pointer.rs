@@ -17,13 +17,13 @@
 //! **The pointer.** A touch shell gives the first finger to the tree as the pointer through the methods here
 //! rather than through the mouse's, because a finger is not a mouse in three ways a list of the platform shows:
 //!
-//! - it hovers nothing. The mouse events still come, `on_mouse_enter` and `on_mouse_leave` among them, but no
-//!   element takes its hovered style from a finger;
-//! - a tap clicks when the finger lifts, and what it tapped stays pressed for a moment after, so that a tap
-//!   quicker than a frame still shows;
-//! - what a finger holds stays pressed only while the finger is near it. Moved further than [`PRESS_REACH`]
-//!   from it, the element no longer shows as pressed, and shows so again when the finger comes back; lifted
-//!   within that reach, even beside the element, the finger clicks it.
+//! - it hovers nothing. The mouse events still come, `on_mouse_enter` and `on_mouse_leave` among them, but no element
+//!   takes its hovered style from a finger;
+//! - a tap clicks when the finger lifts, and what it tapped stays pressed for a moment after, so that a tap quicker
+//!   than a frame still shows;
+//! - what a finger holds stays pressed only while the finger is near it. Moved further than [`PRESS_REACH`] from it,
+//!   the element no longer shows as pressed, and shows so again when the finger comes back; lifted within that reach,
+//!   even beside the element, the finger clicks it.
 
 use std::{
   collections::VecDeque,
@@ -253,6 +253,8 @@ impl Tree {
       if let (Some(root), Some(layout)) = (&self.root, &self.last_layout) {
         let mut hits = Vec::new();
         hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+        // A touch on a disabled element is still a touch on the elements it is in: a pan over it moves them.
+        super::take_disabled_hit(&mut hits);
         targets.extend(hits.iter().map(|(node, _)| node.node_id()));
       }
       self.touch_pointer.touches.retain(|touch| touch.id != id);
@@ -775,6 +777,10 @@ impl Tree {
     if let (Some(root), Some(layout)) = (&self.root, &self.last_layout) {
       let mut hits = Vec::new();
       hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+      // A finger resting on a disabled element presses nothing.
+      if super::take_disabled_hit(&mut hits).is_some() {
+        hits.clear();
+      }
       let control = EventControl::new();
       'bubble: for (node, _) in &hits {
         let event = LongPressEvent {
@@ -931,6 +937,9 @@ impl Tree {
     let (root, layout) = (self.root.as_ref()?, self.last_layout.as_ref()?);
     let mut hits = Vec::new();
     hit_test_tree(root, layout, 0.0, 0.0, x / scale, y / scale, &mut hits);
+    if super::take_disabled_hit(&mut hits).is_some() {
+      return None;
+    }
     let (_, rect) = hits
       .iter()
       .find(|(node, _)| !node.events.on_click.is_empty())

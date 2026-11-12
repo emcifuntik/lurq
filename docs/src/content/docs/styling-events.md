@@ -298,8 +298,8 @@ A state style can also set:
   `Transition::opacity()` on the element animates the change.
 - `.outline(outline)`: an [outline](#outline) while the state holds, typically a focus ring in `focus_visible`.
 
-These three change painting only. Where several state styles set the same value, the one applied last wins: drag-over,
-then active, hovered, focus-visible, focused.
+These three change painting only. Where several state styles set the same value, the one applied last wins: the
+[disabled](#disabled) style, then drag-over, active, hovered, focus-visible, focused.
 
 ```rust
 use lurq::{components::{Row, Text}, node::Outline};
@@ -326,6 +326,44 @@ let hovered = interaction.is_hovered();
 ```
 
 Attach the state to an element with `.interactive(interaction)` if you need to observe that element's state from component code.
+
+## Disabled
+
+`.disabled(true)` takes an element and everything in it out of input:
+
+```rust
+use lurq::components::{Button, Row};
+
+// Neither button can be clicked, focused or reached with Tab.
+Row::new()
+  .disabled(saving)
+  .when_disabled(|style| style.opacity(0.5))
+  .child(Button::new("Save").on_click(save))
+  .child(Button::new("Discard").on_click(discard))
+```
+
+- No press, click, double click, tap, long press or drop reaches a disabled element or anything in it, and none of
+  them is hovered, pressed or focused. Built-in controls in it (text inputs, checkboxes, sliders, selects, links) do
+  nothing.
+- Tab passes it by, `ctx.focus(...)` and `ElementHandle::focus()` on it are ignored, `ElementHandle::click()` does
+  nothing, and an element that had focus when it, or an element it is in, became disabled loses it.
+- It still covers what is behind it: a press on a disabled element reaches nothing. That includes the elements it is
+  in, as with a disabled control on the web: a clickable card is not clicked through its disabled button. A press on it
+  leaves focus where it is.
+- A pointer that moves or scrolls over it still reaches the elements it is in: a row stays hovered over its disabled
+  button, and a wheel or a finger over a disabled element scrolls the container the element is in. A scroll container
+  that is itself disabled, or inside a disabled element, does not scroll by pointer.
+- The disabled style, `.when_disabled(|style| ...)` or `.disabled_style(style)`, is merged over the element's style
+  after every other state style while the element is disabled, by itself or by an element it is in, so each element in
+  a disabled group can have its own. It changes painting only: a frame, padding or flex in it is ignored. Use
+  `.opacity(...)` or `.foreground(...)` in it to dim a whole control from its root, and `.cursor(...)` for the cursor
+  over it.
+- `InteractionState::is_disabled()` (`ctx.interaction().is_disabled()`) is `true` for a disabled element and for the
+  elements in it. It is written when an element is painted, so it is known from the first frame that draws the element
+  after the change.
+- On a live element use `ElementHandle::set_disabled`.
+
+Disabling is about input. It sets no look of its own: without a disabled style a disabled element is painted as before.
 
 ## Mouse Events
 

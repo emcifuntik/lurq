@@ -10,7 +10,9 @@
 //! size or offset with a transition) unhovers it, which moves it back under
 //! the pointer, and so on: like CSS `:hover`, such a node flickers.
 
-use super::{Tree, find_node_by_id, hovered_cursor, scrollbar_hit_at, set_node_hovered, trim_hits_to_scrollbar};
+use super::{
+  Tree, find_node_by_id, hovered_cursor, scrollbar_hit_at, set_node_hovered, take_disabled_hit, trim_hits_to_scrollbar,
+};
 use crate::{
   app::{
     events::{InputSource, input_source, with_input_source},
@@ -59,6 +61,8 @@ impl Tree {
     };
     let mut hits = Vec::new();
     hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+    // A disabled element is not hovered; the elements it is in are.
+    let disabled = take_disabled_hit(&mut hits);
     trim_hits_to_scrollbar(&mut hits, lx, ly);
 
     let changed = with_input_source(source, || move_hover(root, &self.hover_path, &hits));
@@ -73,7 +77,7 @@ impl Tree {
       }
     }
     self.hover_path = hits.iter().map(|(node, _)| node.node_id()).collect();
-    self.cursor = hovered_cursor(hits.iter().map(|(node, _)| *node));
+    self.cursor = hovered_cursor(disabled.into_iter().chain(hits.iter().map(|(node, _)| *node)));
     if changed {
       self.cached_render_list = None;
     }
