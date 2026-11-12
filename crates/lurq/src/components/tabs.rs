@@ -374,6 +374,7 @@ pub struct TabBar {
   pub low_height: f32,
   pub low_window: f32,
   pub low_title_size: f32,
+  pub low_symbol_size: f32,
   /// How long the bar takes to go out of view and to come back, for the keyboard or when it is told to.
   pub hide_duration: Duration,
   pub title_size: f32,
@@ -404,6 +405,7 @@ impl Default for TabBar {
       low_height: 32.0,
       low_window: 480.0,
       low_title_size: 12.0,
+      low_symbol_size: 13.0,
       hide_duration: Duration::from_millis(250),
       title_size: 10.0,
       title_weight: FontWeight::Medium,
@@ -700,23 +702,19 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
   for entry in entries {
     let color = if entry.active { bar.tint } else { bar.color };
     let item = &entry.item;
+    let symbol_size = if low { bar.low_symbol_size } else { bar.symbol_size };
     let picture = match (entry.active, &item.selected_icon, &item.selected_symbol) {
       (true, Some(icon), _) => Some(icon.clone()),
-      (true, None, Some(name)) => symbol(name, bar.symbol_size, color),
+      (true, None, Some(name)) => symbol(name, symbol_size, color),
       // The filled one of the tab's symbol, where the platform has it, as its own bars take.
       (true, None, None) => item
         .symbol
         .as_ref()
-        .and_then(|name| symbol(&format!("{name}.fill"), bar.symbol_size, color)),
+        .and_then(|name| symbol(&format!("{name}.fill"), symbol_size, color)),
       _ => None,
     }
     .or_else(|| item.icon.clone())
-    .or_else(|| {
-      item
-        .symbol
-        .as_ref()
-        .and_then(|name| symbol(name, bar.symbol_size, color))
-    });
+    .or_else(|| item.symbol.as_ref().and_then(|name| symbol(name, symbol_size, color)));
 
     let mut content = Column::new()
       .align_items(Alignment::Center)

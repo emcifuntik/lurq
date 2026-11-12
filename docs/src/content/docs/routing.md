@@ -529,7 +529,7 @@ feature) and left out elsewhere. `badge` is a few characters at the picture's co
 | `tint`, `color` | blue, grey | The active tab's picture and title, and the others' |
 | `blur` | 40 | How much the tab's content is blurred where it shows through the bar; see [Blur](../blur/) |
 | `height` | 49 | Without the room of the home indicator |
-| `low_height`, `low_window`, `low_title_size` | 32, 480, 12 | In a window lower than `low_window`, a phone on its side, the bar is lower and a title stands beside its picture |
+| `low_height`, `low_window`, `low_title_size`, `low_symbol_size` | 32, 480, 12, 13 | In a window lower than `low_window`, a phone on its side, the bar is lower and a title stands beside its picture |
 | `title_size`, `title_weight` | 10, medium | |
 | `symbol_size`, `spacing` | 18, 2 | |
 | `badge_background`, `badge_color`, `badge_size` | red, white, 13 | |
