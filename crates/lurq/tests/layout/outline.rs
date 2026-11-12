@@ -264,3 +264,65 @@ fn an_outline_that_shows_keeps_an_element_whose_box_is_clipped_away() {
   assert_eq!(rings.len(), 1, "its ring reaches back into the clip and is painted");
   assert!(rings[0].clip.active);
 }
+
+fn clip_holds(ring: &Quad) -> bool {
+  !ring.clip.active
+    || (ring.clip.x <= ring.x
+      && ring.clip.y <= ring.y
+      && ring.clip.x + ring.clip.width >= ring.x + ring.width
+      && ring.clip.y + ring.clip.height >= ring.y + ring.height)
+}
+
+#[test]
+fn a_container_that_its_element_fills_does_not_cut_the_outline() {
+  let mut app = App::new();
+  let mut tree = painted(
+    &mut app,
+    // The row and the column around it are exactly as large as the button: its ring lies outside both.
+    Column::new().padding(20.0).child(
+      Column::new().id("group").background("#ffffff").child(
+        lurq::components::Row::new().id("row").child(
+          Rect::new(100.0, 40.0)
+            .id("button")
+            .outline(Outline::new(2.0, RING).offset(2.0)),
+        ),
+      ),
+    ),
+  );
+  assert_eq!(bounds(&mut tree, "row"), bounds(&mut tree, "button"));
+  assert_eq!(bounds(&mut tree, "group"), bounds(&mut tree, "button"));
+
+  let rings = rings(&tree, RING);
+  assert_eq!(rings.len(), 1);
+  assert_eq!(
+    (rings[0].x, rings[0].y, rings[0].width, rings[0].height),
+    (16.0, 16.0, 108.0, 48.0)
+  );
+  assert!(clip_holds(&rings[0]), "the whole ring is inside its clip");
+}
+
+#[test]
+fn a_scroll_container_cuts_the_outline_at_its_viewport() {
+  let mut app = App::new();
+  let tree = painted(
+    &mut app,
+    Column::new().padding(20.0).child(
+      lurq::components::ScrollVertical::new(
+        Column::new()
+          .child(Rect::new(100.0, 40.0).outline(Outline::new(2.0, RING).offset(2.0)))
+          .child(Rect::new(100.0, 400.0)),
+      )
+      .size(100.0, 100.0),
+    ),
+  );
+
+  let rings = rings(&tree, RING);
+  assert_eq!(rings.len(), 1);
+  let clip = rings[0].clip;
+  assert!(clip.active);
+  assert_eq!(
+    (clip.x, clip.y, clip.width, clip.height),
+    (20.0, 20.0, 100.0, 100.0),
+    "the viewport, not a pixel more"
+  );
+}

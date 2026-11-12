@@ -262,8 +262,11 @@ Button::new("Save")
   rounded control. A square corner stays square.
 - A negative offset draws the line inside the box.
 - It is painted over the element's own content. A sibling painted later still covers it where they overlap.
-- It is inside the clips the element is under, as an outer shadow is: an element flush against the edge of a container
-  that clips, or of a scroll container, loses the part of its ring past that edge. Leave padding for it there.
+- A container clips its content to its bounds, but not the ring of what touches its edge: an outline reaches past the
+  containers its element is in by its own offset and width, so a button that fills its row keeps its whole ring with no
+  padding around it. An element that is itself cut by a container is cut with its ring.
+- A scroll container and the window cut the ring where they cut the element: what scrolls out of view takes its ring
+  with it.
 - An outline with no width, or `Outline::none()`, paints nothing; a state style uses `Outline::none()` to remove the
   element's own outline.
 - On a live element use `ElementHandle::set_outline`.

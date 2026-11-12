@@ -258,6 +258,10 @@ pub(crate) struct LayoutEngine {
   foreground: Cell<Option<Color>>,
   /// Whether an ancestor of the node being painted is disabled.
   disabled: Cell<bool>,
+  /// The scroll viewports the node being painted is in, and the window: the
+  /// clips that cut a node's outline where they cut the node. The bounds a
+  /// plain container clips its content to let an outline past by its reach.
+  scroll_clip: Cell<ClipRect>,
   /// Caret of the focused text input recorded by the last quad resolution,
   /// where an input method places its candidate window.
   ime_cursor_area: Cell<Option<crate::app::events::ImeCursorArea>>,
@@ -555,6 +559,7 @@ impl LayoutEngine {
       select_open: Cell::new(None),
       foreground: Cell::new(None),
       disabled: Cell::new(false),
+      scroll_clip: Cell::new(ClipRect::default()),
       ime_cursor_area: Cell::new(None),
       opacity_groups: RefCell::new(Vec::new()),
       #[cfg(feature = "screenshot")]
@@ -931,6 +936,7 @@ impl LayoutEngine {
     self.text_input_frame.set(None);
     self.foreground.set(None);
     self.disabled.set(false);
+    self.scroll_clip.set(viewport);
     self.collect_quads(
       node,
       result,
@@ -1088,6 +1094,7 @@ impl LayoutEngine {
       ));
 
     let select_scope = self.enter_select_scope(node);
+    let scroll_scope = frame.scroll_viewport.map(|viewport| self.scroll_clip.replace(viewport));
     for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
       let child_abs_x = abs_x + child_layout.offset.x;
       let child_abs_y = abs_y + child_layout.offset.y;
@@ -1120,6 +1127,9 @@ impl LayoutEngine {
       );
     }
     self.leave_select_scope(select_scope);
+    if let Some(outer) = scroll_scope {
+      self.scroll_clip.set(outer);
+    }
 
     self.push_node_overlay_quads(node, result, abs_x, abs_y, &frame, clip, quads);
     self.leave_foreground_scope(foreground_scope);
@@ -1952,12 +1962,30 @@ impl LayoutEngine {
         (clip, cull_clip, culling_enabled)
       };
 
+    let scroll_viewport = match node.layout_kind() {
+      LayoutKind::ScrollModifier { state, .. } => Some(content_clip(
+        self.scroll_clip.get(),
+        ClipRect {
+          x: abs_x,
+          y: abs_y,
+          width: state.viewport_width(),
+          height: state.viewport_height(),
+          active: true,
+          border_radius: None,
+        },
+        resolved_border,
+        transform,
+      )),
+      _ => None,
+    };
+
     NodeQuadFrame {
       transform,
       opacity,
       child_clip,
       child_cull_clip,
       child_culling_enabled,
+      scroll_viewport,
       deferred_border: resolved_border.filter(|_| defer_border_to_overlay),
     }
   }
@@ -4061,6 +4089,8 @@ struct NodeQuadFrame {
   child_clip: ClipRect,
   child_cull_clip: ClipRect,
   child_culling_enabled: bool,
+  /// For a scroll container: its viewport within the scroll viewports it is in.
+  scroll_viewport: Option<ClipRect>,
   deferred_border: Option<ResolvedBorders>,
 }
 

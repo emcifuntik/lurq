@@ -1,7 +1,14 @@
-//! Paint of a node's outline: a ring around its box, drawn over its content
-//! and under the clips the node itself is under.
+//! Paint of a node's outline: a ring around its box, drawn over its content.
+//!
+//! Containers clip their content to their bounds by default, and a control
+//! often fills its container to the edge: clipped as content is, its ring
+//! would be cut there, on every side it touches. So an outline takes the clip
+//! its node is under let out by how far the outline reaches. A node that is
+//! itself cut by a container is still cut with its ring, a little further
+//! out. A scroll viewport, and the window, cut the ring where they cut the
+//! node: what scrolls out of view takes its ring with it.
 
-use super::{DEFAULT_TRANSPARENT_COLOR, LayoutEngine, transformed_quad_frame};
+use super::{DEFAULT_TRANSPARENT_COLOR, LayoutEngine, intersect_clip, transformed_quad_frame};
 use crate::{
   layout::{
     layout_result::LayoutResult,
@@ -32,6 +39,29 @@ impl LayoutEngine {
       Some(outline) => shadow.max(outline.outset()),
       None => shadow,
     }
+  }
+
+  /// The clip of an outline that reaches `outset` past its node, which is
+  /// under `clip`.
+  fn outline_clip(&self, clip: ClipRect, outset: f32) -> ClipRect {
+    if !clip.active || outset <= 0.0 {
+      return clip;
+    }
+    let corner = |radius: f32| if radius > 0.0 { radius + outset } else { 0.0 };
+    let let_out = ClipRect {
+      x: clip.x - outset,
+      y: clip.y - outset,
+      width: clip.width + outset * 2.0,
+      height: clip.height + outset * 2.0,
+      active: true,
+      border_radius: clip.border_radius.map(|radius| BorderRadius {
+        top_left: corner(radius.top_left),
+        top_right: corner(radius.top_right),
+        bottom_right: corner(radius.bottom_right),
+        bottom_left: corner(radius.bottom_left),
+      }),
+    };
+    intersect_clip(self.scroll_clip.get(), let_out)
   }
 
   /// Pushes the node's outline: a quad grown past the node's box by the
@@ -73,6 +103,7 @@ impl LayoutEngine {
       placement: BorderPlacement::Inside,
     });
     let (x, y, quad_transform, transform_origin) = transformed_quad_frame(abs_x - grow, abs_y - grow, transform);
+    let clip = self.outline_clip(clip, grow);
     quads.push(Quad {
       x,
       y,
