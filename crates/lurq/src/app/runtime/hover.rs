@@ -148,9 +148,8 @@ pub(super) fn leave(node: &Node) -> bool {
 ///
 /// - the node is drawn differently under the pointer ([`Node::shows_hover`]);
 /// - one of its state styles sizes it, so the change dirtied its layout;
-/// - a handler ran. What a handler changes mostly marks the tree by itself (a
-///   signal, a scroll state, a canvas), but it may also reach what is drawn
-///   through something that marks nothing, so its run is drawn whatever it did.
+/// - a handler ran. What a handler changes mostly marks the tree by itself (a signal, a scroll state, a canvas), but it
+///   may also reach what is drawn through something that marks nothing, so its run is drawn whatever it did.
 ///
 /// Nothing else of a hover is drawn. The cursor is the shell's, which reads
 /// [`Tree::cursor`] after each pointer event. The hover an app reads from an
