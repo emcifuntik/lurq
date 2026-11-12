@@ -1996,6 +1996,13 @@ impl GlyphEngine {
     self.atlas_packer.data.len()
   }
 
+  /// Snapshots of the atlas (`atlas()`) still held somewhere; while there is
+  /// one, the next new glyph is packed into a copy of the atlas's pixels.
+  #[cfg(test)]
+  pub(crate) fn atlas_snapshots_held(&self) -> usize {
+    std::sync::Arc::strong_count(&self.atlas_packer.data) - 1
+  }
+
   fn get_or_pack_glyph(&mut self, cache_key: GlyphCacheKey) -> Option<PackedGlyph> {
     if let Some(&packed) = self.atlas_entries.get(&cache_key) {
       self.glyph_hits += 1;
@@ -3520,7 +3527,10 @@ fn load_platform_fonts(font_system: &mut FontSystem) {
 const GLYPH_ATLAS_DIRTY_LOG_LIMIT: usize = 512;
 
 pub(crate) struct AtlasPacker {
-  pub data: Vec<u8>,
+  /// The atlas's pixels, shared with the snapshots `to_atlas` hands out. A
+  /// glyph is packed in place while no snapshot is held, and into a copy
+  /// otherwise (`pixels_mut`), so a snapshot never changes under its holder.
+  pub data: std::sync::Arc<[u8]>,
   pub width: u32,
   pub height: u32,
   cursor_x: u32,
@@ -3533,10 +3543,8 @@ pub(crate) struct AtlasPacker {
   dirty_rects: std::collections::VecDeque<GlyphAtlasDirtyRect>,
   /// Versions at or before this are no longer covered by the log.
   dirty_from_version: u64,
-  snapshot_data: std::sync::Arc<[u8]>,
+  /// The dirty log as of `snapshot_version`, shared by the snapshots.
   snapshot_rects: std::sync::Arc<[GlyphAtlasDirtyRect]>,
-  snapshot_width: u32,
-  snapshot_height: u32,
   snapshot_version: u64,
 }
 
@@ -3545,7 +3553,7 @@ impl AtlasPacker {
     let width = 1024;
     let height = 1024;
     Self {
-      data: vec![0u8; (width * height) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL],
+      data: vec![0u8; (width * height) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL].into(),
       width,
       height,
       cursor_x: 0,
@@ -3554,12 +3562,19 @@ impl AtlasPacker {
       version: 0,
       dirty_rects: std::collections::VecDeque::new(),
       dirty_from_version: 0,
-      snapshot_data: Vec::<u8>::new().into(),
       snapshot_rects: Vec::new().into(),
-      snapshot_width: 0,
-      snapshot_height: 0,
       snapshot_version: u64::MAX,
     }
+  }
+
+  /// The pixels to pack a glyph into. They are the atlas's own while no
+  /// snapshot of it is held; a held snapshot keeps the pixels it was taken
+  /// with, and packing goes on in a copy of them.
+  fn pixels_mut(&mut self) -> &mut [u8] {
+    if std::sync::Arc::get_mut(&mut self.data).is_none() {
+      self.data = std::sync::Arc::from(&self.data[..]);
+    }
+    std::sync::Arc::get_mut(&mut self.data).expect("the atlas's pixels were just made its own")
   }
 
   #[cfg(test)]
@@ -3576,14 +3591,16 @@ impl AtlasPacker {
   fn pack_pixels(&mut self, glyph_data: &[u8], gw: u32, gh: u32) -> (u32, u32, u32, u32) {
     let (x0, y0, reserved_width, reserved_height) = self.reserve_pixels(gw, gh);
     let padding = GLYPH_ATLAS_PADDING;
+    let width = self.width;
+    let data = self.pixels_mut();
 
     for row in 0..gh {
       let src_start = (row * gw) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
       let src_end = src_start + gw as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
-      let dst_start = ((y0 + padding + row) * self.width + x0 + padding) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
+      let dst_start = ((y0 + padding + row) * width + x0 + padding) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
       let dst_end = dst_start + gw as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
-      if src_end <= glyph_data.len() && dst_end <= self.data.len() {
-        self.data[dst_start..dst_end].copy_from_slice(&glyph_data[src_start..src_end]);
+      if src_end <= glyph_data.len() && dst_end <= data.len() {
+        data[dst_start..dst_end].copy_from_slice(&glyph_data[src_start..src_end]);
       }
     }
 
@@ -3597,30 +3614,32 @@ impl AtlasPacker {
     let (x0, y0, reserved_width, reserved_height) = self.reserve_pixels(gw, gh);
     let padding = GLYPH_ATLAS_PADDING;
     let is_color = matches!(image.content, SwashContent::Color);
+    let width = self.width;
+    let data = self.pixels_mut();
 
     for row in 0..gh {
-      let dst_start = ((y0 + padding + row) * self.width + x0 + padding) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
+      let dst_start = ((y0 + padding + row) * width + x0 + padding) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
       match image.content {
         SwashContent::Color => {
           let src_start = (row * gw) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
           let src_end = src_start + gw as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
           let dst_end = dst_start + gw as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
-          if src_end <= image.data.len() && dst_end <= self.data.len() {
-            self.data[dst_start..dst_end].copy_from_slice(&image.data[src_start..src_end]);
+          if src_end <= image.data.len() && dst_end <= data.len() {
+            data[dst_start..dst_end].copy_from_slice(&image.data[src_start..src_end]);
           }
         }
         SwashContent::Mask => {
           let src_start = (row * gw) as usize;
           let src_end = src_start + gw as usize;
           if src_end <= image.data.len() {
-            write_alpha_row_as_rgba(&mut self.data, dst_start, &image.data[src_start..src_end]);
+            write_alpha_row_as_rgba(data, dst_start, &image.data[src_start..src_end]);
           }
         }
         SwashContent::SubpixelMask => {
           let src_start = (row * gw) as usize * 3;
           let src_end = src_start + gw as usize * 3;
           if src_end <= image.data.len() {
-            write_subpixel_row_as_rgba(&mut self.data, dst_start, &image.data[src_start..src_end]);
+            write_subpixel_row_as_rgba(data, dst_start, &image.data[src_start..src_end]);
           }
         }
       }
@@ -3643,9 +3662,12 @@ impl AtlasPacker {
 
     if self.cursor_y + reserved_height > self.height {
       let new_height = self.height * 2;
-      self
-        .data
-        .resize((self.width * new_height) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL, 0);
+      // The taller atlas: the rows there are, over transparent ones.
+      let grown_len = (self.width * new_height) as usize * GLYPH_ATLAS_BYTES_PER_PIXEL;
+      let mut grown = Vec::with_capacity(grown_len);
+      grown.extend_from_slice(&self.data);
+      grown.resize(grown_len, 0);
+      self.data = grown.into();
       self.height = new_height;
     }
 
@@ -3681,18 +3703,16 @@ impl AtlasPacker {
     }
   }
 
+  /// A snapshot of the atlas: its pixels as they are now, shared, not
+  /// copied. Glyphs packed while a snapshot is held go into a copy.
   pub(crate) fn to_atlas(&mut self) -> GlyphAtlas {
-    if self.snapshot_version != self.version || self.snapshot_width != self.width || self.snapshot_height != self.height
-    {
-      self.snapshot_data = std::sync::Arc::from(self.data.clone());
+    if self.snapshot_version != self.version {
       self.snapshot_rects = self.dirty_rects.iter().copied().collect();
-      self.snapshot_width = self.width;
-      self.snapshot_height = self.height;
       self.snapshot_version = self.version;
     }
 
     GlyphAtlas {
-      data: self.snapshot_data.clone(),
+      data: self.data.clone(),
       width: self.width,
       height: self.height,
       version: self.version,
@@ -3926,6 +3946,79 @@ mod tests {
     assert_eq!(fourth.dirty_rects.len(), 1);
     assert!(std::sync::Arc::ptr_eq(&third.dirty_rects, &fourth.dirty_rects));
     assert!(std::sync::Arc::ptr_eq(&third.data, &fourth.data));
+  }
+
+  #[test]
+  fn atlas_packs_in_place_while_no_snapshot_is_held() {
+    let mut packer = AtlasPacker::new();
+    packer.pack_pixels(&[1; 4], 1, 1);
+    // A snapshot that was taken and let go of leaves the pixels the atlas's own.
+    drop(packer.to_atlas());
+    let pixels = packer.data.as_ptr();
+
+    let (x, y, ..) = packer.pack_pixels(&[2; 4], 1, 1);
+
+    assert_eq!(packer.data.as_ptr(), pixels, "packed where the pixels are");
+    let snapshot = packer.to_atlas();
+    assert_eq!(snapshot.data.as_ptr(), pixels, "a snapshot shares them");
+    let packed = ((y + GLYPH_ATLAS_PADDING) * packer.width + x + GLYPH_ATLAS_PADDING) as usize * 4;
+    assert_eq!(&snapshot.data[packed..packed + 4], &[2; 4]);
+  }
+
+  #[test]
+  fn a_held_atlas_snapshot_keeps_the_pixels_it_was_taken_with() {
+    let mut packer = AtlasPacker::new();
+    let (x, y, ..) = packer.pack_pixels(&[1; 4], 1, 1);
+    let first = ((y + GLYPH_ATLAS_PADDING) * packer.width + x + GLYPH_ATLAS_PADDING) as usize * 4;
+    let held = packer.to_atlas();
+
+    let (x, y, ..) = packer.pack_pixels(&[2; 4], 1, 1);
+    let second = ((y + GLYPH_ATLAS_PADDING) * packer.width + x + GLYPH_ATLAS_PADDING) as usize * 4;
+
+    // The held snapshot has the first glyph and not the second.
+    assert_eq!(&held.data[first..first + 4], &[1; 4]);
+    assert_eq!(&held.data[second..second + 4], &[0; 4]);
+    assert_eq!(held.version + 1, packer.version);
+    // The atlas went on in a copy that has both, and packs in place again
+    // once that copy is its own.
+    let pixels = packer.data.as_ptr();
+    assert_ne!(pixels, held.data.as_ptr());
+    let next = packer.to_atlas();
+    assert_eq!(&next.data[first..first + 4], &[1; 4]);
+    assert_eq!(&next.data[second..second + 4], &[2; 4]);
+    drop(next);
+    packer.pack_pixels(&[3; 4], 1, 1);
+    assert_eq!(packer.data.as_ptr(), pixels);
+  }
+
+  #[test]
+  fn a_growing_atlas_keeps_its_pixels_and_those_of_held_snapshots() {
+    let mut packer = AtlasPacker::new();
+    let (x, y, ..) = packer.pack_pixels(&[7; 4], 1, 1);
+    let first = ((y + GLYPH_ATLAS_PADDING) * packer.width + x + GLYPH_ATLAS_PADDING) as usize * 4;
+    let held = packer.to_atlas();
+    let (width, height) = (packer.width, packer.height);
+
+    // Glyphs as wide as the atlas allows, one per row, until it grows.
+    let side = width - GLYPH_ATLAS_PADDING * 2;
+    let glyph = vec![9_u8; (side * 60) as usize * 4];
+    while packer.height == height {
+      packer.pack_pixels(&glyph, side, 60);
+    }
+
+    assert_eq!(packer.height, height * 2);
+    assert_eq!(packer.data.len(), (width * height * 2) as usize * 4);
+    assert_eq!(&packer.data[first..first + 4], &[7; 4]);
+    assert_eq!(
+      packer.data[packer.data.len() - 1],
+      0,
+      "rows not packed yet are transparent"
+    );
+    assert_eq!(held.data.len(), (width * height) as usize * 4);
+    assert_eq!(&held.data[first..first + 4], &[7; 4]);
+    let snapshot = packer.to_atlas();
+    assert_eq!((snapshot.width, snapshot.height), (width, height * 2));
+    assert_eq!(snapshot.data.len(), packer.data.len());
   }
 
   #[test]

@@ -65,6 +65,8 @@ use crate::{
   },
 };
 
+#[cfg(all(test, feature = "screenshot", feature = "raster"))]
+mod atlas_release_tests;
 mod autoscroll;
 #[cfg(all(test, feature = "screenshot"))]
 mod capture_redaction_tests;
@@ -503,6 +505,16 @@ struct CachedRenderList {
   image_sources: Vec<Option<crate::images::ImageData>>,
   #[cfg(feature = "raster")]
   video_sources: Vec<Option<crate::images::ImageData>>,
+}
+
+/// Lets go of the atlas pixels a drawn list holds. A list kept for another
+/// frame would otherwise hold a snapshot of the glyph atlas, and the atlas
+/// packs its next new glyph into a copy of all its pixels while a snapshot
+/// is held. `try_render_cached_render_list` takes the atlas again before it
+/// draws the list.
+#[cfg_attr(not(feature = "raster"), allow(dead_code))]
+fn release_atlas_pixels(list: &mut RenderList) {
+  list.atlas.data = Arc::default();
 }
 
 /// The marks of [`Tree::timer_marks`], taken before the timers fire and compared after.
@@ -3550,6 +3562,8 @@ impl Tree {
     let should_cache_render_list = false;
 
     if should_cache_render_list {
+      let mut list = list;
+      release_atlas_pixels(&mut list);
       self.cached_render_list = Some(CachedRenderList {
         list,
         #[cfg(feature = "raster")]
@@ -6129,7 +6143,6 @@ impl Tree {
     cached.list.clear_color = clear_color;
     #[cfg(feature = "raster")]
     self.refresh_cached_image_frames(&mut cached, Instant::now());
-    cached.list.atlas = app.shared.glyph_engine.lock().atlas();
     let rect_count = cached.list.rects.len();
     let glyph_count = cached.list.glyphs.len();
     #[cfg(feature = "raster")]
@@ -6157,6 +6170,8 @@ impl Tree {
       #[cfg(feature = "perf_profile")]
       self.profiling.canvas_preparation(profile_elapsed!(_canvas_start));
     }
+    // The list holds the atlas only while it is drawn (`release_atlas_pixels`).
+    cached.list.atlas = app.shared.glyph_engine.lock().atlas();
     // No capture is taken from a cached list: one an engine still holds from
     // a frame it could not render is failed here rather than taken from this
     // frame, whose content (and sensitive text) it was not prepared for.
@@ -6170,6 +6185,7 @@ impl Tree {
         render_engine.render(&cached.list, window, display)
       }
     };
+    release_atlas_pixels(&mut cached.list);
     if !rendered {
       self.cached_render_list = Some(cached);
       return Some(false);
