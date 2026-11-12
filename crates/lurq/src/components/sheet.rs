@@ -248,6 +248,37 @@ struct State {
   /// Where the sheet's top is at each detent, and where it is when down, as last rendered.
   tops: Vec<f32>,
   room: f32,
+  /// How far the window behind draws back for this sheet, as rendered and as last told to the host.
+  receded: Receded,
+  told: Receded,
+  host: Option<Behind>,
+}
+
+/// How far the content of a [`SheetHost`] is drawn back, from 0 to 1, and how it gets there.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Receded {
+  share: f32,
+  pace: Duration,
+  curve: Easing,
+}
+
+#[cfg(feature = "devtools")]
+impl crate::app::component::DevtoolsInspectable for Receded {
+  fn write_info(&self, _buffer: &mut Vec<crate::app::component::ComponentInfo>) {}
+}
+
+impl Receded {
+  const NONE: Self = Self {
+    share: 0.0,
+    pace: Duration::ZERO,
+    curve: Easing::Linear,
+  };
+}
+
+/// What a [`SheetHost`] gives the sheets under it: where they say how far its content draws back.
+#[derive(Clone)]
+struct Behind {
+  receded: Signal<Receded>,
 }
 
 /// No finger has the sheet.
@@ -278,12 +309,14 @@ impl Sheet {
 }
 
 /// How high the sheet stands at `detent`, in a window `room` high whose highest sheet is `large` high.
-fn height_of(detent: SheetDetent, room: f32, large: f32, bottom: f32, content: f32) -> f32 {
+/// The on-screen keyboard is under the sheet: a sheet rises by the `keyboard`'s height, as far as it can.
+fn height_of(detent: SheetDetent, room: f32, large: f32, bottom: f32, keyboard: f32, content: f32) -> f32 {
   let height = match detent {
-    SheetDetent::Medium => room * 0.5,
+    SheetDetent::Medium => room * 0.5 + keyboard,
     SheetDetent::Large => large,
-    SheetDetent::Fraction(share) => large * share.clamp(0.0, 1.0),
+    SheetDetent::Fraction(share) => large * share.clamp(0.0, 1.0) + keyboard,
     SheetDetent::Height(height) => height + bottom,
+    // The content is padded by the keyboard's height.
     SheetDetent::Content => content,
   };
   height.clamp(0.0, large.max(0.0))
@@ -302,6 +335,9 @@ impl Component for Sheet {
       content_height: 0.0,
       tops: Vec::new(),
       room: 0.0,
+      receded: Receded::NONE,
+      told: Receded::NONE,
+      host: None,
     }));
     let changed = Signal::new(0u64);
     let begin = ctx.create_timeout(BEGIN, {
@@ -380,14 +416,25 @@ impl Component for Sheet {
       self.settle.restart();
     }
     state.at = at;
+    state.host = ctx.use_context::<Behind>();
     if state.phase == Phase::Closed {
+      state.receded = Receded::NONE;
       return Element::from(Modal::new(Element::new()).open_when(false));
     }
 
     let heights: Vec<f32> = props
       .detents
       .iter()
-      .map(|detent| height_of(*detent, room, large, safe_area.bottom, state.content_height))
+      .map(|detent| {
+        height_of(
+          *detent,
+          room,
+          large,
+          safe_area.bottom,
+          safe_area.keyboard,
+          state.content_height,
+        )
+      })
       .collect();
     state.tops = heights.iter().map(|height| room - height).collect();
     state.room = room;
@@ -433,6 +480,23 @@ impl Component for Sheet {
       0.0
     };
     let fits_content = props.detents[at] == SheetDetent::Content;
+    // A sheet that takes all the room sends the window behind back, by as much of the way from its next
+    // height down, or from the bottom, as it has come.
+    let reaches = highest >= large - 1.0 && large > 0.0;
+    let under = heights
+      .iter()
+      .copied()
+      .filter(|height| *height < highest - 1.0)
+      .fold(0.0, f32::max);
+    state.receded = Receded {
+      share: if reaches {
+        ((room - top - under) / (highest - under)).clamp(0.0, 1.0)
+      } else {
+        0.0
+      },
+      pace,
+      curve,
+    };
     drop(state);
 
     let backdrop = Row::new()
@@ -595,6 +659,12 @@ impl Component for Sheet {
 
   fn after_layout(&self) {
     let mut state = self.state.lock();
+    if state.receded != state.told {
+      state.told = state.receded;
+      if let Some(host) = &state.host {
+        host.receded.set(state.receded);
+      }
+    }
     if state.phase == Phase::Closed {
       return;
     }
@@ -613,5 +683,105 @@ impl Component for Sheet {
     if changed {
       self.changed.update(|version| *version += 1);
     }
+  }
+}
+
+/// How the content of a [`SheetHost`] draws back behind a sheet that takes all the room.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SheetHostStyle {
+  /// How small the content gets: a share of its size. 1 leaves it as it is.
+  pub scale: f32,
+  /// How round its corners get.
+  pub corner_radius: f32,
+  /// What is seen around it.
+  pub background: Color,
+}
+
+impl Default for SheetHostStyle {
+  fn default() -> Self {
+    Self {
+      scale: 0.92,
+      corner_radius: 12.0,
+      background: Color::from_hex("#000000"),
+    }
+  }
+}
+
+/// What a [`SheetHost`] is made with: how it looks, and what makes its content.
+#[derive(Clone)]
+pub struct SheetHostProps {
+  style: SheetHostStyle,
+  content: Arc<dyn Fn(&mut Ctx) -> Element + Send + Sync>,
+}
+
+impl PartialEq for SheetHostProps {
+  fn eq(&self, other: &Self) -> bool {
+    self.style == other.style && Arc::ptr_eq(&self.content, &other.content)
+  }
+}
+
+#[cfg(feature = "devtools")]
+impl crate::app::component::DevtoolsInspectable for SheetHostProps {
+  fn write_info(&self, _buffer: &mut Vec<crate::app::component::ComponentInfo>) {}
+}
+
+/// The content of a window that draws back behind a sheet at its full height, as a phone's apps do: it gets
+/// smaller, its top goes under the status bar's room and its corners round. Put it around the whole of the
+/// app's content; the sheets mounted in that content tell it how far they are up. Without it a sheet only dims
+/// what is behind.
+pub struct SheetHost {
+  receded: Signal<Receded>,
+}
+
+impl SheetHost {
+  /// The host around what `content` makes. The content is made in the host, as a route's is in its outlet:
+  /// that is what lets the sheets in it find the host.
+  pub fn mount(ctx: &mut Ctx, content: impl Fn(&mut Ctx) -> Element + Send + Sync + 'static) -> Element {
+    Self::mount_with(ctx, SheetHostStyle::default(), content)
+  }
+
+  pub fn mount_with(
+    ctx: &mut Ctx,
+    style: SheetHostStyle,
+    content: impl Fn(&mut Ctx) -> Element + Send + Sync + 'static,
+  ) -> Element {
+    ctx.mount::<Self>(SheetHostProps {
+      style,
+      content: Arc::new(content),
+    })
+  }
+}
+
+impl Component for SheetHost {
+  type Props = SheetHostProps;
+
+  fn create(ctx: &mut Ctx) -> Self {
+    let receded = Signal::new(Receded::NONE);
+    ctx.provide(Behind {
+      receded: receded.clone(),
+    });
+    Self { receded }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<SheetHostProps>().clone();
+    let style = props.style;
+    let receded = self.receded.get();
+    let window = ctx.window();
+    let (room, top) = (window.logical_height(), window.safe_area.top);
+    // Smaller about its middle, and up or down so that its top is where the status bar's room ends.
+    let scale = 1.0 - (1.0 - style.scale) * receded.share;
+    let down = receded.share * (top - room * (1.0 - style.scale) / 2.0);
+    let content = Stack::new()
+      .size(FILL, FILL)
+      .rounded(style.corner_radius * receded.share)
+      .clip()
+      .transform(Transform2D::translate(0.0, down).then(&Transform2D::scale_uniform(scale)))
+      .transition(Transition::transform().duration(receded.pace).easing(receded.curve))
+      .child((props.content)(ctx));
+    Stack::new()
+      .size(FILL, FILL)
+      .background(style.background)
+      .child(content)
   }
 }

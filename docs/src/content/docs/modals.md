@@ -104,7 +104,8 @@ let sheet = Sheet::mount(
 - **Content that scrolls** is named with `SheetProps::scroll(state)`, the `ScrollState` of its list: a finger
   going up moves the sheet to its highest before the list scrolls, and one going down takes the sheet only when
   the list is at its top.
-- **The content is clear of the home indicator and the keyboard**: it is padded by the safe area.
+- **The content is clear of the home indicator and the keyboard**: it is padded by the safe area, and the
+  sheet rises by the keyboard's height, as far as its highest place.
 - Like a `Modal`, it traps Tab.
 
 Several sheets in one component are told apart with `Sheet::mount_keyed`.
@@ -122,6 +123,24 @@ Several sheets in one component are told apart with `Sheet::mount_keyed`.
 | `max_width` | none | In a wider window the sheet stands in the middle |
 | `duration` | 500 ms | Of every move |
 | `throw` | 0.15 | How many seconds of a finger's speed ahead the sheet is taken to be going |
+
+### The window behind
+
+Behind a sheet at its full height a phone's apps draw back: the app gets smaller, its top goes under the status
+bar's room and its corners round. `SheetHost` around the whole of the app's content does that, for every sheet
+mounted in the content. It makes its content itself, as a route's is made in its outlet:
+
+```rust
+fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+  let router = self.router.clone();
+  SheetHost::mount(ctx, move |ctx| Router::mount(ctx, router.clone()))
+}
+```
+
+The app draws back as far as the sheet has come from its next height down, with the sheet and with the finger
+that has it. A sheet that never takes all the room only dims the app, and so does every sheet without a host.
+`SheetHost::mount_with` takes a `SheetHostStyle`: `scale` (0.92), `corner_radius` (12) and the `background`
+seen around the app (black).
 
 A sheet that draws all of itself has a clear `background`, no `corner_radius` and no grabber: the content is
 then the whole sheet, and the moves, the heights and the finger are still the component's.

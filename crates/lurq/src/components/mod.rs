@@ -81,7 +81,7 @@ pub use router_component::{Router, RouterProps};
 pub use row::Row;
 pub use scroll::{ScrollBoth, ScrollHorizontal, ScrollVertical};
 pub use select::{Select, SelectOption};
-pub use sheet::{Sheet, SheetDetent, SheetProps, SheetStyle};
+pub use sheet::{Sheet, SheetDetent, SheetHost, SheetHostProps, SheetHostStyle, SheetProps, SheetStyle};
 pub use slider::Slider;
 pub use slot::Slot;
 pub use spacer::Spacer;

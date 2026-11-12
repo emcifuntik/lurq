@@ -84,16 +84,26 @@ impl Component for SheetsScreen {
             .width(FILL)
             .padding_horizontal(16.0)
             .padding_bottom(8.0)
-            .child(text(
-              if height == 0 {
-                "At half height"
-              } else {
-                "At full height"
-              },
-              17.0,
-              FontWeight::Bold,
-              TEXT,
-            )),
+            .align_items(Alignment::Center)
+            .child(
+              text(
+                if height == 0 {
+                  "At half height"
+                } else {
+                  "At full height"
+                },
+                17.0,
+                FontWeight::Bold,
+                TEXT,
+              )
+              .flex(1.0),
+            )
+            // The signal sends the sheet to its other height, as a finger does.
+            .child({
+              let to = self.height.clone();
+              text(if height == 0 { "Taller" } else { "Lower" }, 17.0, FontWeight::Normal, PRIMARY)
+                .on_click(move |_| to.set(1 - to.get_untracked()))
+            }),
         )
         .child(
           ScrollVertical::new(items)

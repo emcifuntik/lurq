@@ -56,11 +56,11 @@ inside its input.
   it is not dimmed like the platform's menu.
 - **A search field** is the field alone: no scopes under it, no suggestions, and it does not come and go
   with a move of its own when it takes the bar's place.
-- **Sheets** are there (`Sheet`), with these differences from the platform's: the screen behind a full-height
-  sheet does not draw back and round its corners; a sheet is never one the window behind can still be used
-  under; it does not rise further with the keyboard, its content is only padded by it; there is no stack of
-  screens inside a sheet with a bar of its own; and its numbers (the radius, the dim, the spring) were set by
-  eye.
+- **Sheets** are there (`Sheet`, and `SheetHost` for the app that draws back behind one), with these
+  differences from the platform's: a sheet is never one the window behind can still be used under; there is
+  no stack of screens inside a sheet with a bar of its own; the corners of the app drawn back are rounded at
+  once and not little by little; and the numbers (the radii, the dim, the spring, how small the app gets)
+  were set by eye.
 - **Tabs:** a tab bar with a stack of screens for each tab. Not there.
 
 ## Touch

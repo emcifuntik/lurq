@@ -87,6 +87,7 @@ Column::new()
 
 The on-screen keyboard counts: while it is up `safe_area.bottom` is its height, frame by frame as it rises, so
 content padded by the safe area ends above it. The focused text input is scrolled into view as it does.
+`safe_area.keyboard` is how much of `bottom` the keyboard adds, 0 with it down.
 
 ## Touch
 

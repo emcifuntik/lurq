@@ -27,7 +27,9 @@ use lurq::{
     window::Orientation,
     winit_shell::WinitWindow,
   },
-  components::{Column, NavigationBar, NavigationItem, NavigationSearch, Router, Row, StackOutlet, StackOutletProps},
+  components::{
+    Column, NavigationBar, NavigationItem, NavigationSearch, Router, Row, SheetHost, StackOutlet, StackOutletProps,
+  },
   core::Signal,
   layout::{layout_kind::Justify, text_style::FontWeight},
   node::{Element, color::Color},
@@ -58,7 +60,9 @@ impl Component for MobileDemo {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    Router::mount(ctx, self.router.clone())
+    // The whole app draws back behind a sheet that takes all the room.
+    let router = self.router.clone();
+    SheetHost::mount(ctx, move |ctx| Router::mount(ctx, router.clone()))
   }
 }
 

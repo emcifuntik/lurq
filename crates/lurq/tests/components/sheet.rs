@@ -4,15 +4,17 @@ use std::time::{Duration, Instant};
 
 use lurq::{
   app::{App, Tree, component::Component, ctx::Ctx, events::MouseButton, events::TouchPhase},
-  components::{Column, Sheet, SheetDetent, SheetProps, SheetStyle, Spacer, Text},
+  components::{Column, Sheet, SheetDetent, SheetHost, SheetProps, SheetStyle, Spacer, Text},
   core::Signal,
-  node::{Element, color::Color},
+  node::{Element, color::Color, dimension::Dimension},
 };
 
 use crate::support::{pointer_click, render_pass, run_pass};
 
 /// The sheet's color, which nothing else here has.
 const SHEET: Color = Color::new(18, 52, 86, 255);
+/// The page's, behind the sheet.
+const PAGE: Color = Color::new(86, 52, 18, 255);
 
 #[derive(Clone)]
 struct Setup {
@@ -54,7 +56,28 @@ impl Component for Page {
         .child(Text::new("in the sheet"))
         .child(Spacer::new().width(100.0).height(180.0)),
     );
-    Column::new().child(Text::new("the page")).child(sheet)
+    let page = Column::new()
+      .size(Dimension::Pct(100.0), Dimension::Pct(100.0))
+      .background(PAGE)
+      .child(Text::new("the page"))
+      .child(sheet);
+    page
+  }
+}
+
+/// The app: its page in what draws it back behind a sheet.
+struct Whole;
+
+impl Component for Whole {
+  type Props = Setup;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let setup = ctx.props::<Setup>().clone();
+    SheetHost::mount(ctx, move |ctx| ctx.mount::<Page>(setup.clone()))
   }
 }
 
@@ -71,7 +94,7 @@ impl Stage {
     let mut app = App::new();
     let mut tree = Tree::new();
     tree.resize(400, 800);
-    tree.mount_root::<Page>(
+    tree.mount_root::<Whole>(
       &mut app,
       Setup {
         open: open.clone(),
@@ -118,6 +141,16 @@ impl Stage {
       .iter()
       .find(|rect| rect.color == SHEET)
       .map(|rect| rect.y)
+  }
+
+  /// How much of its width the page behind the sheet is drawn at.
+  fn page_scale(&mut self) -> f32 {
+    render_pass(&mut self.tree)
+      .rects
+      .iter()
+      .find(|rect| rect.color == PAGE)
+      .expect("the page")
+      .transform[0]
   }
 
   fn top(&mut self) -> f32 {
@@ -302,4 +335,28 @@ fn a_sheet_goes_to_the_height_its_signal_names() {
   stage.detent.set(1);
   stage.settle();
   assert!((stage.top() - 10.0).abs() < 1.0, "all the room: {}", stage.top());
+}
+
+#[test]
+fn the_window_draws_back_behind_a_sheet_at_its_full_height() {
+  let mut stage = Stage::new(&[SheetDetent::Medium, SheetDetent::Large], true);
+  stage.open.set(true);
+  stage.settle();
+  assert!((stage.page_scale() - 1.0).abs() < 0.001, "as it is behind half a sheet");
+
+  stage.detent.set(1);
+  stage.settle();
+  assert!(
+    (stage.page_scale() - 0.92).abs() < 0.001,
+    "smaller: {}",
+    stage.page_scale()
+  );
+
+  stage.open.set(false);
+  stage.settle();
+  assert!(
+    (stage.page_scale() - 1.0).abs() < 0.001,
+    "and back: {}",
+    stage.page_scale()
+  );
 }
