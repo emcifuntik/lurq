@@ -940,6 +940,13 @@ macro_rules! impl_into_node {
         self
       }
 
+      /// Blurs what is painted behind the component's box (see
+      /// `Node::backdrop_blur`).
+      pub fn backdrop_blur(mut self, radius: f32) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::backdrop_blur(node, radius));
+        self
+      }
+
       pub fn transition(mut self, spec: $crate::animation::Transition) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::transition(node, spec));
         self

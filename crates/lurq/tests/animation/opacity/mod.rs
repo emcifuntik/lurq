@@ -1,3 +1,4 @@
+mod backdrop_blur;
 mod default_opacity;
 mod group_layers;
 mod layer_blur;

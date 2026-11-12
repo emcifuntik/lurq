@@ -2,7 +2,9 @@
 //! [`crate::layout::opacity_layer`]) and the pipelines that composite them.
 //!
 //! A blurred layer takes one or two more textures from the same pool for the
-//! passes between painting it and compositing it ([`BlurSlots`]).
+//! passes between painting it and compositing it ([`BlurSlots`]). A backdrop
+//! blur (see [`crate::layout::backdrop`]) takes those and one for the copy of
+//! its target ([`BackdropSlots`]).
 //!
 //! Layer textures are pooled across frames: a frame takes the smallest free
 //! texture that fits each layer, creating one (rounded up to
@@ -18,24 +20,26 @@ use windows::{
     Foundation::{FALSE, RECT, TRUE},
     Graphics::{
       Direct3D12::{
-        D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
-        D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_ALWAYS,
-        D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_NONE,
-        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ZERO,
-        D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_RANGE,
-        D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_FILL_MODE_SOLID,
-        D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT, D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE,
-        D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
-        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP,
-        D3D12_MEMORY_POOL_UNKNOWN, D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-        D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        D3D_ROOT_SIGNATURE_VERSION_1, D3D12_BLEND, D3D12_BLEND_DESC, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_ONE,
+        D3D12_BLEND_OP_ADD, D3D12_BLEND_ZERO, D3D12_BOX, D3D12_CLEAR_VALUE, D3D12_CLEAR_VALUE_0,
+        D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+        D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+        D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+        D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_FILL_MODE_SOLID, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
+        D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+        D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MEMORY_POOL_UNKNOWN, D3D12_PIPELINE_STATE_FLAG_NONE,
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC,
+        D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER,
         D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
         D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_SHADER_BYTECODE,
         D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0, D3D12_SHADER_VISIBILITY_ALL,
         D3D12_SHADER_VISIBILITY_PIXEL, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
-        D3D12_STATIC_SAMPLER_DESC, D3D12_TEX2D_SRV, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        D3D12_STATIC_SAMPLER_DESC, D3D12_TEX2D_SRV, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_COPY_LOCATION,
+        D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_UNKNOWN,
         D3D12_VIEWPORT, D3D12SerializeRootSignature, ID3D12Device, ID3D12PipelineState, ID3D12Resource,
         ID3D12RootSignature,
       },
@@ -49,7 +53,10 @@ use super::{
   CpuDescriptorHeap, Dx12State, FRAME_COUNT, RENDER_TARGET_FORMAT, SRV_DESCRIPTOR_COUNT, Win32ErrorCompat, blob_bytes,
   blob_message, compile_shader, input_element, render_target_view_desc, shader_bytecode,
 };
-use crate::layout::opacity_layer::{BlurPlan, LayerBlur, LayerBlurPass, LayerCmd, LayerComposite, TargetSpace};
+use crate::layout::{
+  backdrop::BackdropRegion,
+  opacity_layer::{BlurPlan, LayerBlur, LayerBlurPass, LayerCmd, LayerComposite, TargetSpace},
+};
 
 /// Layer textures grow in steps of this many pixels, so a layer that changes
 /// size a little (an animation) keeps its texture.
@@ -67,9 +74,16 @@ pub(super) struct LayerCompositor {
   pipeline_state: ID3D12PipelineState,
   blur_root_signature: ID3D12RootSignature,
   blur_pipeline_state: ID3D12PipelineState,
+  /// The two draws that put a blurred backdrop back: remove what the box
+  /// covers, then add the blurred pixels.
+  backdrop_erase_pipeline_state: ID3D12PipelineState,
+  backdrop_add_pipeline_state: ID3D12PipelineState,
   slots: Vec<LayerSlot>,
   /// The blur textures of each of the frame's targets, by target index.
   blur_slots: Vec<Option<BlurSlots>>,
+  /// The textures of each of the frame's backdrop blurs, by its index in
+  /// `RenderList::backdrops`.
+  backdrop_slots: Vec<Option<BackdropSlots>>,
   /// Released slots, kept alive until their frame slot's fence passes.
   retired: [Vec<LayerSlot>; FRAME_COUNT],
   frame: u64,
@@ -81,9 +95,28 @@ pub(super) struct LayerCompositor {
 /// which the pass compositing the layer reads.
 #[derive(Clone, Copy)]
 struct BlurSlots {
+  blur: LayerBlur,
   plan: BlurPlan,
   reduced: Option<usize>,
   blurred: usize,
+}
+
+/// The textures of a backdrop blur: the copy of its target's pixels, and the
+/// textures of the blur run on it.
+#[derive(Clone, Copy)]
+struct BackdropSlots {
+  region: BackdropRegion,
+  copied: usize,
+  blur: BlurSlots,
+}
+
+/// Which pipeline draws a pass of the blur shader.
+#[derive(Clone, Copy)]
+enum BlurDraw {
+  /// A pass of a layer blur, or of a backdrop blur before its last.
+  Pass,
+  BackdropErase,
+  BackdropAdd,
 }
 
 struct LayerSlot {
@@ -98,17 +131,42 @@ struct LayerSlot {
 impl LayerCompositor {
   unsafe fn new(device: &ID3D12Device) -> Result<Self> {
     let root_signature = create_layer_root_signature(device, std::mem::size_of::<LayerComposite>(), false)?;
-    let pipeline_state = create_layer_pipeline(device, &root_signature, include_bytes!("shaders/layer.hlsl"))?;
+    // Premultiplied source-over: a layer holds premultiplied colour.
+    let over = (D3D12_BLEND_ONE, D3D12_BLEND_INV_SRC_ALPHA);
+    let pipeline_state = create_layer_pipeline(
+      device,
+      &root_signature,
+      include_bytes!("shaders/layer.hlsl"),
+      b"ps_main\0",
+      over,
+    )?;
     let blur_root_signature = create_layer_root_signature(device, std::mem::size_of::<LayerBlurPass>(), true)?;
-    let blur_pipeline_state =
-      create_layer_pipeline(device, &blur_root_signature, include_bytes!("shaders/layer_blur.hlsl"))?;
+    let blur_shader = include_bytes!("shaders/layer_blur.hlsl");
+    let blur_pipeline_state = create_layer_pipeline(device, &blur_root_signature, blur_shader, b"ps_main\0", over)?;
+    let backdrop_erase_pipeline_state = create_layer_pipeline(
+      device,
+      &blur_root_signature,
+      blur_shader,
+      b"ps_backdrop_erase\0",
+      (D3D12_BLEND_ZERO, D3D12_BLEND_INV_SRC_ALPHA),
+    )?;
+    let backdrop_add_pipeline_state = create_layer_pipeline(
+      device,
+      &blur_root_signature,
+      blur_shader,
+      b"ps_backdrop_add\0",
+      (D3D12_BLEND_ONE, D3D12_BLEND_ONE),
+    )?;
     Ok(Self {
       root_signature,
       pipeline_state,
       blur_root_signature,
       blur_pipeline_state,
+      backdrop_erase_pipeline_state,
+      backdrop_add_pipeline_state,
       slots: Vec::new(),
       blur_slots: Vec::new(),
+      backdrop_slots: Vec::new(),
       retired: std::array::from_fn(|_| Vec::new()),
       frame: 0,
       next_srv: 0,
@@ -123,7 +181,29 @@ impl LayerCompositor {
       false => None,
     };
     let blurred = self.acquire(device, plan.size[0], plan.size[1])?;
-    Ok(BlurSlots { plan, reduced, blurred })
+    Ok(BlurSlots {
+      blur: *blur,
+      plan,
+      reduced,
+      blurred,
+    })
+  }
+
+  /// The textures the backdrop blur `region` uses this frame.
+  unsafe fn acquire_backdrop(
+    &mut self,
+    device: &ID3D12Device,
+    region: BackdropRegion,
+  ) -> Result<Option<BackdropSlots>> {
+    let Some(blur) = region.layer.blur else {
+      return Ok(None);
+    };
+    let copied = self.acquire(device, blur.width, blur.height)?;
+    Ok(Some(BackdropSlots {
+      region,
+      copied,
+      blur: self.acquire_blur(device, &blur)?,
+    }))
   }
 
   fn size(&self, slot: usize) -> [u32; 2] {
@@ -159,16 +239,19 @@ impl LayerCompositor {
   }
 }
 
-/// The pipeline of a layer shader: the unit quad, blended premultiplied
-/// source-over into the render target format.
+/// The pipeline of a layer shader: the unit quad drawn by `shader`'s
+/// `vs_main` and its pixel shader `ps_entry`, blended into the render target
+/// format as `src * blend.0 + dst * blend.1`, colour and alpha alike.
 unsafe fn create_layer_pipeline(
   device: &ID3D12Device,
   root_signature: &ID3D12RootSignature,
   shader: &[u8],
+  ps_entry: &'static [u8],
+  (src_blend, dest_blend): (D3D12_BLEND, D3D12_BLEND),
 ) -> Result<ID3D12PipelineState> {
   {
     let vs = compile_shader(shader, b"vs_main\0", b"vs_5_0\0")?;
-    let ps = compile_shader(shader, b"ps_main\0", b"ps_5_0\0")?;
+    let ps = compile_shader(shader, ps_entry, b"ps_5_0\0")?;
     let input_elements = [input_element(
       0,
       DXGI_FORMAT_R32G32_FLOAT,
@@ -179,15 +262,14 @@ unsafe fn create_layer_pipeline(
     )];
     let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
     rtv_formats[0] = RENDER_TARGET_FORMAT;
-    // Premultiplied source-over: the layer holds premultiplied colour.
     let blend = D3D12_RENDER_TARGET_BLEND_DESC {
       BlendEnable: TRUE,
       LogicOpEnable: FALSE,
-      SrcBlend: D3D12_BLEND_ONE,
-      DestBlend: D3D12_BLEND_INV_SRC_ALPHA,
+      SrcBlend: src_blend,
+      DestBlend: dest_blend,
       BlendOp: D3D12_BLEND_OP_ADD,
-      SrcBlendAlpha: D3D12_BLEND_ONE,
-      DestBlendAlpha: D3D12_BLEND_INV_SRC_ALPHA,
+      SrcBlendAlpha: src_blend,
+      DestBlendAlpha: dest_blend,
       BlendOpAlpha: D3D12_BLEND_OP_ADD,
       LogicOp: D3D12_LOGIC_OP_NOOP,
       RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
@@ -393,12 +475,15 @@ fn layer_srv_start(frame_index: usize) -> usize {
 }
 
 impl Dx12State {
-  /// Starts a frame whose plan has layers: takes a texture for each target
-  /// that is a layer (`None` for the window). Releases the textures of the
-  /// frame that last used this frame slot's retired list.
+  /// Starts a frame whose plan has layers or backdrop blurs: takes a texture
+  /// for each target that is a layer (`None` for the window), and the
+  /// textures of each backdrop blur (`None` for one that changes nothing).
+  /// Releases the textures of the frame that last used this frame slot's
+  /// retired list.
   pub(super) unsafe fn begin_layer_frame(
     &mut self,
     layers: &[Option<&LayerCmd>],
+    backdrops: &[Option<BackdropRegion>],
     slots: &mut Vec<Option<usize>>,
   ) -> Result<()> {
     slots.clear();
@@ -427,6 +512,14 @@ impl Dx12State {
         None => None,
       };
       compositor.blur_slots.push(blur_slots);
+    }
+    compositor.backdrop_slots.clear();
+    for region in backdrops {
+      let backdrop_slots = match region {
+        Some(region) => compositor.acquire_backdrop(&self.device, *region)?,
+        None => None,
+      };
+      compositor.backdrop_slots.push(backdrop_slots);
     }
     Ok(())
   }
@@ -518,9 +611,22 @@ impl Dx12State {
     let Some(slots) = compositor.blur_slots.get(target).copied().flatten() else {
       return Ok(());
     };
+    self.prepare_blur(painted, slots)
+  }
+
+  /// The passes of a blur before its last, on the pixels in `painted`.
+  unsafe fn prepare_blur(&mut self, painted: usize, slots: BlurSlots) -> Result<()> {
+    let Some(compositor) = self.layer_compositor.as_ref() else {
+      return Ok(());
+    };
     let mut source = painted;
     if let Some(reduced) = slots.reduced {
-      let constants = LayerBlurPass::reduce(&slots.plan, compositor.size(source), compositor.size(reduced));
+      let constants = LayerBlurPass::reduce(
+        &slots.blur,
+        &slots.plan,
+        compositor.size(source),
+        compositor.size(reduced),
+      );
       self.run_blur_pass(source, reduced, &constants, slots.plan.size)?;
       source = reduced;
     }
@@ -529,6 +635,101 @@ impl Dx12State {
     };
     let constants = LayerBlurPass::horizontal(&slots.plan, compositor.size(source), compositor.size(slots.blurred));
     self.run_blur_pass(source, slots.blurred, &constants, slots.plan.size)
+  }
+
+  /// Runs the backdrop blur `index` of the frame on the current target, in
+  /// the middle of painting it: copies the pixels the blur reads out of the
+  /// target, blurs the copy, and puts the result back inside the node's box.
+  /// `layer` is the layer the target paints and the texture it paints into;
+  /// `None` for the window.
+  pub(super) unsafe fn blur_backdrop(&mut self, index: usize, layer: Option<(&LayerCmd, usize)>) -> Result<()> {
+    let parent = self.space;
+    let Some(compositor) = self.layer_compositor.as_ref() else {
+      return Ok(());
+    };
+    let Some(slots) = compositor.backdrop_slots.get(index).copied().flatten() else {
+      return Ok(());
+    };
+    let Some(scissor) = super::scissor_rect(
+      parent.layer_rect(slots.region.layer.bounds),
+      parent.width,
+      parent.height,
+    ) else {
+      return Ok(());
+    };
+    let (target, target_rtv, target_origin) = match layer {
+      Some((layer, slot)) => {
+        let slot = &compositor.slots[slot];
+        (slot.resource.clone(), slot.rtv_heap.cpu_handle(0), layer.painted().0)
+      }
+      None => (self.current_render_target(), self.current_rtv_handle(), [0, 0]),
+    };
+    let copied = compositor.slots[slots.copied].resource.clone();
+    let blur = slots.blur.blur;
+
+    self.transition_resource(
+      &target,
+      D3D12_RESOURCE_STATE_RENDER_TARGET,
+      D3D12_RESOURCE_STATE_COPY_SOURCE,
+    );
+    self.transition_resource(
+      &copied,
+      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+      D3D12_RESOURCE_STATE_COPY_DEST,
+    );
+    let mut src = D3D12_TEXTURE_COPY_LOCATION {
+      pResource: ManuallyDrop::new(Some(target.clone())),
+      Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+      Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+    };
+    let mut dst = D3D12_TEXTURE_COPY_LOCATION {
+      pResource: ManuallyDrop::new(Some(copied.clone())),
+      Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+      Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+    };
+    let left = (blur.x - target_origin[0]).max(0) as u32;
+    let top = (blur.y - target_origin[1]).max(0) as u32;
+    let source_box = D3D12_BOX {
+      left,
+      top,
+      front: 0,
+      right: left + blur.width,
+      bottom: top + blur.height,
+      back: 1,
+    };
+    self
+      .command_list
+      .CopyTextureRegion(&dst, 0, 0, 0, &src, Some(&source_box));
+    ManuallyDrop::drop(&mut dst.pResource);
+    ManuallyDrop::drop(&mut src.pResource);
+    self.transition_resource(
+      &copied,
+      D3D12_RESOURCE_STATE_COPY_DEST,
+      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+    );
+    self.transition_resource(
+      &target,
+      D3D12_RESOURCE_STATE_COPY_SOURCE,
+      D3D12_RESOURCE_STATE_RENDER_TARGET,
+    );
+
+    let prepared = self.prepare_blur(slots.copied, slots.blur);
+    // Back to the target, as it was: the blur's passes painted elsewhere.
+    self.command_list.OMSetRenderTargets(1, Some(&target_rtv), false, None);
+    self.set_target_viewport(parent);
+    prepared?;
+
+    let Some(compositor) = self.layer_compositor.as_ref() else {
+      return Ok(());
+    };
+    let constants = LayerBlurPass::backdrop(
+      &slots.region,
+      &slots.blur.plan,
+      &parent,
+      compositor.size(slots.blur.blurred),
+    );
+    self.draw_layer_blur(slots.blur.blurred, &constants, scissor, BlurDraw::BackdropErase)?;
+    self.draw_layer_blur(slots.blur.blurred, &constants, scissor, BlurDraw::BackdropAdd)
   }
 
   /// Clears `target`'s texture and draws one blur pass reading `source`
@@ -560,7 +761,7 @@ impl Dx12State {
       right: size[0].min(width) as i32,
       bottom: size[1].min(height) as i32,
     };
-    let drawn = self.draw_layer_blur(source, constants, scissor);
+    let drawn = self.draw_layer_blur(source, constants, scissor, BlurDraw::Pass);
     self.transition_resource(
       &resource,
       D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -570,7 +771,13 @@ impl Dx12State {
   }
 
   /// Draws one blur pass reading `source`'s texture into the current target.
-  unsafe fn draw_layer_blur(&mut self, source: usize, constants: &LayerBlurPass, scissor: RECT) -> Result<()> {
+  unsafe fn draw_layer_blur(
+    &mut self,
+    source: usize,
+    constants: &LayerBlurPass,
+    scissor: RECT,
+    draw: BlurDraw,
+  ) -> Result<()> {
     let Some(descriptor) = self.layer_texture_descriptor(source) else {
       return Ok(());
     };
@@ -579,7 +786,11 @@ impl Dx12State {
     };
     let descriptor_heaps = [Some(self.srv_heap.heap.clone()), Some(self.sampler_heap.heap.clone())];
     self.command_list.SetDescriptorHeaps(&descriptor_heaps);
-    self.command_list.SetPipelineState(&compositor.blur_pipeline_state);
+    self.command_list.SetPipelineState(match draw {
+      BlurDraw::Pass => &compositor.blur_pipeline_state,
+      BlurDraw::BackdropErase => &compositor.backdrop_erase_pipeline_state,
+      BlurDraw::BackdropAdd => &compositor.backdrop_add_pipeline_state,
+    });
     self
       .command_list
       .SetGraphicsRootSignature(&compositor.blur_root_signature);
@@ -653,7 +864,7 @@ impl Dx12State {
       .and_then(|compositor| compositor.blur_slots.get(target).copied().flatten());
     if let (Some(slots), Some(compositor)) = (blur_slots, self.layer_compositor.as_ref()) {
       let constants = LayerBlurPass::composite(layer, &slots.plan, &parent, compositor.size(slots.blurred));
-      return self.draw_layer_blur(slots.blurred, &constants, scissor);
+      return self.draw_layer_blur(slots.blurred, &constants, scissor, BlurDraw::Pass);
     }
     let Some(descriptor) = self.layer_texture_descriptor(slot) else {
       return Ok(());

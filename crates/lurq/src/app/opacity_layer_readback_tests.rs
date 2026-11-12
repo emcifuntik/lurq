@@ -81,6 +81,7 @@ fn list(clear_color: Color, rects: Vec<RectCmd>, glyphs: Vec<GlyphCmd>, layers: 
     #[cfg(feature = "svg")]
     svgs: Vec::new(),
     layers,
+    backdrops: Vec::new(),
     atlas: GlyphAtlas {
       data: Arc::from([255_u8; 4 * 4 * 4].as_slice()),
       width: 4,

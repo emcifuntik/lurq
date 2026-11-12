@@ -22,6 +22,9 @@ pub enum AnimatableProperty {
   Opacity,
   /// The node's blur radius (`Node::blur`), in logical pixels.
   Blur,
+  /// The blur radius of the node's backdrop (`Node::backdrop_blur`), in
+  /// logical pixels.
+  BackdropBlur,
   Transform,
 }
 
@@ -175,6 +178,7 @@ pub(crate) fn read_target(node: &crate::node::Node, prop: AnimatableProperty) ->
     AnimatableProperty::Height => read_target_frame_dim(node, &style, false).map(AnimatableValue::Float),
     AnimatableProperty::Opacity => Some(AnimatableValue::Float(node.opacity)),
     AnimatableProperty::Blur => Some(AnimatableValue::Float(node.blur)),
+    AnimatableProperty::BackdropBlur => Some(AnimatableValue::Float(node.backdrop_blur)),
     AnimatableProperty::Transform => decompose(&node.transform).map(AnimatableValue::Transform),
   }
 }

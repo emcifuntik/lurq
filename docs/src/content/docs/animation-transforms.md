@@ -52,6 +52,7 @@ Transition builders include:
 | `Transition::width()` / `Transition::height()` | Animate frame dimensions |
 | `Transition::opacity()` | Animate opacity |
 | `Transition::blur()` | Animate the blur radius |
+| `Transition::backdrop_blur()` | Animate the backdrop blur radius |
 | `Transition::transform()` | Animate `Transform2D` |
 
 `duration(...)`, `duration_ms(...)`, `delay(...)`, `delay_ms(...)`, `easing(...)`, and `linear()` configure timing.

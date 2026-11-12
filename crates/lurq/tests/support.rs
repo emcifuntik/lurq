@@ -64,6 +64,7 @@ pub struct RenderSnapshot {
   #[cfg(feature = "svg")]
   pub svg_orders: Vec<usize>,
   pub layers: Vec<lurq::layout::opacity_layer::LayerCmd>,
+  pub backdrops: Vec<lurq::layout::backdrop::BackdropCmd>,
 }
 
 /// Where an image is drawn, and which part of its pixels.
@@ -178,6 +179,7 @@ impl RenderEngine for CapturingRenderEngine {
       #[cfg(feature = "svg")]
       svg_orders: list.svgs.iter().map(|svg| svg.order).collect(),
       layers: list.layers.clone(),
+      backdrops: list.backdrops.clone(),
     });
     true
   }
@@ -198,6 +200,7 @@ fn empty_snapshot() -> RenderSnapshot {
     #[cfg(feature = "svg")]
     svg_orders: vec![],
     layers: vec![],
+    backdrops: vec![],
   }
 }
 

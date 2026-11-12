@@ -93,6 +93,7 @@ property_accessors!(Transition {
   Height => height,
   Opacity => opacity,
   Blur => blur,
+  BackdropBlur => backdrop_blur,
   Transform => transform,
 });
 
@@ -113,6 +114,7 @@ const ALL_PROPERTIES: &[AnimatableProperty] = &[
   AnimatableProperty::Height,
   AnimatableProperty::Opacity,
   AnimatableProperty::Blur,
+  AnimatableProperty::BackdropBlur,
   AnimatableProperty::Transform,
 ];
 

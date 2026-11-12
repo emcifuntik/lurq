@@ -22,6 +22,7 @@
 use std::ops::Range;
 
 use crate::layout::{
+  backdrop::BackdropCmd,
   quad::ClipRect,
   render_list::{GlyphCmd, RectCmd},
 };
@@ -172,6 +173,13 @@ impl BlurPlan {
   }
 }
 
+/// How far past the pixels a blur of `sigma` shows the pixels it reads lie,
+/// in whole physical pixels: the blur's reach, and what the passes' sampling
+/// adds (a reduced texel on either side, and the bilinear taps' neighbour).
+pub(crate) fn blur_pad(sigma: f32) -> i32 {
+  (sigma * 3.0).ceil() as i32 + 2 * blur_reduction(sigma) as i32 + 1
+}
+
 fn blur_reduction(sigma: f32) -> u32 {
   let mut reduction = 1;
   while sigma / reduction as f32 > MAX_PASS_SIGMA && reduction < MAX_BLUR_REDUCTION {
@@ -204,6 +212,9 @@ pub(crate) enum LayerStep {
   Draws(Range<usize>),
   /// Composite the layer painted by `LayerPlan::targets()[index]`.
   Composite(usize),
+  /// Blur what the target holds so far for the backdrop blur `index` of the
+  /// frame (see [`crate::layout::backdrop`]).
+  Backdrop(usize),
 }
 
 /// One target to paint: a layer (`Some(index into RenderList::layers)`) or,
@@ -225,18 +236,73 @@ pub(crate) struct LayerPlan {
   targets: Vec<LayerTarget>,
   steps: Vec<LayerStep>,
   pending: Vec<LayerStep>,
+  /// The next backdrop blur to place while a plan is built.
+  backdrop_cursor: usize,
+  backdrop_steps: usize,
 }
 
 #[cfg_attr(not(any(feature = "render", feature = "devtools")), allow(dead_code))]
 impl LayerPlan {
   /// Plans `draw_count` draws sorted by order (`order_of(index)`), grouped by
-  /// `layers`. Invisible layers drop their draws and the layers inside them.
-  pub(crate) fn build(&mut self, draw_count: usize, order_of: impl Fn(usize) -> usize, layers: &[LayerCmd]) {
+  /// `layers`, with the frame's backdrop blurs at `backdrops` (their orders,
+  /// ascending) between them. Invisible layers drop their draws and the
+  /// layers and backdrop blurs inside them.
+  pub(crate) fn build(
+    &mut self,
+    draw_count: usize,
+    order_of: impl Fn(usize) -> usize,
+    layers: &[LayerCmd],
+    backdrops: &[BackdropCmd],
+  ) {
     self.targets.clear();
     self.steps.clear();
     self.pending.clear();
+    self.backdrop_cursor = 0;
+    self.backdrop_steps = 0;
     let mut cursor = 0;
-    self.plan_target(None, 0..draw_count, usize::MAX, &order_of, layers, &mut cursor);
+    self.plan_target(
+      None,
+      0..draw_count,
+      usize::MAX,
+      &order_of,
+      layers,
+      backdrops,
+      &mut cursor,
+    );
+  }
+
+  /// Whether the frame has any backdrop blur to run.
+  #[cfg_attr(not(feature = "render"), allow(dead_code))]
+  pub(crate) fn has_backdrops(&self) -> bool {
+    self.backdrop_steps > 0
+  }
+
+  /// Queues the draws `*next..draw_end` of the target being planned, split
+  /// at the backdrop blurs whose order is below `order_limit`.
+  fn plan_draws(
+    &mut self,
+    next: &mut usize,
+    draw_end: usize,
+    order_limit: usize,
+    order_of: &impl Fn(usize) -> usize,
+    backdrops: &[BackdropCmd],
+  ) {
+    while let Some(backdrop) = backdrops.get(self.backdrop_cursor)
+      && backdrop.order < order_limit
+    {
+      let at = first_at_or_after(*next..draw_end, backdrop.order, order_of);
+      if at > *next {
+        self.pending.push(LayerStep::Draws(*next..at));
+        *next = at;
+      }
+      self.pending.push(LayerStep::Backdrop(self.backdrop_cursor));
+      self.backdrop_cursor += 1;
+      self.backdrop_steps += 1;
+    }
+    if draw_end > *next {
+      self.pending.push(LayerStep::Draws(*next..draw_end));
+      *next = draw_end;
+    }
   }
 
   /// The targets in paint order; the window is last.
@@ -254,6 +320,7 @@ impl LayerPlan {
     self.targets.len() > 1
   }
 
+  #[allow(clippy::too_many_arguments)]
   fn plan_target(
     &mut self,
     layer: Option<usize>,
@@ -261,6 +328,7 @@ impl LayerPlan {
     end_order: usize,
     order_of: &impl Fn(usize) -> usize,
     layers: &[LayerCmd],
+    backdrops: &[BackdropCmd],
     cursor: &mut usize,
   ) -> usize {
     // Steps of this target wait on `pending` while inner targets are planned.
@@ -272,22 +340,33 @@ impl LayerPlan {
       let inner = layers[index];
       let start = first_at_or_after(next..draws.end, inner.start_order, order_of);
       let end = first_at_or_after(start..draws.end, inner.end_order, order_of);
-      if start > next {
-        self.pending.push(LayerStep::Draws(next..start));
-      }
+      self.plan_draws(&mut next, start, inner.start_order, order_of, backdrops);
       if inner.is_visible() && end > start {
-        let target = self.plan_target(Some(index), start..end, inner.end_order, order_of, layers, cursor);
+        let target = self.plan_target(
+          Some(index),
+          start..end,
+          inner.end_order,
+          order_of,
+          layers,
+          backdrops,
+          cursor,
+        );
         self.pending.push(LayerStep::Composite(target));
       } else {
         while *cursor < layers.len() && layers[*cursor].start_order < inner.end_order {
           *cursor += 1;
         }
       }
+      // Nothing of a layer that is not painted is blurred either.
+      while backdrops
+        .get(self.backdrop_cursor)
+        .is_some_and(|backdrop| backdrop.order < inner.end_order)
+      {
+        self.backdrop_cursor += 1;
+      }
       next = end;
     }
-    if next < draws.end {
-      self.pending.push(LayerStep::Draws(next..draws.end));
-    }
+    self.plan_draws(&mut next, draws.end, end_order, order_of, backdrops);
     let steps_start = self.steps.len();
     self.steps.extend(self.pending.drain(pending_start..));
     self.targets.push(LayerTarget {
@@ -445,13 +524,22 @@ pub(crate) struct LayerBlurPass {
   /// `x`: 0 for a Gaussian pass; otherwise the pass is a box reduction that
   /// averages this many bilinear taps per axis (half the reduction).
   pub mode: [f32; 4],
+  /// The source texels a tap may read, as the lowest and the highest texel
+  /// centre: taps past them read the edge texel. The texture around them
+  /// holds whatever it was last used for.
+  pub limit: [f32; 4],
+  /// For the pass that puts a blurred backdrop back: the box it fills, in
+  /// the target's pixels (x, y, width, height), and the box's corner radii
+  /// (top left, top right, bottom right, bottom left). Unused otherwise.
+  pub mask: [f32; 4],
+  pub radii: [f32; 4],
 }
 
 #[cfg(feature = "render")]
 impl LayerBlurPass {
-  /// Reduces the painted layer (in a `source` sized texture) into the
-  /// top-left corner of a `target` sized one.
-  pub(crate) fn reduce(plan: &BlurPlan, source: [u32; 2], target: [u32; 2]) -> Self {
+  /// Reduces the painted layer `blur` (in a `source` sized texture) into
+  /// the top-left corner of a `target` sized one.
+  pub(crate) fn reduce(blur: &LayerBlur, plan: &BlurPlan, source: [u32; 2], target: [u32; 2]) -> Self {
     let r = plan.reduction as f32;
     Self {
       rect: [0.0, 0.0, plan.size[0] as f32, plan.size[1] as f32],
@@ -459,6 +547,9 @@ impl LayerBlurPass {
       source: [r, r, 1.0 / source[0] as f32, 1.0 / source[1] as f32],
       kernel: [0.0, 0.0, 0.0, 1.0],
       mode: [(plan.reduction / 2) as f32, 0.0, 0.0, 0.0],
+      limit: texel_limit([blur.width, blur.height]),
+      mask: [0.0; 4],
+      radii: [0.0; 4],
     }
   }
 
@@ -471,6 +562,9 @@ impl LayerBlurPass {
       source: [1.0, 1.0, 1.0 / source[0] as f32, 1.0 / source[1] as f32],
       kernel: [1.0, 0.0, plan.sigma, 1.0],
       mode: [0.0; 4],
+      limit: texel_limit(plan.size),
+      mask: [0.0; 4],
+      radii: [0.0; 4],
     }
   }
 
@@ -492,8 +586,40 @@ impl LayerBlurPass {
       source: [scale, scale, 1.0 / source[0] as f32, 1.0 / source[1] as f32],
       kernel: [0.0, 1.0, plan.sigma, layer.opacity],
       mode: [0.0; 4],
+      limit: texel_limit(plan.size),
+      mask: [0.0; 4],
+      radii: [0.0; 4],
     }
   }
+
+  /// The vertical Gaussian of a backdrop blur, put back into `parent`
+  /// inside the region's box. `source` is the size of the texture the
+  /// horizontal pass painted.
+  pub(crate) fn backdrop(
+    region: &crate::layout::backdrop::BackdropRegion,
+    plan: &BlurPlan,
+    parent: &TargetSpace,
+    source: [u32; 2],
+  ) -> Self {
+    let [x, y, width, height] = region.mask;
+    Self {
+      mask: [x - parent.origin[0], y - parent.origin[1], width, height],
+      radii: region.radii,
+      ..Self::composite(&region.layer, plan, parent, source)
+    }
+  }
+}
+
+/// The lowest and the highest texel centre of a `size` texel region at a
+/// texture's origin.
+#[cfg(feature = "render")]
+fn texel_limit(size: [u32; 2]) -> [f32; 4] {
+  [
+    0.5,
+    0.5,
+    (size[0] as f32 - 0.5).max(0.5),
+    (size[1] as f32 - 0.5).max(0.5),
+  ]
 }
 
 /// The first index in `range` whose order is at least `order` (`range.end`
@@ -752,7 +878,7 @@ fn blurred_bounds(
   if bounds.is_empty() {
     return (bounds, None);
   }
-  let pad = reach + 2.0 * blur_reduction(sigma) as f32 + 1.0;
+  let pad = blur_pad(sigma) as f32;
   let visible = [
     bounds.x as f32,
     bounds.y as f32,
@@ -818,7 +944,7 @@ mod tests {
 
   fn plan(orders: &[usize], layers: &[LayerCmd]) -> Vec<(Option<usize>, Vec<LayerStep>)> {
     let mut plan = LayerPlan::default();
-    plan.build(orders.len(), |index| orders[index], layers);
+    plan.build(orders.len(), |index| orders[index], layers, &[]);
     plan
       .targets()
       .iter()
@@ -892,6 +1018,60 @@ mod tests {
     let (bounds, blur) = blurred_bounds(&unblurred, [20.0, 30.0, 200.0, 60.0], [100.0, 100.0], 2.0);
     assert!(blur.is_none());
     assert_eq!((bounds.x, bounds.width), (20, 80));
+  }
+
+  fn backdrop(order: usize) -> BackdropCmd {
+    BackdropCmd {
+      order,
+      x: 0.0,
+      y: 0.0,
+      width: 4.0,
+      height: 4.0,
+      radii: [0.0; 4],
+      transform: [1.0, 0.0, 0.0, 1.0],
+      transform_origin: [2.0, 2.0],
+      clip: ClipRect::default(),
+      sigma: 4.0,
+      opacity: 1.0,
+    }
+  }
+
+  #[test]
+  fn backdrop_blurs_split_the_draws_of_the_target_they_are_in() {
+    // Orders: 0 | B1 | 2 [ B3 4 (invisible: B5 6) ] | B7, B8 | 9.
+    let orders = [0, 2, 4, 6, 9];
+    let layers = [layer(3, 7, 0.5), layer(5, 7, 0.0)];
+    let backdrops = [1, 3, 5, 7, 8].map(backdrop);
+    let mut plan = LayerPlan::default();
+    plan.build(orders.len(), |index| orders[index], &layers, &backdrops);
+    let targets: Vec<_> = plan
+      .targets()
+      .iter()
+      .map(|target| (target.layer, plan.steps(target).to_vec()))
+      .collect();
+    assert_eq!(
+      targets,
+      vec![
+        // The blur at 3 sees the layer's own content only: nothing yet.
+        (Some(0), vec![LayerStep::Backdrop(1), LayerStep::Draws(2..3)]),
+        (
+          None,
+          vec![
+            LayerStep::Draws(0..1),
+            LayerStep::Backdrop(0),
+            LayerStep::Draws(1..2),
+            LayerStep::Composite(0),
+            LayerStep::Backdrop(3),
+            LayerStep::Backdrop(4),
+            LayerStep::Draws(4..5),
+          ]
+        ),
+      ]
+    );
+    assert!(plan.has_backdrops());
+
+    plan.build(orders.len(), |index| orders[index], &layers, &[]);
+    assert!(!plan.has_backdrops());
   }
 
   #[test]

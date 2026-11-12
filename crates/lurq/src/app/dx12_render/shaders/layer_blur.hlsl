@@ -1,4 +1,5 @@
-// One pass of a layer blur (see `layout::opacity_layer::LayerBlurPass`).
+// One pass of a layer blur or a backdrop blur (see
+// `layout::opacity_layer::LayerBlurPass`).
 //
 // A blurred layer is painted like any other, then blurred on its way into
 // its parent: a horizontal Gaussian into an intermediate texture, and a
@@ -9,6 +10,13 @@
 // Every texture holds premultiplied colour and was cleared to transparent,
 // so the premultiplied source-over blend of the pipeline writes an
 // intermediate target as it is and composites the last pass.
+//
+// A backdrop blur (see `layout::backdrop`) runs the same passes on a copy of
+// what its target held, and its last pass puts the result back inside the
+// node's rounded box in place of what was there. That takes two draws of
+// the same rect, since the blend has to remove the old pixels by the box's
+// coverage and add the new ones by it: `ps_backdrop_erase`, blended
+// `dst * (1 - src.a)`, then `ps_backdrop_add`, blended `dst + src`.
 
 cbuffer BlurPass : register(b0)
 {
@@ -17,6 +25,9 @@ cbuffer BlurPass : register(b0)
   float4 source; // offset target pixel -> source texel scale, then 1 / source texture size
   float4 kernel; // Gaussian axis in source texels, sigma in source texels, opacity
   float4 mode;   // x = 0: Gaussian; otherwise box taps per axis
+  float4 limit;  // lowest, then highest source texel centre a tap may read
+  float4 mask;   // backdrop: the box to fill, in target pixels: x, y, w, h
+  float4 radii;  // backdrop: the box's radii: tl, tr, br, bl
 };
 
 Texture2D<float4> layer_texture : register(t0);
@@ -40,9 +51,12 @@ VsOut vs_main(float2 corner : TEXCOORD0)
   return output;
 }
 
+// Past the texels the pass may read, the edge texel repeats: the texture
+// around them holds whatever it was last used for.
 float4 read(float2 texel)
 {
-  return layer_texture.SampleLevel(layer_sampler, texel * source.zw, 0.0);
+  float2 inside = clamp(texel, limit.xy, limit.zw);
+  return layer_texture.SampleLevel(layer_sampler, inside * source.zw, 0.0);
 }
 
 // Averages the `2 * taps` square of source texels the pixel covers: each tap
@@ -112,13 +126,51 @@ float4 gaussian(float2 center, float2 axis, float sigma)
   return lerp(gaussian_at(before, axis, sigma), gaussian_at(before + axis, axis, sigma), between);
 }
 
-float4 ps_main(VsOut input) : SV_TARGET
+float4 blurred(float2 pixel)
 {
-  float2 center = (input.position.xy + target.zw) * source.xy;
+  float2 center = (pixel + target.zw) * source.xy;
   int taps = int(mode.x);
   if (taps > 0)
   {
-    return reduce(center, taps) * kernel.w;
+    return reduce(center, taps);
   }
-  return gaussian(center, kernel.xy, max(kernel.z, 0.01)) * kernel.w;
+  return gaussian(center, kernel.xy, max(kernel.z, 0.01));
+}
+
+// How much of `pixel` the backdrop's rounded box covers, times its opacity.
+float backdrop_coverage(float2 pixel)
+{
+  float2 half_size = mask.zw * 0.5;
+  float2 p = pixel - (mask.xy + half_size);
+  float radius = radii.x;
+  if (p.x >= 0.0 && p.y < 0.0)
+  {
+    radius = radii.y;
+  }
+  else if (p.x >= 0.0)
+  {
+    radius = radii.z;
+  }
+  else if (p.y >= 0.0)
+  {
+    radius = radii.w;
+  }
+  float2 q = abs(p) - half_size + float2(radius, radius);
+  float edge = length(max(q, float2(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
+  return clamp(0.5 - edge, 0.0, 1.0) * kernel.w;
+}
+
+float4 ps_main(VsOut input) : SV_TARGET
+{
+  return blurred(input.position.xy) * kernel.w;
+}
+
+float4 ps_backdrop_erase(VsOut input) : SV_TARGET
+{
+  return float4(0.0, 0.0, 0.0, backdrop_coverage(input.position.xy));
+}
+
+float4 ps_backdrop_add(VsOut input) : SV_TARGET
+{
+  return blurred(input.position.xy) * backdrop_coverage(input.position.xy);
 }

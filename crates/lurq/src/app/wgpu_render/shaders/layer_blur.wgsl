@@ -1,4 +1,5 @@
-// One pass of a layer blur (see `layout::opacity_layer::LayerBlurPass`).
+// One pass of a layer blur or a backdrop blur (see
+// `layout::opacity_layer::LayerBlurPass`).
 //
 // A blurred layer is painted like any other, then blurred on its way into
 // its parent: a horizontal Gaussian into an intermediate texture, and a
@@ -10,6 +11,13 @@
 // so the premultiplied source-over blend of the pipeline writes an
 // intermediate target as it is and composites the last pass.
 //
+// A backdrop blur (see `layout::backdrop`) runs the same passes on a copy of
+// what its target held, and its last pass puts the result back inside the
+// node's rounded box in place of what was there. That takes two draws of
+// the same rect, since the blend has to remove the old pixels by the box's
+// coverage and add the new ones by it: `fs_backdrop_erase`, blended
+// `dst * (1 - src.a)`, then `fs_backdrop_add`, blended `dst + src`.
+//
 // Vertex buffer 0: unit quad corner in [0,1]^2.
 
 struct Pass {
@@ -18,6 +26,9 @@ struct Pass {
     source: vec4<f32>,  // offset target pixel -> source texel scale, then 1 / source texture size
     kernel: vec4<f32>,  // Gaussian axis in source texels, sigma in source texels, opacity
     mode:   vec4<f32>,  // x = 0: Gaussian; otherwise box taps per axis
+    limit:  vec4<f32>,  // lowest, then highest source texel centre a tap may read
+    mask:   vec4<f32>,  // backdrop: the box to fill, in target pixels: x, y, w, h
+    radii:  vec4<f32>,  // backdrop: the box's radii: tl, tr, br, bl
 };
 
 @group(0) @binding(0) var<uniform> blur: Pass;
@@ -42,8 +53,11 @@ fn vs_main(@location(0) corner: vec2<f32>) -> VsOut {
     return out;
 }
 
+// Past the texels the pass may read, the edge texel repeats: the texture
+// around them holds whatever it was last used for.
 fn read(texel: vec2<f32>) -> vec4<f32> {
-    return textureSampleLevel(layer, layer_sampler, texel * blur.source.zw, 0.0);
+    let inside = clamp(texel, blur.limit.xy, blur.limit.zw);
+    return textureSampleLevel(layer, layer_sampler, inside * blur.source.zw, 0.0);
 }
 
 // Averages the `2 * taps` square of source texels the pixel covers: each tap
@@ -101,12 +115,43 @@ fn gaussian(center: vec2<f32>, axis: vec2<f32>, sigma: f32) -> vec4<f32> {
     return mix(gaussian_at(before, axis, sigma), gaussian_at(before + axis, axis, sigma), between);
 }
 
-@fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let center = (in.clip.xy + blur.dest.zw) * blur.source.xy;
+fn blurred(pixel: vec2<f32>) -> vec4<f32> {
+    let center = (pixel + blur.dest.zw) * blur.source.xy;
     let taps = i32(blur.mode.x);
     if (taps > 0) {
-        return reduce(center, taps) * blur.kernel.w;
+        return reduce(center, taps);
     }
-    return gaussian(center, blur.kernel.xy, max(blur.kernel.z, 0.01)) * blur.kernel.w;
+    return gaussian(center, blur.kernel.xy, max(blur.kernel.z, 0.01));
+}
+
+// How much of `pixel` the backdrop's rounded box covers, times its opacity.
+fn backdrop_coverage(pixel: vec2<f32>) -> f32 {
+    let half = blur.mask.zw * 0.5;
+    let p = pixel - (blur.mask.xy + half);
+    var radius = blur.radii.x;
+    if (p.x >= 0.0 && p.y < 0.0) {
+        radius = blur.radii.y;
+    } else if (p.x >= 0.0) {
+        radius = blur.radii.z;
+    } else if (p.y >= 0.0) {
+        radius = blur.radii.w;
+    }
+    let q = abs(p) - half + vec2<f32>(radius);
+    let distance = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    return clamp(0.5 - distance, 0.0, 1.0) * blur.kernel.w;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return blurred(in.clip.xy) * blur.kernel.w;
+}
+
+@fragment
+fn fs_backdrop_erase(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, backdrop_coverage(in.clip.xy));
+}
+
+@fragment
+fn fs_backdrop_add(in: VsOut) -> @location(0) vec4<f32> {
+    return blurred(in.clip.xy) * backdrop_coverage(in.clip.xy);
 }

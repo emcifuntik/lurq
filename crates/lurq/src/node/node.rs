@@ -479,6 +479,7 @@ pub(crate) trait NodeUpdate {
   fn off_history_swipe(&mut self, f: impl IntoHistorySwipeEventHandler);
   fn opacity(&mut self, value: f32);
   fn blur(&mut self, radius: f32);
+  fn backdrop_blur(&mut self, radius: f32);
   fn transform(&mut self, t: Transform2D);
   fn transition(&mut self, spec: Transition);
   fn animation(&mut self, spec: Animation);
@@ -770,6 +771,9 @@ pub(crate) struct Node {
   pub(crate) opacity: f32,
   /// Blur radius of the node and its subtree, in logical pixels; 0 is none.
   pub(crate) blur: f32,
+  /// Blur radius of what is painted behind the node's box, in logical
+  /// pixels; 0 is none.
+  pub(crate) backdrop_blur: f32,
   pub(crate) transform: Transform2D,
   /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
   pub(crate) animation_overrides: LazyBox<AnimationOverrides>,
@@ -1562,6 +1566,10 @@ impl NodeUpdate for Node {
     self.blur = radius;
   }
 
+  fn backdrop_blur(&mut self, radius: f32) {
+    self.backdrop_blur = radius;
+  }
+
   fn transform(&mut self, t: Transform2D) {
     self.transform = t;
   }
@@ -1931,6 +1939,7 @@ impl Node {
       state_styles: LazyBox::new(),
       opacity: DEFAULT_OPACITY,
       blur: 0.0,
+      backdrop_blur: 0.0,
       transform: Transform2D::IDENTITY,
       animation_overrides: LazyBox::new(),
       transitions: LazyBox::new(),
@@ -3035,6 +3044,23 @@ impl Node {
     self
   }
 
+  /// Blurs what is painted behind the node's box, like CSS
+  /// `backdrop-filter: blur()`: frosted glass. The node paints itself over
+  /// the result, so it shows through wherever the node is translucent; a
+  /// node with an opaque background hides it.
+  ///
+  /// `radius` is in logical pixels and means what [`Self::blur`]'s means,
+  /// with the same limit; 0 is no blur. The blur fills the node's box with
+  /// its corner radii, inside the clips the node is under. "Behind" is
+  /// everything painted before the node in the window, or, inside a faded or
+  /// blurred ancestor, in that ancestor's layer. The node's own opacity
+  /// fades the blur with it. It animates as
+  /// [`AnimatableProperty::BackdropBlur`](crate::animation::AnimatableProperty::BackdropBlur).
+  pub fn backdrop_blur(mut self, radius: f32) -> Self {
+    self.backdrop_blur = radius;
+    self
+  }
+
   pub fn transform(mut self, t: Transform2D) -> Self {
     self.transform = t;
     self
@@ -4011,6 +4037,18 @@ impl Node {
     }
   }
 
+  /// The blur radius of the node's backdrop as drawn, in logical pixels; 0 without one.
+  pub(crate) fn effective_backdrop_blur(&self) -> f32 {
+    let blur = self
+      .animation_override_float(crate::animation::AnimatableProperty::BackdropBlur)
+      .unwrap_or(self.backdrop_blur);
+    if blur > 0.0 {
+      blur.min(crate::layout::opacity_layer::MAX_BLUR_RADIUS)
+    } else {
+      0.0
+    }
+  }
+
   /// The value a running transition or animation sets for a float property this tick, if any.
   fn animation_override_float(&self, prop: crate::animation::AnimatableProperty) -> Option<f32> {
     self.animation_overrides.iter().find_map(|(p, val)| match val {
@@ -4523,10 +4561,12 @@ impl Node {
   /// keeps its layout cache across rebuilds; any other override still makes it lay out again.
   fn holds_overrides_beyond_opacity(&self) -> bool {
     use crate::animation::AnimatableProperty;
-    self
-      .animation_overrides
-      .iter()
-      .any(|(prop, _)| !matches!(prop, AnimatableProperty::Opacity | AnimatableProperty::Blur))
+    self.animation_overrides.iter().any(|(prop, _)| {
+      !matches!(
+        prop,
+        AnimatableProperty::Opacity | AnimatableProperty::Blur | AnimatableProperty::BackdropBlur
+      )
+    })
   }
 
   fn layout_kind_matches_for_cache(&self, old: &Node) -> bool {
@@ -4864,6 +4904,7 @@ impl Node {
       state_styles: self.state_styles.clone(),
       opacity: self.opacity,
       blur: self.blur,
+      backdrop_blur: self.backdrop_blur,
       transform: self.transform,
       animation_overrides: LazyBox::new(),
       transitions: self.transitions.clone(),

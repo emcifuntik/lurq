@@ -2,7 +2,9 @@
 //! [`crate::layout::opacity_layer`]) and the pipelines that composite them.
 //!
 //! A blurred layer takes one or two more textures from the same pool for the
-//! passes between painting it and compositing it ([`BlurSlots`]).
+//! passes between painting it and compositing it ([`BlurSlots`]). A backdrop
+//! blur (see [`crate::layout::backdrop`]) takes those and one for the copy of
+//! its target ([`BackdropSlots`]).
 //!
 //! Layer textures are pooled across frames: a frame takes the smallest free
 //! texture that fits each layer, creating one (rounded up to
@@ -11,7 +13,10 @@
 //! frame has a layer.
 
 use super::vertex::QuadVertex;
-use crate::layout::opacity_layer::{BlurPlan, LayerBlur, LayerBlurPass, LayerCmd, LayerComposite, TargetSpace};
+use crate::layout::{
+  backdrop::BackdropRegion,
+  opacity_layer::{BlurPlan, LayerBlur, LayerBlurPass, LayerCmd, LayerComposite, TargetSpace},
+};
 
 /// Layer textures grow in steps of this many pixels, so a layer that changes
 /// size a little (an animation) keeps its texture.
@@ -23,6 +28,10 @@ pub(super) struct LayerCompositor {
   pipeline: wgpu::RenderPipeline,
   bind_group_layout: wgpu::BindGroupLayout,
   blur_pipeline: wgpu::RenderPipeline,
+  /// The two draws that put a blurred backdrop back: remove what the box
+  /// covers, then add the blurred pixels.
+  backdrop_erase_pipeline: wgpu::RenderPipeline,
+  backdrop_add_pipeline: wgpu::RenderPipeline,
   blur_bind_group_layout: wgpu::BindGroupLayout,
   blur_sampler: wgpu::Sampler,
   format: wgpu::TextureFormat,
@@ -35,12 +44,30 @@ pub(super) struct LayerCompositor {
 /// which the pass compositing the layer reads.
 #[derive(Clone, Copy)]
 pub(super) struct BlurSlots {
+  blur: LayerBlur,
   plan: BlurPlan,
   reduced: Option<usize>,
   blurred: usize,
 }
 
+/// The textures of a backdrop blur: the copy of its target's pixels, and the
+/// textures of the blur run on it.
+#[derive(Clone, Copy)]
+pub(super) struct BackdropSlots {
+  region: BackdropRegion,
+  copied: usize,
+  blur: BlurSlots,
+}
+
+impl BackdropSlots {
+  /// The window pixels the blur changes.
+  pub(super) fn bounds(&self) -> crate::layout::opacity_layer::LayerBounds {
+    self.region.layer.bounds
+  }
+}
+
 struct LayerSlot {
+  texture: wgpu::Texture,
   view: wgpu::TextureView,
   /// Holds the uniforms of the one pass that reads this texture in a frame:
   /// a `LayerComposite` or a `LayerBlurPass`.
@@ -159,34 +186,64 @@ impl LayerCompositor {
       bind_group_layouts: &[Some(&blur_bind_group_layout)],
       immediate_size: 0,
     });
-    let blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-      label: Some("lurq_layer_blur_pipeline"),
-      layout: Some(&blur_layout),
-      vertex: wgpu::VertexState {
-        module: &blur_shader,
-        entry_point: Some("vs_main"),
-        buffers: &[QuadVertex::desc()],
-        compilation_options: Default::default(),
+    let blur_pipeline_of = |label: &str, fragment: &str, blend: wgpu::BlendState| {
+      device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&blur_layout),
+        vertex: wgpu::VertexState {
+          module: &blur_shader,
+          entry_point: Some("vs_main"),
+          buffers: &[QuadVertex::desc()],
+          compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+          module: &blur_shader,
+          entry_point: Some(fragment),
+          targets: &[Some(wgpu::ColorTargetState {
+            format,
+            blend: Some(blend),
+            write_mask: wgpu::ColorWrites::ALL,
+          })],
+          compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+          topology: wgpu::PrimitiveTopology::TriangleList,
+          ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+      })
+    };
+    let blur_pipeline = blur_pipeline_of(
+      "lurq_layer_blur_pipeline",
+      "fs_main",
+      wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+    );
+    let erase = wgpu::BlendComponent {
+      src_factor: wgpu::BlendFactor::Zero,
+      dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+      operation: wgpu::BlendOperation::Add,
+    };
+    let backdrop_erase_pipeline = blur_pipeline_of(
+      "lurq_backdrop_erase_pipeline",
+      "fs_backdrop_erase",
+      wgpu::BlendState {
+        color: erase,
+        alpha: erase,
       },
-      fragment: Some(wgpu::FragmentState {
-        module: &blur_shader,
-        entry_point: Some("fs_main"),
-        targets: &[Some(wgpu::ColorTargetState {
-          format,
-          blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-          write_mask: wgpu::ColorWrites::ALL,
-        })],
-        compilation_options: Default::default(),
-      }),
-      primitive: wgpu::PrimitiveState {
-        topology: wgpu::PrimitiveTopology::TriangleList,
-        ..Default::default()
-      },
-      depth_stencil: None,
-      multisample: wgpu::MultisampleState::default(),
-      multiview_mask: None,
-      cache: None,
-    });
+    );
+    let add = wgpu::BlendComponent {
+      src_factor: wgpu::BlendFactor::One,
+      dst_factor: wgpu::BlendFactor::One,
+      operation: wgpu::BlendOperation::Add,
+    };
+    let backdrop_add_pipeline = blur_pipeline_of(
+      "lurq_backdrop_add_pipeline",
+      "fs_backdrop_add",
+      wgpu::BlendState { color: add, alpha: add },
+    );
     // Bilinear, so one tap reads two texels of a Gaussian or four of a box;
     // past the texture's edge it repeats the edge, which a pass never shows
     // (see `layout::opacity_layer`).
@@ -203,6 +260,8 @@ impl LayerCompositor {
       pipeline,
       bind_group_layout,
       blur_pipeline,
+      backdrop_erase_pipeline,
+      backdrop_add_pipeline,
       blur_bind_group_layout,
       blur_sampler,
       format,
@@ -260,7 +319,11 @@ impl LayerCompositor {
       sample_count: 1,
       dimension: wgpu::TextureDimension::D2,
       format: self.format,
-      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+      // Copied from and to by backdrop blurs.
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+        | wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::COPY_SRC
+        | wgpu::TextureUsages::COPY_DST,
       view_formats: &[],
     });
     let view = texture.create_view(&Default::default());
@@ -303,6 +366,7 @@ impl LayerCompositor {
       ],
     });
     LayerSlot {
+      texture,
       view,
       uniform,
       bind_group,
@@ -329,7 +393,90 @@ impl LayerCompositor {
     let plan = BlurPlan::new(blur);
     let reduced = (plan.reduction > 1).then(|| self.acquire(device, plan.size[0], plan.size[1]));
     let blurred = self.acquire(device, plan.size[0], plan.size[1]);
-    BlurSlots { plan, reduced, blurred }
+    BlurSlots {
+      blur: *blur,
+      plan,
+      reduced,
+      blurred,
+    }
+  }
+
+  pub(super) fn texture(&self, slot: usize) -> &wgpu::Texture {
+    &self.slots[slot].texture
+  }
+
+  /// The textures the backdrop blur `region` uses this frame.
+  pub(super) fn acquire_backdrop(&mut self, device: &wgpu::Device, region: BackdropRegion) -> Option<BackdropSlots> {
+    let blur = region.layer.blur?;
+    let copied = self.acquire(device, blur.width, blur.height);
+    Some(BackdropSlots {
+      region,
+      copied,
+      blur: self.acquire_blur(device, &blur),
+    })
+  }
+
+  /// Runs a backdrop blur up to compositing, between two passes of its
+  /// target: copies the pixels it reads out of `target` (whose texel (0, 0)
+  /// is window pixel `target_origin`), then reduces and blurs the copy
+  /// along x.
+  #[allow(clippy::too_many_arguments)]
+  pub(super) fn prepare_backdrop(
+    &self,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    vertices: &wgpu::Buffer,
+    indices: &wgpu::Buffer,
+    target: &wgpu::Texture,
+    target_origin: [i32; 2],
+    slots: &BackdropSlots,
+  ) {
+    let blur = slots.blur.blur;
+    encoder.copy_texture_to_texture(
+      wgpu::TexelCopyTextureInfo {
+        texture: target,
+        mip_level: 0,
+        origin: wgpu::Origin3d {
+          x: (blur.x - target_origin[0]).max(0) as u32,
+          y: (blur.y - target_origin[1]).max(0) as u32,
+          z: 0,
+        },
+        aspect: wgpu::TextureAspect::All,
+      },
+      wgpu::TexelCopyTextureInfo {
+        texture: &self.slots[slots.copied].texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+      },
+      wgpu::Extent3d {
+        width: blur.width,
+        height: blur.height,
+        depth_or_array_layers: 1,
+      },
+    );
+    self.prepare_blur(queue, encoder, vertices, indices, slots.copied, &slots.blur);
+  }
+
+  /// Puts a blurred backdrop back into the pass painting `parent`, inside
+  /// the node's box: the vertical Gaussian over what
+  /// [`Self::prepare_backdrop`] left in `slots`.
+  pub(super) fn composite_backdrop(
+    &self,
+    queue: &wgpu::Queue,
+    pass: &mut wgpu::RenderPass<'_>,
+    slots: &BackdropSlots,
+    parent: &TargetSpace,
+  ) {
+    let blurred = slots.blur.blurred;
+    let uniforms = LayerBlurPass::backdrop(&slots.region, &slots.blur.plan, parent, self.size(blurred));
+    let slot = &self.slots[blurred];
+    queue.write_buffer(&slot.uniform, 0, bytemuck::bytes_of(&uniforms));
+    pass.set_bind_group(0, &slot.blur_bind_group, &[]);
+    for pipeline in [&self.backdrop_erase_pipeline, &self.backdrop_add_pipeline] {
+      pass.set_pipeline(pipeline);
+      pass.draw_indexed(0..QuadVertex::INDICES.len() as u32, 0, 0..1);
+    }
   }
 
   /// Runs the passes of a blur that come before compositing, on the layer
@@ -346,7 +493,7 @@ impl LayerCompositor {
   ) {
     let mut source = painted;
     if let Some(reduced) = slots.reduced {
-      let uniforms = LayerBlurPass::reduce(&slots.plan, self.size(source), self.size(reduced));
+      let uniforms = LayerBlurPass::reduce(&slots.blur, &slots.plan, self.size(source), self.size(reduced));
       self.run_blur_pass(
         queue,
         encoder,

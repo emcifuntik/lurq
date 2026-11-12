@@ -1,6 +1,6 @@
-//! End-to-end layer-blur check on a hidden Win32 surface: a scene of blurred
-//! nodes goes through layout and both native backends, and the two captures
-//! must match.
+//! End-to-end blur check on a hidden Win32 surface: a scene of blurred nodes
+//! (`.blur`) and of frosted glass (`.backdrop_blur`) goes through layout and
+//! both native backends, and the two captures must match.
 //! cargo run -p lurq --example layer_blur_capture_check --features screenshot,wgpu,dx12
 //! Writes target/layer-blur-wgpu.png and target/layer-blur-dx12.png.
 #[cfg(windows)]
@@ -33,7 +33,7 @@ fn main() {
     core::w,
   };
 
-  const SIZE: u32 = 320;
+  const SIZE: u32 = 420;
 
   extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -128,6 +128,29 @@ fn main() {
               .clip()
               .background("#dfe3ea")
               .child(Rect::new(320.0, 40.0).background("#dc2626").blur(12.0)),
+          )
+          // Frosted glass over stripes: the stripes are blurred inside the
+          // glass's rounded box and sharp around it.
+          .child(
+            Stack::new()
+              .size(200.0, 72.0)
+              .child(
+                Row::new()
+                  .child(Rect::new(40.0, 72.0).background("#111827"))
+                  .child(Rect::new(40.0, 72.0).background("#f9fafb"))
+                  .child(Rect::new(40.0, 72.0).background("#111827"))
+                  .child(Rect::new(40.0, 72.0).background("#f9fafb"))
+                  .child(Rect::new(40.0, 72.0).background("#111827")),
+              )
+              .child(
+                Column::new().padding(12.0).child(
+                  Rect::new(140.0, 48.0)
+                    .background("#ffffff33")
+                    .border_inside(1.0, "#ffffff80")
+                    .rounded(12.0)
+                    .backdrop_blur(16.0),
+                ),
+              ),
           ),
       )
       .into()
@@ -227,6 +250,17 @@ fn main() {
     assert!(inside[0] > 200 && inside[1] < 60, "clipped blur edge {inside:?}");
     assert_eq!(at(frame, 226, 228), PAGE, "blur leaked out of its clip");
     assert_eq!(at(frame, 100, 284), PAGE, "blur leaked out of its clip");
+    // The stripes (x 24..224, y 316..388, 40 wide) under the glass (x 36..176,
+    // y 328..376): sharp above the glass, a soft edge inside it.
+    let (dark, light) = (at(frame, 62, 320), at(frame, 66, 320));
+    assert!(dark[0] < 0x20 && light[0] > 0xf0, "sharp stripes {dark:?} {light:?}");
+    let (soft_dark, soft_light) = (at(frame, 62, 352), at(frame, 66, 352));
+    assert!(
+      (0x50..0xb0).contains(&soft_dark[0]) && (0x70..0xd0).contains(&soft_light[0]) && soft_dark[0] < soft_light[0],
+      "the edge under the glass {soft_dark:?} {soft_light:?}"
+    );
+    // Outside the glass's rounded corner the stripe is untouched.
+    assert_eq!(at(frame, 36, 328), at(frame, 30, 320), "the glass's corner");
   }
 
   let mut worst = 0u8;

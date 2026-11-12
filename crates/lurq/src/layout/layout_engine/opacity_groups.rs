@@ -97,6 +97,6 @@ fn paints_one_primitive(quad: &Quad) -> bool {
     QuadContent::Svg { .. } => true,
     #[cfg(all(feature = "svg", not(feature = "raster")))]
     QuadContent::Svg { .. } => false,
-    QuadContent::BoxShadow(_) | QuadContent::None => true,
+    QuadContent::BoxShadow(_) | QuadContent::Backdrop { .. } | QuadContent::None => true,
   }
 }

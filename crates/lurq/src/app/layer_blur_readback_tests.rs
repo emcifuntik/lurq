@@ -80,6 +80,7 @@ fn list(rects: Vec<RectCmd>, groups: &[OpacityGroup]) -> RenderList {
     #[cfg(feature = "svg")]
     svgs: Vec::new(),
     layers,
+    backdrops: Vec::new(),
     atlas: GlyphAtlas {
       data: Arc::from([255_u8; 4 * 4 * 4].as_slice()),
       width: 4,
