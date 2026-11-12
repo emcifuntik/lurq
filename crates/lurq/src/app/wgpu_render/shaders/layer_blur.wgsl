@@ -25,10 +25,14 @@ struct Pass {
     dest:   vec4<f32>,  // target size, then the offset added to a target pixel
     source: vec4<f32>,  // offset target pixel -> source texel scale, then 1 / source texture size
     kernel: vec4<f32>,  // Gaussian axis in source texels, sigma in source texels, opacity
-    mode:   vec4<f32>,  // x = 0: Gaussian; otherwise box taps per axis
+    mode:   vec4<f32>,  // x = 0: Gaussian; otherwise box taps per axis. y, z: mask and clip scale
     limit:  vec4<f32>,  // lowest, then highest source texel centre a tap may read
-    mask:   vec4<f32>,  // backdrop: the box to fill, in target pixels: x, y, w, h
-    radii:  vec4<f32>,  // backdrop: the box's radii: tl, tr, br, bl
+    mask:         vec4<f32>,  // backdrop: the box to fill: centre in target pixels, half size
+    mask_inverse: vec4<f32>,  // 2x2 from a target-pixel offset to the box's own axes
+    radii:        vec4<f32>,  // the box's radii: tl, tr, br, bl
+    clip:         vec4<f32>,  // last pass: the rounded clip to cut to, in the same form
+    clip_inverse: vec4<f32>,
+    clip_radii:   vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> blur: Pass;
@@ -124,26 +128,40 @@ fn blurred(pixel: vec2<f32>) -> vec4<f32> {
     return gaussian(center, blur.kernel.xy, max(blur.kernel.z, 0.01));
 }
 
-// How much of `pixel` the backdrop's rounded box covers, times its opacity.
-fn backdrop_coverage(pixel: vec2<f32>) -> f32 {
-    let half = blur.mask.zw * 0.5;
-    let p = pixel - (blur.mask.xy + half);
-    var radius = blur.radii.x;
+// How much of `pixel` a rounded box covers (see `RoundedBox`): the pixel's
+// offset from the box's centre is taken into the box's own axes, where its
+// distance to the rounded edge is measured, and `scale` brings the distance
+// back to pixels.
+fn box_coverage(pixel: vec2<f32>, box: vec4<f32>, inverse: vec4<f32>, radii: vec4<f32>, scale: f32) -> f32 {
+    let offset = pixel - box.xy;
+    let p = vec2<f32>(inverse.x * offset.x + inverse.z * offset.y, inverse.y * offset.x + inverse.w * offset.y);
+    var radius = radii.x;
     if (p.x >= 0.0 && p.y < 0.0) {
-        radius = blur.radii.y;
+        radius = radii.y;
     } else if (p.x >= 0.0) {
-        radius = blur.radii.z;
+        radius = radii.z;
     } else if (p.y >= 0.0) {
-        radius = blur.radii.w;
+        radius = radii.w;
     }
-    let q = abs(p) - half + vec2<f32>(radius);
+    let q = abs(p) - box.zw + vec2<f32>(radius);
     let distance = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
-    return clamp(0.5 - distance, 0.0, 1.0) * blur.kernel.w;
+    return clamp(0.5 - distance * scale, 0.0, 1.0);
+}
+
+// How much of the last pass's result shows at `pixel`: its opacity, cut to
+// the rounded clip.
+fn shown(pixel: vec2<f32>) -> f32 {
+    return blur.kernel.w * box_coverage(pixel, blur.clip, blur.clip_inverse, blur.clip_radii, blur.mode.z);
+}
+
+// How much of `pixel` the blurred backdrop replaces: the node's rounded box.
+fn backdrop_coverage(pixel: vec2<f32>) -> f32 {
+    return shown(pixel) * box_coverage(pixel, blur.mask, blur.mask_inverse, blur.radii, blur.mode.y);
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return blurred(in.clip.xy) * blur.kernel.w;
+    return blurred(in.clip.xy) * shown(in.clip.xy);
 }
 
 @fragment

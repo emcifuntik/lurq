@@ -13,11 +13,19 @@ use crate::layout::{
   quad::{ClipRect, Quad, QuadContent},
 };
 
+/// How much a transform scales lengths, as one factor: the square root of
+/// the area it scales by. A blur radius is in its node's own units, so a
+/// node scaled by a transform is blurred by that much more on screen.
+pub(super) fn transform_scale(transform: crate::node::transform::Transform2D) -> f32 {
+  let scale = (transform.a * transform.d - transform.b * transform.c).abs().sqrt();
+  if scale.is_finite() { scale } else { 1.0 }
+}
+
 /// `clip` for the content of a node blurred by `radius`: grown by as far as
 /// the blur moves colour. Content just outside the clip the node is under is
 /// not shown, but it bleeds into what is, so it has to be painted into the
-/// node's layer; the layer itself is cut to the clip when it is composited.
-/// A rounded clip loses its corners here, and the layer is cut to its box.
+/// node's layer; the layer itself is cut to the clip when it is composited,
+/// rounded corners included, so the grown clip here has none.
 pub(super) fn blur_content_clip(clip: ClipRect, radius: f32) -> ClipRect {
   if !clip.active {
     return clip;
@@ -67,6 +75,17 @@ impl LayoutEngine {
       opacity,
       blur: blur.max(0.0),
       clip: (blur > 0.0 && clip.active).then_some([clip.x, clip.y, clip.width, clip.height]),
+      clip_radii: clip
+        .border_radius
+        .map(|radius| {
+          [
+            radius.top_left,
+            radius.top_right,
+            radius.bottom_right,
+            radius.bottom_left,
+          ]
+        })
+        .unwrap_or([0.0; 4]),
     });
   }
 

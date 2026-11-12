@@ -9,8 +9,8 @@ use lurq::{
   animation::Transition,
   app::Tree,
   components::{Column, Rect, Stack},
-  layout::opacity_layer::{LayerBounds, LayerCmd, MAX_BLUR_RADIUS},
-  node::color::Color,
+  layout::opacity_layer::{LayerBounds, LayerCmd, MAX_BLUR_RADIUS, RoundedBox},
+  node::{color::Color, transform::Transform2D},
 };
 
 use crate::support::{RenderSnapshot, render_pass};
@@ -150,6 +150,73 @@ fn a_blur_stays_inside_the_clip_its_node_is_under() {
     (fill.clip.x, fill.clip.y, fill.clip.width, fill.clip.height),
     (40.0 - 12.0, 40.0 - 12.0, 60.0 + 24.0, 30.0 + 24.0)
   );
+}
+
+#[test]
+fn a_rounded_clip_cuts_the_blur_with_its_corners() {
+  let snapshot = render(
+    window(
+      40.0,
+      Stack::new()
+        .size(60.0, 30.0)
+        .rounded(10.0)
+        .clip()
+        .child(Rect::new(100.0, 36.0).background(FILL).blur(8.0)),
+    ),
+    1.5,
+  );
+  let layer = snapshot.layers[0];
+  assert_eq!((layer.bounds.x, layer.bounds.width), (60, 90));
+  assert_eq!(
+    layer.blur.unwrap().clip,
+    Some(RoundedBox::rect(60.0, 60.0, 90.0, 45.0, [15.0; 4]))
+  );
+}
+
+#[test]
+fn the_blur_scales_with_the_transforms_its_node_is_under() {
+  // The node's own transform, and an ancestor's: the radius is in the
+  // node's units, so on screen the blur is as many times wider.
+  let own = render(
+    window(
+      40.0,
+      Rect::new(100.0, 36.0)
+        .background(FILL)
+        .blur(8.0)
+        .transform(Transform2D::scale_uniform(2.0)),
+    ),
+    1.0,
+  );
+  assert_eq!(own.layers[0].blur.unwrap().sigma, 8.0);
+
+  let inherited = render(
+    window(
+      40.0,
+      Stack::new()
+        .size(100.0, 36.0)
+        .transform(Transform2D::scale(3.0, 0.75))
+        .child(Rect::new(100.0, 36.0).background(FILL).blur(8.0)),
+    ),
+    1.0,
+  );
+  assert_eq!(
+    inherited.layers[0].blur.unwrap().sigma,
+    6.0,
+    "sqrt(3 * 0.75) = 1.5 times"
+  );
+
+  // A turn changes no length.
+  let turned = render(
+    window(
+      40.0,
+      Rect::new(100.0, 36.0)
+        .background(FILL)
+        .blur(8.0)
+        .transform(Transform2D::rotate_deg(30.0)),
+    ),
+    1.0,
+  );
+  assert!((turned.layers[0].blur.unwrap().sigma - 4.0).abs() < 1e-4);
 }
 
 #[test]

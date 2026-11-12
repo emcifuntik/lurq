@@ -8,7 +8,7 @@ use lurq::{
   app::Tree,
   components::{Column, Rect, Stack},
   layout::opacity_layer::MAX_BLUR_RADIUS,
-  node::color::Color,
+  node::{color::Color, transform::Transform2D},
 };
 
 use crate::support::{RenderSnapshot, render_pass};
@@ -152,6 +152,28 @@ fn a_backdrop_blur_carries_the_clip_its_node_is_under() {
     ),
     (40.0, 40.0, 60.0, 30.0)
   );
+}
+
+#[test]
+fn a_transformed_node_blurs_its_backdrop_in_its_own_units() {
+  let snapshot = render(
+    window(
+      40.0,
+      Rect::new(100.0, 36.0)
+        .background(GLASS)
+        .rounded(8.0)
+        .backdrop_blur(12.0)
+        .transform(Transform2D::scale_uniform(2.0)),
+    ),
+    1.0,
+  );
+  let backdrop = snapshot.backdrops[0];
+  // The box and its radii stay the node's own; the transform rides along,
+  // and the blur is twice as wide on screen.
+  assert_eq!((backdrop.width, backdrop.height), (100.0, 36.0));
+  assert_eq!(backdrop.radii, [8.0; 4]);
+  assert_eq!(backdrop.transform, [2.0, 0.0, 0.0, 2.0]);
+  assert_eq!(backdrop.sigma, 12.0);
 }
 
 #[test]

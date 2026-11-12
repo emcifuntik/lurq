@@ -214,6 +214,67 @@ fn assert_backdrop_blur<E: RenderEngine>(new_engine: fn() -> E, backend: &str) {
     "{backend}: the rounded box's side is {value}"
   );
 
+  // A box turned by 45 degrees about its centre (80, 48) blurs its own
+  // diamond, not its bounding box.
+  let mut turned = backdrop(1, BOX, 4.0);
+  let turn = std::f32::consts::FRAC_1_SQRT_2;
+  turned.transform = [turn, turn, -turn, turn];
+  let frame = render(&mut new_engine(), &split(turned));
+  for (x, y) in [(84, 48), (76, 48), (84, 20), (70, 70)] {
+    let value = f32::from(pixel(&frame, x as u32, y as u32)[0]);
+    assert!(
+      (value - soft(x, 4.0)).abs() <= 2.5,
+      "{backend}: ({x}, {y}) inside the turned box is {value}, expected {}",
+      soft(x, 4.0)
+    );
+  }
+  // Inside the bounding box, outside the diamond.
+  for (x, y) in [(78, 2), (82, 94), (40, 10), (120, 86), (76, 90), (83, 5)] {
+    let value = f32::from(pixel(&frame, x as u32, y as u32)[0]);
+    assert!(
+      (value - sharp(x)).abs() <= 1.0,
+      "{backend}: ({x}, {y}) outside the turned box is {value}"
+    );
+  }
+
+  // A rounded clip the node is under cuts the blur, corners included.
+  let mut clipped = backdrop(1, BOX, 4.0);
+  clipped.clip = ClipRect {
+    x: EDGE as f32 - 6.0,
+    y: 30.0,
+    width: 40.0,
+    height: 36.0,
+    active: true,
+    border_radius: Some(crate::node::border::BorderRadius {
+      top_left: 14.0,
+      top_right: 14.0,
+      bottom_right: 14.0,
+      bottom_left: 14.0,
+    }),
+  };
+  let frame = render(&mut new_engine(), &split(clipped));
+  for (x, y) in [
+    (EDGE - 6, 30),
+    (EDGE - 4, 31),
+    (EDGE - 5, 65),
+    (EDGE - 2, 48 - 19),
+    (EDGE - 7, 48),
+  ] {
+    let value = f32::from(pixel(&frame, x as u32, y as u32)[0]);
+    assert!(
+      (value - sharp(x)).abs() <= 1.0,
+      "{backend}: ({x}, {y}) outside the rounded clip is {value}"
+    );
+  }
+  for (x, y) in [(EDGE - 5, 48), (EDGE - 2, 40), (EDGE + 1, 34)] {
+    let value = f32::from(pixel(&frame, x as u32, y as u32)[0]);
+    assert!(
+      (value - soft(x, 4.0)).abs() <= 2.5,
+      "{backend}: ({x}, {y}) inside the rounded clip is {value}, expected {}",
+      soft(x, 4.0)
+    );
+  }
+
   // What is painted after the blur is painted over it, sharp.
   let over = [70.0, 30.0, 20.0, 20.0];
   let frame = render(

@@ -14,7 +14,7 @@
 //! the box, in place of what was there ([`BackdropRegion`]).
 
 #[cfg(any(feature = "render", feature = "devtools"))]
-use crate::layout::opacity_layer::{LayerBlur, LayerBounds, LayerCmd};
+use crate::layout::opacity_layer::{LayerBlur, LayerBounds, LayerCmd, RoundedBox};
 use crate::layout::quad::ClipRect;
 
 /// Blurs what the target holds inside a box before the draws of `order` and
@@ -32,11 +32,12 @@ pub struct BackdropCmd {
   /// Corner radii of the box: top left, top right, bottom right, bottom left.
   pub radii: [f32; 4],
   /// The 2x2 transform of the box around `transform_origin` (relative to the
-  /// box), as for a [`RectCmd`](crate::layout::render_list::RectCmd). The
-  /// blur covers the transformed box's bounding box; see [`BackdropRegion`].
+  /// box), as for a [`RectCmd`](crate::layout::render_list::RectCmd): the
+  /// blur fills the box as it is turned and scaled.
   pub transform: [f32; 4],
   pub transform_origin: [f32; 2],
-  /// The clip the node is under. The blur is cut to its rectangle.
+  /// The clip the node is under. The blur is cut to it, rounded corners
+  /// included.
   pub clip: ClipRect,
   /// Standard deviation of the Gaussian, in physical pixels.
   pub sigma: f32,
@@ -78,13 +79,14 @@ const MIN_BACKDROP_SIGMA: f32 = 0.05;
 pub(crate) struct BackdropRegion {
   /// The blur as a layer: `bounds` are the window pixels it changes, the
   /// [`LayerBlur`] rectangle the pixels copied out of the target (the
-  /// bounds grown by the blur's reach, within the target), and `opacity` the
-  /// command's. Its orders are unused.
+  /// bounds grown by the blur's reach, within the target) with the rounded
+  /// clip the node is under, if it has one, and `opacity` the command's.
+  /// Its orders are unused.
   pub layer: LayerCmd,
-  /// The box the blurred pixels are put back in, in physical pixels of the
-  /// window (x, y, width, height), and its corner radii.
-  pub mask: [f32; 4],
-  pub radii: [f32; 4],
+  /// The node's box, which the blurred pixels are put back in.
+  pub mask: RoundedBox,
+  /// The rounded clip the node is under, when its clip has rounded corners.
+  pub clip: Option<RoundedBox>,
 }
 
 #[cfg(any(feature = "render", feature = "devtools"))]
@@ -95,8 +97,18 @@ impl BackdropRegion {
     if !(cmd.sigma >= MIN_BACKDROP_SIGMA && cmd.opacity > 0.0 && cmd.width > 0.0 && cmd.height > 0.0) {
       return None;
     }
-    let (mask, radii) = mask_of(cmd);
-    let mut shown = [mask[0], mask[1], mask[0] + mask[2], mask[1] + mask[3]];
+    let limit = cmd.width.min(cmd.height) * 0.5;
+    let mask = RoundedBox::transformed(
+      cmd.x,
+      cmd.y,
+      cmd.width,
+      cmd.height,
+      cmd.radii.map(|radius| radius.clamp(0.0, limit)),
+      cmd.transform,
+      cmd.transform_origin,
+    )?;
+    let mut shown = mask.extent();
+    let mut clip = None;
     if cmd.clip.active {
       shown = [
         shown[0].max(cmd.clip.x),
@@ -104,6 +116,22 @@ impl BackdropRegion {
         shown[2].min(cmd.clip.x + cmd.clip.width),
         shown[3].min(cmd.clip.y + cmd.clip.height),
       ];
+      clip = cmd.clip.border_radius.map(|radius| {
+        let limit = cmd.clip.width.min(cmd.clip.height) * 0.5;
+        RoundedBox::rect(
+          cmd.clip.x,
+          cmd.clip.y,
+          cmd.clip.width,
+          cmd.clip.height,
+          [
+            radius.top_left,
+            radius.top_right,
+            radius.bottom_right,
+            radius.bottom_left,
+          ]
+          .map(|radius| radius.clamp(0.0, limit.max(0.0))),
+        )
+      });
     }
     // The target's pixels inside the window: a layer may be painted for
     // pixels outside it, which are never shown.
@@ -147,51 +175,13 @@ impl BackdropRegion {
           y: copied_y0,
           width: (copied_x1 - copied_x0) as u32,
           height: (copied_y1 - copied_y0) as u32,
+          clip,
         }),
       },
       mask,
-      radii,
+      clip,
     })
   }
-}
-
-/// The box a backdrop blur fills, and its corner radii. An untransformed box
-/// is the node's own. Under a scale or a flip it is the scaled box, with the
-/// radii scaled by the smaller factor; under any other transform it is the
-/// bounding box of the transformed one, without radii.
-#[cfg(any(feature = "render", feature = "devtools"))]
-fn mask_of(cmd: &BackdropCmd) -> ([f32; 4], [f32; 4]) {
-  let [a, b, c, d] = cmd.transform;
-  if a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0 {
-    return ([cmd.x, cmd.y, cmd.width, cmd.height], cmd.radii);
-  }
-  let [origin_x, origin_y] = cmd.transform_origin;
-  let corners = [(0.0, 0.0), (cmd.width, 0.0), (0.0, cmd.height), (cmd.width, cmd.height)].map(|(x, y)| {
-    let (dx, dy) = (x - origin_x, y - origin_y);
-    (cmd.x + origin_x + a * dx + c * dy, cmd.y + origin_y + b * dx + d * dy)
-  });
-  let x0 = corners.iter().map(|corner| corner.0).fold(f32::INFINITY, f32::min);
-  let y0 = corners.iter().map(|corner| corner.1).fold(f32::INFINITY, f32::min);
-  let x1 = corners.iter().map(|corner| corner.0).fold(f32::NEG_INFINITY, f32::max);
-  let y1 = corners.iter().map(|corner| corner.1).fold(f32::NEG_INFINITY, f32::max);
-  let radii = if b == 0.0 && c == 0.0 {
-    let scale = a.abs().min(d.abs());
-    let [top_left, top_right, bottom_right, bottom_left] = cmd.radii.map(|radius| radius * scale);
-    // A flip swaps the corners across its axis.
-    let (top_left, top_right, bottom_right, bottom_left) = if a < 0.0 {
-      (top_right, top_left, bottom_left, bottom_right)
-    } else {
-      (top_left, top_right, bottom_right, bottom_left)
-    };
-    if d < 0.0 {
-      [bottom_left, bottom_right, top_right, top_left]
-    } else {
-      [top_left, top_right, bottom_right, bottom_left]
-    }
-  } else {
-    [0.0; 4]
-  };
-  ([x0, y0, x1 - x0, y1 - y0], radii)
 }
 
 #[cfg(all(test, any(feature = "render", feature = "devtools")))]
@@ -231,8 +221,11 @@ mod tests {
     assert_eq!((blur.x, blur.y), (40 - 15, 30 - 15));
     // Below, the target ends 10 pixels under the box.
     assert_eq!((blur.x + blur.width as i32, blur.y + blur.height as i32), (91 + 15, 60));
-    assert_eq!(region.mask, [40.5, 30.0, 50.0, 20.0]);
-    assert_eq!(region.radii, [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(
+      region.mask,
+      RoundedBox::rect(40.5, 30.0, 50.0, 20.0, [1.0, 2.0, 3.0, 4.0])
+    );
+    assert_eq!(region.clip, None);
   }
 
   #[test]
@@ -249,7 +242,20 @@ mod tests {
     let region = BackdropRegion::new(&clipped, [0, 0], [200, 60]).unwrap();
     assert_eq!((region.layer.bounds.x, region.layer.bounds.width), (60, 30));
     // The mask is still the whole box: its corners stay where they are.
-    assert_eq!(region.mask[0], 40.0);
+    assert_eq!(region.mask.extent()[0], 40.0);
+    assert_eq!(region.clip, None, "a clip without corners is in the bounds");
+
+    // A rounded clip rides along, for the pass that puts the blur back.
+    clipped.clip.border_radius = Some(crate::node::border::BorderRadius {
+      top_left: 6.0,
+      top_right: 0.0,
+      bottom_right: 80.0,
+      bottom_left: 0.0,
+    });
+    let region = BackdropRegion::new(&clipped, [0, 0], [200, 60]).unwrap();
+    let rounded = RoundedBox::rect(60.0, 0.0, 100.0, 100.0, [6.0, 0.0, 50.0, 0.0]);
+    assert_eq!(region.clip, Some(rounded));
+    assert_eq!(region.layer.blur.unwrap().clip, Some(rounded));
 
     // A layer target that starts inside the box and outside the window.
     let region = BackdropRegion::new(&cmd(-20.0, 10.0, 100.0, 20.0, 4.0), [-30, 0], [70, 60]).unwrap();
@@ -264,23 +270,36 @@ mod tests {
   }
 
   #[test]
-  fn a_transformed_box_is_its_scaled_or_bounding_box() {
+  fn a_transformed_box_is_blurred_as_it_is_turned_and_scaled() {
     let mut scaled = cmd(40.0, 30.0, 50.0, 20.0, 4.0);
     scaled.transform = [2.0, 0.0, 0.0, 0.5];
-    let (mask, radii) = mask_of(&scaled);
-    assert_eq!(mask, [15.0, 35.0, 100.0, 10.0]);
-    assert_eq!(radii, [0.5, 1.0, 1.5, 2.0]);
+    let region = BackdropRegion::new(&scaled, [0, 0], [200, 100]).unwrap();
+    assert_eq!(region.mask.extent(), [15.0, 35.0, 115.0, 45.0]);
+    // The box keeps its own size and radii; the transform is in the mask.
+    assert_eq!(
+      (region.mask.half, region.mask.radii),
+      ([25.0, 10.0], [1.0, 2.0, 3.0, 4.0])
+    );
+    assert_eq!((region.layer.bounds.x, region.layer.bounds.width), (15, 100));
 
-    let mut flipped = cmd(40.0, 30.0, 50.0, 20.0, 4.0);
-    flipped.transform = [-1.0, 0.0, 0.0, 1.0];
-    let (mask, radii) = mask_of(&flipped);
-    assert_eq!(mask, [40.0, 30.0, 50.0, 20.0]);
-    assert_eq!(radii, [2.0, 1.0, 4.0, 3.0]);
-
+    // A quarter turn: 20 wide and 50 tall about the same centre.
     let mut turned = cmd(40.0, 30.0, 50.0, 20.0, 4.0);
     turned.transform = [0.0, 1.0, -1.0, 0.0];
-    let (mask, radii) = mask_of(&turned);
-    assert_eq!(mask, [55.0, 15.0, 20.0, 50.0]);
-    assert_eq!(radii, [0.0; 4]);
+    let region = BackdropRegion::new(&turned, [0, 0], [200, 100]).unwrap();
+    let extent = region.mask.extent();
+    assert!(
+      (extent[0] - 55.0).abs() < 1e-4 && (extent[2] - 75.0).abs() < 1e-4,
+      "{extent:?}"
+    );
+    assert!(
+      (extent[1] - 15.0).abs() < 1e-4 && (extent[3] - 65.0).abs() < 1e-4,
+      "{extent:?}"
+    );
+    assert_eq!(region.mask.coverage(65.0, 20.0), 1.0);
+    assert_eq!(region.mask.coverage(45.0, 40.0), 0.0, "inside the upright box only");
+
+    let mut flat = cmd(40.0, 30.0, 50.0, 20.0, 4.0);
+    flat.transform = [1.0, 0.0, 0.0, 0.0];
+    assert!(BackdropRegion::new(&flat, [0, 0], [200, 100]).is_none());
   }
 }

@@ -24,10 +24,14 @@ cbuffer BlurPass : register(b0)
   float4 target; // target size, then the offset added to a target pixel
   float4 source; // offset target pixel -> source texel scale, then 1 / source texture size
   float4 kernel; // Gaussian axis in source texels, sigma in source texels, opacity
-  float4 mode;   // x = 0: Gaussian; otherwise box taps per axis
+  float4 mode;   // x = 0: Gaussian; otherwise box taps per axis. y, z: mask and clip scale
   float4 limit;  // lowest, then highest source texel centre a tap may read
-  float4 mask;   // backdrop: the box to fill, in target pixels: x, y, w, h
-  float4 radii;  // backdrop: the box's radii: tl, tr, br, bl
+  float4 mask;         // backdrop: the box to fill: centre in target pixels, half size
+  float4 mask_inverse; // 2x2 from a target-pixel offset to the box's own axes
+  float4 radii;        // the box's radii: tl, tr, br, bl
+  float4 cut;          // last pass: the rounded clip to cut to, in the same form
+  float4 cut_inverse;
+  float4 cut_radii;
 };
 
 Texture2D<float4> layer_texture : register(t0);
@@ -137,32 +141,48 @@ float4 blurred(float2 pixel)
   return gaussian(center, kernel.xy, max(kernel.z, 0.01));
 }
 
-// How much of `pixel` the backdrop's rounded box covers, times its opacity.
-float backdrop_coverage(float2 pixel)
+// How much of `pixel` a rounded box covers (see `RoundedBox`): the pixel's
+// offset from the box's centre is taken into the box's own axes, where its
+// distance to the rounded edge is measured, and `scale` brings the distance
+// back to pixels.
+float box_coverage(float2 pixel, float4 rounded, float4 inverse, float4 corner_radii, float scale)
 {
-  float2 half_size = mask.zw * 0.5;
-  float2 p = pixel - (mask.xy + half_size);
-  float radius = radii.x;
+  float2 offset = pixel - rounded.xy;
+  float2 p = float2(inverse.x * offset.x + inverse.z * offset.y, inverse.y * offset.x + inverse.w * offset.y);
+  float radius = corner_radii.x;
   if (p.x >= 0.0 && p.y < 0.0)
   {
-    radius = radii.y;
+    radius = corner_radii.y;
   }
   else if (p.x >= 0.0)
   {
-    radius = radii.z;
+    radius = corner_radii.z;
   }
   else if (p.y >= 0.0)
   {
-    radius = radii.w;
+    radius = corner_radii.w;
   }
-  float2 q = abs(p) - half_size + float2(radius, radius);
+  float2 q = abs(p) - rounded.zw + float2(radius, radius);
   float edge = length(max(q, float2(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
-  return clamp(0.5 - edge, 0.0, 1.0) * kernel.w;
+  return clamp(0.5 - edge * scale, 0.0, 1.0);
+}
+
+// How much of the last pass's result shows at `pixel`: its opacity, cut to
+// the rounded clip.
+float shown(float2 pixel)
+{
+  return kernel.w * box_coverage(pixel, cut, cut_inverse, cut_radii, mode.z);
+}
+
+// How much of `pixel` the blurred backdrop replaces: the node's rounded box.
+float backdrop_coverage(float2 pixel)
+{
+  return shown(pixel) * box_coverage(pixel, mask, mask_inverse, radii, mode.y);
 }
 
 float4 ps_main(VsOut input) : SV_TARGET
 {
-  return blurred(input.position.xy) * kernel.w;
+  return blurred(input.position.xy) * shown(input.position.xy);
 }
 
 float4 ps_backdrop_erase(VsOut input) : SV_TARGET

@@ -105,15 +105,17 @@ Column::new()
   under and by the window, as the element's own pixels are; inside them, content of the element that lies just outside
   the clip still bleeds in, so a blurred element cut by a scroll container or the window's edge does not fade out
   there. Containers clip by default: give a blur room with padding, or call `.overflow_visible()` on the containers it
-  should escape. A rounded clip cuts a blurred element to its box, without the corners.
+  should escape. A rounded clip cuts the blur with its corners.
 - `.blur(...)` and `.opacity(...)` on one element share a layer: the blurred result is faded.
-- Blur changes painting only. Layout, scrolling and hit testing are the same at any radius, and the radius does not
-  scale with a `.transform(...)`.
+- Blur changes painting only: layout, scrolling and hit testing are the same at any radius.
+- The radius is in the element's own units, so it scales with the transforms the element is under, its own included:
+  `blur(8.0)` on an element scaled by 2 softens it as `blur(16.0)` would unscaled. A transform that scales the axes
+  differently blurs by their geometric mean, the same along both.
 - The cost is the layer's pixels, not the radius: a wide blur runs on a reduced copy of the layer. A blurred layer
   takes two or three pooled textures for its frame.
 - A blurred `LayerCmd` carries a `LayerBlur`: the deviation in physical pixels and the rectangle the layer is painted
-  for, which is larger than the `bounds` it shows in and may reach outside the window. A custom `RenderEngine` that
-  ignores it draws the layer unblurred.
+  for, which is larger than the `bounds` it shows in and may reach outside the window, and the rounded clip to cut
+  the result to, if the element is under one. A custom `RenderEngine` that ignores it draws the layer unblurred.
 
 ## Backdrop Blur
 
@@ -135,10 +137,9 @@ Column::new()
 ```
 
 - `radius` means what `.blur(radius)`'s means and has the same limit; `0` (the default) is no blur.
-- The blur fills the element's box with its corner radii, inside the clips the element is under. It does not spread
-  past the box. A rounded clip of an ancestor cuts it to the clip's box, without the corners. Under a `.transform(...)`
-  that scales or flips, the box is the scaled box; under a rotation or a skew it is the bounding box of the turned
-  one, without corner radii.
+- The blur fills the element's box with its corner radii, inside the clips the element is under (their rounded
+  corners included). It does not spread past the box. Under a `.transform(...)` the box is the transformed box,
+  turned, scaled or skewed as the element is, and the radius scales as `.blur(...)`'s does.
 - "Behind" is everything painted before the element: earlier siblings, ancestors' backgrounds, anything under an
   overlay. Inside an ancestor with `.opacity(...)` below 1 or a `.blur(...)`, it is only what that ancestor's layer
   holds, as in CSS: the blur does not see through the layer to the window.

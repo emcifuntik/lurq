@@ -10,7 +10,9 @@
 //! A node with a blur is a layer too, like CSS `filter: blur()`: its subtree
 //! is painted into the layer, and the layer is blurred as it is composited
 //! ([`LayerBlur`]). A blurred layer is painted for more pixels than it shows,
-//! because what lies just outside the visible part still bleeds into it.
+//! because what lies just outside the visible part still bleeds into it. The
+//! radius is in the node's own units: under a transform that scales the node
+//! it scales with it.
 //!
 //! Layout records each group as a range of quads (`OpacityGroup`). A faded
 //! group whose content paints a single primitive gives the same pixels either
@@ -70,6 +72,9 @@ pub(crate) struct OpacityGroup {
   /// (x, y, width, height). The blurred layer shows only inside it; its
   /// content is clipped further out (see `LayoutEngine::collect_quads`).
   pub clip: Option<[f32; 4]>,
+  /// The corner radii of `clip`, in logical pixels: top left, top right,
+  /// bottom right, bottom left.
+  pub clip_radii: [f32; 4],
 }
 
 /// An offscreen layer: the draws whose `order` lies in `start_order..end_order`
@@ -127,6 +132,106 @@ pub struct LayerBlur {
   pub y: i32,
   pub width: u32,
   pub height: u32,
+  /// The rounded clip the blurred layer is cut to as it is composited:
+  /// the clip its node is under, when that clip has rounded corners. A
+  /// clip without them is in [`LayerCmd::bounds`] already.
+  pub clip: Option<RoundedBox>,
+}
+
+/// A box with rounded corners in the window, possibly turned or scaled: what
+/// a blur is cut to. The shaders and [`Self::coverage`] take a pixel's
+/// offset from `center` into the box's own axes with `inverse` and measure
+/// its distance to the rounded edge there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundedBox {
+  /// The box's centre, in physical pixels of the window.
+  pub center: [f32; 2],
+  /// Half the box's width and height, along its own axes.
+  pub half: [f32; 2],
+  /// Corner radii along its own axes: top left, top right, bottom right,
+  /// bottom left.
+  pub radii: [f32; 4],
+  /// The 2x2 matrix (`[a, b, c, d]`, as a
+  /// [`RectCmd`](crate::layout::render_list::RectCmd)'s transform) from an
+  /// offset in window pixels to the box's own axes. The identity for an
+  /// upright box.
+  pub inverse: [f32; 4],
+  /// Window pixels per unit of the box's own axes: 1 for an upright box.
+  pub scale: f32,
+}
+
+impl RoundedBox {
+  /// An upright box.
+  pub fn rect(x: f32, y: f32, width: f32, height: f32, radii: [f32; 4]) -> Self {
+    Self {
+      center: [x + width * 0.5, y + height * 0.5],
+      half: [width * 0.5, height * 0.5],
+      radii,
+      inverse: [1.0, 0.0, 0.0, 1.0],
+      scale: 1.0,
+    }
+  }
+
+  /// A `width` x `height` box at (`x`, `y`) under the 2x2 `transform` around
+  /// `origin` (relative to the box), as a
+  /// [`RectCmd`](crate::layout::render_list::RectCmd) is placed. `None` for
+  /// a transform that flattens the box.
+  pub fn transformed(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radii: [f32; 4],
+    transform: [f32; 4],
+    origin: [f32; 2],
+  ) -> Option<Self> {
+    let [a, b, c, d] = transform;
+    let determinant = a * d - b * c;
+    if !(determinant.is_finite() && determinant.abs() > 1.0e-6) {
+      return None;
+    }
+    let (dx, dy) = (width * 0.5 - origin[0], height * 0.5 - origin[1]);
+    Some(Self {
+      center: [x + origin[0] + a * dx + c * dy, y + origin[1] + b * dx + d * dy],
+      half: [width * 0.5, height * 0.5],
+      radii,
+      inverse: [d / determinant, -b / determinant, -c / determinant, a / determinant],
+      scale: determinant.abs().sqrt(),
+    })
+  }
+
+  /// The box's axis-aligned bounds in the window: x0, y0, x1, y1.
+  pub fn extent(&self) -> [f32; 4] {
+    // The forward matrix is the inverse of `inverse`.
+    let [ia, ib, ic, id] = self.inverse;
+    let determinant = ia * id - ib * ic;
+    let (a, b, c, d) = (id / determinant, -ib / determinant, -ic / determinant, ia / determinant);
+    let reach_x = (a * self.half[0]).abs() + (c * self.half[1]).abs();
+    let reach_y = (b * self.half[0]).abs() + (d * self.half[1]).abs();
+    [
+      self.center[0] - reach_x,
+      self.center[1] - reach_y,
+      self.center[0] + reach_x,
+      self.center[1] + reach_y,
+    ]
+  }
+
+  /// How much of the pixel whose centre is (`x`, `y`) the box covers, from
+  /// the centre's distance to the rounded edge, as the blur shaders take it.
+  pub fn coverage(&self, x: f32, y: f32) -> f32 {
+    let (dx, dy) = (x - self.center[0], y - self.center[1]);
+    let [a, b, c, d] = self.inverse;
+    let p = [a * dx + c * dy, b * dx + d * dy];
+    let radius = match (p[0] >= 0.0, p[1] >= 0.0) {
+      (false, false) => self.radii[0],
+      (true, false) => self.radii[1],
+      (true, true) => self.radii[2],
+      (false, true) => self.radii[3],
+    };
+    let q = [p[0].abs() - self.half[0] + radius, p[1].abs() - self.half[1] + radius];
+    let distance = q[0].max(0.0).hypot(q[1].max(0.0)) + q[0].max(q[1]).min(0.0) - radius;
+    (0.5 - distance * self.scale).clamp(0.0, 1.0)
+  }
 }
 
 /// How a render engine blurs a layer: wide blurs first reduce the layer by
@@ -522,17 +627,25 @@ pub(crate) struct LayerBlurPass {
   /// and the opacity the result is multiplied by.
   pub kernel: [f32; 4],
   /// `x`: 0 for a Gaussian pass; otherwise the pass is a box reduction that
-  /// averages this many bilinear taps per axis (half the reduction).
+  /// averages this many bilinear taps per axis (half the reduction). `y`:
+  /// the mask's [`RoundedBox::scale`]; `z`: the clip's.
   pub mode: [f32; 4],
   /// The source texels a tap may read, as the lowest and the highest texel
   /// centre: taps past them read the edge texel. The texture around them
   /// holds whatever it was last used for.
   pub limit: [f32; 4],
-  /// For the pass that puts a blurred backdrop back: the box it fills, in
-  /// the target's pixels (x, y, width, height), and the box's corner radii
-  /// (top left, top right, bottom right, bottom left). Unused otherwise.
+  /// For the pass that puts a blurred backdrop back: the [`RoundedBox`] it
+  /// fills, as its centre in the target's pixels and its half size, its
+  /// `inverse` matrix and its corner radii. A box that covers everything
+  /// otherwise.
   pub mask: [f32; 4],
+  pub mask_inverse: [f32; 4],
   pub radii: [f32; 4],
+  /// For the last pass of a blur: the rounded clip its result is cut to, in
+  /// the same form. A box that covers everything without one.
+  pub clip: [f32; 4],
+  pub clip_inverse: [f32; 4],
+  pub clip_radii: [f32; 4],
 }
 
 #[cfg(feature = "render")]
@@ -546,10 +659,9 @@ impl LayerBlurPass {
       target: [target[0] as f32, target[1] as f32, 0.0, 0.0],
       source: [r, r, 1.0 / source[0] as f32, 1.0 / source[1] as f32],
       kernel: [0.0, 0.0, 0.0, 1.0],
-      mode: [(plan.reduction / 2) as f32, 0.0, 0.0, 0.0],
+      mode: [(plan.reduction / 2) as f32, 1.0, 1.0, 0.0],
       limit: texel_limit([blur.width, blur.height]),
-      mask: [0.0; 4],
-      radii: [0.0; 4],
+      ..Self::UNCUT
     }
   }
 
@@ -561,10 +673,9 @@ impl LayerBlurPass {
       target: [target[0] as f32, target[1] as f32, 0.0, 0.0],
       source: [1.0, 1.0, 1.0 / source[0] as f32, 1.0 / source[1] as f32],
       kernel: [1.0, 0.0, plan.sigma, 1.0],
-      mode: [0.0; 4],
+      mode: [0.0, 1.0, 1.0, 0.0],
       limit: texel_limit(plan.size),
-      mask: [0.0; 4],
-      radii: [0.0; 4],
+      ..Self::UNCUT
     }
   }
 
@@ -575,7 +686,11 @@ impl LayerBlurPass {
     let rect = parent.layer_rect(layer.bounds);
     let (origin, _) = layer.painted();
     let scale = 1.0 / plan.reduction as f32;
+    let (clip, clip_inverse, clip_radii, clip_scale) = box_uniforms(layer.blur.and_then(|blur| blur.clip), parent);
     Self {
+      clip,
+      clip_inverse,
+      clip_radii,
       rect: [rect.x, rect.y, rect.width, rect.height],
       target: [
         parent.width,
@@ -585,10 +700,9 @@ impl LayerBlurPass {
       ],
       source: [scale, scale, 1.0 / source[0] as f32, 1.0 / source[1] as f32],
       kernel: [0.0, 1.0, plan.sigma, layer.opacity],
-      mode: [0.0; 4],
+      mode: [0.0, 1.0, clip_scale, 0.0],
       limit: texel_limit(plan.size),
-      mask: [0.0; 4],
-      radii: [0.0; 4],
+      ..Self::UNCUT
     }
   }
 
@@ -601,12 +715,56 @@ impl LayerBlurPass {
     parent: &TargetSpace,
     source: [u32; 2],
   ) -> Self {
-    let [x, y, width, height] = region.mask;
+    let composite = Self::composite(&region.layer, plan, parent, source);
+    let (mask, mask_inverse, radii, mask_scale) = box_uniforms(Some(region.mask), parent);
     Self {
-      mask: [x - parent.origin[0], y - parent.origin[1], width, height],
-      radii: region.radii,
-      ..Self::composite(&region.layer, plan, parent, source)
+      mask,
+      mask_inverse,
+      radii,
+      mode: [composite.mode[0], mask_scale, composite.mode[2], 0.0],
+      ..composite
     }
+  }
+
+  /// A pass that is cut to nothing: both boxes cover everything.
+  const UNCUT: Self = Self {
+    rect: [0.0; 4],
+    target: [0.0; 4],
+    source: [0.0; 4],
+    kernel: [0.0; 4],
+    mode: [0.0, 1.0, 1.0, 0.0],
+    limit: [0.0; 4],
+    mask: [0.0, 0.0, EVERYWHERE, EVERYWHERE],
+    mask_inverse: [1.0, 0.0, 0.0, 1.0],
+    radii: [0.0; 4],
+    clip: [0.0, 0.0, EVERYWHERE, EVERYWHERE],
+    clip_inverse: [1.0, 0.0, 0.0, 1.0],
+    clip_radii: [0.0; 4],
+  };
+}
+
+/// The half size of a box that covers every pixel of any target.
+#[cfg(feature = "render")]
+const EVERYWHERE: f32 = 1.0e9;
+
+/// A [`RoundedBox`] as a pass's uniforms in `parent`'s pixels: centre and
+/// half size, inverse matrix, radii and scale. A box that covers everything
+/// for `None`.
+#[cfg(feature = "render")]
+fn box_uniforms(rounded: Option<RoundedBox>, parent: &TargetSpace) -> ([f32; 4], [f32; 4], [f32; 4], f32) {
+  match rounded {
+    Some(rounded) => (
+      [
+        rounded.center[0] - parent.origin[0],
+        rounded.center[1] - parent.origin[1],
+        rounded.half[0],
+        rounded.half[1],
+      ],
+      rounded.inverse,
+      rounded.radii,
+      rounded.scale,
+    ),
+    None => ([0.0, 0.0, EVERYWHERE, EVERYWHERE], [1.0, 0.0, 0.0, 1.0], [0.0; 4], 1.0),
   }
 }
 
@@ -863,7 +1021,18 @@ fn blurred_bounds(
   }
   let reach = (sigma * 3.0).ceil();
   let mut shown = grown(extent, reach);
+  let mut clip = None;
   if let Some([x, y, width, height]) = group.clip {
+    if group.clip_radii.iter().any(|radius| *radius > 0.0) {
+      let limit = width.min(height) * 0.5 * scale;
+      clip = Some(RoundedBox::rect(
+        x * scale,
+        y * scale,
+        width * scale,
+        height * scale,
+        group.clip_radii.map(|radius| (radius * scale).min(limit)),
+      ));
+    }
     shown = intersection(
       shown,
       [
@@ -903,6 +1072,7 @@ fn blurred_bounds(
       y: y0 as i32,
       width: (x1 - x0) as u32,
       height: (y1 - y0) as u32,
+      clip,
     }),
   )
 }
@@ -953,6 +1123,42 @@ mod tests {
   }
 
   #[test]
+  fn a_rounded_box_covers_what_is_inside_its_corners_under_any_transform() {
+    let upright = RoundedBox::rect(10.0, 20.0, 40.0, 20.0, [8.0, 0.0, 0.0, 0.0]);
+    assert_eq!(upright.extent(), [10.0, 20.0, 50.0, 40.0]);
+    assert_eq!(upright.coverage(30.5, 30.5), 1.0);
+    // An edge through a pixel's centre covers half of it.
+    assert_eq!(upright.coverage(50.0, 30.5), 0.5);
+    assert_eq!(upright.coverage(51.5, 30.5), 0.0);
+    // The rounded corner is cut, the square one is not.
+    assert_eq!(upright.coverage(11.0, 21.0), 0.0);
+    assert_eq!(upright.coverage(49.0, 21.0), 1.0);
+
+    // A quarter turn about the centre: 20 wide, 40 tall.
+    let turned =
+      RoundedBox::transformed(10.0, 20.0, 40.0, 20.0, [0.0; 4], [0.0, 1.0, -1.0, 0.0], [20.0, 10.0]).unwrap();
+    let extent = turned.extent();
+    assert!(
+      (extent[0] - 20.0).abs() < 1e-4 && (extent[2] - 40.0).abs() < 1e-4,
+      "{extent:?}"
+    );
+    assert!(
+      (extent[1] - 10.0).abs() < 1e-4 && (extent[3] - 50.0).abs() < 1e-4,
+      "{extent:?}"
+    );
+    assert_eq!(turned.coverage(30.5, 12.5), 1.0);
+    assert_eq!(turned.coverage(15.5, 30.5), 0.0);
+
+    // Twice the size about its top-left corner: the edge is still one
+    // pixel wide.
+    let doubled = RoundedBox::transformed(10.0, 20.0, 40.0, 20.0, [0.0; 4], [2.0, 0.0, 0.0, 2.0], [0.0, 0.0]).unwrap();
+    assert_eq!(doubled.extent(), [10.0, 20.0, 90.0, 60.0]);
+    assert_eq!((doubled.coverage(89.0, 40.0), doubled.coverage(90.0, 40.0)), (1.0, 0.5));
+
+    assert!(RoundedBox::transformed(0.0, 0.0, 4.0, 4.0, [0.0; 4], [1.0, 2.0, 2.0, 4.0], [0.0, 0.0]).is_none());
+  }
+
+  #[test]
   fn a_narrow_blur_runs_on_the_layer_and_a_wide_one_on_a_reduced_copy() {
     let blur = |sigma: f32| LayerBlur {
       sigma,
@@ -960,6 +1166,7 @@ mod tests {
       y: 0,
       width: 201,
       height: 100,
+      clip: None,
     };
     let narrow = BlurPlan::new(&blur(4.0));
     assert_eq!((narrow.reduction, narrow.sigma, narrow.size), (1, 4.0, [201, 100]));
@@ -991,6 +1198,7 @@ mod tests {
       opacity: 1.0,
       blur: 8.0,
       clip: Some([10.0, 0.0, 50.0, 100.0]),
+      clip_radii: [0.0; 4],
     };
     // Content from x 20 to 200, in a 100 x 100 window at scale 2.
     let (bounds, blur) = blurred_bounds(&group, [20.0, 30.0, 200.0, 60.0], [100.0, 100.0], 2.0);
@@ -1012,6 +1220,18 @@ mod tests {
     assert_eq!(
       (blur.x + blur.width as i32, blur.y + blur.height as i32),
       (100 + 27, 60 + 27)
+    );
+
+    assert_eq!(blur.clip, None, "a clip without corners is in the bounds");
+    // A rounded clip rides along, in physical pixels.
+    let rounded = OpacityGroup {
+      clip_radii: [4.0, 0.0, 0.0, 0.0],
+      ..group
+    };
+    let (_, blur) = blurred_bounds(&rounded, [20.0, 30.0, 200.0, 60.0], [100.0, 100.0], 2.0);
+    assert_eq!(
+      blur.unwrap().clip,
+      Some(RoundedBox::rect(20.0, 0.0, 100.0, 200.0, [8.0, 0.0, 0.0, 0.0]))
     );
 
     let unblurred = OpacityGroup { blur: 0.0, ..group };

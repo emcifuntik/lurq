@@ -997,7 +997,16 @@ impl LayoutEngine {
     // A plain wrapper never carries opacity or a blur (the fast path above
     // requires the defaults), so only here can a node open an opacity group.
     let group_start = quads.len();
+    // The radius is in the node's own units: on screen it is scaled by the
+    // transforms the node is under, its own included.
     let blur = node.effective_blur();
+    let blur = if blur > 0.0 {
+      blur
+        * opacity_groups::transform_scale(inherited_transform)
+        * opacity_groups::transform_scale(node.effective_transform())
+    } else {
+      blur
+    };
     let group_clip = clip;
     let (clip, cull_clip) = if blur > 0.0 {
       (

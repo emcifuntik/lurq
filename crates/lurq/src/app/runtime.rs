@@ -3256,7 +3256,13 @@ impl Tree {
               .map(|[x, y]| [x * scale, y * scale])
               .unwrap_or([w * 0.5, h * 0.5]),
             clip: scaled_clip,
-            sigma: crate::layout::opacity_layer::blur_sigma(*blur) * scale,
+            // The radius is in the node's own units, like the box.
+            sigma: {
+              let [a, b, c, d] = quad.transform.matrix_2x2();
+              let transform_scale = (a * d - b * c).abs().sqrt();
+              let radius = (*blur * transform_scale).min(crate::layout::opacity_layer::MAX_BLUR_RADIUS);
+              crate::layout::opacity_layer::blur_sigma(radius) * scale
+            },
             opacity: quad.opacity.clamp(0.0, 1.0),
           });
         }
@@ -9491,6 +9497,9 @@ fn save_devtools_screenshot(
           };
           if let Some(blur) = layers[layer].blur {
             blur_screenshot_layer(&mut layer_pixels, bounds.width, blur.sigma);
+            if let Some(clip) = blur.clip {
+              clip_screenshot_layer(&mut layer_pixels, bounds, &clip);
+            }
           }
           composite_screenshot_layer(&mut target_pixels, &layer_pixels, bounds.width, layers[layer].opacity);
         }
@@ -10150,26 +10159,13 @@ fn blur_screenshot_backdrop(
   };
   let mut blurred = pixels.to_vec();
   blur_screenshot_layer(&mut blurred, bounds.width, backdrop.sigma);
-  let [mask_x, mask_y, mask_width, mask_height] = region.mask;
-  let half = [mask_width * 0.5, mask_height * 0.5];
   let shown = region.layer.bounds;
   for world_y in shown.y..shown.y + shown.height {
     for world_x in shown.x..shown.x + shown.width {
-      // The box's coverage of the pixel, from its distance to the rounded
-      // edge, as the blur shaders take it.
-      let p = [
-        world_x as f32 + 0.5 - (mask_x + half[0]),
-        world_y as f32 + 0.5 - (mask_y + half[1]),
-      ];
-      let radius = match (p[0] >= 0.0, p[1] >= 0.0) {
-        (false, false) => region.radii[0],
-        (true, false) => region.radii[1],
-        (true, true) => region.radii[2],
-        (false, true) => region.radii[3],
-      };
-      let q = [p[0].abs() - half[0] + radius, p[1].abs() - half[1] + radius];
-      let distance = q[0].max(0.0).hypot(q[1].max(0.0)) + q[0].max(q[1]).min(0.0) - radius;
-      let coverage = (0.5 - distance).clamp(0.0, 1.0) * region.layer.opacity;
+      let center = (world_x as f32 + 0.5, world_y as f32 + 0.5);
+      let coverage = region.mask.coverage(center.0, center.1)
+        * region.clip.map_or(1.0, |clip| clip.coverage(center.0, center.1))
+        * region.layer.opacity;
       if coverage <= 0.0 {
         continue;
       }
@@ -10192,6 +10188,24 @@ fn blur_screenshot_backdrop(
       }
       pixels[index + 3] = alpha.round().clamp(0.0, 255.0) as u8;
     }
+  }
+}
+
+/// Cuts a capture layer (straight alpha, the capture's size) to a rounded
+/// clip: the clip a blurred layer's node is under.
+#[cfg(feature = "devtools")]
+fn clip_screenshot_layer(
+  layer: &mut [u8],
+  bounds: DevtoolsScreenshotBounds,
+  clip: &crate::layout::opacity_layer::RoundedBox,
+) {
+  for (index, pixel) in layer.chunks_exact_mut(4).enumerate() {
+    if pixel[3] == 0 {
+      continue;
+    }
+    let (x, y) = (index as u32 % bounds.width, index as u32 / bounds.width);
+    let coverage = clip.coverage((bounds.x + x) as f32 + 0.5, (bounds.y + y) as f32 + 0.5);
+    pixel[3] = (f32::from(pixel[3]) * coverage).round() as u8;
   }
 }
 

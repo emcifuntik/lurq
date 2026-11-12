@@ -239,7 +239,7 @@ fn blur_showcase() -> Element {
           .background("#ffffff")
           .border_inside(1.0, BORDER)
           .rounded(10.0)
-          .child(text("Blurred", 14.0, FontWeight::Bold, TEXT))
+          .child(text("Blurred", 14.0, FontWeight::Bold, "#0f172a"))
           .child(lurq::components::Rect::new(64.0, 10.0).background(PRIMARY).rounded(5.0))
           .opacity(opacity)
           .blur(radius),
@@ -297,7 +297,7 @@ fn backdrop_blur_showcase() -> Element {
         .child(glass("blur 0", 0.0))
         .child(glass("blur 4", 4.0))
         .child(glass("blur 12", 12.0))
-        .child(glass("blur 32", 32.0)),
+        .child(glass("turned", 12.0).transform(lurq::node::transform::Transform2D::rotate_deg(-8.0))),
     )
     .into()
 }

@@ -51,6 +51,7 @@ fn group(start: usize, end: usize, opacity: f32, blur: f32) -> OpacityGroup {
     opacity,
     blur,
     clip: Some([0.0, 0.0, WIDTH as f32, HEIGHT as f32]),
+    clip_radii: [0.0; 4],
   }
 }
 
@@ -229,6 +230,42 @@ fn assert_layer_blur<E: RenderEngine>(new_engine: fn() -> E, backend: &str) {
       &expected_stripes(sigma),
       2.5,
       &format!("{backend}: stripes at sigma {sigma}"),
+    );
+  }
+
+  // A rounded clip the node is under cuts the blurred layer, corners
+  // included: the clip here lies inside the box, so without its corners
+  // every pixel of it would be the box's colour.
+  let mut clipped = group(0, 1, 1.0, 8.0);
+  clipped.clip = Some([64.0, 32.0, 32.0, 32.0]);
+  clipped.clip_radii = [12.0; 4];
+  let frame = render(
+    &mut new_engine(),
+    &list(vec![rect(0, BOX, Color::new(FILL, FILL, FILL, 255))], &[clipped]),
+  );
+  for (x, y) in [
+    (64, 32),
+    (65, 33),
+    (95, 32),
+    (64, 63),
+    (95, 63),
+    (63, 48),
+    (96, 48),
+    (80, 31),
+  ] {
+    assert_eq!(
+      pixel(&frame, x, y),
+      [BACKGROUND; 3],
+      "{backend}: ({x}, {y}) outside the rounded clip"
+    );
+  }
+  // Inside it the layer is the blurred box, as without a clip.
+  let unclipped = expected_box(4.0, 1.0);
+  for (x, y) in [(80, 48), (64, 48), (80, 32), (68, 36), (91, 59)] {
+    let (value, want) = (f32::from(pixel(&frame, x, y)[0]), unclipped[(y * WIDTH + x) as usize]);
+    assert!(
+      (value - want).abs() <= 2.5,
+      "{backend}: ({x}, {y}) inside the rounded clip is {value}, expected {want}"
     );
   }
 
