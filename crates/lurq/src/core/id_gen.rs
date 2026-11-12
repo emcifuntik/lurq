@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+  Arc,
+  atomic::{AtomicU64, Ordering},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(u64);
@@ -15,26 +18,24 @@ impl NodeId {
   }
 }
 
+/// The next ID is a counter with no lock around it: a lock of the standard library's makes its first use an
+/// allocation on the platforms whose lock is a `pthread` one, and a tree's first IDs are given in a pass that
+/// allocates nothing.
 #[derive(Clone)]
 pub struct IdGenerator {
-  pool: Arc<Mutex<IdPool>>,
-}
-
-struct IdPool {
-  current: u64,
+  next: Arc<AtomicU64>,
 }
 
 impl IdGenerator {
   pub fn new() -> Self {
     Self {
-      pool: Arc::new(Mutex::new(IdPool { current: 1 })),
+      next: Arc::new(AtomicU64::new(1)),
     }
   }
 
   pub fn next(&self) -> NodeId {
-    let mut pool = self.pool.lock().unwrap();
-    let id = pool.current;
-    pool.current = pool.current.checked_add(1).expect("node IDs exhausted");
+    let id = self.next.fetch_add(1, Ordering::Relaxed);
+    assert!(id != u64::MAX, "node IDs exhausted");
     NodeId(id)
   }
 

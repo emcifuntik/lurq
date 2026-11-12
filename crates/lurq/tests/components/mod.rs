@@ -1,6 +1,9 @@
 #[cfg(feature = "image")]
 mod decoded_image;
 mod dnd;
+mod refresh;
+mod sheet;
+mod swipe_row;
 mod virtualized_list;
 mod virtualized_list_anchoring;
 mod virtualized_list_bootstrap;

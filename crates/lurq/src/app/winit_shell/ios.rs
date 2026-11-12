@@ -177,8 +177,12 @@ impl KeyboardProbe {
     }
   }
 
-  /// How much of a window `height` points high the keyboard covers now, in points. With no keyboard the guide
-  /// rests at the bottom safe area, which is no cover of the keyboard's: the shell takes the larger of the two.
+  /// How much of a window `height` points high the keyboard covers now, in points; 0 with no keyboard.
+  ///
+  /// With no keyboard the guide rests at the bottom safe area of the view it is in, which is no cover of the
+  /// keyboard's. That is winit's view, whose safe area UIKit does not turn with the device: on a phone on its
+  /// side the guide rests where the home indicator's room ended upright, higher than it ends now, and taken
+  /// for a keyboard that hid what goes away for one.
   pub(super) fn overlap(&self, height: f64) -> f64 {
     unsafe {
       let layer: Retained<AnyObject> = msg_send![&*self.probe, layer];
@@ -191,7 +195,16 @@ impl KeyboardProbe {
       if frame.origin.y < 1.0 {
         return 0.0;
       }
-      (height - frame.origin.y).clamp(0.0, height)
+      let covered = (height - frame.origin.y).clamp(0.0, height);
+      let parent: Option<Retained<AnyObject>> = msg_send![&*self.probe, superview];
+      let rests = match &parent {
+        Some(parent) => {
+          let insets: UIEdgeInsets = msg_send![&**parent, safeAreaInsets];
+          insets.bottom
+        }
+        None => 0.0,
+      };
+      if covered <= rests + 0.5 { 0.0 } else { covered }
     }
   }
 }
@@ -895,5 +908,53 @@ pub(super) fn watch_orientation() {
   };
   if TOLD_ORIENTATION.swap(number, Ordering::AcqRel) != number {
     push_app_event(AppEvent::Rotated(orientation));
+  }
+}
+
+use crate::app::window::{Appearance, SystemSettings};
+
+#[link(name = "UIKit", kind = "framework")]
+unsafe extern "C" {
+  fn UIAccessibilityIsBoldTextEnabled() -> bool;
+  fn UIAccessibilityIsReduceMotionEnabled() -> bool;
+  fn UIAccessibilityDarkerSystemColorsEnabled() -> bool;
+  fn UIAccessibilityIsReduceTransparencyEnabled() -> bool;
+  fn UIAccessibilityShouldDifferentiateWithoutColor() -> bool;
+  fn UIAccessibilityButtonShapesEnabled() -> bool;
+  fn UIAccessibilityIsOnOffSwitchLabelsEnabled() -> bool;
+}
+
+/// What the person set for the whole system, as it is now. Main thread only.
+///
+/// The appearance is the scene's: winit's window was made outside the scene, and a window made in it says
+/// what the scene is in. The text scale is what the system makes of a size of 100 for the person's text
+/// size, the body style's curve.
+pub(super) fn system_settings(view: NonNull<c_void>) -> SystemSettings {
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  unsafe {
+    let probe = SAFE_AREA_PROBE.load(Ordering::Acquire);
+    let traits: Retained<AnyObject> = match probe.as_ref() {
+      Some(probe) => msg_send![probe, traitCollection],
+      None => msg_send![view, traitCollection],
+    };
+    // `UIUserInterfaceStyleDark`.
+    let style: isize = msg_send![&*traits, userInterfaceStyle];
+    let metrics: Retained<AnyObject> = msg_send![class!(UIFontMetrics), defaultMetrics];
+    let scaled: f64 = msg_send![&*metrics, scaledValueForValue: 100.0f64, compatibleWithTraitCollection: &*traits];
+    SystemSettings {
+      appearance: if style == 2 {
+        Appearance::Dark
+      } else {
+        Appearance::Light
+      },
+      text_scale: (scaled / 100.0) as f32,
+      bold_text: UIAccessibilityIsBoldTextEnabled(),
+      reduce_motion: UIAccessibilityIsReduceMotionEnabled(),
+      increase_contrast: UIAccessibilityDarkerSystemColorsEnabled(),
+      reduce_transparency: UIAccessibilityIsReduceTransparencyEnabled(),
+      differentiate_without_color: UIAccessibilityShouldDifferentiateWithoutColor(),
+      button_shapes: UIAccessibilityButtonShapesEnabled(),
+      on_off_labels: UIAccessibilityIsOnOffSwitchLabelsEnabled(),
+    }
   }
 }

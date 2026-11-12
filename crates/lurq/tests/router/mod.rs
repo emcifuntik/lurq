@@ -57,6 +57,10 @@ mod rerender {
   mod sibling_unchanged;
 }
 
+mod tabs {
+  mod outlet;
+}
+
 mod stack {
   mod custom_bar;
   mod screens;

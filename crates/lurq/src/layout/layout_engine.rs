@@ -2333,7 +2333,14 @@ impl LayoutEngine {
       let style = node.scrollbar_style(self.scrollbar.borrow().clone());
       let reserve_vertical = should_reserve_scrollbar(&style, *direction, ScrollAxis::Vertical);
       let reserve_horizontal = should_reserve_scrollbar(&style, *direction, ScrollAxis::Horizontal);
-      let viewport = reserved_viewport(result.size, &style, reserve_vertical, reserve_horizontal);
+      // The container's own padding is around what scrolls: the content is seen in the room inside it, and
+      // starts at its inner corner.
+      let padding = self.resolved_padding_for_size(node, result.size);
+      let inner = Size::new(
+        (result.size.width - padding.left - padding.right).max(0.0),
+        (result.size.height - padding.top - padding.bottom).max(0.0),
+      );
+      let viewport = reserved_viewport(inner, &style, reserve_vertical, reserve_horizontal);
       state.update_layout_with_container(
         content_width,
         content_height,
@@ -2343,7 +2350,11 @@ impl LayoutEngine {
         result.size.height,
       );
       if let Some(child) = result.children.first_mut() {
-        child.offset = state.content_offset();
+        let offset = state.content_offset();
+        child.offset = Offset {
+          x: offset.x + padding.left,
+          y: offset.y + padding.top,
+        };
       }
     }
   }

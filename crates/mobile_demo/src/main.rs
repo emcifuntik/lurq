@@ -8,10 +8,15 @@
 //! `ios/MobileDemo.xcodeproj` wraps it in an app bundle for a simulator or a phone: its only build phase runs
 //! `ios/build-rust.sh`, which builds this binary with cargo, and Xcode signs the result.
 
+mod auth;
 mod gestures;
 mod home;
 mod inputs;
+mod lists;
+mod more;
 mod scroll;
+mod sheets;
+mod system;
 mod touch;
 mod ui;
 mod virtual_list;
@@ -22,20 +27,25 @@ use lurq::{
     component::Component,
     ctx::Ctx,
     events::{HistoryDirection, HistorySwipeEvent},
+    theme::{PaletteColor, ThemePalette},
     wgpu_render::WgpuRenderEngine,
     window::Orientation,
     winit_shell::WinitWindow,
   },
-  components::{Column, NavigationBar, NavigationItem, Router, StackOutlet, StackOutletProps},
+  components::{
+    Column, NavigationBar, NavigationItem, NavigationSearch, Row, SheetHost, StackOutlet, StackOutletProps, TabBar,
+    TabItem, TabOutlet, TabOutletProps, Tabs,
+  },
   core::Signal,
+  layout::{layout_kind::Justify, text_style::FontWeight},
   node::{Element, color::Color},
-  router::{RouterHandle, Routes},
+  router::Routes,
 };
 
-use crate::ui::{BG, BORDER, FILL, PRIMARY, SURFACE, TEXT};
+use crate::ui::{BG, BORDER, FILL, PRIMARY, TEXT};
 
 struct MobileDemo {
-  router: RouterHandle,
+  tabs: Tabs,
 }
 
 impl Component for MobileDemo {
@@ -49,14 +59,60 @@ impl Component for MobileDemo {
         said.truncate(6);
       });
     });
-    let router = ctx.router(routes());
-    // The first entry of the history: the screen at the bottom of the stack, which the others go back to.
-    router.replace("/");
-    Self { router }
+    // Two tabs, each a stack of screens with a history of its own. The first entry of a history is the
+    // screen at the bottom of its stack, which the others go back to.
+    let checks = ctx.router(routes());
+    checks.replace("/");
+    let more = ctx.router(more::routes());
+    more.replace("/");
+    let tabs = Tabs::new();
+    tabs
+      .add(
+        "checks",
+        TabItem::new("Checks")
+          .symbol("checklist")
+          .selected_symbol("checklist.checked"),
+        checks,
+      )
+      .add(
+        "more",
+        TabItem::new("More")
+          .symbol("ellipsis.circle")
+          .selected_symbol("ellipsis.circle.fill"),
+        more,
+      );
+    // The tab to search in, which a floating bar stands apart from the others.
+    let search = ctx.router(more::search_routes());
+    search.replace("/");
+    tabs.add("search", TabItem::new("Search").search(), search);
+    // Tabs to add from the second tab's screen, until the bar has more than it has places for.
+    more::set_spares(
+      (1..=4)
+        .map(|number| {
+          let router = ctx.router(more::spare_routes(number));
+          router.replace("/");
+          router
+        })
+        .collect(),
+    );
+    Self { tabs }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    Router::mount(ctx, self.router.clone())
+    // The whole app draws back behind a sheet that takes all the room.
+    let tabs = self.tabs.clone();
+    SheetHost::mount(ctx, move |ctx| {
+      let bar = TabBar::dark()
+        // A bar that floats over the content, as the newest system's does, and gets out of the way of a
+        // list that is being read.
+        .floating()
+        .minimizes_on_scroll(true)
+        // Not all there: what scrolls under the bar shows through it, blurred.
+        .background(Color::new(30, 41, 59, 190))
+        .border(Color::from_hex(BORDER))
+        .tint(Color::from_hex(PRIMARY));
+      TabOutlet::mount(ctx, TabOutletProps::new(tabs.clone()).bar(bar))
+    })
   }
 }
 
@@ -82,6 +138,16 @@ fn routes() -> Routes {
       .route("/scroll", |ctx| {
         screen(ctx, "/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
       })
+      .route("/system", |ctx| screen(ctx, "/system", system::system))
+      .route("/auth", |ctx| {
+        screen(ctx, "/auth", |ctx| ctx.mount::<auth::AuthScreen>(()))
+      })
+      .route("/lists", |ctx| {
+        screen(ctx, "/lists", |ctx| ctx.mount::<lists::ListsScreen>(()))
+      })
+      .route("/sheets", |ctx| {
+        screen(ctx, "/sheets", |ctx| ctx.mount::<sheets::SheetsScreen>(()))
+      })
       .route("/virtual-list", |ctx| {
         screen(ctx, "/virtual-list", |ctx| {
           ctx.mount::<virtual_list::VirtualListScreen>(())
@@ -93,10 +159,11 @@ fn routes() -> Routes {
 
 /// The stack of screens under its bar. A finger in from the left edge takes the top screen back with it; from
 /// the right edge, or a trackpad's swipe, the history moves as the event says.
-fn shell(ctx: &mut Ctx) -> Element {
+pub(crate) fn shell(ctx: &mut Ctx) -> Element {
   let navigator = ctx.navigator();
   let bar = NavigationBar::dark()
-    .background(Color::from_hex(SURFACE))
+    // Not all there: a list that goes on under the bar shows through it, blurred.
+    .background(Color::new(30, 41, 59, 190))
     .tint(Color::from_hex(PRIMARY))
     .title(Color::from_hex(TEXT))
     .border(Color::from_hex(BORDER));
@@ -124,14 +191,30 @@ fn shell(ctx: &mut Ctx) -> Element {
 /// the edges of the display; what is read and touched stays clear of the camera housing and the home
 /// indicator.
 fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) -> Element {
-  ctx.navigation_item(NavigationItem::new(home::title_of(path)));
-  let safe_area = ctx.window().safe_area;
+  // The home screen and the inputs have their title large, over content that scrolls it away.
+  let large = matches!(path, "/" | "/inputs");
+  let item = NavigationItem::new(home::title_of(path)).large_title(large);
+  ctx.navigation_item(match path {
+    // The home screen is searched; the scroll screen has a prompt over its title and a toolbar under it.
+    "/" => item.search(NavigationSearch::new(home::sought()).placeholder("Search the screens")),
+    "/scroll" => item.prompt("A prompt over the title").toolbar(
+      Row::new()
+        .width(FILL)
+        .justify(Justify::SpaceBetween)
+        .child(ui::text("A toolbar", 17.0, FontWeight::Normal, PRIMARY))
+        .child(ui::text("of the screen's", 17.0, FontWeight::Normal, PRIMARY)),
+    ),
+    _ => item,
+  });
+  // Under the bar of tabs there is nothing more to keep clear of at the bottom.
+  let safe_area = ctx.safe_area();
   Column::new()
     .child(content(ctx))
     .size(FILL, FILL)
     .padding_left(safe_area.left)
     .padding_right(safe_area.right)
-    .padding_bottom(safe_area.bottom)
+    // The home screen's list goes on under the bar of tabs, and shows through it: it pads its own content.
+    .padding_bottom(if matches!(path, "/" | "/system" | "/lists") { 0.0 } else { safe_area.bottom })
     .into()
 }
 
@@ -153,6 +236,16 @@ fn main() {
       handle.token()
     );
   }
+  // A palette for each appearance: the theme is in the system's, and the System screen shows it.
+  let mut dark = ThemePalette::default();
+  for (role, color) in [
+    (PaletteColor::SurfaceBase, "#1c1c1e"),
+    (PaletteColor::Border, "#38383a"),
+    (PaletteColor::TextPrimary, "#ffffff"),
+  ] {
+    dark.set(role, Color::from_hex(color));
+  }
+  app.theme().set_palettes(ThemePalette::default(), dark);
   tree.mount_root::<MobileDemo>(&mut app, ());
   let window = WinitWindow::new(app, tree)
     .with_title("lurq mobile demo")

@@ -48,12 +48,24 @@ inside its input.
 
 - **The way back's arrow** is the platform's symbol with the `raster` feature; without it, a drawing after
   it.
-- **The move** is a spring of 500 ms that starts at the finger's speed; the platform's own spring was not
-  measured against it.
-- **The bar** is opaque and its content does not scroll under it; there is no large title, no search field
-  and no material.
-- **A way back with no room even for `Back`** keeps the word; the platform leaves the arrow alone.
-- **Sheets and tabs:** not there.
+- **The bar** is over a screen's list, which shows through it blurred, as it does through the toolbar and
+  the list a long press on the way back opens; the platform's material also brightens and saturates what is
+  behind it, and the newest system's bar is glass that bends it.
+- **How things move** in the stack (the spring's length, how far a large title grows and the way it takes to
+  a way back) was set by eye and not measured against the platform; `StackMotion` changes the numbers.
+- **A search field** is the field alone: no scopes under it, no suggestions, and it does not come and go
+  with a move of its own when it takes the bar's place.
+- **Sheets** are there (`Sheet`, and `SheetHost` for the app that draws back behind one), with these
+  differences from the platform's: a sheet is never one the window behind can still be used under; the
+  corners of the app drawn back are rounded at once and not little by little; a list of a stack inside a
+  sheet does not give the finger to the sheet at its top; and the numbers (the radii, the dim, the spring,
+  how small the app gets) were set by eye.
+- **Tabs** are there (`Tabs`, `TabOutlet`, `TabBar`), flat or floating, with these differences from the
+  platform's: a floating bar is a blurred rounded bar, not glass, and has no lens a finger drags between
+  tabs; as a list is scrolled the bar goes out of view, where the platform's shrinks to a small one; the
+  picture of a tab that is chosen does not spring; the tab to search in is a place apart and does not open
+  into a field; the list of the tabs that do not fit cannot be put in another order; there is no accessory
+  over the bar, and no sidebar in a wide window. Its sizes were set by eye in a simulator.
 
 ## Touch
 
@@ -69,7 +81,11 @@ inside its input.
 - **The scroll indicator** is as wide to a finger as it is drawn, 3 pt; the platform's is easier to catch.
 - **The status bar's tap** scrolls the outermost list under the middle of the window. An app can turn a list
   off for it (`ScrollState::set_scrolls_to_top`) but not name the one it is for.
-- Not there at all: pull to refresh, paging, pinch to zoom inside a scroll, swipe actions on a row.
+- **Pull to refresh** (`PullToRefresh`) and **swipe actions** (`SwipeRow`) are there, written without a device
+  to pull and swipe on: only their tests have run. The spinner is drawn by lurq, not the platform's; an
+  action does not stretch as the row is pulled past it; and opening one row does not close another unless
+  the app ties them with `SwipeRowProps::open`.
+- Not there at all: paging, pinch to zoom inside a scroll.
 
 ## The platform
 
@@ -77,14 +93,42 @@ inside its input.
   no status bar. Now and then, turned back upright, the window shows a frame drawn for half its height until
   something asks for another; the shell asks for one when the window's size is not the last frame's, which
   made it rarer and did not end it. Not looked into further.
-- **Light and dark appearance, Dynamic Type, VoiceOver:** not done.
+- **Face ID and Touch ID** (`app::biometry`): an app asks the person to prove who they are. Written without
+  a device to try it on. Keeping a secret behind it in the keychain is not done, and a Mac's Touch ID is not
+  asked, though it has the same framework.
 - **Features of lurq other than touch and text** have not been run on iOS: `resources` (the network; `ring`
   did not build without Xcode), `persistent_storage`, `image`, `svg`, `markdown`, the developer tools.
 - **Haptics** (`ctx.window().haptic(..)`) were written without a device to feel them; no crash was reported,
   and nobody confirmed the tap itself.
 
+## Appearance and accessibility
+
+What a person sets for the whole system reaches a lurq app (`ctx.window().system`), and the theme, the stack,
+the bars and the sheets follow it. Tried in a simulator: the appearance and the text size, changed while the
+app runs. Not checked on a device, and bold text, reduced motion and reduced transparency not checked at all.
+
+- **Dynamic Type** is the theme's typography, what is made from it (a form's labels, Markdown's sizes, which
+  are shares of it) and a stack's large title: a size an app gives itself does not change unless it asks
+  (`theme.scaled`). The navigation bar's and the bar of tabs' own text keeps its size, as the platform's
+  does, but the platform shows a tab large when it is held, which lurq does not.
+- **Light and dark:** a theme follows with a palette for each. The demo app is dark in both.
+- **Bold Text** makes every text two weights heavier, where the font has the weights.
+- **Reduce Motion:** the stack and a sheet fade. A text input's caret, a scroll's momentum and an app's own
+  transitions are as always.
+- **Increase Contrast** makes the bars solid and their lines and unchosen tabs stand out; **Button Shapes**
+  underlines the way back. Nothing else in lurq acts on them, nor on **Differentiate Without Color** and
+  **On/Off Labels**, which are only told.
+- **The Liquid Glass setting** (clear or tinted) is not followed. No API tells it. UIKit keeps it in its own
+  defaults (`UIViewGlassTintAmount` in `com.apple.UIKit`), which an app can read and which was seen to change
+  with the setting on an iPhone 17, but the name is in no documentation and lurq does not lean on it.
+- **A change while the app is in front and nothing happens** (the appearance at sunset) is taken at the next
+  touch or frame, not at once.
+- **VoiceOver, Switch Control, Voice Control:** the screen is one opaque view to them. Nothing in it has a
+  label, a role or a value, and nothing can be reached or activated.
+- **Larger accessibility sizes, Zoom, Smart Invert:** not checked.
+
 ## Performance
 
-- **Single frames of up to 20 ms** against 8.3 ms at 120 Hz, a few a second at worst, measured while
-  scrolling on an iPhone 17. Not looked into; it is expected on the desktop too.
-- `frame_pacing_tests` measure the wall clock and fail now and then, on `master` as well.
+- **Late frames.** While a finger drags content or an animation runs, 2 to 5 frames in a hundred come a
+  refresh late on an iPhone 17; it was a third of them before the display link was left running between
+  frames. Whether a desktop has late frames of its own was not looked into.

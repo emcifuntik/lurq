@@ -317,6 +317,7 @@ pub struct Modal {
   target: ModalTarget,
   dismiss_on_escape: bool,
   layer: ModalLayer,
+  dismiss: Option<Signal<bool>>,
 }
 
 impl Modal {
@@ -327,6 +328,7 @@ impl Modal {
       target: ModalTarget::Parent,
       dismiss_on_escape: true,
       layer: ModalLayer::Dialog,
+      dismiss: None,
     }
   }
 
@@ -350,6 +352,13 @@ impl Modal {
     self
   }
 
+  /// The signal Escape sets to `false`, for a modal that stays open after it: one that is shown on its way
+  /// out, as a [`Sheet`](crate::components::Sheet) is.
+  pub(crate) fn dismisses(mut self, open: Signal<bool>) -> Self {
+    self.dismiss = Some(open);
+    self
+  }
+
   /// Marks this layer as `WindowChrome`'s decoration instead of a dialog.
   pub(crate) fn window_chrome_layer(mut self) -> Self {
     self.layer = ModalLayer::WindowChrome;
@@ -364,7 +373,7 @@ impl Modal {
     Some(ModalSpec {
       target: self.target,
       node: *self.node,
-      open_signal: self.open.signal(),
+      open_signal: self.dismiss.or_else(|| self.open.signal()),
       dismiss_on_escape: self.dismiss_on_escape,
       layer: self.layer,
     })
@@ -699,7 +708,22 @@ impl Timer {
 struct ElementRequests {
   focus: Option<ElementRef>,
   scroll_into_view: Option<ElementRef>,
+  blur: bool,
+  scroll_to_top: bool,
 }
+
+/// What a component's descendants keep clear of at the bottom, more than the window's own bottom inset, for
+/// a bar the component draws over them there: [`Ctx::safe_area`] adds it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum BottomBarInset {
+  Over(f32),
+}
+
+/// A component keeps its descendants clear of everything at the window's edges itself: for them
+/// [`Ctx::safe_area`] is nothing at every side. A sheet's content is such: the sheet stands clear of the status
+/// bar, and pads its content by the home indicator and the keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SafeAreaTaken;
 
 pub struct Ctx {
   dirty: Arc<AtomicBool>,
@@ -2167,7 +2191,46 @@ impl Ctx {
   /// Whether a focus or scroll-into-view request is waiting for the runtime.
   pub(crate) fn has_element_request(&self) -> bool {
     let requests = self.element_requests.lock();
-    requests.focus.is_some() || requests.scroll_into_view.is_some()
+    requests.focus.is_some() || requests.scroll_into_view.is_some() || requests.blur || requests.scroll_to_top
+  }
+
+  /// Takes the focus from whatever has it, after the current render: a text input being typed into is left,
+  /// and a phone's keyboard goes away. A request to focus made in the same render wins.
+  pub fn blur(&self) {
+    self.element_requests.lock().blur = true;
+    self.wake_window();
+  }
+
+  pub(crate) fn take_blur_request(&self) -> bool {
+    std::mem::take(&mut self.element_requests.lock().blur)
+  }
+
+  /// Scrolls the page to its top, after the current render, as a tap on a phone's status bar does: the
+  /// outermost list at the middle of the window that scrolls down and is away from its top, unless it is left
+  /// out with `ScrollState::set_scrolls_to_top(false)`.
+  pub fn scroll_to_top(&self) {
+    self.element_requests.lock().scroll_to_top = true;
+    self.wake_window();
+  }
+
+  pub(crate) fn take_scroll_to_top_request(&self) -> bool {
+    std::mem::take(&mut self.element_requests.lock().scroll_to_top)
+  }
+
+  /// How far in from each edge of the window this component's content stays clear of what is over it there:
+  /// the window's [`safe_area`](crate::app::window::WindowInfo), and at the bottom also the bar a component
+  /// around this one draws over its content, as a [`TabOutlet`](crate::components::TabOutlet) does. Content
+  /// that scrolls under such a bar is padded by this inside its list, and shows through the bar.
+  pub fn safe_area(&mut self) -> crate::app::window::SafeAreaInsets {
+    if self.use_context::<SafeAreaTaken>().is_some() {
+      return crate::app::window::SafeAreaInsets::default();
+    }
+    let mut safe_area = self.window().safe_area;
+    match self.use_context::<BottomBarInset>() {
+      Some(BottomBarInset::Over(bar)) => safe_area.bottom += bar,
+      None => {}
+    }
+    safe_area
   }
 
   pub(crate) fn focus_request(&self) -> Option<ElementRef> {

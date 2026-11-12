@@ -478,6 +478,7 @@ pub(crate) struct GlyphEngine {
   transformed_scale_context: ScaleContext,
   font_aliases: HashMap<String, String>,
   face_weights: FaceWeights,
+  bold_text: bool,
   /// What is known of each plain text laid out one way: its size, extents,
   /// carets and glyphs.
   texts: TextCache,
@@ -534,6 +535,7 @@ impl GlyphEngine {
       font_aliases: HashMap::new(),
       input_cache: input_tokens::InputCache::default(),
       face_weights: FaceWeights::default(),
+      bold_text: false,
       texts: TextCache::new(GLYPH_LAYOUT_CACHE_LIMIT),
       rich_shaped_layout_cache: HashMap::new(),
       underline_metrics: span_boxes::UnderlineMetrics::default(),
@@ -3003,9 +3005,25 @@ impl GlyphEngine {
 
   /// Weight of the loaded face nearest to `style.weight` in `family`; see [`FaceWeights`].
   fn face_weight(&mut self, family: &str, style: &TextStyle) -> cosmic_text::Weight {
+    // A person who asked the system for bold text has every text two weights heavier, whatever set its
+    // weight.
+    let weight = if self.bold_text {
+      crate::layout::text_style::FontWeight::Numeric((style.weight.value() + 200).min(900))
+    } else {
+      style.weight
+    };
     self
       .face_weights
-      .resolve(self.font_system.db(), family, style.weight, style.style)
+      .resolve(self.font_system.db(), family, weight, style.style)
+  }
+
+  /// Draws every text heavier, or as it is set: the theme's bold text. The text laid out before is laid
+  /// out anew.
+  pub(crate) fn set_bold_text(&mut self, bold: bool) {
+    if self.bold_text != bold {
+      self.bold_text = bold;
+      self.clear_text_caches();
+    }
   }
 
   fn style_attrs<'a>(&mut self, style: &TextStyle, resolved_family: &'a str) -> Attrs<'a> {

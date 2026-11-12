@@ -61,7 +61,15 @@ struct ThemeInner {
   breakpoints: ThemeBreakpoints,
   caret: ThemeCaret,
   scrollbar: ScrollBarStyle,
+  /// The styles as they are used: `set_typography`'s, at `text_scale`.
   typography: ThemeTypography,
+  base_typography: ThemeTypography,
+  text_scale: f32,
+  bold_text: bool,
+  /// The palettes of a theme that has one for each appearance, and the appearance it is in.
+  palettes: Option<(ThemePalette, ThemePalette)>,
+  appearance: crate::app::window::Appearance,
+  follows_system: bool,
   #[cfg(feature = "markdown")]
   text_marks: Arc<ThemeTextMarks>,
   #[cfg(feature = "markdown")]
@@ -69,6 +77,12 @@ struct ThemeInner {
   #[cfg(feature = "form")]
   form: FormTheme,
   version: u64,
+}
+
+impl ThemeInner {
+  fn adjust_typography(&mut self) {
+    self.typography = self.base_typography.scaled(self.text_scale);
+  }
 }
 
 pub struct ThemeRef<'a, T> {
@@ -97,6 +111,12 @@ impl Default for Theme {
         caret: ThemeCaret::default(),
         scrollbar: ScrollBarStyle::default(),
         typography: ThemeTypography::default(),
+        base_typography: ThemeTypography::default(),
+        text_scale: 1.0,
+        bold_text: false,
+        palettes: None,
+        appearance: crate::app::window::Appearance::Light,
+        follows_system: true,
         #[cfg(feature = "markdown")]
         text_marks: Arc::new(ThemeTextMarks::default()),
         #[cfg(feature = "markdown")]
@@ -286,11 +306,106 @@ impl Theme {
   }
 
   pub fn set_typography(&self, typography: ThemeTypography) {
-    self.mutate_inner(|inner| inner.typography = typography);
+    self.mutate_inner(|inner| {
+      inner.base_typography = typography;
+      inner.adjust_typography();
+    });
   }
 
   pub fn set_typography_style(&self, typography_style: impl Into<TypographyStyle>, style: TextStyle) {
-    self.mutate_inner(|inner| inner.typography.set(typography_style, style));
+    self.mutate_inner(|inner| {
+      inner.base_typography.set(typography_style, style);
+      inner.adjust_typography();
+    });
+  }
+
+  /// How much larger than set the typography's styles are: what a person asked the system for (a phone's
+  /// Dynamic Type), 1 where they asked for nothing. A size that is not one of the typography's is scaled
+  /// with [`Theme::scaled`].
+  pub fn text_scale(&self) -> f32 {
+    self.inner.read().unwrap().text_scale
+  }
+
+  pub fn set_text_scale(&self, scale: f32) {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    if self.text_scale() == scale {
+      return;
+    }
+    self.mutate_inner(|inner| {
+      inner.text_scale = scale;
+      inner.adjust_typography();
+    });
+  }
+
+  /// A size in logical pixels at the theme's text scale.
+  pub fn scaled(&self, size: f32) -> f32 {
+    size * self.text_scale()
+  }
+
+  /// Every text is drawn two weights heavier, whatever set its weight: a person asked the system for bold
+  /// text.
+  pub fn bold_text(&self) -> bool {
+    self.inner.read().unwrap().bold_text
+  }
+
+  pub fn set_bold_text(&self, bold: bool) {
+    if self.bold_text() == bold {
+      return;
+    }
+    self.mutate_inner(|inner| inner.bold_text = bold);
+  }
+
+  /// Gives the theme a palette for each appearance: the one for the appearance it is in is its palette, now
+  /// and when the appearance changes.
+  pub fn set_palettes(&self, light: ThemePalette, dark: ThemePalette) {
+    self.mutate_inner(|inner| {
+      inner.palette = match inner.appearance {
+        crate::app::window::Appearance::Light => light.clone(),
+        crate::app::window::Appearance::Dark => dark.clone(),
+      };
+      inner.palettes = Some((light, dark));
+    });
+  }
+
+  /// Light or dark: the system's where the theme follows it, and what [`Theme::set_appearance`] said.
+  pub fn appearance(&self) -> crate::app::window::Appearance {
+    self.inner.read().unwrap().appearance
+  }
+
+  pub fn set_appearance(&self, appearance: crate::app::window::Appearance) {
+    if self.appearance() == appearance {
+      return;
+    }
+    self.mutate_inner(|inner| {
+      inner.appearance = appearance;
+      if let Some((light, dark)) = &inner.palettes {
+        inner.palette = match appearance {
+          crate::app::window::Appearance::Light => light.clone(),
+          crate::app::window::Appearance::Dark => dark.clone(),
+        };
+      }
+    });
+  }
+
+  /// Whether the theme takes what a person set for the whole system: its appearance, its text size and bold
+  /// text. It does unless told not to; an app with a look of its own, or its own setting for these, says no
+  /// and sets them itself.
+  pub fn follows_system(&self) -> bool {
+    self.inner.read().unwrap().follows_system
+  }
+
+  pub fn set_follows_system(&self, follows: bool) {
+    self.inner.write().unwrap().follows_system = follows;
+  }
+
+  /// Takes the system's settings, if the theme follows them. A shell calls it when they change.
+  pub fn apply_system(&self, system: &crate::app::window::SystemSettings) {
+    if !self.follows_system() {
+      return;
+    }
+    self.set_appearance(system.appearance);
+    self.set_text_scale(system.text_scale);
+    self.set_bold_text(system.bold_text);
   }
 
   pub fn default_text_style(&self) -> TextStyle {
@@ -298,7 +413,10 @@ impl Theme {
   }
 
   pub fn set_default_text_style(&self, style: TextStyle) {
-    self.mutate_inner(|inner| inner.typography.set_default_style(style));
+    self.mutate_inner(|inner| {
+      inner.base_typography.set_default_style(style);
+      inner.adjust_typography();
+    });
   }
 
   pub fn typography_style(&self, typography_style: impl Into<TypographyStyle>) -> TextStyle {

@@ -5622,6 +5622,12 @@ impl Tree {
   }
 
   fn apply_focus_request_inner(&mut self, discard_missing: bool) {
+    if self.root_ctx.as_ref().is_some_and(Ctx::take_blur_request) {
+      self.blur_focus();
+    }
+    if self.root_ctx.as_ref().is_some_and(Ctx::take_scroll_to_top_request) {
+      self.touch_scroll_to_top(Instant::now());
+    }
     let Some(reference) = self.root_ctx.as_ref().and_then(Ctx::focus_request) else {
       return;
     };
@@ -6731,6 +6737,8 @@ impl Tree {
       // out with the theme as it is now, even if a focus callback below
       // changes it; that change lays out next pass.
       self.layout_engine.set_theme(theme);
+      let bold_text = theme.bold_text();
+      app.shared.glyph_engine.lock().set_bold_text(bold_text);
       #[cfg(feature = "canvas")]
       let canvas_font = crate::canvas::CanvasFont::from_style(theme.typography().default_style());
       let theme_changed = self.last_theme_version != theme_version;

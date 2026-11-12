@@ -20,11 +20,13 @@ mod markdown;
 mod outlet;
 mod popup;
 mod rect;
+pub(crate) mod refresh;
 #[cfg(feature = "router")]
 mod router_component;
 mod row;
 mod scroll;
 mod select;
+pub(crate) mod sheet;
 mod slider;
 mod slot;
 mod spacer;
@@ -35,6 +37,9 @@ pub(crate) mod stack_outlet;
 pub(crate) mod styled_text;
 #[cfg(feature = "svg")]
 mod svg;
+pub(crate) mod swipe_row;
+#[cfg(feature = "router")]
+pub(crate) mod tabs;
 mod text;
 mod text_input;
 mod text_input_controller;
@@ -75,19 +80,21 @@ pub use markdown::{Markdown, MarkdownLink, MarkdownLinkPresentation, MarkdownLis
 pub use outlet::Outlet;
 pub use popup::{Popover, Popup};
 pub use rect::Rect;
+pub use refresh::{ActivityIndicator, ActivityIndicatorProps, PullToRefresh, PullToRefreshProps, PullToRefreshStyle};
 #[cfg(feature = "router")]
 pub use router_component::{Router, RouterProps};
 pub use row::Row;
 pub use scroll::{ScrollBoth, ScrollHorizontal, ScrollVertical};
 pub use select::{Select, SelectOption};
+pub use sheet::{Sheet, SheetDetent, SheetHost, SheetHostProps, SheetHostStyle, SheetProps, SheetStyle};
 pub use slider::Slider;
 pub use slot::Slot;
 pub use spacer::Spacer;
 pub use stack::Stack;
 #[cfg(feature = "router")]
 pub use stack_outlet::{
-  NavigationBar, NavigationBarBuilder, NavigationBarScreen, NavigationBarState, NavigationItem, StackOutlet,
-  StackOutletProps,
+  NavigationBar, NavigationBarBuilder, NavigationBarScreen, NavigationBarState, NavigationItem, NavigationSearch,
+  StackMotion, StackOutlet, StackOutletProps,
 };
 #[cfg(feature = "markdown")]
 pub use styled_text::{
@@ -95,6 +102,9 @@ pub use styled_text::{
 };
 #[cfg(feature = "svg")]
 pub use svg::Svg;
+pub use swipe_row::{SwipeAction, SwipeRow, SwipeRowProps, SwipeRowStyle};
+#[cfg(feature = "router")]
+pub use tabs::{TabBar, TabBarBuilder, TabBarPlace, TabBarState, TabEntry, TabItem, TabOutlet, TabOutletProps, Tabs};
 pub use text::{Text, TextOverflow};
 pub use text_input::{ContentKind, KeyboardKind, ReturnKey, TextInput, TextInputOverflow, TextInputOverflowAnchor};
 pub use text_input_controller::{InputEditError, InputSelection, TextInputController};
