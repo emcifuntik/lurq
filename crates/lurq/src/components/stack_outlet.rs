@@ -890,6 +890,30 @@ impl Component for StackOutlet {
     let mut screens = Stack::new().size(FILL, FILL).clip();
     for layer in shown.layers.iter().chain(shown.leaving.iter()) {
       let id = Some(layer.entry.id);
+      // How much of the screen the bar is over. The screen is told before it is rendered, so that a list of
+      // its own starts clear of the bar in its first frame; what the screen then says of itself (no bar, a
+      // prompt) is taken up after it.
+      let top_of = |layer: &Layer| {
+        let (bar_hidden, prompted) = {
+          let item = layer.bar.item.lock();
+          (item.bar_hidden, item.prompt.is_some())
+        };
+        match &props.bar {
+          Some(Bar::Standard(_)) if !bar_hidden => {
+            let items = if layer.bar.searching.get() {
+              0.0
+            } else {
+              bar_height + if prompted { style.prompt_height } else { 0.0 }
+            };
+            safe_area.top + items + 0.5
+          }
+          _ => 0.0,
+        }
+      };
+      let before = top_of(layer);
+      if layer.bar.top.get_untracked() != before {
+        layer.bar.top.set(before);
+      }
       let content = ctx.mount_keyed_offstage::<StackLayer>(
         &layer.entry.id.to_string(),
         StackLayerProps {
@@ -916,21 +940,7 @@ impl Component for StackOutlet {
       );
       // The bar is over the screens. A screen whose list goes on under it keeps its own content clear; any
       // other is kept clear here, by as much as its bar is high.
-      let (bar_hidden, prompted) = {
-        let item = layer.bar.item.lock();
-        (item.bar_hidden, item.prompt.is_some())
-      };
-      let top = match &props.bar {
-        Some(Bar::Standard(_)) if !bar_hidden => {
-          let items = if layer.bar.searching.get() {
-            0.0
-          } else {
-            bar_height + if prompted { style.prompt_height } else { 0.0 }
-          };
-          safe_area.top + items + 0.5
-        }
-        _ => 0.0,
-      };
+      let top = top_of(layer);
       *layer.bar.top_now.lock() = top;
       let clear = if layer.bar.under.load(Ordering::Acquire) {
         0.0

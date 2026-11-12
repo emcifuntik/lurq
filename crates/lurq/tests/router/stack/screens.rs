@@ -596,3 +596,15 @@ fn the_bar_is_over_a_screens_list_and_a_plain_screen_is_kept_clear_of_it() {
     "the list's content starts clear of the bar: {title:?}"
   );
 }
+
+#[test]
+fn a_screens_list_is_clear_of_the_bar_in_its_first_frame() {
+  let (mut tree, router) = setup();
+  router.push("/big");
+  run_pass(&mut tree);
+  let title = tree
+    .find_element(|element| element.id() == Some("navigation-large-title"))
+    .expect("the large title")
+    .rect();
+  assert!(title.1 >= 44.0, "not under the bar first, to jump down after: {title:?}");
+}
