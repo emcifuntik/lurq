@@ -67,8 +67,9 @@ fn styled_marks_paint_fills_colors_and_lines_from_the_theme() {
   let (link_left, link_right) = extent(link_glyphs.iter().copied());
   let underline = thin_rects(&snapshot, LINK);
   assert_eq!(underline.len(), 1, "one underline under the link");
-  // Glyph boxes reach a little past the advances the underline spans.
-  assert!(underline[0].x <= link_left + 1.0 && underline[0].x + underline[0].width >= link_right - 4.0);
+  // Glyph boxes reach a little past the advances the underline spans: by a pixel of padding and, with a
+  // font whose first letter starts at a fraction of a pixel, by that fraction as well.
+  assert!(underline[0].x <= link_left + 2.0 && underline[0].x + underline[0].width >= link_right - 4.0);
   let glyph_bottom = link_glyphs
     .iter()
     .map(|glyph| glyph.y + glyph.height)
