@@ -24,6 +24,12 @@ struct IdPool {
   current: u64,
 }
 
+impl Default for IdGenerator {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl IdGenerator {
   pub fn new() -> Self {
     Self {

@@ -178,6 +178,12 @@ pub struct TransitionEngine {
   reduced_motion: bool,
 }
 
+impl Default for TransitionEngine {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl TransitionEngine {
   pub fn new() -> Self {
     Self {
