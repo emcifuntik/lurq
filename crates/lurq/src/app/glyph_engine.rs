@@ -29,6 +29,7 @@ mod letter_spacing;
 mod reflow;
 mod scaler;
 mod span_boxes;
+mod text_cache;
 mod vertical_align;
 use cap_height::GlyphFace;
 pub(crate) use face_weight::FaceWeights;
@@ -36,6 +37,7 @@ use letter_spacing::letter_spacing_bits;
 pub(crate) use letter_spacing::with_letter_spacing;
 use reflow::ReflowRange;
 pub(crate) use span_boxes::SpanBox;
+use text_cache::{GlyphPlacement, TextCache};
 
 use crate::{
   app::profile_types::GlyphEngineProfile,
@@ -148,23 +150,8 @@ impl CacheKey {
   }
 }
 
-fn text_measure_fingerprint(text: &str, style: &TextStyle, max_width: f32, wrap: bool) -> u64 {
-  let mut hasher = DefaultHasher::new();
-  hash_sampled_text(text, &mut hasher);
-  style.font_family.hash(&mut hasher);
-  style.font_size.to_bits().hash(&mut hasher);
-  style.line_height.to_bits().hash(&mut hasher);
-  letter_spacing_bits(style.letter_spacing).hash(&mut hasher);
-  style.font_features.hash(&mut hasher);
-  max_width.to_bits().hash(&mut hasher);
-  style.weight.value().hash(&mut hasher);
-  style_to_u8(style.style).hash(&mut hasher);
-  text_align_to_u8(style.text_align).hash(&mut hasher);
-  wrap.hash(&mut hasher);
-  style.trim_line_box.hash(&mut hasher);
-  hasher.finish()
-}
-
+/// Hashes a long text by three samples of it and its length: hashing a whole
+/// document on every lookup would cost more than the lookup saves.
 fn hash_sampled_text<H: Hasher>(text: &str, hasher: &mut H) {
   const SAMPLE: usize = 128;
   text.len().hash(hasher);
@@ -468,13 +455,11 @@ pub(crate) struct GlyphEngine {
   transformed_scale_context: ScaleContext,
   font_aliases: HashMap<String, String>,
   face_weights: FaceWeights,
-  measure_cache: HashMap<u64, Vec<(CacheKey, Size)>>,
-  vertical_extents_cache: HashMap<u64, Vec<(CacheKey, Option<TextVerticalExtents>)>>,
-  optical_extents_cache: HashMap<u64, Vec<(CacheKey, Option<(f32, f32)>)>>,
-  caret_cache: HashMap<u64, Vec<(CacheKey, CaretPositions)>>,
+  /// What is known of each plain text laid out one way: its size, extents,
+  /// carets and glyphs.
+  texts: TextCache,
   rich_shaped_layout_cache: HashMap<u64, Vec<(RichTextShapeKey, CachedRichShapedLayout)>>,
   underline_metrics: span_boxes::UnderlineMetrics,
-  glyph_layout_cache: HashMap<CacheKey, Vec<CachedGlyph>>,
   clipped_glyph_layout_cache: HashMap<ClippedCacheKey, Vec<CachedGlyph>>,
   rich_glyph_layout_cache: HashMap<u64, Vec<(RichTextCacheKey, Vec<CachedRichGlyph>)>>,
   transformed_glyph_layout_cache: HashMap<CacheKey, Vec<CachedTransformedGlyph>>,
@@ -518,13 +503,9 @@ impl GlyphEngine {
       font_aliases: HashMap::new(),
       input_cache: input_tokens::InputCache::default(),
       face_weights: FaceWeights::default(),
-      measure_cache: HashMap::new(),
-      vertical_extents_cache: HashMap::new(),
-      optical_extents_cache: HashMap::new(),
-      caret_cache: HashMap::new(),
+      texts: TextCache::new(GLYPH_LAYOUT_CACHE_LIMIT),
       rich_shaped_layout_cache: HashMap::new(),
       underline_metrics: span_boxes::UnderlineMetrics::default(),
-      glyph_layout_cache: HashMap::new(),
       clipped_glyph_layout_cache: HashMap::new(),
       rich_glyph_layout_cache: HashMap::new(),
       transformed_glyph_layout_cache: HashMap::new(),
@@ -639,19 +620,21 @@ impl GlyphEngine {
     self.input_cache.clear();
     self.plain_buffers.clear();
     self.plain_buffer_bytes = 0;
-    self.measure_cache.clear();
-    self.vertical_extents_cache.clear();
-    self.optical_extents_cache.clear();
-    self.caret_cache.clear();
+    self.texts.clear();
     self.rich_shaped_layout_cache.clear();
     self.underline_metrics = span_boxes::UnderlineMetrics::default();
-    self.glyph_layout_cache.clear();
     self.clipped_glyph_layout_cache.clear();
     self.rich_glyph_layout_cache.clear();
     self.transformed_glyph_layout_cache.clear();
   }
 
-  #[cfg_attr(not(feature = "perf_profile"), allow(dead_code))]
+  /// A pass of a window begins: its counters start from zero, and what the
+  /// text caches are asked for from here on counts as in use.
+  pub(crate) fn begin_pass(&mut self) {
+    self.reset_stats();
+    self.texts.begin_pass();
+  }
+
   pub(crate) fn reset_stats(&mut self) {
     self.measure_hits = 0;
     self.measure_misses = 0;
@@ -681,30 +664,18 @@ impl GlyphEngine {
 
   pub(crate) fn measure_text(&mut self, text: &str, style: &TextStyle, max_width: f32) -> Size {
     let wrap = is_bounded_text_width(max_width);
-    let fingerprint = text_measure_fingerprint(text, style, max_width, wrap);
+    let fingerprint = self.texts.fingerprint(text, style, max_width, wrap);
     if let Some(cached) = self
-      .measure_cache
-      .get(&fingerprint)
-      .and_then(|bucket| {
-        bucket
-          .iter()
-          .find(|(key, _)| key.matches_measure(text, style, max_width, wrap))
-      })
-      .map(|(_, size)| *size)
+      .texts
+      .get(fingerprint, text, style, max_width, wrap)
+      .and_then(|entry| entry.size)
     {
       self.measure_hits += 1;
       return cached;
     }
     self.measure_misses += 1;
     let size = self.shape_and_measure(text, style, max_width, wrap);
-    if self.measure_cache.len() >= GLYPH_LAYOUT_CACHE_LIMIT {
-      self.measure_cache.clear();
-    }
-    self
-      .measure_cache
-      .entry(fingerprint)
-      .or_default()
-      .push((CacheKey::new(text, style, max_width, wrap), size));
+    self.texts.entry(fingerprint, text, style, max_width, wrap).size = Some(size);
     size
   }
 
@@ -719,16 +690,11 @@ impl GlyphEngine {
     max_width: f32,
     wrap: bool,
   ) -> Option<TextVerticalExtents> {
-    let fingerprint = text_measure_fingerprint(text, style, max_width, wrap);
+    let fingerprint = self.texts.fingerprint(text, style, max_width, wrap);
     if let Some(cached) = self
-      .vertical_extents_cache
-      .get(&fingerprint)
-      .and_then(|bucket| {
-        bucket
-          .iter()
-          .find(|(key, _)| key.matches_measure(text, style, max_width, wrap))
-      })
-      .map(|(_, extents)| *extents)
+      .texts
+      .get(fingerprint, text, style, max_width, wrap)
+      .and_then(|entry| entry.vertical_extents)
     {
       self.measure_hits += 1;
       return cached;
@@ -741,14 +707,10 @@ impl GlyphEngine {
     {
       self.profile.vertical_extents += extents_start.elapsed();
     }
-    if self.vertical_extents_cache.len() >= GLYPH_LAYOUT_CACHE_LIMIT {
-      self.vertical_extents_cache.clear();
-    }
     self
-      .vertical_extents_cache
-      .entry(fingerprint)
-      .or_default()
-      .push((CacheKey::new(text, style, max_width, wrap), extents));
+      .texts
+      .entry(fingerprint, text, style, max_width, wrap)
+      .vertical_extents = Some(extents);
     extents
   }
 
@@ -761,14 +723,14 @@ impl GlyphEngine {
     max_width: f32,
     wrap: bool,
   ) -> Option<(f32, f32)> {
-    let fingerprint = text_measure_fingerprint(text, style, max_width, wrap);
-    if let Some((_, extents)) = self.optical_extents_cache.get(&fingerprint).and_then(|bucket| {
-      bucket
-        .iter()
-        .find(|(key, _)| key.matches_measure(text, style, max_width, wrap))
-    }) {
+    let fingerprint = self.texts.fingerprint(text, style, max_width, wrap);
+    if let Some(extents) = self
+      .texts
+      .get(fingerprint, text, style, max_width, wrap)
+      .and_then(|entry| entry.optical_extents)
+    {
       self.measure_hits += 1;
-      return *extents;
+      return extents;
     }
     self.measure_misses += 1;
     #[cfg(feature = "perf_profile")]
@@ -778,14 +740,10 @@ impl GlyphEngine {
     {
       self.profile.vertical_extents += extents_start.elapsed();
     }
-    if self.optical_extents_cache.len() >= GLYPH_LAYOUT_CACHE_LIMIT {
-      self.optical_extents_cache.clear();
-    }
     self
-      .optical_extents_cache
-      .entry(fingerprint)
-      .or_default()
-      .push((CacheKey::new(text, style, max_width, wrap), extents));
+      .texts
+      .entry(fingerprint, text, style, max_width, wrap)
+      .optical_extents = Some(extents);
     extents
   }
 
@@ -1087,16 +1045,11 @@ impl GlyphEngine {
     {
       self.profile.caret_requests += 1;
     }
-    let fingerprint = text_measure_fingerprint(text, style, max_width, wrap);
+    let fingerprint = self.texts.fingerprint(text, style, max_width, wrap);
     if let Some(cached) = self
-      .caret_cache
-      .get(&fingerprint)
-      .and_then(|bucket| {
-        bucket
-          .iter()
-          .find(|(key, _)| key.matches_measure(text, style, max_width, wrap))
-      })
-      .map(|(_, positions)| positions.clone())
+      .texts
+      .get(fingerprint, text, style, max_width, wrap)
+      .and_then(|entry| entry.carets.clone())
     {
       #[cfg(feature = "perf_profile")]
       {
@@ -1111,14 +1064,7 @@ impl GlyphEngine {
       self.profile.caret_misses += 1;
     }
     let positions = self.compute_caret_positions(text, style, max_width, wrap);
-    if self.caret_cache.len() >= GLYPH_LAYOUT_CACHE_LIMIT {
-      self.caret_cache.clear();
-    }
-    self
-      .caret_cache
-      .entry(fingerprint)
-      .or_default()
-      .push((CacheKey::new(text, style, max_width, wrap), positions.clone()));
+    self.texts.entry(fingerprint, text, style, max_width, wrap).carets = Some(positions.clone());
     #[cfg(feature = "perf_profile")]
     {
       self.profile.caret_returned_positions += positions.len();
@@ -1526,7 +1472,12 @@ impl GlyphEngine {
     out: &mut Vec<GlyphCmd>,
   ) {
     let wrap = effective_text_wrap(max_width, wrap);
-    let key = CacheKey::new_for_raster(text, style, max_width, wrap, snap_to_pixel);
+    let placement = if snap_to_pixel {
+      GlyphPlacement::Snapped
+    } else {
+      GlyphPlacement::Unsnapped
+    };
+    let fingerprint = self.texts.fingerprint(text, style, max_width, wrap);
     let atlas_w = self.atlas_packer.width as f32;
     let atlas_h = self.atlas_packer.height as f32;
     // `LURQ_GLYPH_DEBUG=<substring>` dumps every emission of a matching text
@@ -1542,7 +1493,11 @@ impl GlyphEngine {
         clip_debug_text(clip),
       );
     }
-    if let Some(cached) = self.glyph_layout_cache.get(&key) {
+    if let Some(cached) = self
+      .texts
+      .get(fingerprint, text, style, max_width, wrap)
+      .and_then(|entry| entry.glyphs(placement))
+    {
       if let Some(marker) = &debug_marker {
         for glyph in cached.iter() {
           eprintln!(
@@ -1576,7 +1531,11 @@ impl GlyphEngine {
       }
       return;
     }
-    let clipped_key = clip.and_then(|clip| ClippedCacheKey::new(key.clone(), origin_x, origin_y, clip));
+    // The text is not cached whole: its key is copied from here on.
+    let clipped_key = clip.and_then(|clip| {
+      let key = CacheKey::new_for_raster(text, style, max_width, wrap, snap_to_pixel);
+      ClippedCacheKey::new(key, origin_x, origin_y, clip)
+    });
     if let Some(clipped_key) = clipped_key.as_ref() {
       if let Some(cached) = self.clipped_glyph_layout_cache.get(clipped_key) {
         self.glyph_hits += cached.len();
@@ -1758,10 +1717,10 @@ impl GlyphEngine {
       self.profile.append_cached += append_start.elapsed();
     }
     if !clipped {
-      if self.glyph_layout_cache.len() >= GLYPH_LAYOUT_CACHE_LIMIT {
-        self.glyph_layout_cache.clear();
-      }
-      self.glyph_layout_cache.insert(key, cached);
+      self
+        .texts
+        .entry(fingerprint, text, style, max_width, wrap)
+        .set_glyphs(placement, cached);
     } else if let Some(clipped_key) = clipped_key {
       if self.clipped_glyph_layout_cache.len() >= GLYPH_LAYOUT_CACHE_LIMIT {
         self.clipped_glyph_layout_cache.clear();
@@ -2873,17 +2832,6 @@ impl GlyphEngine {
       .iter()
       .map(|(name, family)| name.capacity() + family.capacity())
       .sum::<usize>();
-    let measure_key_heap = self
-      .measure_cache
-      .values()
-      .flat_map(|bucket| bucket.iter().map(|(key, _)| key))
-      .map(|key| key.text.capacity() + key.font_family.len())
-      .sum::<usize>();
-    let measure_cache_bucket_bytes = self
-      .measure_cache
-      .values()
-      .map(|bucket| bucket.capacity() * std::mem::size_of::<(CacheKey, Size)>())
-      .sum::<usize>();
     let rich_shaped_key_heap = self
       .rich_shaped_layout_cache
       .values()
@@ -2898,11 +2846,6 @@ impl GlyphEngine {
         layout.glyphs.len() * std::mem::size_of::<CachedRichShapedGlyph>()
           + layout.span_boxes.len() * std::mem::size_of::<SpanBox>()
       })
-      .sum::<usize>();
-    let glyph_layout_cache_bytes = self
-      .glyph_layout_cache
-      .values()
-      .map(|glyphs| glyphs.capacity() * std::mem::size_of::<CachedGlyph>())
       .sum::<usize>();
     let clipped_key_heap = self
       .clipped_glyph_layout_cache
@@ -2931,26 +2874,12 @@ impl GlyphEngine {
       .values()
       .map(|glyphs| glyphs.capacity() * std::mem::size_of::<CachedTransformedGlyph>())
       .sum::<usize>();
-    let optical_cache_bytes = self.optical_extents_cache.capacity()
-      * std::mem::size_of::<(u64, Vec<(CacheKey, Option<(f32, f32)>)>)>()
-      + self
-        .optical_extents_cache
-        .values()
-        .map(|bucket| {
-          bucket.capacity() * std::mem::size_of::<(CacheKey, Option<(f32, f32)>)>()
-            + bucket.iter().map(|(key, _)| key.text.capacity()).sum::<usize>()
-        })
-        .sum::<usize>();
-
     std::mem::size_of::<Self>()
       + self.plain_buffer_bytes
       + self.input_cache.estimated_memory_bytes()
-      + optical_cache_bytes
+      + self.texts.estimated_memory_bytes()
       + self.font_aliases.capacity() * std::mem::size_of::<(String, String)>()
       + alias_heap
-      + self.measure_cache.capacity() * std::mem::size_of::<(u64, Vec<(CacheKey, Size)>)>()
-      + measure_cache_bucket_bytes
-      + measure_key_heap
       + self.rich_shaped_layout_cache.capacity()
         * std::mem::size_of::<(u64, Vec<(RichTextShapeKey, CachedRichShapedLayout)>)>()
       + self
@@ -2961,8 +2890,6 @@ impl GlyphEngine {
       + rich_shaped_key_heap
       + rich_shaped_layout_cache_bytes
       + self.underline_metrics.estimated_memory_bytes()
-      + self.glyph_layout_cache.capacity() * std::mem::size_of::<(CacheKey, Vec<CachedGlyph>)>()
-      + glyph_layout_cache_bytes
       + self.clipped_glyph_layout_cache.capacity() * std::mem::size_of::<(ClippedCacheKey, Vec<CachedGlyph>)>()
       + clipped_key_heap
       + clipped_glyph_layout_cache_bytes
@@ -4385,7 +4312,7 @@ mod tests {
     let glyphs = engine.rasterize_text("Existing atlas text", &style, 400.0, 0.0, 0.0);
     engine.measure_text("Cached measurement", &style, 400.0);
     assert!(!glyphs.is_empty());
-    assert!(!engine.measure_cache.is_empty());
+    assert!(!engine.texts.is_empty());
 
     let atlas_version = engine.atlas_packer.version;
     let atlas_entries = engine.atlas_entries.len();
@@ -4396,7 +4323,7 @@ mod tests {
 
     assert_eq!(engine.atlas_packer.version, atlas_version);
     assert_eq!(engine.atlas_entries.len(), atlas_entries);
-    assert!(engine.measure_cache.is_empty());
+    assert!(engine.texts.is_empty());
     assert_eq!(
       engine.font_aliases.get("test-icons").map(String::as_str),
       Some("lucide")
@@ -5269,7 +5196,7 @@ mod tests {
     engine.text_optical_extents("after font change", &style, 200.0, true);
     engine.install_fonts([Vec::new()], std::iter::empty::<(&str, &str)>());
     assert!(engine.plain_buffers.is_empty());
-    assert!(engine.optical_extents_cache.is_empty());
+    assert!(engine.texts.is_empty());
     assert_eq!(engine.plain_buffer_bytes, 0);
     let large = "A bounded cache retains recently shaped document lines.\n".repeat(800);
     for index in 0..8 {

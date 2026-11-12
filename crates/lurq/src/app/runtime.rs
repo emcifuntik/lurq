@@ -2548,8 +2548,9 @@ impl Tree {
     let _frame_start = profile_scope!();
     let scale = self.scale_factor();
     // Cheap counter reset; the cache hit/miss stats feed the frame timeline
-    // log (and the perf overlay when profiling).
-    app.shared.glyph_engine.lock().reset_stats();
+    // log (and the perf overlay when profiling). The text caches count the
+    // passes to tell what is still in use.
+    app.shared.glyph_engine.lock().begin_pass();
     self.update_perf_overlay_stats();
 
     let now = Instant::now();
