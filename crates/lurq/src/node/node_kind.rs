@@ -231,6 +231,12 @@ pub(crate) struct TextStyleSource {
   letter_spacing: Option<f32>,
   font_features: Option<crate::layout::text_style::FontFeatures>,
   shadow: Option<crate::layout::text_style::TextShadow>,
+  /// What few texts set. Boxed: a text's style is part of every node.
+  rare: Option<Box<RareTextStyle>>,
+}
+
+#[derive(Clone, Default, PartialEq)]
+struct RareTextStyle {
   underline: Option<crate::layout::text_style::TextUnderline>,
   strikethrough: Option<crate::layout::text_style::TextStrikethrough>,
   /// The most lines the text is laid out in; see `Text::max_lines`.
@@ -253,9 +259,7 @@ impl TextStyleSource {
       letter_spacing: None,
       font_features: None,
       shadow: None,
-      underline: None,
-      strikethrough: None,
-      max_lines: None,
+      rare: None,
     }
   }
 
@@ -267,9 +271,7 @@ impl TextStyleSource {
       letter_spacing: None,
       font_features: None,
       shadow: None,
-      underline: None,
-      strikethrough: None,
-      max_lines: None,
+      rare: None,
     }
   }
 
@@ -304,20 +306,24 @@ impl TextStyleSource {
     self.shadow = Some(shadow);
   }
 
+  fn rare_mut(&mut self) -> &mut RareTextStyle {
+    self.rare.get_or_insert_with(Box::default)
+  }
+
   pub(crate) fn set_underline(&mut self, underline: crate::layout::text_style::TextUnderline) {
-    self.underline = Some(underline);
+    self.rare_mut().underline = Some(underline);
   }
 
   pub(crate) fn set_strikethrough(&mut self, strikethrough: crate::layout::text_style::TextStrikethrough) {
-    self.strikethrough = Some(strikethrough);
+    self.rare_mut().strikethrough = Some(strikethrough);
   }
 
   pub(crate) fn set_max_lines(&mut self, max_lines: u32) {
-    self.max_lines = Some(max_lines);
+    self.rare_mut().max_lines = Some(max_lines);
   }
 
   pub(crate) fn max_lines(&self) -> Option<u32> {
-    self.max_lines
+    self.rare.as_ref().and_then(|rare| rare.max_lines)
   }
 
   pub(crate) fn resolve(&self, typography: &ThemeTypography, palette: &ThemePalette) -> TextStyle {
@@ -341,11 +347,13 @@ impl TextStyleSource {
     if let Some(shadow) = self.shadow {
       style.shadow = Some(shadow);
     }
-    if let Some(underline) = self.underline {
-      style.underline = Some(underline);
-    }
-    if let Some(strikethrough) = self.strikethrough {
-      style.strikethrough = Some(strikethrough);
+    if let Some(rare) = &self.rare {
+      if let Some(underline) = rare.underline {
+        style.underline = Some(underline);
+      }
+      if let Some(strikethrough) = rare.strikethrough {
+        style.strikethrough = Some(strikethrough);
+      }
     }
     style
   }
