@@ -2002,6 +2002,15 @@ impl Ctx {
     theme
   }
 
+  /// Whether motion is to be reduced: the app's decision, or else the
+  /// system's accessibility setting (see `Theme::reduced_motion`). Reading it
+  /// renders the component again when it changes. Transitions of an
+  /// element's place and size already end at once while it is; use it to hold
+  /// back a keyframe animation that moves, or to swap it for a fade.
+  pub fn reduced_motion(&self) -> bool {
+    self.theme().reduced_motion()
+  }
+
   /// Current window geometry/state plus platform window commands.
   /// Reading this subscribes the component to window resize/move/scale changes.
   pub fn window(&self) -> crate::app::window::WindowHandle {

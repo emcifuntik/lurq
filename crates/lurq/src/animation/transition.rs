@@ -124,6 +124,18 @@ const ALL_PROPERTIES: &[AnimatableProperty] = &[
   AnimatableProperty::BoxShadow,
 ];
 
+/// Whether animating `prop` moves an element or changes its size on screen.
+fn moves(prop: AnimatableProperty) -> bool {
+  matches!(
+    prop,
+    AnimatableProperty::OffsetX
+      | AnimatableProperty::OffsetY
+      | AnimatableProperty::Width
+      | AnimatableProperty::Height
+      | AnimatableProperty::Transform
+  )
+}
+
 struct TransitionRun {
   from: AnimatableValue,
   to: AnimatableValue,
@@ -162,6 +174,8 @@ pub struct TransitionEngine {
   /// The theme the values nodes head to are read against, and the theme and version it was copied from.
   theme: TargetTheme,
   theme_seen: Option<(Theme, u64)>,
+  /// Whether motion is reduced (`Theme::reduced_motion`): what moves or resizes an element then ends at once.
+  reduced_motion: bool,
 }
 
 impl TransitionEngine {
@@ -174,12 +188,14 @@ impl TransitionEngine {
       has_active: false,
       theme: TargetTheme::default(),
       theme_seen: None,
+      reduced_motion: false,
     }
   }
 
   /// Takes the palette, border sizes and shadows of `theme`, which colors, widths and shadows given as roles
   /// are read against. Copies nothing while the theme and its version are the ones last taken.
   pub(crate) fn set_theme(&mut self, theme: &Theme) {
+    self.reduced_motion = theme.reduced_motion();
     let version = theme.version();
     if self
       .theme_seen
@@ -310,14 +326,21 @@ impl TransitionEngine {
             *prev
           };
 
+          // With motion reduced, what moves or resizes an element is there at once. A fade or a
+          // change of color is no motion and still runs.
+          let (duration, delay) = if self.reduced_motion && moves(*prop) {
+            (Duration::ZERO, Duration::ZERO)
+          } else {
+            (*duration, *delay)
+          };
           self.active.insert(
             key,
             TransitionRun {
               from,
               to: current,
               start_time: now,
-              duration: *duration,
-              delay: *delay,
+              duration,
+              delay,
               easing: *easing,
             },
           );

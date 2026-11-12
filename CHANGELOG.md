@@ -4,6 +4,7 @@
 
 Added:
 
+- Reduced motion: lurq reads the system's accessibility setting on Windows, macOS and iOS, when a window opens and when one takes focus. `Theme::reduced_motion()` and `Ctx::reduced_motion()` report what is in effect, and `Theme::set_reduced_motion(Some(bool))` decides for the app. While motion is reduced a transition of an element's transform, offset, width or height ends at once; fades and color changes still run, and keyframe animations are left to the app. See [animation](docs/src/content/docs/animation-transforms.md#reduced-motion).
 - `Transition::foreground()`, `Transition::outline()` and `Transition::box_shadow()`, with `AnimatableProperty::Foreground`, `Outline` and `BoxShadow`, and `Transition::all()` includes them: the color of the text under an element, its outline and its box shadows animate, in transitions and in keyframe animations (`AnimatableValue::Outline`, `AnimatableValue::Shadows` with `ShadowList`). An outline grows in from nothing and fades back to it, so a focus ring can come and go smoothly. They are paint only: animating them lays nothing out. See [animation](docs/src/content/docs/animation-transforms.md).
 - `App::load_hinted_font(data)` loads a font whose glyphs are drawn grid-fitted: at the nearest whole pixel size and position, with the font's TrueType hints applied along both axes. It is for an icon font hinted for it; text stays unhinted, so a letter looks the same wherever on the line it falls. The font has to ask for native ClearType in its `prep` program for its hints along x to count. A glyph under a transform, or in a text that is not snapped to pixels, is drawn unhinted like any other. See [resources](docs/src/content/docs/resources-media.md#hinted-fonts).
 - `examples/icon_hinting.rs` draws lurq's icon font twice at each size, loaded as any font is and loaded hinted, to compare; `--capture <file.png>` saves the window's frame.
@@ -21,6 +22,7 @@ Added:
 
 Behaviour changes:
 
+- On a machine whose user asked the system for less motion, transitions of place and size no longer animate, sheets and stack navigation included. `Theme::set_reduced_motion(Some(false))` restores them.
 - A transition of a color given as a `PaletteColor` role now runs. The value a node is heading to was read from concrete colors only, so a background or border set to a role changed at once whatever its transition said. A role whose color changes with the theme runs the transition as well.
 - `AnimatableProperty` has three new variants and `AnimatableValue` two: code that matches either without a wildcard arm must add them.
 - `TextStyle` and `MarkdownTextStyle` have a new public field, `strikethrough`: code that builds one with every field named must add it (`..TextStyle::default()` takes care of it).

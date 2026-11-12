@@ -72,6 +72,32 @@ transition too.
 
 `duration(...)`, `duration_ms(...)`, `delay(...)`, `delay_ms(...)`, `easing(...)`, and `linear()` configure timing.
 
+## Reduced Motion
+
+A user can ask every app for less motion in the system's accessibility settings. lurq reads the setting on Windows
+(Settings › Accessibility › Visual effects › Animation effects), macOS (System Settings › Accessibility › Display ›
+Reduce motion) and iOS (Settings › Accessibility › Motion › Reduce Motion), when a window opens and each time one takes
+focus, so a change made in the settings shows when the user comes back.
+
+```rust
+// What is in effect: the app's decision, or else the system's setting.
+let reduced = ctx.reduced_motion();
+
+// The app decides, whatever the system says; `None` follows the system again.
+app.theme().set_reduced_motion(Some(true));
+```
+
+- While motion is reduced, a transition of where an element is or how large it is (`transform`, `offset_x`, `offset_y`,
+  `width`, `height`) ends at once: the element is at its new place and size in the next frame. Sheets and stack
+  navigation, which move with such transitions, switch without the slide.
+- A fade or a change of color is not motion and still runs: opacity, colors, the foreground, the outline, box shadows,
+  blur, radii and border widths.
+- Keyframe animations are the app's and are not changed. Read `ctx.reduced_motion()`, which renders the component again
+  when the setting changes, to hold back one that moves or to show a fade in its place.
+- Linux and other platforms have no setting every desktop shares, so lurq reads none there: motion is reduced only when
+  the app says so with `set_reduced_motion`.
+- A tree without a window, as in a test, never reads the system: its motion does not depend on the machine.
+
 `Easing::Spring { velocity }` eases as a spring that comes to rest without going past its end: quick at first,
 settling slowly. `velocity` is the speed the value already has when the transition starts, as a share of the
 way per duration, and 0 from rest; something a finger lets go of goes on at the finger's speed with it.
