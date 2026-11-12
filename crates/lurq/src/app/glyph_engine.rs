@@ -28,6 +28,7 @@ mod ios_fallback;
 mod letter_spacing;
 mod reflow;
 mod scaler;
+mod shaped_texts;
 mod span_boxes;
 mod text_cache;
 mod vertical_align;
@@ -36,6 +37,7 @@ pub(crate) use face_weight::FaceWeights;
 use letter_spacing::letter_spacing_bits;
 pub(crate) use letter_spacing::with_letter_spacing;
 use reflow::ReflowRange;
+use shaped_texts::{SHORT_TEXT_BYTES, ShapedTexts};
 pub(crate) use span_boxes::SpanBox;
 use text_cache::{GlyphPlacement, TextCache};
 
@@ -58,6 +60,10 @@ const GLYPH_LAYOUT_CACHE_LIMIT: usize = 1024;
 const PLAIN_BUFFER_CACHE_LIMIT: usize = 64;
 // Keep logical and physical document layouts together at fractional display scales.
 const PLAIN_BUFFER_CACHE_BYTES: usize = 48 * 1024 * 1024;
+/// What the short texts kept shaped may hold: a few screens of labels and
+/// messages, so that a resize or a new scale factor lays them out again
+/// without shaping them again.
+const SHAPED_TEXT_CACHE_BYTES: usize = 4 * 1024 * 1024;
 /// Transparent texels the atlas keeps around every glyph it packs.
 pub(crate) const GLYPH_ATLAS_PADDING: u32 = 2;
 const GLYPH_ATLAS_BYTES_PER_PIXEL: usize = 4;
@@ -131,6 +137,18 @@ impl CacheKey {
     let mut key = Self::new(text, style, max_width, wrap);
     key.raster_mode = 2;
     key
+  }
+
+  /// The key of the same text in the same face, laid out as `style`,
+  /// `max_width` and `wrap` lay it out.
+  fn lay_out_as(&mut self, style: &TextStyle, max_width: f32, wrap: bool) {
+    self.font_size_bits = style.font_size.to_bits();
+    self.line_height_bits = style.line_height.to_bits();
+    self.letter_spacing_bits = letter_spacing_bits(style.letter_spacing);
+    self.max_width_bits = max_width.to_bits();
+    self.text_align = text_align_to_u8(style.text_align);
+    self.wrap = wrap;
+    self.trim_line_box = style.trim_line_box;
   }
 
   fn matches_measure(&self, text: &str, style: &TextStyle, max_width: f32, wrap: bool) -> bool {
@@ -467,9 +485,12 @@ pub(crate) struct GlyphEngine {
   atlas_entries: HashMap<GlyphCacheKey, PackedGlyph>,
   transformed_atlas_entries: HashMap<TransformedGlyphKey, PackedGlyph>,
   buffer_pool: Vec<Buffer>,
-  // Full-height layouts shared by measurement, ink bounds, and clipped painting.
+  // Full-height layouts of documents (`SHORT_TEXT_BYTES` and longer) shared by
+  // measurement, ink bounds, and clipped painting.
   // Oldest entries are evicted first; taking and returning an entry refreshes its age.
   plain_buffers: Vec<CachedPlainBuffer>,
+  /// The same for shorter texts, found by what shapes them.
+  shaped_texts: ShapedTexts,
   plain_buffer_bytes: usize,
   plain_buffer_budget: usize,
   pub(crate) measure_hits: usize,
@@ -514,6 +535,7 @@ impl GlyphEngine {
       transformed_atlas_entries: HashMap::new(),
       buffer_pool: Vec::new(),
       plain_buffers: Vec::new(),
+      shaped_texts: ShapedTexts::new(SHAPED_TEXT_CACHE_BYTES),
       plain_buffer_bytes: 0,
       plain_buffer_budget: plain_buffer_cache_budget(),
       measure_hits: 0,
@@ -619,6 +641,7 @@ impl GlyphEngine {
     self.face_weights.clear();
     self.input_cache.clear();
     self.plain_buffers.clear();
+    self.shaped_texts.clear();
     self.plain_buffer_bytes = 0;
     self.texts.clear();
     self.rich_shaped_layout_cache.clear();
@@ -651,8 +674,8 @@ impl GlyphEngine {
     #[cfg(feature = "perf_profile")]
     {
       GlyphEngineProfile {
-        plain_cache_bytes: self.plain_buffer_bytes,
-        plain_cache_budget: self.plain_buffer_budget,
+        plain_cache_bytes: self.plain_buffer_bytes + self.shaped_texts.bytes(),
+        plain_cache_budget: self.plain_buffer_budget + SHAPED_TEXT_CACHE_BYTES,
         ..self.profile
       }
     }
@@ -1531,8 +1554,12 @@ impl GlyphEngine {
       }
       return;
     }
-    // The text is not cached whole: its key is copied from here on.
-    let clipped_key = clip.and_then(|clip| {
+    // A short text is always laid out whole, and cached whole: the clip then
+    // picks its glyphs wherever the text is scrolled to. Only a document is
+    // laid out down to the clip, and cached by where the clip cuts it.
+    let whole = text.len() < SHORT_TEXT_BYTES;
+    let run_clip = if whole { None } else { clip };
+    let clipped_key = run_clip.and_then(|clip| {
       let key = CacheKey::new_for_raster(text, style, max_width, wrap, snap_to_pixel);
       ClippedCacheKey::new(key, origin_x, origin_y, clip)
     });
@@ -1562,7 +1589,11 @@ impl GlyphEngine {
 
     #[cfg(feature = "perf_profile")]
     let acquire_start = Instant::now();
-    let shaped = self.take_plain_buffer(text, style, max_width, wrap);
+    let shaped = if whole {
+      Some(self.full_text_buffer(text, style, max_width, wrap))
+    } else {
+      self.take_plain_buffer(text, style, max_width, wrap)
+    };
     let mut partial = None;
     if shaped.is_none() {
       let mut buffer = self.acquire_buffer(style, max_width, wrap);
@@ -1599,7 +1630,7 @@ impl GlyphEngine {
     let mut visited_runs = 0;
     for run in buffer.layout_runs() {
       visited_runs += 1;
-      if !text_run_intersects_clip(origin_y, run.line_top, run.line_height, clip) {
+      if !text_run_intersects_clip(origin_y, run.line_top, run.line_height, run_clip) {
         if let Some(marker) = &debug_marker {
           eprintln!(
             "[glyph-debug:{marker}] MISS line SKIPPED by clip: line_top={} line_height={} origin_y={origin_y} clip={}",
@@ -2114,6 +2145,9 @@ impl GlyphEngine {
     max_width: f32,
     wrap: bool,
   ) -> Option<CachedPlainBuffer> {
+    if text.len() < SHORT_TEXT_BYTES {
+      return self.take_shaped_text(text, style, max_width, wrap);
+    }
     let index = self
       .plain_buffers
       .iter()
@@ -2143,6 +2177,59 @@ impl GlyphEngine {
         self.profile.plain_buffer_build += start.elapsed();
       }
     }
+    Some(entry)
+  }
+
+  /// A short text kept shaped, laid out as asked. Shaped for the same text
+  /// in the same face, it may have been laid out for another size, width,
+  /// wrapping or alignment: it is then laid out again, not shaped again.
+  fn take_shaped_text(
+    &mut self,
+    text: &str,
+    style: &TextStyle,
+    max_width: f32,
+    wrap: bool,
+  ) -> Option<CachedPlainBuffer> {
+    let entry = self.shaped_texts.take(text, style);
+    #[cfg(feature = "perf_profile")]
+    {
+      if entry.is_some() {
+        self.profile.plain_buffer_hits += 1;
+      } else {
+        self.profile.plain_buffer_misses += 1;
+      }
+    }
+    let mut entry = entry?;
+    if entry.key.matches_measure(text, style, max_width, wrap) {
+      return Some(entry);
+    }
+    #[cfg(feature = "perf_profile")]
+    let start = Instant::now();
+    // The settings `acquire_buffer` and `set_buffer_text` give a new buffer.
+    let wraps = effective_text_wrap(max_width, wrap);
+    entry
+      .buffer
+      .set_metrics(Metrics::new(style.font_size, style.font_size * style.line_height));
+    entry.buffer.set_size(text_buffer_width(max_width), None);
+    entry
+      .buffer
+      .set_wrap(if wraps { Wrap::WordOrGlyph } else { Wrap::None });
+    let align = Some(style.text_align.to_cosmic());
+    for line in &mut entry.buffer.lines {
+      line.set_align(align);
+    }
+    entry.buffer.shape_until_scroll(&mut self.font_system, false);
+    #[cfg(feature = "perf_profile")]
+    {
+      self.profile.plain_paragraph_layout += start.elapsed();
+      self.profile.plain_laid_out_paragraphs += entry.buffer.lines.len();
+    }
+    for (line, paragraph) in entry.buffer.lines.iter().zip(&mut entry.paragraphs) {
+      paragraph.carets = None;
+      paragraph.layout_bytes = plain_line_layout_bytes(line);
+    }
+    entry.key.lay_out_as(style, max_width, wrap);
+    entry.refresh_bytes();
     Some(entry)
   }
 
@@ -2411,6 +2498,14 @@ impl GlyphEngine {
   fn retain_plain_buffer(&mut self, entry: CachedPlainBuffer) {
     #[cfg(feature = "perf_profile")]
     let start = Instant::now();
+    if entry.key.text.len() < SHORT_TEXT_BYTES {
+      self.shaped_texts.put(entry);
+      #[cfg(feature = "perf_profile")]
+      {
+        self.profile.plain_buffer_retain += start.elapsed();
+      }
+      return;
+    }
     let bytes = entry.bytes;
     // Oversized documents still render correctly, but cannot displace the entire bounded cache.
     if bytes > self.plain_buffer_budget {
@@ -2876,6 +2971,8 @@ impl GlyphEngine {
       .sum::<usize>();
     std::mem::size_of::<Self>()
       + self.plain_buffer_bytes
+      + self.shaped_texts.bytes()
+      + self.shaped_texts.estimated_overhead_bytes()
       + self.input_cache.estimated_memory_bytes()
       + self.texts.estimated_memory_bytes()
       + self.font_aliases.capacity() * std::mem::size_of::<(String, String)>()
@@ -3746,8 +3843,8 @@ mod tests {
 
   use super::{
     AtlasPacker, GLYPH_ATLAS_BYTES_PER_PIXEL, GLYPH_ATLAS_PADDING, GlyphAtlasDirtyRect, GlyphEngine,
-    PLAIN_BUFFER_CACHE_LIMIT, cluster_is_whitespace, coalesce_dirty_rects, glyph_atlas_pixels, glyph_coverage_mask,
-    is_bounded_text_width, render_glyph_image, set_buffer_text, swash_transform_from_screen,
+    PLAIN_BUFFER_CACHE_LIMIT, SHORT_TEXT_BYTES, cluster_is_whitespace, coalesce_dirty_rects, glyph_atlas_pixels,
+    glyph_coverage_mask, is_bounded_text_width, render_glyph_image, set_buffer_text, swash_transform_from_screen,
   };
   use crate::{
     layout::{
@@ -5173,29 +5270,37 @@ mod tests {
     let mut engine = GlyphEngine::new();
     engine.plain_buffer_budget = 32 * 1024 * 1024;
     let style = TextStyle::default();
+    // Documents: one paragraph each, too long for the short texts' cache.
+    let document = |index: usize| format!("Entry {index} {}", "word ".repeat(SHORT_TEXT_BYTES / 5));
     for index in 0..PLAIN_BUFFER_CACHE_LIMIT + 3 {
-      engine.measure_text(&format!("Entry {index}"), &style, 200.0);
+      engine.measure_text(&document(index), &style, 200.0);
     }
     assert_eq!(engine.plain_buffers.len(), PLAIN_BUFFER_CACHE_LIMIT);
+    assert_eq!(engine.shaped_texts.len(), 0);
     assert!(engine.plain_buffer_bytes <= engine.plain_buffer_budget);
-    assert!(engine.take_plain_buffer("Entry 0", &style, 200.0, true).is_none());
-    assert!(engine.take_plain_buffer("Entry 64", &style, 201.0, true).is_none());
+    assert!(engine.take_plain_buffer(&document(0), &style, 200.0, true).is_none());
+    assert!(engine.take_plain_buffer(&document(64), &style, 201.0, true).is_none());
     let changed_style = TextStyle {
       font_size: 20.0,
       ..style.clone()
     };
     assert!(
       engine
-        .take_plain_buffer("Entry 64", &changed_style, 200.0, true)
+        .take_plain_buffer(&document(64), &changed_style, 200.0, true)
         .is_none()
     );
+    engine.measure_text("A short text", &style, 200.0);
+    assert_eq!(engine.shaped_texts.len(), 1);
     engine.register_font("test-alias", "Segoe UI");
     assert!(engine.plain_buffers.is_empty());
+    assert_eq!(engine.shaped_texts.len(), 0);
+    assert_eq!(engine.shaped_texts.bytes(), 0);
     assert_eq!(engine.plain_buffer_bytes, 0);
     engine.measure_text("after font change", &style, 200.0);
     engine.text_optical_extents("after font change", &style, 200.0, true);
     engine.install_fonts([Vec::new()], std::iter::empty::<(&str, &str)>());
     assert!(engine.plain_buffers.is_empty());
+    assert_eq!(engine.shaped_texts.len(), 0);
     assert!(engine.texts.is_empty());
     assert_eq!(engine.plain_buffer_bytes, 0);
     let large = "A bounded cache retains recently shaped document lines.\n".repeat(800);
@@ -5211,6 +5316,195 @@ mod tests {
       engine.plain_buffers.len() < 8,
       "large layouts should trigger byte-budget eviction"
     );
+  }
+
+  /// Short texts whose shaping meets what a width or a size could disturb:
+  /// two directions, a combining mark, an emoji from a fallback font, a word
+  /// longer than its line, line breaks, tabs, nothing at all.
+  const SHAPED_TEXTS: &[&str] = &[
+    "Short label",
+    "the quick brown fox jumps over the lazy dog and keeps running until the line has wrapped twice",
+    "Mixed office cafe\u{301} مرحبا بالعالم 😀 and back",
+    "first line\nsecond line\r\nthird",
+    "Supercalifragilisticexpialidocious-and-then-some-more-letters",
+    "tab\tseparated\tcells",
+    "",
+  ];
+
+  /// `(font size, line height, width, wrap, alignment)`, in an order that
+  /// changes one or several of them each time and comes back to the first.
+  const LAYOUTS: &[(f32, f32, f32, bool, TextAlign)] = &[
+    (16.0, 1.2, 200.0, true, TextAlign::Left),
+    (16.0, 1.2, 120.0, true, TextAlign::Left),
+    (24.0, 1.2, 180.0, true, TextAlign::Left),
+    (16.0, 1.5, 200.0, true, TextAlign::Center),
+    (16.0, 1.2, f32::MAX, false, TextAlign::Left),
+    (16.0, 1.2, 90.5, true, TextAlign::Right),
+    (11.0, 1.4, 200.0, false, TextAlign::End),
+    (16.0, 1.2, 200.0, true, TextAlign::Justified),
+    (16.0, 1.2, 200.0, true, TextAlign::Left),
+  ];
+
+  fn laid_out(
+    base: &TextStyle,
+    (font_size, line_height, _, _, text_align): (f32, f32, f32, bool, TextAlign),
+  ) -> TextStyle {
+    TextStyle {
+      font_size,
+      line_height,
+      text_align,
+      ..base.clone()
+    }
+  }
+
+  #[test]
+  fn a_short_text_laid_out_again_matches_a_fresh_layout() {
+    let mut engine = GlyphEngine::new();
+    let faces = [
+      TextStyle::default(),
+      TextStyle {
+        weight: crate::layout::text_style::FontWeight::Bold,
+        ..TextStyle::default()
+      },
+      TextStyle {
+        style: crate::layout::text_style::FontStyle::Italic,
+        ..TextStyle::default()
+      },
+    ];
+    for (shaped, text) in SHAPED_TEXTS.iter().enumerate() {
+      for (face, base) in faces.iter().enumerate() {
+        for layout in LAYOUTS {
+          let style = laid_out(base, *layout);
+          let (_, _, width, wrap, _) = *layout;
+          let entry = engine.full_text_buffer(text, &style, width, wrap);
+          assert!(entry.key.matches_measure(text, &style, width, wrap));
+          assert_plain_layout_matches_fresh(&mut engine, &entry, text, &style, width, wrap);
+          engine.retain_plain_buffer(entry);
+          // One shaped buffer per text and face, whatever it is laid out as.
+          assert_eq!(engine.shaped_texts.len(), shaped * faces.len() + face + 1);
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn what_a_short_text_measures_and_paints_does_not_depend_on_what_it_was_laid_out_as_before() {
+    let style_of = |layout| laid_out(&TextStyle::default(), layout);
+    let glyphs = |engine: &mut GlyphEngine, text: &str, layout: (f32, f32, f32, bool, TextAlign)| {
+      let style = style_of(layout);
+      let mut glyphs = Vec::new();
+      engine.rasterize_text_with_wrap_into(text, &style, layout.2, layout.3, 3.0, 7.0, &mut glyphs);
+      glyphs
+        .iter()
+        .map(|glyph| (glyph.x, glyph.y, glyph.width, glyph.height))
+        .collect::<Vec<_>>()
+    };
+    let mut reused = GlyphEngine::new();
+    for text in SHAPED_TEXTS {
+      for (index, layout) in LAYOUTS.iter().enumerate() {
+        let style = style_of(*layout);
+        let mut fresh = GlyphEngine::new();
+        let size = reused.measure_text(text, &style, layout.2);
+        let expected = fresh.measure_text(text, &style, layout.2);
+        assert_eq!(
+          (size.width, size.height),
+          (expected.width, expected.height),
+          "{text:?}, layout {index}"
+        );
+        assert_eq!(
+          reused.text_optical_extents(text, &style, layout.2, layout.3),
+          fresh.text_optical_extents(text, &style, layout.2, layout.3),
+          "{text:?}, layout {index}"
+        );
+        assert_eq!(
+          glyphs(&mut reused, text, *layout),
+          glyphs(&mut fresh, text, *layout),
+          "{text:?}, layout {index}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn tracking_shapes_a_short_text_by_its_ems() {
+    let mut engine = GlyphEngine::new();
+    let text = "tracked letters wrap here";
+    let style = |font_size: f32, letter_spacing: f32| TextStyle {
+      font_size,
+      letter_spacing,
+      ..TextStyle::default()
+    };
+    // 2 px at 16 px and 3 px at 24 px are both an eighth of an em: one
+    // shaping, as a scale factor of 1.5 makes of a text. 2 px at 24 px is
+    // another tracking, and another shaping.
+    for (style, shaped) in [
+      (style(16.0, 2.0), 1),
+      (style(24.0, 3.0), 1),
+      (style(24.0, 2.0), 2),
+      (style(16.0, 0.0), 3),
+    ] {
+      let entry = engine.full_text_buffer(text, &style, 150.0, true);
+      assert_plain_layout_matches_fresh(&mut engine, &entry, text, &style, 150.0, true);
+      engine.retain_plain_buffer(entry);
+      assert_eq!(engine.shaped_texts.len(), shaped);
+    }
+  }
+
+  #[test]
+  #[cfg(feature = "perf_profile")]
+  fn a_short_text_is_shaped_once_for_every_width_and_size() {
+    let mut engine = GlyphEngine::new();
+    let text = "a message long enough to wrap when the window gets narrow";
+    let base = TextStyle::default();
+    for (index, layout) in LAYOUTS.iter().enumerate() {
+      engine.reset_stats();
+      let style = laid_out(&base, *layout);
+      engine.measure_text(text, &style, layout.2);
+      engine.text_optical_extents(text, &style, layout.2, layout.3);
+      let mut glyphs = Vec::new();
+      engine.rasterize_text_with_wrap_into(text, &style, layout.2, layout.3, 0.0, 0.0, &mut glyphs);
+      assert_eq!(
+        engine.profile.plain_shaped_paragraphs,
+        usize::from(index == 0),
+        "layout {index}"
+      );
+    }
+  }
+
+  #[test]
+  fn short_texts_kept_shaped_stay_within_their_budget_and_the_oldest_go_first() {
+    let mut engine = GlyphEngine::new();
+    engine.shaped_texts = super::ShapedTexts::new(512 * 1024);
+    let style = TextStyle::default();
+    let text = |index: usize| format!("Message {index} with a few more words to shape");
+    for index in 0..200 {
+      engine.measure_text(&text(index), &style, 200.0);
+      assert!(engine.shaped_texts.bytes() <= 512 * 1024);
+    }
+    let kept = engine.shaped_texts.len();
+    assert!(kept > 4 && kept < 200, "{kept} texts kept");
+    assert!(engine.shaped_texts.take(&text(0), &style).is_none());
+    assert!(engine.shaped_texts.take(&text(199 - kept), &style).is_none());
+    let newest = engine.shaped_texts.take(&text(199), &style).expect("the newest text");
+    let oldest_kept = engine
+      .shaped_texts
+      .take(&text(200 - kept), &style)
+      .expect("the oldest kept text");
+    assert_eq!(engine.shaped_texts.len(), kept - 2);
+    engine.shaped_texts.put(newest);
+    engine.shaped_texts.put(oldest_kept);
+
+    // A text used again is the newest again: as many more texts as the cache
+    // holds push out those put before it, not it.
+    for index in 200..200 + kept {
+      let used_again = engine.full_text_buffer(&text(200 - kept), &style, 200.0, true);
+      engine.retain_plain_buffer(used_again);
+      engine.measure_text(&text(index), &style, 200.0);
+    }
+    assert!(engine.shaped_texts.take(&text(200 - kept), &style).is_some());
+    assert!(engine.shaped_texts.take(&text(199), &style).is_none());
+    // The places a text taken and put again leaves behind do not pile up.
+    assert!(engine.shaped_texts.places() <= engine.shaped_texts.len() * 2 + 64 + 1);
   }
 
   #[test]
