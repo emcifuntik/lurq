@@ -261,6 +261,7 @@ fn the_state_of_a_disabled_element_and_of_what_is_in_it_says_disabled() {
   let inside = InteractionState::new();
   let outside = InteractionState::new();
   let mut app = App::new();
+  // Nothing is painted here: the state is written when the tree is built, for every element, in view or not.
   let mut tree = mounted(
     &mut app,
     Column::new()
@@ -273,17 +274,101 @@ fn the_state_of_a_disabled_element_and_of_what_is_in_it_says_disabled() {
       )
       .child(Rect::new(40.0, 20.0).interactive(outside.clone())),
   );
-  // The state is written when the elements are painted.
-  tree.resolve_quads(tree.last_layout().unwrap());
   assert_eq!(
     (group.is_disabled(), inside.is_disabled(), outside.is_disabled()),
     (true, true, false)
   );
 
+  // Enabling a live element is known at once, before any pass.
   tree.get_element_by_id_mut("group").unwrap().set_disabled(false);
-  tree.pass(&mut app, &TestSurface);
-  tree.resolve_quads(tree.last_layout().unwrap());
   assert!(!group.is_disabled() && !inside.is_disabled());
+
+  tree.get_element_by_id_mut("group").unwrap().set_disabled(true);
+  assert!(group.is_disabled() && inside.is_disabled());
+  assert!(!outside.is_disabled());
+}
+
+#[test]
+fn an_element_enabled_inside_a_disabled_one_stays_disabled() {
+  let inner = InteractionState::new();
+  let leaf = InteractionState::new();
+  let mut app = App::new();
+  let mut tree = mounted(
+    &mut app,
+    Column::new().id("outer").disabled(true).child(
+      Row::new()
+        .id("inner")
+        .interactive(inner.clone())
+        .disabled(true)
+        .child(Rect::new(40.0, 20.0).interactive(leaf.clone())),
+    ),
+  );
+
+  tree.get_element_by_id_mut("inner").unwrap().set_disabled(false);
+  assert!(
+    inner.is_disabled() && leaf.is_disabled(),
+    "the outer element still disables them"
+  );
+
+  tree.get_element_by_id_mut("outer").unwrap().set_disabled(false);
+  assert!(!inner.is_disabled() && !leaf.is_disabled());
+}
+
+struct DisabledInPopup {
+  anchor: lurq::core::ElementRef,
+}
+
+#[derive(Clone, lurq::DevtoolsInspectable)]
+struct PopupProps {
+  #[devtools_ignore]
+  inside: InteractionState,
+}
+
+// One popup, mounted once: its props never differ.
+impl PartialEq for PopupProps {
+  fn eq(&self, _other: &Self) -> bool {
+    true
+  }
+}
+
+impl lurq::app::component::Component for DisabledInPopup {
+  type Props = PopupProps;
+
+  fn create(_ctx: &mut lurq::app::ctx::Ctx) -> Self {
+    Self {
+      anchor: lurq::core::ElementRef::new(),
+    }
+  }
+
+  fn render(&self, ctx: &mut lurq::app::ctx::Ctx) -> impl Into<Element> {
+    let inside = ctx.props::<PopupProps>().inside.clone();
+    Column::new()
+      .child(Rect::new(40.0, 20.0).ref_element(self.anchor.clone()))
+      .child(
+        lurq::components::Popup::new(
+          self.anchor.clone(),
+          Row::new()
+            .disabled(true)
+            .child(Rect::new(40.0, 20.0).interactive(inside)),
+        )
+        .open_when(true),
+      )
+  }
+}
+
+#[test]
+fn the_state_reaches_what_a_popup_holds() {
+  let inside = InteractionState::new();
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.mount_root::<DisabledInPopup>(&mut app, PopupProps { inside: inside.clone() });
+  tree.pass(&mut app, &TestSurface);
+  tree.pass(&mut app, &TestSurface);
+
+  assert!(
+    inside.is_disabled(),
+    "a popup's content is built after the page, and gets its state too"
+  );
 }
 
 fn painted_colors(tree: &Tree) -> (Vec<Color>, Vec<Color>) {

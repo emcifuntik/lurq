@@ -256,8 +256,6 @@ pub(crate) struct LayoutEngine {
   select_open: Cell<Option<bool>>,
   /// The foreground the node being painted inherits, if an ancestor set one.
   foreground: Cell<Option<Color>>,
-  /// Whether an ancestor of the node being painted is disabled.
-  disabled: Cell<bool>,
   /// The scroll viewports the node being painted is in, and the window: the
   /// clips that cut a node's outline where they cut the node. The bounds a
   /// plain container clips its content to let an outline past by its reach.
@@ -558,7 +556,6 @@ impl LayoutEngine {
       text_marks: RefCell::new(Arc::new(crate::app::theme::ThemeTextMarks::default())),
       select_open: Cell::new(None),
       foreground: Cell::new(None),
-      disabled: Cell::new(false),
       scroll_clip: Cell::new(ClipRect::default()),
       ime_cursor_area: Cell::new(None),
       opacity_groups: RefCell::new(Vec::new()),
@@ -935,7 +932,6 @@ impl LayoutEngine {
     self.ime_cursor_area.set(None);
     self.text_input_frame.set(None);
     self.foreground.set(None);
-    self.disabled.set(false);
     self.scroll_clip.set(viewport);
     self.collect_quads(
       node,
@@ -970,7 +966,6 @@ impl LayoutEngine {
       return;
     }
     if node_is_plain_logical_wrapper(node) {
-      self.inherit_disabled_state(node);
       if let Some(ref element_ref) = node.element_ref {
         element_ref.update(
           abs_x,
@@ -1062,7 +1057,6 @@ impl LayoutEngine {
     } else {
       (clip, cull_clip)
     };
-    let disabled_scope = self.enter_disabled_scope(node);
     let foreground_scope = self.enter_foreground_scope(node);
     let frame = self.push_node_quads(
       node,
@@ -1133,7 +1127,6 @@ impl LayoutEngine {
 
     self.push_node_overlay_quads(node, result, abs_x, abs_y, &frame, clip, quads);
     self.leave_foreground_scope(foreground_scope);
-    self.leave_disabled_scope(disabled_scope);
     let opacity = node.effective_opacity();
     if opacity < DEFAULT_QUAD_OPACITY || blur > 0.0 {
       self.close_opacity_group(opacity, blur, group_clip, group_start, quads);
@@ -4185,7 +4178,6 @@ fn node_is_plain_logical_wrapper(node: &Node) -> bool {
     && node.rare_style.box_shadow.is_none()
     && node.rare_style.foreground.is_none()
     && node.rare_style.outline.is_none()
-    && !node.rare_style.disabled
     && node.rare_style.caret_color.is_none()
     && node.rare_style.caret_mode.is_none()
     && node.scrollbar_style.as_ref().is_none()

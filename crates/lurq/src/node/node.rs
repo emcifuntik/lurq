@@ -887,6 +887,14 @@ pub(crate) struct RareStyle {
   pub(crate) caret_mode: Option<CaretMode>,
 }
 
+/// Whether any node of the process was ever disabled. Until one is, no tree
+/// has a disabled state to keep.
+static DISABLED_IN_USE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn disabled_in_use() -> bool {
+  DISABLED_IN_USE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) type AnimationOverrides = Vec<(crate::animation::AnimatableProperty, crate::animation::AnimatableValue)>;
 
 empty_default!(EventHandlers);
@@ -1447,6 +1455,9 @@ impl NodeUpdate for Node {
     // Writing through the lazy box would allocate it for a node that is, and stays, enabled.
     if self.rare_style.disabled != disabled {
       self.rare_style.disabled = disabled;
+    }
+    if disabled {
+      DISABLED_IN_USE.store(true, std::sync::atomic::Ordering::Relaxed);
     }
   }
 
@@ -4163,6 +4174,30 @@ impl Node {
     self
   }
 
+  /// [`Self::assign_ids`] for the root of a tree that was just built, which
+  /// also writes to every node whether it is disabled. A built node starts
+  /// enabled, as it starts unhovered, and this is the walk that visits them
+  /// all, so the state costs no walk of its own; and none of this runs in a
+  /// process that never disabled anything.
+  pub(crate) fn assign_tree_ids(&mut self, id_gen: &IdGenerator) {
+    if disabled_in_use() {
+      self.assign_ids_and_disabled(id_gen, false);
+    } else {
+      self.assign_ids(id_gen);
+    }
+  }
+
+  fn assign_ids_and_disabled(&mut self, id_gen: &IdGenerator, inherited: bool) {
+    if !self.node_id.is_assigned() {
+      self.node_id = id_gen.next();
+    }
+    let disabled = inherited || self.is_disabled();
+    self.sync_disabled_state(disabled);
+    for child in &mut self.children {
+      child.assign_ids_and_disabled(id_gen, disabled);
+    }
+  }
+
   pub fn assign_ids(&mut self, id_gen: &IdGenerator) {
     if !self.node_id.is_assigned() {
       self.node_id = id_gen.next();
@@ -4489,10 +4524,19 @@ impl Node {
     self.rare_style.disabled
   }
 
-  /// Records whether the node is disabled, by itself or by an element it is
-  /// in, where its state styles and `Ctx::interaction` read it. Touches the
-  /// state only when it changes, so an enabled node allocates none.
-  pub(crate) fn sync_disabled_state(&self, disabled: bool) {
+  /// Records in this node and in every node under it whether it is disabled,
+  /// by itself or by an element it is in (`inherited`), where state styles
+  /// and the app's `InteractionState` read it.
+  pub(crate) fn sync_disabled_tree(&self, inherited: bool) {
+    let disabled = inherited || self.is_disabled();
+    self.sync_disabled_state(disabled);
+    for child in &self.children {
+      child.sync_disabled_tree(disabled);
+    }
+  }
+
+  /// Touches the state only when it changes, so an enabled node allocates none.
+  fn sync_disabled_state(&self, disabled: bool) {
     if self.style_state.is_disabled() != disabled {
       self.style_state.set_disabled(disabled);
     }

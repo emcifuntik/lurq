@@ -1,6 +1,6 @@
-//! What a node inherits while its tree is painted: the nearest ancestor's
-//! `foreground`, which stands in for the color of a text that names none, and
-//! whether an ancestor is disabled, which disables it.
+//! The foreground a text inherits while its tree is painted: the nearest
+//! ancestor's `foreground`, which stands in for the color of a text that
+//! names none.
 
 use super::LayoutEngine;
 use crate::{
@@ -25,26 +25,6 @@ impl LayoutEngine {
 
   pub(super) fn leave_foreground_scope(&self, previous: Option<Color>) {
     self.foreground.set(previous);
-  }
-
-  /// Enters `node` for painting it and its children: it is disabled when it
-  /// was built so or an element it is in is, and its state says so from here
-  /// on. Returns the scope to restore afterwards.
-  pub(super) fn enter_disabled_scope(&self, node: &Node) -> bool {
-    let inherited = self.disabled.get();
-    let disabled = inherited || node.is_disabled();
-    node.sync_disabled_state(disabled);
-    self.disabled.set(disabled);
-    inherited
-  }
-
-  pub(super) fn leave_disabled_scope(&self, previous: bool) {
-    self.disabled.set(previous);
-  }
-
-  /// A node painted without a scope of its own takes the state it is in.
-  pub(super) fn inherit_disabled_state(&self, node: &Node) {
-    node.sync_disabled_state(self.disabled.get());
   }
 
   /// The style a text is painted in: its own, in the inherited foreground

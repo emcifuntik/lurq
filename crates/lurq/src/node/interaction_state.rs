@@ -80,8 +80,9 @@ impl InteractionState {
   }
 
   /// The node takes no input: it is disabled (`.disabled(true)`), or an
-  /// element it is in is. Written when the node is painted, so it is known
-  /// from the first frame that draws the node after the change.
+  /// element it is in is. Kept for every node of a tree, in view or not: it
+  /// is written when the tree is built and when a live element is disabled
+  /// or enabled.
   pub fn is_disabled(&self) -> bool {
     self.inner.get().is_some_and(|inner| inner.lock().unwrap().disabled)
   }

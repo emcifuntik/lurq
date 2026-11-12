@@ -2165,7 +2165,7 @@ impl Tree {
     wrapper.on_mounted();
     self.root = Some(*node);
     if let Some(root) = &mut self.root {
-      root.assign_ids(&self.id_gen);
+      root.assign_tree_ids(&self.id_gen);
     }
     self.root_component = Some(Box::new(wrapper));
     self.root_ctx = Some(ctx);
@@ -2232,7 +2232,7 @@ impl Tree {
       if let Some(root) = &mut self.root {
         #[cfg(feature = "canvas")]
         detach_canvases_not_carried(old_canvases, Some(root));
-        root.assign_ids(&self.id_gen);
+        root.assign_tree_ids(&self.id_gen);
       }
       self.tree_rebuilt_since_layout = true;
       self.cached_render_list = None;
@@ -2263,7 +2263,7 @@ impl Tree {
     }
     #[cfg(feature = "canvas")]
     detach_canvases_not_carried(old_canvases, Some(&node));
-    node.assign_ids(&self.id_gen);
+    node.assign_tree_ids(&self.id_gen);
     self.root = Some(node);
     self.root_component = None;
     self.root_ctx = None;
@@ -4137,6 +4137,23 @@ impl Tree {
   /// Moves focus off a node its Row/Column dropped to make room
   /// (`ShrinkLimit::Drop`): a dropped node is not drawn, so it must not keep
   /// taking keys.
+  /// Writes the disabled state of a live element that was just disabled or enabled, and of everything in it.
+  fn sync_disabled_under(&self, id: NodeId) {
+    let Some(root) = &self.root else {
+      return;
+    };
+    let Some(path) = find_path_by_id(root, id) else {
+      return;
+    };
+    let Some(node) = find_node_by_path(root, &path) else {
+      return;
+    };
+    let inherited = path
+      .split_last()
+      .is_some_and(|(_, parents)| tab_navigation::path_is_disabled(root, parents));
+    node.sync_disabled_tree(inherited);
+  }
+
   /// Whether the node, or an element it is in, is disabled.
   fn is_node_disabled(&self, id: NodeId) -> bool {
     let Some(root) = &self.root else {
@@ -6541,7 +6558,7 @@ impl Tree {
     }
 
     if let Some(root) = &mut self.root {
-      root.assign_ids(&self.id_gen);
+      root.assign_tree_ids(&self.id_gen);
     }
     self.tree_rebuilt_since_layout = true;
     self.cached_render_list = None;
@@ -7027,7 +7044,7 @@ impl Tree {
     #[cfg(feature = "canvas")]
     detach_canvases_not_carried(old_parts.unused_canvas_bindings(), Some(&host));
     old_parts.free_ids(&self.id_gen);
-    host.assign_ids(&self.id_gen);
+    host.assign_tree_ids(&self.id_gen);
     self.root = Some(host);
     let focus_return = self.focused_overlay_hidden(old_parts_had_host, &layers);
     self.overlay_dismiss_entries = layers.dismiss_entries;
@@ -8735,6 +8752,7 @@ impl<'t> ElementHandle<'t> {
   pub fn set_disabled(&mut self, disabled: bool) {
     let Some(node) = self.node_mut() else { return };
     NodeUpdate::disabled(node, disabled);
+    self.tree.sync_disabled_under(self.node_id);
     self.invalidate_render();
   }
 

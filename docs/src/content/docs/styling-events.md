@@ -363,9 +363,9 @@ Row::new()
   a disabled group can have its own. It changes painting only: a frame, padding or flex in it is ignored. Use
   `.opacity(...)` or `.foreground(...)` in it to dim a whole control from its root, and `.cursor(...)` for the cursor
   over it.
-- `InteractionState::is_disabled()` (`ctx.interaction().is_disabled()`) is `true` for a disabled element and for the
-  elements in it. It is written when an element is painted, so it is known from the first frame that draws the element
-  after the change.
+- `InteractionState::is_disabled()`, on a state given to an element with `.interactive(state)`, is `true` for a
+  disabled element and for the elements in it, in view or not. It is written when the tree is built and when a live
+  element is disabled or enabled, so it is right as soon as either has happened.
 - On a live element use `ElementHandle::set_disabled`.
 
 Disabling is about input. It sets no look of its own: without a disabled style a disabled element is painted as before.
