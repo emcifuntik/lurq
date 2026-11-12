@@ -5,12 +5,13 @@
 	<!-- Lets an iPhone with a 120 Hz display draw above 60 frames a second. Xcode adds the generated keys to these. -->
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
-	<!-- The app's one scene. lurq makes the delegate's class; without this UIKit refuses to start an app built
-	     with the iOS 27 SDK. -->
+	<!-- The app's scenes. lurq makes the delegate's class; without this UIKit refuses to start an app built
+	     with the iOS 27 SDK. Several scenes let a tablet show more than one window of the app, and the second
+	     role is a display plugged in: with no entry for it the display shows what the device does. -->
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
+		<true/>
 		<key>UISceneConfigurations</key>
 		<dict>
 			<key>UIWindowSceneSessionRoleApplication</key>
@@ -18,6 +19,15 @@
 				<dict>
 					<key>UISceneConfigurationName</key>
 					<string>Default</string>
+					<key>UISceneDelegateClassName</key>
+					<string>LurqSceneDelegate</string>
+				</dict>
+			</array>
+			<key>UIWindowSceneSessionRoleExternalDisplayNonInteractive</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Display</string>
 					<key>UISceneDelegateClassName</key>
 					<string>LurqSceneDelegate</string>
 				</dict>

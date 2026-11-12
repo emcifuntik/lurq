@@ -321,6 +321,46 @@ ctx.window().on_app_event(move |event| match event {
 | `Shortcut(kind)` | The app was opened by one of its home screen shortcuts |
 | `Rotated(orientation)` | The way the content is turned: at the start, and whenever it changes |
 
+### More than one window
+
+A window an app opens with `ctx.window_opener()` is a scene of its own on iOS: a tablet shows it beside the
+first, or in its place, and the person moves between them as between the windows of any app. On a phone
+there is one scene, and a further window waits until a display is plugged in.
+
+```rust
+let opener = ctx.window_opener();
+ctx.window().on_app_event(move |event| {
+  // The person asked the system for another window, or plugged a display in.
+  if let AppEvent::WindowAsked { external } = event {
+    opener.open("Notes", 480, 640, move |app, tree| tree.mount_root::<Notes>(app, *external));
+  }
+});
+```
+
+- `AppEvent::WindowAsked` says the system has a place with no window in it: the next window the app opens is
+  shown there. While the app opens none the place is empty, and a display shows what the device does.
+- A window the person closes, and one on a display that is unplugged, is closed for the app too. A window
+  the app closes takes its scene with it, and the first window comes back in front.
+- The app's `Info.plist` allows several scenes, and names the delegate for a display's:
+
+```xml
+<key>UIApplicationSupportsMultipleScenes</key>
+<true/>
+<!-- in UISceneConfigurations, beside UIWindowSceneSessionRoleApplication -->
+<key>UIWindowSceneSessionRoleExternalDisplayNonInteractive</key>
+<array>
+  <dict>
+    <key>UISceneConfigurationName</key>
+    <string>Display</string>
+    <key>UISceneDelegateClassName</key>
+    <string>LurqSceneDelegate</string>
+  </dict>
+</array>
+```
+
+A finger presses and scrolls in a further window as in the first. It has no keyboard: a text input in it is
+not typed into. `Active`, `Background` and the rest are told of the first window alone.
+
 ### What the person set for the system
 
 The appearance, the text size, bold text, reduced motion and the rest of what a person sets for every app are
@@ -357,32 +397,6 @@ biometry::authenticate("Open your notes", AuthPolicy::BiometryOrPasscode, move |
 
 Off a phone there is nothing to ask: `available()` is `Biometry::None` and the answer is `Unavailable` at once.
 
-### Turning
-
-A phone held on its side turns the app with it, with no status bar, and the safe area follows. Which ways the
-app may be turned is said before the window runs, with `Orientation`s joined by `|`:
-
-```rust
-WinitWindow::new(app, tree)
-    .with_orientations(Orientation::Portrait | Orientation::LandscapeLeft)
-    .run();
-```
-
-`Orientation` is `Portrait`, `PortraitUpsideDown`, `LandscapeLeft` (the device's top at the left) or
-`LandscapeRight`; `Orientations::LANDSCAPE` is both sides and `Orientations::ALL` every way. The app's
-`Info.plist` names the ways it supports too (`UISupportedInterfaceOrientations`), and a way has to be in both.
-Without `with_orientations` the app turns every way the `Info.plist` names.
-
-### A keyboard attached to the device
-
-Shortcuts take Command, and moving by words Option, as on a Mac. In a text input the keys are the text
-system's, as the screen keyboard's are, but for Tab, which moves the focus, and Escape. Outside an input every
-key reaches the tree as on a desktop.
-
-## Frames
-
-The shell presents from a `CADisplayLink` at the display's full rate, and only while something changes: an idle
-app draws nothing. Going to the background and coming back needs nothing from the app.
 #### A secret behind the check
 
 An ask of the app's own guards nothing by itself: what it guards is in the app, which can be made to skip the
@@ -412,3 +426,29 @@ biometry::read_secret("session", "Log you in", move |answer| match answer {
   simulator are in the binary. A binary cargo builds has none: `crates/mobile_demo/ios/build-rust.sh` shows
   how they are linked in.
 
+### Turning
+
+A phone held on its side turns the app with it, with no status bar, and the safe area follows. Which ways the
+app may be turned is said before the window runs, with `Orientation`s joined by `|`:
+
+```rust
+WinitWindow::new(app, tree)
+    .with_orientations(Orientation::Portrait | Orientation::LandscapeLeft)
+    .run();
+```
+
+`Orientation` is `Portrait`, `PortraitUpsideDown`, `LandscapeLeft` (the device's top at the left) or
+`LandscapeRight`; `Orientations::LANDSCAPE` is both sides and `Orientations::ALL` every way. The app's
+`Info.plist` names the ways it supports too (`UISupportedInterfaceOrientations`), and a way has to be in both.
+Without `with_orientations` the app turns every way the `Info.plist` names.
+
+### A keyboard attached to the device
+
+Shortcuts take Command, and moving by words Option, as on a Mac. In a text input the keys are the text
+system's, as the screen keyboard's are, but for Tab, which moves the focus, and Escape. Outside an input every
+key reaches the tree as on a desktop.
+
+## Frames
+
+The shell presents from a `CADisplayLink` at the display's full rate, and only while something changes: an idle
+app draws nothing. Going to the background and coming back needs nothing from the app.

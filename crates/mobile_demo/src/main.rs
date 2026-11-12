@@ -14,6 +14,7 @@ mod home;
 mod inputs;
 mod lists;
 mod more;
+mod other_window;
 mod scroll;
 mod sheets;
 mod system;
@@ -53,7 +54,12 @@ impl Component for MobileDemo {
 
   fn create(ctx: &mut Ctx) -> Self {
     let said = app_events();
+    let opener = ctx.window_opener();
     ctx.window().on_app_event(move |event| {
+      // The system has a place for another window: beside this one on a tablet, or on a display.
+      if let lurq::app::window::AppEvent::WindowAsked { external } = event {
+        other_window::open(&opener, *external);
+      }
       said.update(|said| {
         said.insert(0, format!("{event:?}"));
         said.truncate(6);

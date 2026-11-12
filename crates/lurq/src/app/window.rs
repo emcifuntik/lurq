@@ -46,6 +46,11 @@ pub enum AppEvent {
   /// The way the app's content is turned, told once at the start and again whenever the device is turned to
   /// a way the app allows.
   Rotated(Orientation),
+  /// The system has a place for another window of the app and the app has opened none for it: the person
+  /// asked for one, on a tablet, or plugged a display in (`external`). The window the app opens next
+  /// ([`WindowOpener`](crate::app::WindowOpener)) is shown there; while it opens none the place stays empty,
+  /// and a display shows what the device does.
+  WindowAsked { external: bool },
 }
 
 /// A way a phone is held, and so the way an app's content is turned. Several are joined with `|` into the

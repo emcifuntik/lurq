@@ -13,7 +13,13 @@ makes the scene's delegate and puts winit's window into the scene. The app has t
 `UISceneDelegateClassName` set to `LurqSceneDelegate`); winit starts the app with no delegate of its own that
 could say so in code. Going to the background and back, and the lock screen, were tried on a device.
 
-- **One scene.** A second window of the app, on an iPad or an outer display, is not there.
+- **Further windows** (`WindowOpener`) are scenes of their own: beside the first on a tablet, or on a display
+  plugged in (`AppEvent::WindowAsked`). In a simulated tablet a window was opened by the app, pressed and
+  scrolled by synthetic input, and closed by the app. Not checked: a finger in such a window, a window the
+  person asks the system for or closes there, and a display, which no simulator could be given from a
+  terminal: `docs/ios-ipad-checks.md` lists what to try. What such a window does not have: a keyboard (a text input in it is not typed into), the
+  keyboard's share of the safe area, a safe area that turns with the device, the status bar's tap, and the
+  display's own pace for its frames.
 - **What the app is opened with:** a link of the app's own scheme reaches it (`AppEvent::OpenUrl`), tried on a
   device. A universal link and a home screen shortcut: not checked.
 
