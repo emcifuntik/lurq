@@ -719,6 +719,12 @@ pub(crate) enum BottomBarInset {
   Over(f32),
 }
 
+/// A component keeps its descendants clear of everything at the window's edges itself: for them
+/// [`Ctx::safe_area`] is nothing at every side. A sheet's content is such: the sheet stands clear of the status
+/// bar, and pads its content by the home indicator and the keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SafeAreaTaken;
+
 pub struct Ctx {
   dirty: Arc<AtomicBool>,
   subtree_dirty: Arc<AtomicBool>,
@@ -2216,6 +2222,9 @@ impl Ctx {
   /// around this one draws over its content, as a [`TabOutlet`](crate::components::TabOutlet) does. Content
   /// that scrolls under such a bar is padded by this inside its list, and shows through the bar.
   pub fn safe_area(&mut self) -> crate::app::window::SafeAreaInsets {
+    if self.use_context::<SafeAreaTaken>().is_some() {
+      return crate::app::window::SafeAreaInsets::default();
+    }
     let mut safe_area = self.window().safe_area;
     match self.use_context::<BottomBarInset>() {
       Some(BottomBarInset::Over(bar)) => safe_area.bottom += bar,

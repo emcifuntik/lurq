@@ -152,6 +152,8 @@ pub struct SheetProps {
   style: SheetStyle,
   dismissable: bool,
   scroll: Option<ScrollState>,
+  /// What makes the content, for a sheet whose content is made in it ([`Sheet::mount_with`]).
+  content: Option<Arc<dyn Fn(&mut Ctx) -> Element + Send + Sync>>,
 }
 
 impl PartialEq for SheetProps {
@@ -167,6 +169,11 @@ impl PartialEq for SheetProps {
       && self.style == other.style
       && self.dismissable == other.dismissable
       && same_scroll
+      && match (&self.content, &other.content) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+      }
   }
 }
 
@@ -185,6 +192,7 @@ impl SheetProps {
       style: SheetStyle::default(),
       dismissable: true,
       scroll: None,
+      content: None,
     }
   }
 
@@ -313,7 +321,31 @@ impl Sheet {
     ctx.mount_with::<Self>(props, vec![content.into()])
   }
 
-  /// The same, told apart from its siblings by `key`.
+  /// A sheet whose content is made in it, as a route's is in its outlet. It is the way to put a stack of
+  /// screens in a sheet: what `content` mounts is the sheet's own, so a `StackOutlet` there has its bar at the
+  /// sheet's top, with nothing of the window's edges to keep clear of (`ctx.safe_area()` is nothing inside a
+  /// sheet).
+  pub fn mount_with(
+    ctx: &mut Ctx,
+    mut props: SheetProps,
+    content: impl Fn(&mut Ctx) -> Element + Send + Sync + 'static,
+  ) -> Element {
+    props.content = Some(Arc::new(content));
+    ctx.mount::<Self>(props)
+  }
+
+  /// [`Sheet::mount_with`], told apart from its siblings by `key`.
+  pub fn mount_keyed_with(
+    ctx: &mut Ctx,
+    key: &str,
+    mut props: SheetProps,
+    content: impl Fn(&mut Ctx) -> Element + Send + Sync + 'static,
+  ) -> Element {
+    props.content = Some(Arc::new(content));
+    ctx.mount_keyed::<Self>(key, props)
+  }
+
+  /// [`Sheet::mount`], told apart from its siblings by `key`.
   pub fn mount_keyed(ctx: &mut Ctx, key: &str, props: SheetProps, content: impl Into<Element>) -> Element {
     ctx.mount_keyed_with::<Self>(key, props, vec![content.into()])
   }
@@ -336,6 +368,8 @@ impl Component for Sheet {
   type Props = SheetProps;
 
   fn create(ctx: &mut Ctx) -> Self {
+    // The sheet keeps its content clear of the window's edges itself.
+    ctx.provide(crate::app::ctx::SafeAreaTaken);
     let state = Arc::new(Mutex::new(State {
       phase: Phase::Closed,
       begin_due: false,
@@ -545,6 +579,9 @@ impl Component for Sheet {
     } else {
       content.height(height)
     };
+    if let Some(build) = &props.content {
+      content = content.child(build(ctx));
+    }
     for child in ctx.children() {
       content = content.child(child.clone());
     }
