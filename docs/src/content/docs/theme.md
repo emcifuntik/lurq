@@ -667,3 +667,54 @@ Rect::new(80.0, 32.0)
 ```
 
 Prefer concrete values for isolated drawings, debug visuals, or one-off component details. Prefer theme roles for app surfaces, text, controls, repeated spacing, repeated border widths, elevations, and reusable component defaults.
+
+## The System's Settings
+
+Added after **lurq 0.60.0**. What a person set for the whole system is in the window's info, and a render that
+reads it runs again when it changes:
+
+```rust
+let system = ctx.window().system;
+if system.reduce_motion { /* fade, do not slide */ }
+```
+
+| `SystemSettings` | |
+| --- | --- |
+| `appearance` | `Appearance::Light` or `Dark` |
+| `text_scale` | How much larger than usual the person asked text to be: 1 for the usual size |
+| `bold_text` | Text is to be heavier |
+| `reduce_motion` | Things are not to move across the screen |
+| `increase_contrast` | Colors are to stand further apart |
+| `reduce_transparency` | Nothing is to show through anything: no glass, no blur |
+| `differentiate_without_color`, `button_shapes`, `on_off_labels` | What a color or a place says is to be said some other way too |
+
+A phone tells all of it (see [iOS](../ios/)); a desktop shell tells the appearance, and the rest is as if
+nothing was set.
+
+### What The Theme Takes
+
+The theme follows three of them by itself:
+
+- **The appearance**, if it has a palette for each: `theme.set_palettes(light, dark)`. The palette for the
+  appearance the theme is in is its palette, and it changes with the system. `theme.appearance()` says which
+  it is in. A theme with one palette keeps it.
+- **The text scale.** Every style of the typography is as much larger: `Text::new(..).variant(..)`, a text
+  with no style of its own, a form's labels. A size the app gives itself, `TextStyle { font_size: 17.0, .. }`,
+  stays as given, as a fixed size does on the platform; `theme.scaled(17.0)` is that size at the person's
+  scale. `theme.set_typography_style(..)` takes a style at its own size, whatever the scale is.
+- **Bold text.** Every text is drawn two weights heavier, whatever set its weight, where the font has them.
+
+`theme.set_follows_system(false)` leaves all three to the app, which sets them with `set_appearance`,
+`set_text_scale` and `set_bold_text`: an app with a look of its own, or with its own setting for them.
+
+### What The Components Do
+
+- `StackOutlet`: with motion reduced a screen fades in where it stands and the bar's titles do not slide.
+  With transparency reduced or contrast increased the bar is solid and nothing is blurred behind it, and with
+  contrast increased the line under it is all there. With button shapes the way back is underlined. A large
+  title is at the person's text size, up to `NavigationBar::large_title_max_scale`.
+- `TabOutlet`'s bar: solid with transparency reduced or contrast increased, when the tabs that are not chosen
+  also stand out more; it goes and comes at once with motion reduced.
+- `Sheet`: with motion reduced it fades in where it stands, and out.
+- `NavigationBar::for_appearance(..)`, `TabBar::for_appearance(..)` and `SheetStyle::for_appearance(..)` are
+  the platform's light or dark ones: `NavigationBar::for_appearance(ctx.window().system.appearance)`.

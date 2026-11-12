@@ -112,6 +112,24 @@ let sheet = Sheet::mount(
 
 Several sheets in one component are told apart with `Sheet::mount_keyed`.
 
+### A stack of screens in a sheet
+
+`Sheet::mount_with(ctx, props, |ctx| ..)` makes the sheet's content in the sheet, as a route's is made in its
+outlet. What is mounted there is the sheet's own: `ctx.safe_area()` is nothing inside it, since the sheet
+stands clear of the status bar and pads its content by the home indicator and the keyboard. That is what puts
+a `StackOutlet`'s bar at the sheet's top:
+
+```rust
+let router = self.sheet_router.clone();
+Sheet::mount_with(
+  ctx,
+  SheetProps::new(self.open.clone()).detents([SheetDetent::Large]),
+  move |ctx| Router::mount(ctx, router.clone()),
+)
+```
+
+The router is the sheet's own, made once with `ctx.router(..)`, with a `StackOutlet` as its routes' layout.
+
 `SheetStyle` is how it looks and moves; `SheetStyle::dark()` has the platform's dark colors.
 
 | Field | Starts as | |

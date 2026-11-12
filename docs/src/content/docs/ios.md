@@ -164,12 +164,64 @@ One gesture scrolls one container, the innermost that has room in the finger's d
   the content, shown while it scrolls.
 - **A tap on the status bar** scrolls the outermost vertical list to its top.
   `ScrollState::set_scrolls_to_top(false)` leaves a list out of it.
-- **The keyboard** stays up when a list is scrolled, unless the list says otherwise:
-  `ScrollState::set_dismisses_keyboard(true)` puts it away when a finger starts to scroll.
+- **The keyboard** stays up when a list is scrolled, unless the list says otherwise with
+  `ScrollState::set_keyboard_dismissal(..)`: `KeyboardDismissal::OnDrag` puts it away when a finger starts
+  to scroll, and `Interactive` has it go down with the finger once the finger reaches it, and come back if
+  the finger goes back up. `set_dismisses_keyboard(true)` is `OnDrag`.
 - **Momentum** can be changed for the whole window with `Tree::set_touch_momentum(TouchMomentum { .. })`:
   the deceleration rate, and the slowest and fastest speeds. The defaults are the platform's.
 
 `VirtualizedList` scrolls the same way.
+
+### Pull to refresh
+
+`PullToRefresh` goes around a list. Pulled down past its top far enough, the list sets its signal and calls
+`on_refresh`; it stays down with a spinner over it until the app clears the signal.
+
+```rust
+let list = ScrollVertical::new(rows).with_scroll_state(self.scroll.clone());
+PullToRefresh::mount(
+  ctx,
+  PullToRefreshProps::new(self.refreshing.clone(), self.scroll.clone()).on_refresh(move || load()),
+  list,
+)
+```
+
+- Around a stack screen's list the state is `StackOutlet::screen_scroll(ctx)`, and `.top(StackOutlet::bar_inset(ctx))`
+  puts the spinner under the navigation bar.
+- `PullToRefreshStyle`: `threshold` (100), how far the list is pulled before it asks; `hold` (60), how far
+  down it stays meanwhile; `spinner_size`, `spinner_color`, `duration` and `haptic`. `dark()` has the dark
+  spinner.
+- `ActivityIndicator` is the spinner by itself: `ActivityIndicator::mount(ctx, ActivityIndicatorProps::new())`.
+  It draws frames only while it goes round.
+
+### Swipe actions
+
+`SwipeRow` goes around a row of a list. Swiped towards the leading edge it shows its trailing actions, and
+the other way its leading ones.
+
+```rust
+SwipeRow::mount_keyed(
+  ctx,
+  &message.id,
+  SwipeRowProps::new()
+    .trailing([
+      SwipeAction::destructive("Delete", move || delete(id)),
+      SwipeAction::new("Flag", move || flag(id)),
+    ])
+    .leading([SwipeAction::new("Read", move || read(id))]),
+  row_content,
+)
+```
+
+- Let go far enough, or thrown, the row stays open; a press on an action does it and closes the row, and a
+  press on the open row closes it.
+- A swipe all the way (`SwipeRowStyle::full_swipe`, 0.6 of the row's width) does the first action of that
+  side at once, with a tick of the device.
+- The first action given is the one at the edge. `SwipeAction::icon` puts a picture over the title.
+- `SwipeRowProps::open(signal)` says which side is open (-1 trailing, 0, 1 leading), for a list that closes
+  the other rows when one opens.
+- The content paints its own background: the actions are behind it.
 
 ## Text inputs
 
@@ -199,7 +251,26 @@ TextInput::new(email)
 focus from the one being typed into. A screen of inputs gives a way to put it away, such as a list that
 dismisses the keyboard when scrolled (above).
 
-Saved passwords are not offered yet.
+### Saved passwords
+
+Over an input that hides what is typed (`mask()`), or says it is for a password, the keyboard offers the
+person's saved logins. One that is chosen fills the input, and the other inputs of the login with it: every
+text input in the tree whose `content` is `Username`, `Email`, `Password` or `NewPassword`.
+
+```rust
+TextInput::new(name).single_line().content(ContentKind::Username)
+TextInput::new(password).single_line().mask().content(ContentKind::Password)
+```
+
+What the keyboard does around a saved login is the system's, and the same as for a text field of its own.
+Its bar of saved logins goes for a few frames as the keyboard moves between two of a login's inputs. And when
+the login comes from another app's list that had a keyboard up, a password manager's, the input is left and
+the keyboard stays down; from the system's own list the keyboard comes back, with the caret after the
+password.
+
+Which logins are offered first, and whether the system offers to save a new one, depends on the app's
+associated domains (`webcredentials:` in its entitlements, and the domain's `apple-app-site-association`):
+that is the app's to set up, and nothing of lurq's.
 
 ## The app and the system
 
@@ -222,6 +293,42 @@ ctx.window().on_app_event(move |event| match event {
 | `OpenUrl(url)` | The app was opened with a link: a scheme of its own (`CFBundleURLTypes` in `Info.plist`) |
 | `Shortcut(kind)` | The app was opened by one of its home screen shortcuts |
 | `Rotated(orientation)` | The way the content is turned: at the start, and whenever it changes |
+
+### What the person set for the system
+
+The appearance, the text size, bold text, reduced motion and the rest of what a person sets for every app are
+in `ctx.window().system`, and are read again whenever the app comes back from the settings or the control
+centre. The theme follows the appearance, the text size (Dynamic Type) and bold text by itself, and the stack,
+the bars and the sheets follow reduced motion and transparency. See
+[The System's Settings](../theme/#the-systems-settings).
+
+### Face ID and Touch ID
+
+`lurq::app::biometry` asks the person to prove who they are, before an app opens or shows a part of itself.
+
+```rust
+use lurq::app::biometry::{self, AuthPolicy, Biometry};
+
+if biometry::available() != Biometry::None { /* offer the lock */ }
+
+let unlocked = self.unlocked.clone();
+biometry::authenticate("Open your notes", AuthPolicy::BiometryOrPasscode, move |answer| {
+  unlocked.set(answer.is_ok());
+});
+```
+
+- The system shows its own prompt. The answer comes to the callback on a thread of the system's: set a signal
+  from it.
+- `AuthPolicy::BiometryOrPasscode` falls back to the device's passcode; `BiometryOnly` does not.
+- The error says why not: `Cancelled`, `Failed`, `Unavailable`, `LockedOut` or `Other(text)`.
+- The app's `Info.plist` says why it asks, or the system ends the app at the first ask:
+
+```xml
+<key>NSFaceIDUsageDescription</key>
+<string>To open your notes.</string>
+```
+
+Off a phone there is nothing to ask: `available()` is `Biometry::None` and the answer is `Unavailable` at once.
 
 ### Turning
 

@@ -10,7 +10,11 @@ use std::{
   time::{Duration, Instant},
 };
 
-use crate::{app::ctx::OutsidePress, layout::layout_kind::ScrollState, node::SelectStyle};
+use crate::{
+  app::ctx::OutsidePress,
+  layout::layout_kind::ScrollState,
+  node::{SelectStyle, select_icon::SelectAdornment},
+};
 
 pub(crate) type SelectChangeCallback = Arc<dyn Fn(usize) + Send + Sync>;
 
@@ -29,6 +33,9 @@ struct SelectInner {
   labels: Vec<Arc<str>>,
   details: Vec<Option<Arc<str>>>,
   disabled: Vec<bool>,
+  /// The builders of the elements before and after each option's label.
+  leading: Vec<Option<SelectAdornment>>,
+  trailing: Vec<Option<SelectAdornment>>,
   selected: Vec<usize>,
   multiple: bool,
   placeholder: Option<Arc<str>>,
@@ -115,6 +122,8 @@ impl SelectState {
         labels: Vec::new(),
         details: Vec::new(),
         disabled: Vec::new(),
+        leading: Vec::new(),
+        trailing: Vec::new(),
         selected: Vec::new(),
         multiple: false,
         placeholder: None,
@@ -144,6 +153,12 @@ impl SelectState {
 
   pub(crate) fn set_disabled(&self, disabled: Vec<bool>) {
     self.inner.lock().unwrap().disabled = disabled;
+  }
+
+  pub(crate) fn set_adornments(&self, leading: Vec<Option<SelectAdornment>>, trailing: Vec<Option<SelectAdornment>>) {
+    let mut inner = self.inner.lock().unwrap();
+    inner.leading = leading;
+    inner.trailing = trailing;
   }
 
   pub(crate) fn set_selected(&self, selected: Vec<usize>) {
@@ -198,6 +213,15 @@ impl SelectState {
 
   pub(crate) fn detail(&self, index: usize) -> Option<Arc<str>> {
     self.inner.lock().unwrap().details.get(index).cloned().flatten()
+  }
+
+  /// The builders of the elements before and after the label of option
+  /// `index`. Returned, not called here: a builder is app code and runs
+  /// without the state locked.
+  pub(crate) fn adornments(&self, index: usize) -> (Option<SelectAdornment>, Option<SelectAdornment>) {
+    let inner = self.inner.lock().unwrap();
+    let builder = |slots: &[Option<SelectAdornment>]| slots.get(index).cloned().flatten();
+    (builder(&inner.leading), builder(&inner.trailing))
   }
 
   pub(crate) fn is_disabled(&self, index: usize) -> bool {

@@ -311,6 +311,70 @@ impl Drop for FrameLink {
   }
 }
 
+/// The scroll view whose finger takes the keyboard down with it. Main thread only.
+///
+/// Nothing an app can call moves the system's keyboard. A `UIScrollView` whose `keyboardDismissMode` is
+/// interactive does: UIKit follows that view's own pan gesture, and once the finger is on the keyboard the
+/// keyboard goes down and up with it. The view is not seen and scrolls nothing; its pan gesture is put on
+/// winit's view, where the fingers are, and takes no touch from it.
+pub(super) struct KeyboardDrag {
+  scroll_view: Retained<AnyObject>,
+  interactive: bool,
+}
+
+impl KeyboardDrag {
+  pub(super) fn new(view: NonNull<c_void>) -> Self {
+    let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+    unsafe {
+      let scroll_view: Retained<AnyObject> = msg_send![class!(UIScrollView), new];
+      let bounds: CGRect = msg_send![view, bounds];
+      let _: () = msg_send![&*scroll_view, setFrame: bounds];
+      // `UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight`.
+      let _: () = msg_send![&*scroll_view, setAutoresizingMask: 18usize];
+      // Not seen, and no finger lands on it: the fingers are winit's view's.
+      let _: () = msg_send![&*scroll_view, setUserInteractionEnabled: false];
+      let _: () = msg_send![&*scroll_view, setHidden: false];
+      let _: () = msg_send![&*scroll_view, setAlpha: 0.0f64];
+      let _: () = msg_send![&*scroll_view, setScrollsToTop: false];
+      let _: () = msg_send![&*scroll_view, setAlwaysBounceVertical: true];
+      let _: () = msg_send![&*scroll_view, setShowsVerticalScrollIndicator: false];
+      let _: () = msg_send![&*scroll_view, setShowsHorizontalScrollIndicator: false];
+      let _: () = msg_send![&*scroll_view, setContentSize: CGSize { width: bounds.size.width, height: 100_000.0 }];
+      let _: () = msg_send![&*scroll_view, setContentOffset: CGPoint { x: 0.0, y: 50_000.0 }];
+      let _: () = msg_send![view, insertSubview: &*scroll_view, atIndex: 0isize];
+      // The gesture hears the fingers of winit's view, and leaves them to it.
+      let pan: Retained<AnyObject> = msg_send![&*scroll_view, panGestureRecognizer];
+      let _: () = msg_send![&*pan, setCancelsTouchesInView: false];
+      let _: () = msg_send![&*pan, setDelaysTouchesBegan: false];
+      let _: () = msg_send![&*pan, setDelaysTouchesEnded: false];
+      let _: () = msg_send![&*pan, setEnabled: false];
+      let _: () = msg_send![view, addGestureRecognizer: &*pan];
+      Self {
+        scroll_view,
+        interactive: false,
+      }
+    }
+  }
+
+  /// Whether the keyboard follows the finger that has just landed. Said at each landing, before the gesture
+  /// begins.
+  pub(super) fn set_interactive(&mut self, interactive: bool) {
+    unsafe {
+      // Back to the middle of its content, wherever the last finger left it: it has to have room both ways.
+      let _: () = msg_send![&*self.scroll_view, setContentOffset: CGPoint { x: 0.0, y: 50_000.0 }];
+      if self.interactive == interactive {
+        return;
+      }
+      self.interactive = interactive;
+      // `UIScrollViewKeyboardDismissModeInteractive`.
+      let mode: isize = if interactive { 2 } else { 0 };
+      let _: () = msg_send![&*self.scroll_view, setKeyboardDismissMode: mode];
+      let pan: Retained<AnyObject> = msg_send![&*self.scroll_view, panGestureRecognizer];
+      let _: () = msg_send![&*pan, setEnabled: interactive];
+    }
+  }
+}
+
 /// The scroll view that takes the status bar's tap. Main thread only.
 pub(super) struct StatusBarTap {
   scroll_view: Retained<AnyObject>,
@@ -908,5 +972,53 @@ pub(super) fn watch_orientation() {
   };
   if TOLD_ORIENTATION.swap(number, Ordering::AcqRel) != number {
     push_app_event(AppEvent::Rotated(orientation));
+  }
+}
+
+use crate::app::window::{Appearance, SystemSettings};
+
+#[link(name = "UIKit", kind = "framework")]
+unsafe extern "C" {
+  fn UIAccessibilityIsBoldTextEnabled() -> bool;
+  fn UIAccessibilityIsReduceMotionEnabled() -> bool;
+  fn UIAccessibilityDarkerSystemColorsEnabled() -> bool;
+  fn UIAccessibilityIsReduceTransparencyEnabled() -> bool;
+  fn UIAccessibilityShouldDifferentiateWithoutColor() -> bool;
+  fn UIAccessibilityButtonShapesEnabled() -> bool;
+  fn UIAccessibilityIsOnOffSwitchLabelsEnabled() -> bool;
+}
+
+/// What the person set for the whole system, as it is now. Main thread only.
+///
+/// The appearance is the scene's: winit's window was made outside the scene, and a window made in it says
+/// what the scene is in. The text scale is what the system makes of a size of 100 for the person's text
+/// size, the body style's curve.
+pub(super) fn system_settings(view: NonNull<c_void>) -> SystemSettings {
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  unsafe {
+    let probe = SAFE_AREA_PROBE.load(Ordering::Acquire);
+    let traits: Retained<AnyObject> = match probe.as_ref() {
+      Some(probe) => msg_send![probe, traitCollection],
+      None => msg_send![view, traitCollection],
+    };
+    // `UIUserInterfaceStyleDark`.
+    let style: isize = msg_send![&*traits, userInterfaceStyle];
+    let metrics: Retained<AnyObject> = msg_send![class!(UIFontMetrics), defaultMetrics];
+    let scaled: f64 = msg_send![&*metrics, scaledValueForValue: 100.0f64, compatibleWithTraitCollection: &*traits];
+    SystemSettings {
+      appearance: if style == 2 {
+        Appearance::Dark
+      } else {
+        Appearance::Light
+      },
+      text_scale: (scaled / 100.0) as f32,
+      bold_text: UIAccessibilityIsBoldTextEnabled(),
+      reduce_motion: UIAccessibilityIsReduceMotionEnabled(),
+      increase_contrast: UIAccessibilityDarkerSystemColorsEnabled(),
+      reduce_transparency: UIAccessibilityIsReduceTransparencyEnabled(),
+      differentiate_without_color: UIAccessibilityShouldDifferentiateWithoutColor(),
+      button_shapes: UIAccessibilityButtonShapesEnabled(),
+      on_off_labels: UIAccessibilityIsOnOffSwitchLabelsEnabled(),
+    }
   }
 }

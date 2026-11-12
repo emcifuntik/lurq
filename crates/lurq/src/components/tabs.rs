@@ -49,8 +49,12 @@ pub struct TabItem {
   /// with the `raster` feature); elsewhere nothing is drawn for it.
   pub symbol: Option<String>,
   pub selected_symbol: Option<String>,
-  /// A few characters in a mark at the picture's corner: a count of what waits there.
+  /// A few characters in a mark at the picture's corner: a count of what waits there. With no characters
+  /// the mark is a dot.
   pub badge: Option<String>,
+  /// The tab is the one to search in: a floating bar stands it apart from the others, at its end, as the
+  /// platform's does.
+  pub search: bool,
 }
 
 impl TabItem {
@@ -85,6 +89,16 @@ impl TabItem {
     self.badge = Some(badge.into());
     self
   }
+
+  /// Marks the tab as the one to search in, with the platform's magnifying glass if it has no picture.
+  pub fn search(mut self) -> Self {
+    self.search = true;
+    if self.symbol.is_none() && self.icon.is_none() {
+      self.symbol = Some("magnifyingglass".to_owned());
+      self.selected_symbol = Some("magnifyingglass".to_owned());
+    }
+    self
+  }
 }
 
 struct Tab {
@@ -93,6 +107,8 @@ struct Tab {
   router: RouterHandle,
   /// How far the tab's own screens have the bar out of view.
   bar_move: Signal<BarMove>,
+  /// The tab's list was last scrolled down.
+  scrolled: Signal<bool>,
 }
 
 /// How far out of view a tab's screens have the bar, from 0 to 1, and how it gets there: a stack of screens
@@ -117,9 +133,10 @@ impl crate::app::component::DevtoolsInspectable for BarMove {
   fn write_info(&self, _buffer: &mut Vec<crate::app::component::ComponentInfo>) {}
 }
 
-/// A tab's part of the context: where its screens say how far they have the bar out of view.
+/// A tab's part of the context: where its screens say how far they have the bar out of view, and whether
+/// their list was last scrolled down.
 #[derive(Clone)]
-pub(crate) struct TabBarLink(pub(crate) Signal<BarMove>);
+pub(crate) struct TabBarLink(pub(crate) Signal<BarMove>, pub(crate) Signal<bool>);
 
 struct TabsInner {
   tabs: Mutex<Vec<Tab>>,
@@ -164,6 +181,7 @@ pub struct TabEntry {
   pub router: RouterHandle,
   pub active: bool,
   bar_move: Signal<BarMove>,
+  scrolled: Signal<bool>,
 }
 
 impl Tabs {
@@ -200,10 +218,12 @@ impl Tabs {
         item,
         router,
         bar_move: Signal::new(BarMove::SHOWN),
+        scrolled: Signal::new(false),
       };
       match tabs.iter().position(|tab| tab.key == key) {
         Some(at) => {
           tab.bar_move = tabs[at].bar_move.clone();
+          tab.scrolled = tabs[at].scrolled.clone();
           tabs[at] = tab;
         }
         None => {
@@ -309,6 +329,7 @@ impl Tabs {
         router: tab.router.clone(),
         active: tab.key == active,
         bar_move: tab.bar_move.clone(),
+        scrolled: tab.scrolled.clone(),
       })
       .collect()
   }
@@ -365,6 +386,8 @@ pub struct TabBar {
   /// The active tab's picture and title, and the others'.
   pub tint: Color,
   pub color: Color,
+  /// The others' when the person asked for more contrast.
+  pub contrast_color: Color,
   /// How much what is behind the bar is blurred where the bar's color lets it show: the content of a tab
   /// that scrolls under a bar across the bottom. 0 is no blur.
   pub blur: f32,
@@ -390,6 +413,23 @@ pub struct TabBar {
   pub item_max_width: f32,
   /// The bar goes out of view while the on-screen keyboard is up.
   pub hides_with_keyboard: bool,
+  /// The most places the bar has. With more tabs than that, the last place is one that lists the rest.
+  pub max_items: usize,
+  /// What that place says, and the platform's symbol for it.
+  pub more_title: String,
+  pub more_symbol: String,
+  /// The bar goes out of view as a list of its tab is scrolled down, and comes back as it is scrolled up:
+  /// the list of a stack's screen ([`StackOutlet::large_title_scroll`](super::StackOutlet)).
+  pub minimizes_on_scroll: bool,
+  /// The bar is a rounded bar that stands clear of the window's edges, over the content, as the newest
+  /// system's does; see [`TabBar::floating`]. Only across the bottom.
+  pub floating: bool,
+  /// A floating bar's room at each side and under it, its height, and what is drawn behind the place of the
+  /// tab that is chosen.
+  pub floating_margin: f32,
+  pub floating_bottom: f32,
+  pub floating_height: f32,
+  pub floating_selection: Color,
 }
 
 impl Default for TabBar {
@@ -400,6 +440,7 @@ impl Default for TabBar {
       border: Color::new(60, 60, 67, 74),
       tint: Color::from_hex("#007AFF"),
       color: Color::from_hex("#999999"),
+      contrast_color: Color::from_hex("#515154"),
       blur: 40.0,
       height: 49.0,
       low_height: 32.0,
@@ -416,6 +457,15 @@ impl Default for TabBar {
       badge_size: 13.0,
       item_max_width: f32::INFINITY,
       hides_with_keyboard: true,
+      max_items: 5,
+      more_title: "More".to_owned(),
+      more_symbol: "ellipsis".to_owned(),
+      minimizes_on_scroll: false,
+      floating: false,
+      floating_margin: 21.0,
+      floating_bottom: 21.0,
+      floating_height: 62.0,
+      floating_selection: Color::new(120, 120, 128, 41),
     }
   }
 }
@@ -432,8 +482,29 @@ impl TabBar {
       border: Color::new(84, 84, 88, 153),
       tint: Color::from_hex("#0A84FF"),
       color: Color::from_hex("#8E8E93"),
+      contrast_color: Color::from_hex("#C7C7CC"),
       ..Self::default()
     }
+  }
+
+  /// The platform's bar for an appearance: `ctx.window().system.appearance`, or the theme's.
+  pub fn for_appearance(appearance: crate::app::window::Appearance) -> Self {
+    match appearance {
+      crate::app::window::Appearance::Light => Self::new(),
+      crate::app::window::Appearance::Dark => Self::dark(),
+    }
+  }
+
+  /// A bar that floats over the content, clear of the window's edges, with the place of the chosen tab
+  /// marked: the look of the newest system's, without its glass.
+  pub fn floating(mut self) -> Self {
+    self.floating = true;
+    self
+  }
+
+  pub fn minimizes_on_scroll(mut self, minimizes: bool) -> Self {
+    self.minimizes_on_scroll = minimizes;
+    self
   }
 
   pub fn place(mut self, place: TabBarPlace) -> Self {
@@ -541,6 +612,8 @@ pub struct TabOutlet {
   /// The bar as it is laid out, and how high that was: the tabs' content keeps clear of as much.
   bar: ElementRef,
   bar_height: Signal<f32>,
+  /// The list of the tabs that have no place in the bar is shown.
+  more_open: Signal<bool>,
 }
 
 impl TabOutlet {
@@ -560,6 +633,7 @@ impl Component for TabOutlet {
       to_top,
       bar: ElementRef::default(),
       bar_height: Signal::new(0.0),
+      more_open: Signal::new(false),
     }
   }
 
@@ -602,17 +676,20 @@ impl Component for TabOutlet {
 
     let mut screens = Stack::new().size(FILL, FILL);
     let mut moved = BarMove::SHOWN;
+    let mut scrolled = false;
     for entry in &entries {
       let host = ctx.mount_keyed_offstage::<TabHost>(
         &entry.key,
         TabHostProps {
           router: entry.router.clone(),
           bar_move: entry.bar_move.clone(),
+          scrolled: entry.scrolled.clone(),
         },
         entry.active,
       );
       if entry.active {
         moved = entry.bar_move.get();
+        scrolled = entry.scrolled.get();
       }
       // A tab that is not shown has nothing to touch, and its holder, over the shown one's, takes no touch
       // from it.
@@ -627,6 +704,12 @@ impl Component for TabOutlet {
       });
     }
 
+    // A bar that gets out of a list's way: a floating one draws in to the tab that is shown, and any other
+    // goes out of view.
+    let minimized =
+      matches!(&props.bar, Some(Bar::Standard(bar)) if bar.minimizes_on_scroll) && scrolled && !self.more_open.get();
+    let drawn_in = minimized && matches!(&props.bar, Some(Bar::Standard(bar)) if bar.floating);
+    let minimized = minimized && !drawn_in;
     let bar: Option<Element> = match &props.bar {
       None => None,
       _ if away && !over => None,
@@ -636,7 +719,39 @@ impl Component for TabOutlet {
         safe_area,
         low,
       })),
-      Some(Bar::Standard(bar)) => Some(standard_bar(bar, &tabs, &entries, safe_area, low)),
+      Some(Bar::Standard(bar)) => {
+        // With transparency reduced or contrast increased the bar is all there, and nothing is blurred
+        // behind it; with contrast increased the line over it and the tabs that are not chosen stand out.
+        let mut bar = bar.clone();
+        if window.system.reduce_transparency || window.system.increase_contrast {
+          let solid = |color: Color| Color::new(color.r(), color.g(), color.b(), 255);
+          bar.background = solid(bar.background);
+          bar.blur = 0.0;
+          if window.system.increase_contrast {
+            bar.border = solid(bar.border);
+            bar.color = bar.contrast_color;
+          }
+        }
+        Some(standard_bar(
+          &bar,
+          &tabs,
+          &entries,
+          safe_area,
+          low,
+          &self.more_open,
+          drawn_in,
+          window.logical_width(),
+        ))
+      }
+    };
+    // The tabs with no place in the bar, listed over the tab that is shown while the bar's last place is
+    // chosen.
+    let more_open = self.more_open.get();
+    let more: Option<Element> = match &props.bar {
+      Some(Bar::Standard(bar)) if more_open && entries.len() > bar.max_items.max(2) => {
+        Some(more_list(bar, &tabs, &entries, safe_area, bar_height, &self.more_open))
+      }
+      _ => None,
     };
     let whole = Stack::new().size(FILL, FILL);
     match (bar, place) {
@@ -651,23 +766,31 @@ impl Component for TabOutlet {
         // Out of view the bar is under the window's bottom edge: all the way there for the keyboard or when
         // told to, with a move of its own, and as far as a screen that hides it has come in, with that
         // screen's move.
-        let (share, pace, curve) = if away {
+        let (share, pace, curve) = if away || minimized {
           (1.0, hide_duration, Easing::EASE)
         } else if moved.pace.is_zero() && moved.hidden == 0.0 {
           (0.0, hide_duration, Easing::EASE)
         } else {
           (moved.hidden, moved.pace, moved.curve)
         };
+        // With motion reduced the bar is there or it is not.
+        let pace = if window.system.reduce_motion {
+          Duration::ZERO
+        } else {
+          pace
+        };
         let bar = Row::new()
           .ref_element(self.bar.clone())
           .width(FILL)
+          .hit_test(crate::node::HitTestBehavior::ContentOnly)
           .child(bar)
           .transform(Transform2D::translate(0.0, share * bar_height))
           .transition(Transition::transform().duration(pace).easing(curve));
-        whole
-          .stack_align(StackAlignment::BottomStart)
-          .child(screens)
-          .child(if share >= 1.0 { bar.pointer_events_none() } else { bar })
+        let mut whole = whole.stack_align(StackAlignment::BottomStart).child(screens);
+        if let Some(more) = more {
+          whole = whole.child(more);
+        }
+        whole.child(if share >= 1.0 { bar.pointer_events_none() } else { bar })
       }
     }
   }
@@ -697,116 +820,273 @@ fn symbol(name: &str, size: f32, color: Color) -> Option<Element> {
   None
 }
 
-fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: SafeAreaInsets, low: bool) -> Element {
+/// What a tab's place in a bar shows: its picture with its badge, and its title under or beside it.
+fn place_content(bar: &TabBar, item: &TabItem, active: bool, low: bool) -> Column {
+  let color = if active { bar.tint } else { bar.color };
+  let symbol_size = if low { bar.low_symbol_size } else { bar.symbol_size };
+  let picture = match (active, &item.selected_icon, &item.selected_symbol) {
+    (true, Some(icon), _) => Some(icon.clone()),
+    (true, None, Some(name)) => symbol(name, symbol_size, color),
+    // The filled one of the tab's symbol, where the platform has it, as its own bars take.
+    (true, None, None) => item
+      .symbol
+      .as_ref()
+      .and_then(|name| symbol(&format!("{name}.fill"), symbol_size, color)),
+    _ => None,
+  }
+  .or_else(|| item.icon.clone())
+  .or_else(|| item.symbol.as_ref().and_then(|name| symbol(name, symbol_size, color)));
+
+  let mut content = Column::new()
+    .align_items(Alignment::Center)
+    .spacing(bar.spacing)
+    .overflow_visible();
+  let badge = item.badge.as_ref().map(|badge| {
+    // With nothing to say the badge is a dot.
+    let side = if badge.is_empty() {
+      bar.badge_size * 0.7
+    } else {
+      bar.badge_size + 5.0
+    };
+    let mark = Row::new()
+      .min_width(side)
+      .height(side)
+      .align_items(Alignment::Center)
+      .justify(Justify::Center)
+      .rounded(side / 2.0)
+      .background(bar.badge_background);
+    if badge.is_empty() {
+      mark
+    } else {
+      mark.padding_horizontal(5.0).child(
+        Text::styled(
+          badge,
+          TextStyle {
+            font_size: bar.badge_size,
+            color: bar.badge_color,
+            ..TextStyle::default()
+          },
+        )
+        .nowrap(),
+      )
+    }
+  });
+  let title = Text::styled(
+    &item.title,
+    TextStyle {
+      font_size: if low { bar.low_title_size } else { bar.title_size },
+      weight: bar.title_weight,
+      color,
+      ..TextStyle::default()
+    },
+  )
+  .nowrap();
+  match (picture, badge) {
+    (Some(picture), badge) => {
+      // The badge at the picture's upper corner, half over it: it reaches past the picture's box, and past
+      // the place's own in a low bar.
+      let mut over = Stack::new()
+        .stack_align(StackAlignment::TopEnd)
+        .overflow_visible()
+        .child(picture);
+      if let Some(badge) = badge {
+        over = over.child(badge.transform(Transform2D::translate(bar.badge_size * 0.7, -bar.badge_size * 0.3)));
+      }
+      if low {
+        // In a low bar the title stands beside the picture.
+        let mut row = Row::new()
+          .align_items(Alignment::Center)
+          .spacing(6.0)
+          .overflow_visible()
+          .child(over);
+        if !item.title.is_empty() {
+          row = row.child(title);
+        }
+        content.child(row)
+      } else {
+        content = content.child(over);
+        if item.title.is_empty() {
+          content
+        } else {
+          content.child(title)
+        }
+      }
+    }
+    (None, badge) => {
+      let mut row = Row::new().align_items(Alignment::Center).spacing(4.0).child(title);
+      if let Some(badge) = badge {
+        row = row.child(badge);
+      }
+      content.child(row)
+    }
+  }
+}
+
+/// The tabs that have a place in the bar and those that have none: with more tabs than the bar has places,
+/// the last place is for the rest.
+fn placed<'a>(bar: &TabBar, entries: &'a [TabEntry]) -> (&'a [TabEntry], &'a [TabEntry]) {
+  let places = bar.max_items.max(2);
+  if entries.len() > places {
+    entries.split_at(places - 1)
+  } else {
+    (entries, &[])
+  }
+}
+
+fn standard_bar(
+  bar: &TabBar,
+  tabs: &Tabs,
+  entries: &[TabEntry],
+  safe_area: SafeAreaInsets,
+  low: bool,
+  more_open: &Signal<bool>,
+  drawn_in: bool,
+  window_width: f32,
+) -> Element {
+  let floating = bar.floating && bar.place == TabBarPlace::Bottom;
+  let (shown, rest) = placed(bar, entries);
+  let height = if floating {
+    bar.floating_height
+  } else if low {
+    bar.low_height
+  } else {
+    bar.height
+  };
+  let opened = more_open.get_untracked();
+  // A floating bar's places have widths of their own, which change with a move: drawn in, as a list is
+  // scrolled, the place of the tab that is shown is all the bar has, and the others have no width.
+  let apart_there = floating && shown.iter().any(|entry| entry.item.search);
+  let count = shown.iter().filter(|entry| !(floating && entry.item.search)).count() + usize::from(!rest.is_empty());
+  let full = (window_width
+    - safe_area.left
+    - safe_area.right
+    - 2.0 * bar.floating_margin
+    - if apart_there { height + 10.0 } else { 0.0 })
+  .max(0.0);
+  let each = ((full - 8.0) / count.max(1) as f32).max(0.0);
+  let alone = (height + 12.0).min(each.max(height));
+  let resize = Transition::width().duration(bar.hide_duration).easing(Easing::EASE);
+  let fade = Transition::opacity().duration(bar.hide_duration).easing(Easing::EASE);
+  // A place: what it shows, whether it is the chosen one, whether it is in the bar's row, and what a press on
+  // it does.
+  let place = |id: String, content: Column, chosen: bool, in_row: bool, press: Box<dyn Fn() + Send + Sync>| {
+    let mut place = Row::new().id(id);
+    place = if floating && in_row {
+      let (width, seen) = match (drawn_in, chosen) {
+        (false, _) => (each, 1.0),
+        (true, true) => (alone, 1.0),
+        (true, false) => (0.0, 0.0),
+      };
+      place
+        .width(width)
+        .opacity(seen)
+        .transition(resize.clone())
+        .transition(fade.clone())
+    } else {
+      place.flex(1.0).max_width(bar.item_max_width)
+    };
+    let mut place = place
+      .height(FILL)
+      .align_items(Alignment::Center)
+      .justify(Justify::Center)
+      .overflow_visible()
+      .child(content)
+      .on_click(move |_| press());
+    if floating {
+      // The chosen tab's place is marked, as far as the bar's own round ends.
+      place = place.rounded((height - 8.0) / 2.0).background(if chosen {
+        bar.floating_selection
+      } else {
+        Color::new(0, 0, 0, 0)
+      });
+    }
+    place
+  };
   let mut places = Row::new()
+    .height(if floating { height - 8.0 } else { height })
+    .justify(Justify::Center);
+  let mut apart: Option<Element> = None;
+  for entry in shown {
+    let chosen = entry.active && !opened;
+    let (tabs, key, open) = (tabs.clone(), entry.key.clone(), more_open.clone());
+    let (scrolled, opens) = (entry.scrolled.clone(), drawn_in && entry.active && !entry.item.search);
+    let made = place(
+      format!("tab-{}", entry.key),
+      place_content(bar, &entry.item, chosen, low),
+      chosen,
+      !entry.item.search,
+      Box::new(move || {
+        if opens {
+          scrolled.set(false);
+          return;
+        }
+        open.set(false);
+        tabs.press(&key);
+      }),
+    );
+    if floating && entry.item.search {
+      // The tab to search in stands apart from the others, a round place of its own at the bar's end.
+      apart = Some(
+        Row::new()
+          .width(height)
+          .height(height)
+          .padding(4.0)
+          .rounded(height / 2.0)
+          .background(bar.background)
+          .backdrop_blur(bar.blur)
+          .border_inside(0.5, bar.border)
+          .child(made)
+          .into(),
+      );
+    } else {
+      places = places.child(made);
+    }
+  }
+  if !rest.is_empty() {
+    // The last place lists the tabs that have none. It is the chosen one while its list is open, and while
+    // the tab that is shown is one of those.
+    let chosen = opened || rest.iter().any(|entry| entry.active);
+    let item = TabItem::new(bar.more_title.clone()).symbol(bar.more_symbol.clone());
+    let open = more_open.clone();
+    places = places.child(place(
+      "tab-more-places".to_owned(),
+      place_content(bar, &item, chosen, low),
+      chosen,
+      true,
+      Box::new(move || open.set(!open.get_untracked())),
+    ));
+  }
+
+  if floating {
+    let capsule = places
+      .width(if drawn_in { alone + 8.0 } else { full })
+      .transition(resize.clone())
+      .height(height)
+      .padding(4.0)
+      .rounded(height / 2.0)
+      .background(bar.background)
+      .backdrop_blur(bar.blur)
+      .border_inside(0.5, bar.border);
+    // The room around the bar is the content's: a touch there goes to what is under.
+    let mut row = Row::new()
+      .width(FILL)
+      .hit_test(crate::node::HitTestBehavior::ContentOnly)
+      .padding_left(safe_area.left + bar.floating_margin)
+      .padding_right(safe_area.right + bar.floating_margin)
+      .padding_bottom(bar.floating_bottom)
+      .child(capsule);
+    if let Some(apart) = apart {
+      // The tab to search in keeps its place at the bar's end as the bar draws in.
+      row = row
+        .child(Row::new().flex(1.0).min_width(10.0).pointer_events_none())
+        .child(apart);
+    }
+    return row.into();
+  }
+  let places = places
     .width(FILL)
-    .height(if low { bar.low_height } else { bar.height })
-    .justify(Justify::Center)
     .padding_left(safe_area.left)
     .padding_right(safe_area.right);
-  for entry in entries {
-    let color = if entry.active { bar.tint } else { bar.color };
-    let item = &entry.item;
-    let symbol_size = if low { bar.low_symbol_size } else { bar.symbol_size };
-    let picture = match (entry.active, &item.selected_icon, &item.selected_symbol) {
-      (true, Some(icon), _) => Some(icon.clone()),
-      (true, None, Some(name)) => symbol(name, symbol_size, color),
-      // The filled one of the tab's symbol, where the platform has it, as its own bars take.
-      (true, None, None) => item
-        .symbol
-        .as_ref()
-        .and_then(|name| symbol(&format!("{name}.fill"), symbol_size, color)),
-      _ => None,
-    }
-    .or_else(|| item.icon.clone())
-    .or_else(|| item.symbol.as_ref().and_then(|name| symbol(name, symbol_size, color)));
-
-    let mut content = Column::new()
-      .align_items(Alignment::Center)
-      .spacing(bar.spacing)
-      .overflow_visible();
-    let badge = item.badge.as_ref().map(|badge| {
-      Row::new()
-        .min_width(bar.badge_size + 5.0)
-        .height(bar.badge_size + 5.0)
-        .padding_horizontal(5.0)
-        .align_items(Alignment::Center)
-        .justify(Justify::Center)
-        .rounded((bar.badge_size + 5.0) / 2.0)
-        .background(bar.badge_background)
-        .child(
-          Text::styled(
-            badge,
-            TextStyle {
-              font_size: bar.badge_size,
-              color: bar.badge_color,
-              ..TextStyle::default()
-            },
-          )
-          .nowrap(),
-        )
-    });
-    let title = Text::styled(
-      &item.title,
-      TextStyle {
-        font_size: if low { bar.low_title_size } else { bar.title_size },
-        weight: bar.title_weight,
-        color,
-        ..TextStyle::default()
-      },
-    )
-    .nowrap();
-    match (picture, badge) {
-      (Some(picture), badge) => {
-        // The badge at the picture's upper corner, half over it.
-        // The badge reaches past the picture's box, and past the place's own in a low bar.
-        let mut over = Stack::new()
-          .stack_align(StackAlignment::TopEnd)
-          .overflow_visible()
-          .child(picture);
-        if let Some(badge) = badge {
-          over = over.child(badge.transform(Transform2D::translate(bar.badge_size * 0.7, -bar.badge_size * 0.3)));
-        }
-        if low {
-          // In a low bar the title stands beside the picture.
-          let mut row = Row::new()
-            .align_items(Alignment::Center)
-            .spacing(6.0)
-            .overflow_visible()
-            .child(over);
-          if !item.title.is_empty() {
-            row = row.child(title);
-          }
-          content = content.child(row);
-        } else {
-          content = content.child(over);
-          if !item.title.is_empty() {
-            content = content.child(title);
-          }
-        }
-      }
-      (None, badge) => {
-        let mut row = Row::new().align_items(Alignment::Center).spacing(4.0).child(title);
-        if let Some(badge) = badge {
-          row = row.child(badge);
-        }
-        content = content.child(row);
-      }
-    }
-    let (tabs, key) = (tabs.clone(), entry.key.clone());
-    places = places.child(
-      Row::new()
-        .id(format!("tab-{}", entry.key))
-        .flex(1.0)
-        .max_width(bar.item_max_width)
-        .height(FILL)
-        .align_items(Alignment::Center)
-        .justify(Justify::Center)
-        .overflow_visible()
-        .child(content)
-        .on_click(move |_| tabs.press(&key)),
-    );
-  }
   let line = Row::new().width(FILL).height(0.5).background(bar.border);
   let column = Column::new()
     .width(FILL)
@@ -819,10 +1099,88 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
   .into()
 }
 
+/// The tabs that have no place in the bar, as a list over the tab that is shown: a press on one shows it.
+fn more_list(
+  bar: &TabBar,
+  tabs: &Tabs,
+  entries: &[TabEntry],
+  safe_area: SafeAreaInsets,
+  bar_height: f32,
+  more_open: &Signal<bool>,
+) -> Element {
+  let (_, rest) = placed(bar, entries);
+  let solid = Color::new(bar.background.r(), bar.background.g(), bar.background.b(), 255);
+  let mut rows = Column::new().width(FILL);
+  for entry in rest {
+    let (tabs, key, open) = (tabs.clone(), entry.key.clone(), more_open.clone());
+    let color = if entry.active { bar.tint } else { bar.color };
+    let mut row = Row::new()
+      .id(format!("tab-{}", entry.key))
+      .width(FILL)
+      .height(44.0)
+      .align_items(Alignment::Center)
+      .spacing(12.0)
+      .padding_horizontal(16.0);
+    if let Some(picture) = entry.item.icon.clone().or_else(|| {
+      entry
+        .item
+        .symbol
+        .as_ref()
+        .and_then(|name| symbol(name, bar.symbol_size, color))
+    }) {
+      row = row.child(picture);
+    }
+    row = row.child(
+      Text::styled(
+        &entry.item.title,
+        TextStyle {
+          font_size: 17.0,
+          color: bar.tint,
+          ..TextStyle::default()
+        },
+      )
+      .nowrap(),
+    );
+    rows = rows
+      .child(row.on_click(move |_| {
+        open.set(false);
+        tabs.select(&key);
+      }))
+      .child(Row::new().width(FILL).height(0.5).background(bar.border));
+  }
+  Column::new()
+    .id("tab-more-list")
+    .size(FILL, FILL)
+    .background(solid)
+    .padding_top(safe_area.top + 16.0)
+    .padding_left(safe_area.left)
+    .padding_right(safe_area.right)
+    .padding_bottom(bar_height)
+    .child(
+      Row::new().padding_horizontal(16.0).padding_bottom(8.0).child(
+        Text::styled(
+          &bar.more_title,
+          TextStyle {
+            font_size: 34.0,
+            weight: FontWeight::Bold,
+            color: bar.tint,
+            ..TextStyle::default()
+          },
+        )
+        .nowrap(),
+      ),
+    )
+    .child(crate::components::ScrollVertical::new(rows).width(FILL).flex(1.0))
+    // A press on the list is the list's, not the tab's under it.
+    .on_click(|_| {})
+    .into()
+}
+
 #[derive(Clone)]
 struct TabHostProps {
   router: RouterHandle,
   bar_move: Signal<BarMove>,
+  scrolled: Signal<bool>,
 }
 
 impl PartialEq for TabHostProps {
@@ -843,8 +1201,9 @@ impl Component for TabHost {
   type Props = TabHostProps;
 
   fn create(ctx: &mut Ctx) -> Self {
-    let bar_move = ctx.props::<TabHostProps>().bar_move.clone();
-    ctx.provide(TabBarLink(bar_move));
+    let props = ctx.props::<TabHostProps>();
+    let link = TabBarLink(props.bar_move.clone(), props.scrolled.clone());
+    ctx.provide(link);
     Self
   }
 

@@ -115,6 +115,14 @@ impl SheetStyle {
     }
   }
 
+  /// The platform's sheet for an appearance: `ctx.window().system.appearance`, or the theme's.
+  pub fn for_appearance(appearance: crate::app::window::Appearance) -> Self {
+    match appearance {
+      crate::app::window::Appearance::Light => Self::new(),
+      crate::app::window::Appearance::Dark => Self::dark(),
+    }
+  }
+
   pub fn background(mut self, color: Color) -> Self {
     self.background = color;
     self
@@ -144,6 +152,8 @@ pub struct SheetProps {
   style: SheetStyle,
   dismissable: bool,
   scroll: Option<ScrollState>,
+  /// What makes the content, for a sheet whose content is made in it ([`Sheet::mount_with`]).
+  content: Option<Arc<dyn Fn(&mut Ctx) -> Element + Send + Sync>>,
 }
 
 impl PartialEq for SheetProps {
@@ -159,6 +169,11 @@ impl PartialEq for SheetProps {
       && self.style == other.style
       && self.dismissable == other.dismissable
       && same_scroll
+      && match (&self.content, &other.content) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+      }
   }
 }
 
@@ -177,6 +192,7 @@ impl SheetProps {
       style: SheetStyle::default(),
       dismissable: true,
       scroll: None,
+      content: None,
     }
   }
 
@@ -284,6 +300,11 @@ struct Behind {
   receded: Signal<Receded>,
 }
 
+/// The list a sheet's own content scrolls in, for a sheet that was not told it: a stack of screens in the
+/// sheet says which list its top screen has, and a finger at that list's top is the sheet's.
+#[derive(Clone, Default)]
+pub(crate) struct SheetScroll(pub(crate) Arc<Mutex<Option<ScrollState>>>);
+
 /// No finger has the sheet.
 const NO_DRAG: f32 = f32::MIN;
 
@@ -297,6 +318,7 @@ pub struct Sheet {
   begin: Timeout,
   settle: Timeout,
   content: ElementRef,
+  scroll: SheetScroll,
 }
 
 impl Sheet {
@@ -305,7 +327,31 @@ impl Sheet {
     ctx.mount_with::<Self>(props, vec![content.into()])
   }
 
-  /// The same, told apart from its siblings by `key`.
+  /// A sheet whose content is made in it, as a route's is in its outlet. It is the way to put a stack of
+  /// screens in a sheet: what `content` mounts is the sheet's own, so a `StackOutlet` there has its bar at the
+  /// sheet's top, with nothing of the window's edges to keep clear of (`ctx.safe_area()` is nothing inside a
+  /// sheet).
+  pub fn mount_with(
+    ctx: &mut Ctx,
+    mut props: SheetProps,
+    content: impl Fn(&mut Ctx) -> Element + Send + Sync + 'static,
+  ) -> Element {
+    props.content = Some(Arc::new(content));
+    ctx.mount::<Self>(props)
+  }
+
+  /// [`Sheet::mount_with`], told apart from its siblings by `key`.
+  pub fn mount_keyed_with(
+    ctx: &mut Ctx,
+    key: &str,
+    mut props: SheetProps,
+    content: impl Fn(&mut Ctx) -> Element + Send + Sync + 'static,
+  ) -> Element {
+    props.content = Some(Arc::new(content));
+    ctx.mount_keyed::<Self>(key, props)
+  }
+
+  /// [`Sheet::mount`], told apart from its siblings by `key`.
   pub fn mount_keyed(ctx: &mut Ctx, key: &str, props: SheetProps, content: impl Into<Element>) -> Element {
     ctx.mount_keyed_with::<Self>(key, props, vec![content.into()])
   }
@@ -328,6 +374,10 @@ impl Component for Sheet {
   type Props = SheetProps;
 
   fn create(ctx: &mut Ctx) -> Self {
+    // The sheet keeps its content clear of the window's edges itself.
+    ctx.provide(crate::app::ctx::SafeAreaTaken);
+    let scroll = SheetScroll::default();
+    ctx.provide(scroll.clone());
     let state = Arc::new(Mutex::new(State {
       phase: Phase::Closed,
       begin_due: false,
@@ -375,6 +425,7 @@ impl Component for Sheet {
       begin,
       settle,
       content: ElementRef::default(),
+      scroll,
     }
   }
 
@@ -450,8 +501,11 @@ impl Component for Sheet {
     // Where the sheet's top is: under the window before it sets off and when it goes, at its height
     // otherwise, and as far from there as a finger has it. Past its highest place it gives way less and less.
     let dragged = drag != NO_DRAG;
+    // With motion reduced the sheet does not cross the window: it fades in where it stands, and out.
+    let reduce_motion = window.system.reduce_motion;
+    let away = matches!(state.phase, Phase::Entering { started: false } | Phase::Leaving);
     let top = match state.phase {
-      Phase::Entering { started: false } | Phase::Leaving => room,
+      Phase::Entering { started: false } | Phase::Leaving if !reduce_motion => room,
       _ if dragged => {
         let top = room - height + drag;
         let limit = room - highest;
@@ -479,7 +533,9 @@ impl Component for Sheet {
       velocity: state.velocity,
     };
     // How much of the lowest height is in view: the window behind dims by as much.
-    let up = if lowest > 0.0 {
+    let up = if reduce_motion && away {
+      0.0
+    } else if lowest > 0.0 {
       ((room - top) / lowest).clamp(0.0, 1.0)
     } else {
       0.0
@@ -532,6 +588,9 @@ impl Component for Sheet {
     } else {
       content.height(height)
     };
+    if let Some(build) = &props.content {
+      content = content.child(build(ctx));
+    }
     for child in ctx.children() {
       content = content.child(child.clone());
     }
@@ -562,14 +621,16 @@ impl Component for Sheet {
       .rounded(style.corner_radius)
       .clip()
       .child(body)
+      .opacity(if reduce_motion && away { 0.0 } else { 1.0 })
       .transform(Transform2D::translate(0.0, top))
       .transition(Transition::transform().duration(pace).easing(curve))
+      .transition(Transition::opacity().duration(pace).easing(curve))
       // A press on the sheet is the sheet's: it is not a tap beside it.
       .on_click(|_| {})
       .on_pan({
         let (state, drag, changed) = (self.state.clone(), self.drag.clone(), self.changed.clone());
         let (open, detent, settle) = (props.open.clone(), detent.clone(), self.settle.clone());
-        let (scroll, dismissable) = (props.scroll.clone(), props.dismissable);
+        let (told, found, dismissable) = (props.scroll.clone(), self.scroll.clone(), props.dismissable);
         move |event: PanEvent| {
           let mut state = state.lock();
           match event.phase {
@@ -585,7 +646,8 @@ impl Component for Sheet {
               let at_highest = top <= highest + 0.5;
               let takes = if event.translation_y > 0.0 {
                 // Down: the content's while it has something above to show.
-                scroll.as_ref().is_none_or(|scroll| scroll.scroll_y() <= 0.0)
+                let scroll = told.clone().or_else(|| found.0.lock().clone());
+                scroll.is_none_or(|scroll| scroll.scroll_y() <= 0.0)
               } else {
                 !at_highest
               };

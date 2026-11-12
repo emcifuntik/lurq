@@ -540,3 +540,213 @@ fn explicit_trigger_background_is_painted_in_every_state() {
   );
   assert_eq!(themed, [fill]);
 }
+
+fn mark(id: &str) -> Element {
+  Element::from(Rect::new(12.0, 12.0)).id(id)
+}
+
+fn bounds_of_id(fixture: &mut Fixture, id: &str) -> Option<lurq::core::ElementRect> {
+  fixture
+    .tree
+    .find_element(|el| el.id() == Some(id))
+    .map(|element| element.bounds())
+}
+
+#[test]
+fn option_leading_and_trailing_elements_sit_around_the_label() {
+  let options = vec![
+    SelectOption::new("sm".to_owned(), "Small"),
+    SelectOption::new("md".to_owned(), "Medium")
+      .leading(mark("lead"))
+      .trailing(mark("trail")),
+  ];
+  let mut fixture = Fixture::with_options("sm", options, SelectStyle::new().option_adornment_gap(6.0));
+  assert!(
+    bounds_of_id(&mut fixture, "lead").is_none(),
+    "a closed select builds no menu"
+  );
+  fixture.pointer_open();
+  let label = fixture.bounds_of("Medium");
+  let plain = fixture.bounds_of("Small");
+  let lead = bounds_of_id(&mut fixture, "lead").expect("leading element is laid out");
+  let trail = bounds_of_id(&mut fixture, "trail").expect("trailing element is laid out");
+  let menu = fixture.menu_bounds();
+
+  assert_eq!((lead.width, lead.height), (12.0, 12.0));
+  assert_eq!(lead.x, plain.x, "the leading element starts where a plain label does");
+  assert_eq!(label.x, lead.x + lead.width + 6.0);
+  assert_eq!(label.x + label.width + 6.0, trail.x);
+  assert!(
+    trail.x + trail.width > menu.x + menu.width - 24.0,
+    "the trailing element is at the row's end"
+  );
+  let centre = |rect: lurq::core::ElementRect| rect.y + rect.height / 2.0;
+  assert!((centre(lead) - centre(label)).abs() <= 0.5);
+  assert!((centre(trail) - centre(label)).abs() <= 0.5);
+}
+
+#[test]
+fn option_adornments_are_centred_on_the_label_line_beside_a_detail() {
+  let options = vec![
+    SelectOption::new("sm".to_owned(), "Small"),
+    SelectOption::new("xl".to_owned(), "Extra large")
+      .detail("Needs a bigger plan")
+      .leading(mark("lead"))
+      .trailing(mark("trail")),
+  ];
+  let mut fixture = Fixture::with_options("sm", options, SelectStyle::new());
+  fixture.pointer_open();
+  let label = fixture.bounds_of("Extra large");
+  let detail = fixture.bounds_of("Needs a bigger plan");
+  let centre = |rect: lurq::core::ElementRect| rect.y + rect.height / 2.0;
+  for id in ["lead", "trail"] {
+    let slot = bounds_of_id(&mut fixture, id).expect("the element is laid out");
+    assert!(
+      (centre(slot) - centre(label)).abs() <= 0.5,
+      "{id} is centred on the label, not on the label and detail block"
+    );
+  }
+  assert_eq!(detail.x, label.x, "the detail line stays under the label");
+}
+
+#[test]
+fn closed_field_shows_the_selected_options_adornments() {
+  let options = || {
+    vec![
+      SelectOption::new("sm".to_owned(), "Small").leading(mark("lead-sm")),
+      SelectOption::new("md".to_owned(), "Medium")
+        .leading(mark("lead-md"))
+        .trailing(mark("trail-md")),
+    ]
+  };
+  let mut fixture = Fixture::build("md", options(), SelectStyle::new(), false);
+  let label = fixture.bounds_of("Medium");
+  let lead = bounds_of_id(&mut fixture, "lead-md").expect("the field shows the leading element");
+  let trail = bounds_of_id(&mut fixture, "trail-md").expect("the field shows the trailing element");
+  assert_eq!(label.x, lead.x + lead.width + 8.0);
+  assert_eq!(label.x + label.width + 8.0, trail.x);
+  assert!(
+    bounds_of_id(&mut fixture, "lead-sm").is_none(),
+    "only the selected option's element is on the field"
+  );
+
+  let mut unselected = Fixture::build("none", options(), SelectStyle::new(), false);
+  assert!(bounds_of_id(&mut unselected, "lead-sm").is_none());
+  assert!(bounds_of_id(&mut unselected, "lead-md").is_none());
+}
+
+#[test]
+fn custom_trigger_receives_the_selected_options_adornments() {
+  let mut tree = Tree::new();
+  tree.set_root(
+    Select::new(Signal::new("md".to_owned()))
+      .options([
+        SelectOption::new("sm".to_owned(), "Small"),
+        SelectOption::new("md".to_owned(), "Medium").leading(mark("lead-md")),
+      ])
+      .trigger(|state| {
+        assert!(state.trailing.is_none());
+        state.leading.expect("the selected option has a leading element")
+      }),
+  );
+  render_pass_with_app(&mut tree, &mut App::new());
+  assert!(tree.find_element(|el| el.id() == Some("lead-md")).is_some());
+
+  let mut tree = Tree::new();
+  tree.set_root(
+    Select::multiple(Signal::new(vec!["md".to_owned()]))
+      .options([SelectOption::new("md".to_owned(), "Medium").leading(mark("lead-md"))])
+      .trigger(|state| {
+        assert!(state.leading.is_none(), "a multi-select field shows no option element");
+        Text::new("Pick")
+      }),
+  );
+  render_pass_with_app(&mut tree, &mut App::new());
+}
+
+#[test]
+fn option_detail_spans_the_label_between_the_adornments() {
+  let options = vec![
+    SelectOption::new("sm".to_owned(), "Small"),
+    SelectOption::new("xl".to_owned(), "Extra large")
+      .detail("Needs a bigger plan")
+      .leading(mark("lead"))
+      .trailing(mark("trail")),
+  ];
+  let mut fixture = Fixture::with_options("sm", options, SelectStyle::new());
+  fixture.pointer_open();
+  let label = fixture.bounds_of("Extra large");
+  let detail = fixture.bounds_of("Needs a bigger plan");
+  let trail = bounds_of_id(&mut fixture, "trail").expect("trailing element is laid out");
+  assert_eq!(detail.width, label.width, "the detail ends where the label does");
+  assert_eq!(detail.x + detail.width + 8.0, trail.x);
+  assert!(!fixture.has_text(" "), "the alignment adds no text node to the option");
+}
+
+#[test]
+fn adornment_builder_follows_the_row_and_field_state() {
+  use std::sync::Mutex;
+
+  use lurq::node::SelectAdornmentState;
+
+  let seen: Arc<Mutex<Vec<(&'static str, SelectAdornmentState)>>> = Arc::default();
+  let record = |name: &'static str| {
+    let seen = seen.clone();
+    move |state: &SelectAdornmentState| {
+      seen.lock().unwrap().push((name, state.clone()));
+      Rect::new(12.0, 12.0)
+    }
+  };
+  let selected = Color::from_hex("#f8fafc");
+  let options = vec![
+    SelectOption::new("sm".to_owned(), "Small").leading_with(record("sm")),
+    SelectOption::new("md".to_owned(), "Medium").trailing_with(record("md")),
+    SelectOption::new("lg".to_owned(), "Large")
+      .leading_with(record("lg"))
+      .disabled(true),
+  ];
+  let style = SelectStyle::new()
+    .trigger(SelectPartStyle::new().text_color(PaletteColor::TextMuted))
+    .option_selected(SelectPartStyle::new().text_color(selected));
+  let mut fixture = Fixture::build("md", options, style, false);
+  let latest = |name: &str| {
+    let seen = seen.lock().unwrap();
+    seen
+      .iter()
+      .rev()
+      .find(|(seen_name, _)| *seen_name == name)
+      .map(|(_, state)| state.clone())
+  };
+
+  let field = latest("md").expect("the field builds the selected option's element");
+  assert!(field.in_field && field.selected && !field.highlighted && !field.disabled);
+  assert_eq!(field.text_color, Some(PaletteColor::TextMuted.into()));
+  assert!(latest("sm").is_none(), "a closed select builds no other element");
+
+  seen.lock().unwrap().clear();
+  fixture.keyboard_open();
+  let rows = seen.lock().unwrap().iter().filter(|(_, state)| !state.in_field).count();
+  assert!(rows >= 3, "every row builds its element");
+  let row = |name: &str| {
+    let seen = seen.lock().unwrap();
+    seen
+      .iter()
+      .rev()
+      .find(|(seen_name, state)| *seen_name == name && !state.in_field)
+      .map(|(_, state)| state.clone())
+      .expect("the row builds its element")
+  };
+  let (small, medium, large) = (row("sm"), row("md"), row("lg"));
+  assert!(!small.selected && !small.highlighted && small.text_color.is_none());
+  assert!(medium.selected && medium.highlighted);
+  assert_eq!(medium.text_color, Some(selected.into()));
+  assert!(large.disabled && !large.selected && !large.highlighted);
+
+  seen.lock().unwrap().clear();
+  fixture
+    .tree
+    .key_down("ArrowUp".to_owned(), "ArrowUp".to_owned(), false, false, false);
+  fixture.render();
+  assert!(row("sm").highlighted, "moving the highlight rebuilds the element");
+  assert!(!row("md").highlighted);
+}

@@ -44,6 +44,21 @@ pub(crate) const SCREENS: &[Screen] = &[
     checks: "Content that comes up from the bottom: its heights, a finger that drags it, a list inside it",
   },
   Screen {
+    path: "/lists",
+    title: "Lists",
+    checks: "Pull down to load the list anew, and swipe a row aside for what can be done with it",
+  },
+  Screen {
+    path: "/auth",
+    title: "Face ID",
+    checks: "The person proves who they are with their face or finger before something is shown",
+  },
+  Screen {
+    path: "/system",
+    title: "System",
+    checks: "The appearance, text size, bold text and reduced motion the person set, and what follows them",
+  },
+  Screen {
     path: "/inputs",
     title: "Inputs",
     checks: "The on-screen keyboard, what it types into a field, and a field it would cover",
@@ -105,7 +120,9 @@ fn screen_row(ctx: &mut Ctx, screen: &Screen) -> Element {
     .background(SURFACE)
     .border_inside(1.0, Color::from_hex(BORDER))
     .rounded(10.0)
-    .hovered(|style| style.background("#273449"));
+    .hovered(|style| style.background("#273449"))
+    // A finger hovers nothing: what it presses shows as pressed.
+    .active(|style| style.background("#273449"));
 
   Link::build_empty(ctx, screen.path).child(row).width(FILL).into()
 }

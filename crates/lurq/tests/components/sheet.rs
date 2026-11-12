@@ -359,3 +359,60 @@ fn the_window_draws_back_behind_a_sheet_at_its_full_height() {
     stage.page_scale()
   );
 }
+
+/// A sheet whose content is made in it, and says what it keeps clear of.
+struct Built;
+
+impl Component for Built {
+  type Props = Setup;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let setup = ctx.props::<Setup>().clone();
+    let outside = ctx.safe_area();
+    let sheet = Sheet::mount_with(ctx, SheetProps::new(setup.open).detents(setup.detents), |ctx| {
+      let inside = ctx.safe_area();
+      Text::new(&format!("inside {} {}", inside.top, inside.bottom)).into()
+    });
+    Column::new()
+      .child(Text::new(&format!("outside {} {}", outside.top, outside.bottom)))
+      .child(sheet)
+  }
+}
+
+#[test]
+fn inside_a_sheet_that_makes_its_content_there_is_nothing_of_the_window_to_keep_clear_of() {
+  let open = Signal::new(true);
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(400, 800);
+  tree.window().set_safe_area(lurq::app::window::SafeAreaInsets {
+    top: 62.0,
+    bottom: 34.0,
+    ..Default::default()
+  });
+  tree.mount_root::<Built>(
+    &mut app,
+    Setup {
+      open,
+      detent: Signal::new(0),
+      detents: vec![SheetDetent::Medium],
+      dismissable: true,
+    },
+  );
+  for _ in 0..3 {
+    run_pass(&mut tree);
+    tree.tick_timers_at(Instant::now() + Duration::from_secs(2));
+  }
+  run_pass(&mut tree);
+  let shows = |tree: &mut Tree, text: &str| {
+    tree
+      .find_element(|element| element.text_content() == Some(text))
+      .is_some()
+  };
+  assert!(shows(&mut tree, "outside 62 34"));
+  assert!(shows(&mut tree, "inside 0 0"));
+}

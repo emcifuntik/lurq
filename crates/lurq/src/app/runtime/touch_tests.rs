@@ -590,3 +590,22 @@ fn scrolling_a_list_that_dismisses_the_keyboard_takes_the_focus_from_the_text_in
   tree.touch_scroll_begin(100.0, 200.0, 0.0, -10.0);
   assert!(!tree.focused_text_input());
 }
+
+#[test]
+fn a_list_the_keyboard_follows_a_finger_over_keeps_the_focus_until_the_platform_takes_the_keyboard() {
+  use crate::layout::layout_kind::KeyboardDismissal;
+  let (mut tree, mut app, state) = input_over_a_list();
+  assert!(!tree.touch_keyboard_follows_at(100.0, 200.0), "nothing is typed into");
+  tree.touch_press(100.0, 20.0);
+  tree.touch_release(100.0, 20.0);
+  tree.pass(&mut app, &HeadlessSurface);
+  assert!(!tree.touch_keyboard_follows_at(100.0, 200.0), "the list does not ask");
+
+  state.set_keyboard_dismissal(KeyboardDismissal::Interactive);
+  assert!(tree.touch_keyboard_follows_at(100.0, 200.0));
+  tree.touch_scroll_begin(100.0, 200.0, 0.0, -10.0);
+  assert!(tree.focused_text_input(), "scrolling alone leaves the keyboard up");
+
+  tree.keyboard_was_put_away();
+  assert!(!tree.focused_text_input(), "the finger took the keyboard down");
+}
