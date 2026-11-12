@@ -29,8 +29,9 @@ inside its input.
 
 - **Password AutoFill.** The view that types says it is a text field while its input hides what is typed,
   which is what UIKit offers saved passwords to, and a text field that is not seen stands for each other
-  input of the login, for the platform to fill the name beside the password. Written without a device to try
-  it on: not checked. Saving a password after a login needs the app's associated domain and was not tried.
+  input of the login, for the platform to fill the name beside the password. Checked on an iPhone 17, with
+  the system's passwords and with a password manager's. Saving a password after a login needs the app's
+  associated domain and was not tried.
 - **A code from a message** (`ContentKind::OneTimeCode`): set, not checked. It needs a real message.
 - **A hardware keyboard:** its keys are passed to the tree, and shortcuts take Command. Written with no
   keyboard to try it on: nothing of it was checked.

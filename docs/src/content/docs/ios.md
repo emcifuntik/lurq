@@ -255,12 +255,18 @@ dismisses the keyboard when scrolled (above).
 
 Over an input that hides what is typed (`mask()`), or says it is for a password, the keyboard offers the
 person's saved logins. One that is chosen fills the input, and the other inputs of the login with it: every
-text input in the tree whose `content` is `Username`, `Email`, `Password`, `NewPassword` or `OneTimeCode`.
+text input in the tree whose `content` is `Username`, `Email`, `Password` or `NewPassword`.
 
 ```rust
 TextInput::new(name).single_line().content(ContentKind::Username)
 TextInput::new(password).single_line().mask().content(ContentKind::Password)
 ```
+
+What the keyboard does around a saved login is the system's, and the same as for a text field of its own.
+Its bar of saved logins goes for a few frames as the keyboard moves between two of a login's inputs. And when
+the login comes from another app's list that had a keyboard up, a password manager's, the input is left and
+the keyboard stays down; from the system's own list the keyboard comes back, with the caret after the
+password.
 
 Which logins are offered first, and whether the system offers to save a new one, depends on the app's
 associated domains (`webcredentials:` in its entitlements, and the domain's `apple-app-site-association`):
