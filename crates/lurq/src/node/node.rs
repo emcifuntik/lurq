@@ -663,6 +663,7 @@ pub(crate) trait NodeUpdate {
   fn transform(&mut self, t: Transform2D);
   fn transition(&mut self, spec: Transition);
   fn animation(&mut self, spec: Animation);
+  fn exit_animation(&mut self, spec: Animation);
   fn scrollbar(&mut self, style: ScrollBarStyle);
   fn scrollbar_hovered(&mut self, f: impl Fn(ScrollBarStyle) -> ScrollBarStyle + Send + Sync + 'static);
   fn culling(&mut self, enabled: bool);
@@ -821,6 +822,9 @@ pub(crate) enum SyntheticNodeRole {
   /// Stands for a child component's root in a component's cached output
   /// (`node/component_output.rs`); never in the live tree.
   ComponentSlot,
+  /// A closed layer the overlay host keeps while its exit animations play
+  /// (`node/presence.rs`): painted, and nothing else.
+  LeavingLayer,
 }
 
 #[derive(Default, Clone)]
@@ -990,7 +994,8 @@ pub(crate) struct Node {
   /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
   pub(crate) transitions: LazyBox<Vec<Transition>>,
   /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
-  pub(crate) animation: Option<Box<Animation>>,
+  /// What the node plays and what it leaves with: `node/presence.rs`.
+  pub(crate) animation: Option<Box<crate::node::presence::NodeAnimations>>,
   pub(crate) layout_cache: crate::node::layout_cache::LayoutCache,
   pub(crate) children: Vec<Node>,
   pub(crate) events: LazyBox<EventHandlers>,
@@ -1936,6 +1941,10 @@ impl NodeUpdate for Node {
 
   fn animation(&mut self, spec: Animation) {
     self.set_animation(spec);
+  }
+
+  fn exit_animation(&mut self, spec: Animation) {
+    self.set_exit_animation(spec);
   }
 
   fn scrollbar(&mut self, style: ScrollBarStyle) {
@@ -3638,11 +3647,6 @@ impl Node {
   pub fn animation(mut self, spec: Animation) -> Self {
     self.set_animation(spec);
     self
-  }
-
-  fn set_animation(&mut self, spec: Animation) {
-    self.animation = Some(Box::new(spec));
-    self.layout_cache.invalidate();
   }
 
   pub fn scrollbar(mut self, style: ScrollBarStyle) -> Self {

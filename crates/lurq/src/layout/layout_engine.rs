@@ -14,7 +14,7 @@ use crate::{
       ThemeSpacing, ThemeTypography,
     },
   },
-  core::{ElementRect, ElementRef},
+  core::{ElementRect, ElementRef, NodeId},
   layout::{
     Alignment, Constraints, Offset, Size, StackAlignment,
     layout_kind::{
@@ -164,9 +164,13 @@ pub(crate) struct ElementLayoutRecord {
   pub(crate) visible: bool,
 }
 
+/// A layer the overlay host draws over the tree. `origin` is the node that
+/// declares it, once that node has an id: the layer of the same declaration
+/// in the next pass is the same layer.
 pub(crate) enum OverlayLayoutRecord {
   SelectMenu {
     reuse_key: Option<Arc<str>>,
+    origin: Option<NodeId>,
     state: SelectState,
     bounds: ElementRect,
     /// Whether the select shows through its ancestors' clips; see
@@ -175,13 +179,21 @@ pub(crate) enum OverlayLayoutRecord {
   },
   Overlay {
     reuse_key: Option<Arc<str>>,
+    origin: Option<NodeId>,
     spec: OverlaySpec,
   },
   Modal {
     reuse_key: Option<Arc<str>>,
+    origin: Option<NodeId>,
     spec: ModalSpec,
     parent: ElementRect,
   },
+}
+
+/// The id of `node`, if it has one yet.
+fn assigned_id(node: &Node) -> Option<NodeId> {
+  let id = node.node_id();
+  id.is_assigned().then_some(id)
 }
 
 impl Clone for OverlayLayoutIndex {
@@ -199,25 +211,34 @@ impl Clone for OverlayLayoutRecord {
     match self {
       Self::SelectMenu {
         reuse_key,
+        origin,
         state,
         bounds,
         visible,
       } => Self::SelectMenu {
         reuse_key: reuse_key.clone(),
+        origin: *origin,
         state: state.clone(),
         bounds: *bounds,
         visible: *visible,
       },
-      Self::Overlay { reuse_key, spec } => Self::Overlay {
+      Self::Overlay {
+        reuse_key,
+        origin,
+        spec,
+      } => Self::Overlay {
         reuse_key: reuse_key.clone(),
+        origin: *origin,
         spec: spec.clone_for_reuse(),
       },
       Self::Modal {
         reuse_key,
+        origin,
         spec,
         parent,
       } => Self::Modal {
         reuse_key: reuse_key.clone(),
+        origin: *origin,
         spec: spec.clone_for_reuse(),
         parent: *parent,
       },
@@ -741,6 +762,7 @@ impl LayoutEngine {
           .node_id()
           .is_assigned()
           .then(|| Arc::<str>::from(format!("select:{}", node.node_id().value()))),
+        origin: assigned_id(node),
         state: state.clone(),
         bounds: rect,
         visible,
@@ -753,6 +775,7 @@ impl LayoutEngine {
           .node
           .component_key()
           .map(|key| Arc::<str>::from(format!("overlay:{key}"))),
+        origin: assigned_id(node),
         spec: spec.clone_for_reuse(),
       });
     }
@@ -766,6 +789,7 @@ impl LayoutEngine {
           .node
           .component_key()
           .map(|key| Arc::<str>::from(format!("modal:{key}"))),
+        origin: assigned_id(child),
         spec: spec.clone_for_reuse(),
         parent,
       });

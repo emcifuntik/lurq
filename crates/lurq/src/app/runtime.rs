@@ -81,6 +81,7 @@ mod inline_link_copy_tests;
 #[cfg(feature = "markdown")]
 mod inline_link_keys;
 mod input_token_paint;
+mod leaving_layers;
 #[cfg(feature = "image")]
 mod loading_images;
 #[cfg(feature = "image")]
@@ -840,6 +841,16 @@ pub struct Tree {
   /// The anchor of each overlay host layer after the page, in host order;
   /// `None` for a select menu or a modal over the page.
   overlay_layer_anchors: Vec<Option<OwnedElementRef>>,
+  /// The node that declares each overlay host layer after the page, in host
+  /// order, where it has an id: what tells a layer from another between
+  /// passes. `None` for a layer that is leaving.
+  overlay_layer_origins: Vec<Option<NodeId>>,
+  /// The closed layers the overlay host still draws, while their exit
+  /// animations play: see [`leaving_layers`].
+  leaving_layers: Vec<leaving_layers::LeavingLayer>,
+  /// The roots of the layers that began to leave in this pass, until input is
+  /// taken out of them.
+  layers_left: Vec<NodeId>,
   /// The anchors of the dropdowns in the tree, open or closed, while the
   /// overlay host is up: a press on one switches dropdowns.
   dropdown_anchors: Vec<OwnedElementRef>,
@@ -1228,6 +1239,9 @@ impl Tree {
       canvas_registry: Vec::new(),
       overlay_dismiss_entries: Vec::new(),
       overlay_layer_anchors: Vec::new(),
+      overlay_layer_origins: Vec::new(),
+      leaving_layers: Vec::new(),
+      layers_left: Vec::new(),
       dropdown_anchors: Vec::new(),
       ime_keys: ime::ImeKeys::default(),
       next_secondary_window_id: 1,
@@ -1611,7 +1625,8 @@ impl Tree {
   /// idle screen is a bug (stale runs for unmounted nodes are pruned at the end
   /// of each full pass).
   pub fn has_active_timeline(&self) -> bool {
-    self.transition_engine.has_active || self.animation_engine.has_active
+    // A layer on its way out is dropped by a pass, so passes go on until it is.
+    self.transition_engine.has_active || self.animation_engine.has_active || !self.leaving_layers.is_empty()
   }
 
   /// When the running animations and transitions next draw something else, as of the last pass: the end of a
@@ -1630,7 +1645,8 @@ impl Tree {
     }
     let transition = self.transition_engine.next_change();
     let animation = self.animation_engine.next_change();
-    transition.into_iter().chain(animation).min()
+    let layer_dropped = self.leaving_layers.iter().map(|layer| layer.until).min();
+    transition.into_iter().chain(animation).chain(layer_dropped).min()
   }
 
   pub(crate) fn has_continuous_redraw_image(&self) -> bool {
@@ -6706,6 +6722,7 @@ impl Tree {
         && !has_runtime_layout_state
         && has_last_layout
         && root_cache_contains
+        && !self.leaving_layer_due(now)
       {
         self.last_theme_version = theme_version;
         #[cfg(feature = "canvas")]
@@ -6782,7 +6799,9 @@ impl Tree {
         &mut app.shared.glyph_engine.lock(),
         constraints,
         theme_changed,
+        now,
       );
+      self.release_input_in_leaving_layers();
       // Focus/blur callbacks may mutate App services; the glyph lock used to
       // construct the overlay host must be released before dispatching them.
       if had_overlay_host
@@ -6907,27 +6926,27 @@ impl Tree {
 
   fn detach_overlay_host(&mut self) -> OverlayHostReuse {
     let Some(root) = self.root.take() else {
-      return OverlayHostReuse {
-        old_host: None,
-        old_overlays: Vec::new(),
-        old_overlay_used: Vec::new(),
-        old_overlay_layout_dirty: Vec::new(),
-      };
+      return OverlayHostReuse::default();
     };
     let parts = overlay_host_parts(root);
-    let old_overlay_layout_dirty = parts
-      .old_overlays
-      .iter()
-      .map(has_pending_layout_dirty_recursive)
-      .collect();
     self.root = Some(parts.base);
-    let old_overlay_used = vec![false; parts.old_overlays.len()];
-    OverlayHostReuse {
+    let mut reuse = OverlayHostReuse {
       old_host: parts.old_host,
-      old_overlays: parts.old_overlays,
-      old_overlay_used,
-      old_overlay_layout_dirty,
+      ..OverlayHostReuse::default()
+    };
+    for (position, layer) in parts.old_overlays.into_iter().enumerate() {
+      if layer.is_leaving_layer() {
+        reuse.leaving.push((position, layer));
+        continue;
+      }
+      reuse
+        .old_overlay_layout_dirty
+        .push(has_pending_layout_dirty_recursive(&layer));
+      reuse.old_overlay_used.push(false);
+      reuse.old_overlay_positions.push(position);
+      reuse.old_overlays.push(layer);
     }
+    reuse
   }
 
   fn sync_overlay_host_from_layout(
@@ -6937,13 +6956,17 @@ impl Tree {
     glyph_engine: &mut crate::app::glyph_engine::GlyphEngine,
     constraints: Constraints,
     theme_changed: bool,
+    now: Instant,
   ) -> Option<OwnedElementRef> {
     let Some(base) = self.root.take() else {
+      old_parts.drop_leaving();
       #[cfg(feature = "canvas")]
       detach_canvases_not_carried(old_parts.unused_canvas_bindings(), None);
       old_parts.free_ids(&self.id_gen);
       self.overlay_dismiss_entries.clear();
       self.overlay_layer_anchors.clear();
+      self.overlay_layer_origins.clear();
+      self.leaving_layers.clear();
       self.dropdown_anchors.clear();
       return None;
     };
@@ -6962,29 +6985,13 @@ impl Tree {
       &mut self.profiling,
     );
 
-    if overlays.is_empty() {
-      let focus_return = self.focused_overlay_hidden(old_parts.old_host.is_some(), &layers);
-      #[cfg(feature = "canvas")]
-      detach_canvases_not_carried(old_parts.unused_canvas_bindings(), Some(&base));
-      old_parts.free_ids(&self.id_gen);
-      self.root = Some(base);
-      // Overlays hidden with their anchor are still dismissed.
-      self.overlay_dismiss_entries = layers.dismiss_entries;
-      self.overlay_layer_anchors.clear();
-      self.dropdown_anchors.clear();
-      return focus_return;
-    }
-
+    let old_origins = std::mem::take(&mut self.overlay_layer_origins);
     let mut dropdown_anchors = std::mem::take(&mut base_overlay_index.dropdown_anchors);
-    let mut old_overlay_index = 0;
-    for overlay in &mut overlays {
-      preserve_overlay_reuse(overlay, &mut old_parts, old_overlay_index);
-      old_overlay_index += 1;
-    }
+    old_parts.claim(&mut overlays, &layers.origins, 0, &old_origins);
 
     let mut overlay_index = 0;
     while overlay_index < overlays.len() {
-      let nested_overlays = if overlays[overlay_index].has_synthetic_role(SyntheticNodeRole::SelectMenu) {
+      let mut nested_overlays = if overlays[overlay_index].has_synthetic_role(SyntheticNodeRole::SelectMenu) {
         Vec::new()
       } else {
         let overlay = &overlays[overlay_index];
@@ -7022,18 +7029,31 @@ impl Tree {
         nested
       };
 
-      for mut nested_overlay in nested_overlays {
-        preserve_overlay_reuse(&mut nested_overlay, &mut old_parts, old_overlay_index);
-        old_overlay_index += 1;
-        overlays.push(nested_overlay);
-      }
+      let first = overlays.len();
+      old_parts.claim(&mut nested_overlays, &layers.origins[first..], first, &old_origins);
+      overlays.append(&mut nested_overlays);
       overlay_index += 1;
     }
 
+    let leaving = self.leaving_layers(&mut old_parts, &layers, now);
+    if overlays.is_empty() && leaving.is_empty() {
+      let focus_return = self.focused_overlay_hidden(old_parts.old_host.is_some(), &layers);
+      #[cfg(feature = "canvas")]
+      detach_canvases_not_carried(old_parts.unused_canvas_bindings(), Some(&base));
+      old_parts.free_ids(&self.id_gen);
+      self.root = Some(base);
+      // Overlays hidden with their anchor are still dismissed.
+      self.overlay_dismiss_entries = layers.dismiss_entries;
+      self.overlay_layer_anchors.clear();
+      self.dropdown_anchors.clear();
+      return focus_return;
+    }
+
+    let stack = leaving_layers::stack_layers(overlays, leaving, &mut layers);
     let old_parts_had_host = old_parts.old_host.is_some();
-    let mut children = Vec::with_capacity(1 + overlays.len());
+    let mut children = Vec::with_capacity(1 + stack.len());
     children.push(base);
-    children.extend(overlays);
+    children.extend(stack);
     let mut host = Node::stack(crate::layout::StackAlignment::TopStart, children);
     host.set_tag_name("OverlayHost");
     host.set_synthetic_role(SyntheticNodeRole::OverlayHost);
@@ -7051,6 +7071,7 @@ impl Tree {
     let focus_return = self.focused_overlay_hidden(old_parts_had_host, &layers);
     self.overlay_dismiss_entries = layers.dismiss_entries;
     self.overlay_layer_anchors = layers.anchors;
+    self.overlay_layer_origins = layers.origins;
     self.dropdown_anchors = dropdown_anchors;
     focus_return
   }
@@ -7401,11 +7422,21 @@ struct OverlayHostParts {
   old_overlays: Vec<Node>,
 }
 
+/// What the overlay host held before a pass, for the host the pass builds to
+/// take over: the open layers, and apart from them the layers that were
+/// leaving, which no new layer takes over.
+#[derive(Default)]
 struct OverlayHostReuse {
   old_host: Option<Node>,
   old_overlays: Vec<Node>,
   old_overlay_used: Vec<bool>,
   old_overlay_layout_dirty: Vec<bool>,
+  /// Where each of `old_overlays` was among the old host's layers.
+  old_overlay_positions: Vec<usize>,
+  /// The layers that were leaving, each with where it was among the old host's layers.
+  leaving: Vec<(usize, Node)>,
+  /// Leaving layers whose time is up: dropped with the pass.
+  dropped: Vec<Node>,
 }
 
 impl OverlayHostReuse {
@@ -7418,7 +7449,9 @@ impl OverlayHostReuse {
       .iter()
       .enumerate()
       .filter(|(index, _)| !self.old_overlay_used.get(*index).copied().unwrap_or(false))
-      .flat_map(|(_, overlay)| canvas_bindings(overlay))
+      .map(|(_, overlay)| overlay)
+      .chain(&self.dropped)
+      .flat_map(canvas_bindings)
       .collect()
   }
 
@@ -7426,9 +7459,85 @@ impl OverlayHostReuse {
     if let Some(old_host) = &mut self.old_host {
       old_host.free_ids(id_gen);
     }
-    for old_overlay in &mut self.old_overlays {
+    for old_overlay in self.old_overlays.iter_mut().chain(&mut self.dropped) {
       old_overlay.free_ids(id_gen);
     }
+  }
+
+  /// Every layer that was leaving is dropped with the pass.
+  fn drop_leaving(&mut self) {
+    let leaving = std::mem::take(&mut self.leaving);
+    self.dropped.extend(leaving.into_iter().map(|(_, layer)| layer));
+  }
+
+  /// The node that declared the old layer at `index` of `old_overlays`.
+  fn old_origin(&self, index: usize, old_origins: &[Option<NodeId>]) -> Option<NodeId> {
+    old_origins
+      .get(*self.old_overlay_positions.get(index)?)
+      .copied()
+      .flatten()
+  }
+
+  fn is_free(&self, index: usize) -> bool {
+    index < self.old_overlays.len() && !self.old_overlay_used.get(index).copied().unwrap_or(false)
+  }
+
+  /// Hands each of `overlays`, layers built in this pass, the state and ids
+  /// of the old layer it continues. `origins` are the nodes that declare
+  /// them, `first` is the place of the first of them among the layers built,
+  /// and `old_origins` are the nodes that declared the old host's layers.
+  ///
+  /// A layer continues the old layer of its key, or else the old layer the
+  /// same node declared. Only then do the layers left take the old layer at
+  /// their own place, so that a layer never takes the one a later layer
+  /// continues.
+  fn claim(&mut self, overlays: &mut [Node], origins: &[Option<NodeId>], first: usize, old_origins: &[Option<NodeId>]) {
+    let mut claimed = vec![false; overlays.len()];
+    for (offset, overlay) in overlays.iter_mut().enumerate() {
+      let origin = origins.get(offset).copied().flatten();
+      if let Some(index) = self.same_layer(overlay, origin, old_origins) {
+        preserve_overlay_reuse_at(overlay, self, index);
+        claimed[offset] = true;
+      }
+    }
+    for (offset, overlay) in overlays.iter_mut().enumerate() {
+      let origin = origins.get(offset).copied().flatten();
+      if !claimed[offset] && self.takes_place(overlay, origin, first + offset, old_origins) {
+        preserve_overlay_reuse_at(overlay, self, first + offset);
+      }
+    }
+  }
+
+  /// The free old layer `overlay` is known to continue: the one of its key,
+  /// or the one `origin` declared too, when neither has a key to say more.
+  fn same_layer(&self, overlay: &Node, origin: Option<NodeId>, old_origins: &[Option<NodeId>]) -> Option<usize> {
+    let key = overlay.component_key();
+    let free = || (0..self.old_overlays.len()).filter(|index| self.is_free(*index));
+    if key.is_some()
+      && let Some(index) = free().find(|index| self.old_overlays[*index].component_key() == key)
+    {
+      return Some(index);
+    }
+    let origin = origin?;
+    free().find(|index| {
+      let old = &self.old_overlays[*index];
+      (key.is_none() || old.component_key().is_none()) && self.old_origin(*index, old_origins) == Some(origin)
+    })
+  }
+
+  /// Whether `overlay`, which continues no old layer it is known by, takes
+  /// the old layer at its own place, `index`. A layer that animates in, or
+  /// an old one that animates out, is not taken for another layer's, one
+  /// that another node declared or that has another key: a popup opened by
+  /// the press that closes another enters, and the other leaves.
+  fn takes_place(&self, overlay: &Node, origin: Option<NodeId>, index: usize, old_origins: &[Option<NodeId>]) -> bool {
+    if !self.is_free(index) {
+      return false;
+    }
+    let old = &self.old_overlays[index];
+    let another = matches!((origin, self.old_origin(index, old_origins)), (Some(new), Some(old)) if new != old)
+      || matches!((overlay.component_key(), old.component_key()), (Some(new), Some(old)) if new != old);
+    !(another && (overlay.has_keyframe_animation() || old.has_keyframe_animation()))
   }
 }
 
@@ -7490,28 +7599,6 @@ fn translate_overlay_layout_index(index: &mut OverlayLayoutIndex, x: f32, y: f32
   }
 }
 
-fn preserve_overlay_reuse(overlay: &mut Node, old_parts: &mut OverlayHostReuse, index: usize) {
-  let key = overlay.component_key().map(str::to_owned);
-  if let Some(key) = key
-    && let Some(keyed_index) = old_parts
-      .old_overlays
-      .iter()
-      .enumerate()
-      .find(|(old_index, old_overlay)| {
-        !old_parts.old_overlay_used.get(*old_index).copied().unwrap_or(false)
-          && old_overlay.component_key() == Some(key.as_str())
-      })
-      .map(|(old_index, _)| old_index)
-  {
-    preserve_overlay_reuse_at(overlay, old_parts, keyed_index);
-    return;
-  }
-
-  if index < old_parts.old_overlays.len() && !old_parts.old_overlay_used.get(index).copied().unwrap_or(false) {
-    preserve_overlay_reuse_at(overlay, old_parts, index);
-  }
-}
-
 fn preserve_overlay_reuse_at(overlay: &mut Node, old_parts: &mut OverlayHostReuse, index: usize) {
   let Some(old_overlay) = old_parts.old_overlays.get_mut(index) else {
     return;
@@ -7547,6 +7634,7 @@ fn build_overlays_from_layout_index(
     match record.clone() {
       OverlayLayoutRecord::SelectMenu {
         reuse_key,
+        origin,
         state,
         bounds,
         visible,
@@ -7581,8 +7669,13 @@ fn build_overlays_from_layout_index(
         set_overlay_reuse_key(&mut menu, reuse_key.as_deref());
         overlays.push(menu);
         layers.anchors.push(None);
+        layers.origins.push(origin);
       }
-      OverlayLayoutRecord::Overlay { reuse_key, spec } => {
+      OverlayLayoutRecord::Overlay {
+        reuse_key,
+        origin,
+        spec,
+      } => {
         let Some(anchor) = find_element_record(index, &spec.anchor) else {
           continue;
         };
@@ -7636,9 +7729,11 @@ fn build_overlays_from_layout_index(
         }
         overlays.push(overlay);
         layers.anchors.push(Some(layer_anchor));
+        layers.origins.push(origin);
       }
       OverlayLayoutRecord::Modal {
         reuse_key,
+        origin,
         spec,
         parent,
       } => {
@@ -7683,6 +7778,7 @@ fn build_overlays_from_layout_index(
         }
         overlays.push(modal);
         layers.anchors.push(owner);
+        layers.origins.push(origin);
       }
     }
   }
@@ -8472,6 +8568,10 @@ fn find_element_recursive(
 ) -> Option<OwnedElementRef> {
   if layout.dropped {
     return find_element_in_dropped(node, abs_x, abs_y, parent_x, parent_y, predicate);
+  }
+  // A layer on its way out is painted and nothing else: the app has closed it.
+  if node.is_leaving_layer() {
+    return None;
   }
   let rect = ElementRect {
     x: abs_x,
@@ -10936,7 +11036,9 @@ fn has_timeline_target_recursive(node: &Node) -> bool {
   }
   #[cfg(test)]
   crate::core::layout_dirty::visit();
-  !node.transitions.is_empty() || node.animation.is_some() || node.children().iter().any(has_timeline_target_recursive)
+  !node.transitions.is_empty()
+    || node.playing_animation().is_some()
+    || node.children().iter().any(has_timeline_target_recursive)
 }
 
 /// Whether a scroll container in the subtree was scrolled, or asked to scroll, since it was last laid out. Like

@@ -23,6 +23,7 @@ pub(crate) mod node_kind;
 pub(crate) mod outer_decoration;
 pub mod outline;
 pub mod padding;
+pub(crate) mod presence;
 pub mod radius_value;
 pub mod select_icon;
 pub(crate) mod select_state;

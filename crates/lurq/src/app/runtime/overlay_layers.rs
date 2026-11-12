@@ -30,6 +30,9 @@ pub(super) struct OverlayLayers {
   /// The anchor of each layer built, in the order the host stacks them;
   /// `None` for a select menu or a modal.
   pub(super) anchors: Vec<Option<OwnedElementRef>>,
+  /// The node that declares each layer built, in the same order, where it
+  /// has an id.
+  pub(super) origins: Vec<Option<NodeId>>,
   /// The anchors of the overlays not drawn because their anchor is out of view.
   hidden_anchors: Vec<OwnedElementRef>,
 }
@@ -59,7 +62,7 @@ impl OverlayLayers {
     });
   }
 
-  fn is_hidden(&self, anchor: &OwnedElementRef) -> bool {
+  pub(super) fn is_hidden(&self, anchor: &OwnedElementRef) -> bool {
     self.hidden_anchors.iter().any(|hidden| hidden.same_handle(anchor))
   }
 }

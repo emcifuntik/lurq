@@ -111,6 +111,18 @@ impl Animation {
     self.direction = AnimationDirection::Alternate;
     self
   }
+
+  /// How long the animation takes from its start to its end, its delay
+  /// included: one iteration for one that repeats without end.
+  pub(crate) fn total_time(&self) -> Duration {
+    let iterations = match self.iteration_count {
+      AnimationIterationCount::Count(count) if count.is_finite() && count > 0.0 => count,
+      AnimationIterationCount::Count(_) => 0.0,
+      AnimationIterationCount::Infinite => 1.0,
+    };
+    let active = Duration::try_from_secs_f64(self.duration.as_secs_f64() * iterations).unwrap_or(Duration::MAX);
+    self.delay.saturating_add(active)
+  }
 }
 
 /// A frame due at a step boundary is drawn this long after it, so that it samples the new step even where
@@ -286,6 +298,12 @@ impl AnimationEngine {
     self.keyframe_store.insert(keyframes.id, keyframes.frames);
   }
 
+  /// Forgets the runs of `node`, so that the animation it plays next starts
+  /// from its beginning, even one of the keyframes it already played.
+  pub(crate) fn forget_node(&mut self, node: NodeId) {
+    self.active.retain(|(id, _), _| *id != node);
+  }
+
   pub(crate) fn clear_state(&mut self) {
     self.active.clear();
     self.seen.clear();
@@ -340,7 +358,7 @@ impl AnimationEngine {
     let mut needs_layout = false;
     let node_id = node.node_id();
     if node_id.is_assigned() {
-      if let Some(spec) = &node.animation {
+      if let Some(spec) = node.playing_animation() {
         self.seen.insert(node_id);
         let spec = Animation::clone(spec);
         needs_layout = self.process_node(node, &spec, now);

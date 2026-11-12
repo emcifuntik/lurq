@@ -1132,6 +1132,15 @@ macro_rules! impl_into_node {
         self
       }
 
+      /// The animation the element plays when the layer it is in closes: an
+      /// `Overlay`, a `Popup` or a `Modal`. The layer's content stays on
+      /// screen, taking no input, until the longest exit animation in it
+      /// ends.
+      pub fn exit_animation(mut self, spec: $crate::animation::Animation) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::exit_animation(node, spec));
+        self
+      }
+
       pub fn transform(mut self, t: $crate::node::transform::Transform2D) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::transform(node, t));
         self

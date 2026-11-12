@@ -70,7 +70,9 @@ Modal::new(content).open(open.clone()).target(panel_ref);
 
 - When the signal is `false`, the modal declaration remains layout-neutral and no modal layer is rendered.
 - When the signal is `true`, the modal content is layered above its target.
-- Setting the signal back to `false` removes the modal on the next render pass.
+- Setting the signal back to `false` removes the modal on the next render pass. Content with an exit animation stays
+  on screen, taking no input, until the animation ends: see
+  [Presence](../animation-transforms/#presence-entering-and-leaving-layers).
 - Multiple render-flow modals stack in declaration/layer order.
 - Signal-backed modals close on `Escape` by default.
 - An open modal traps Tab and Shift+Tab: they cycle the topmost modal's stops (elements with `tab_index(0)` or higher, and form controls) and never reach the page behind it, with or without a form. A form inside the modal cycles inside it. See [Modal Focus Trap](../focus-navigation/#modal-focus-trap).

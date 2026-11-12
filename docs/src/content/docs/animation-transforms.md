@@ -151,6 +151,74 @@ Keyframe offsets are normalized from `0.0` to `1.0`. The engine finds the surrou
 | `fill_mode(...)` | None, forwards, backwards, or both; forwards holds the pose the run stops on, part way into an iteration for a fractional count |
 | `iteration_count(...)` / `infinite()` | Finite or infinite playback |
 
+## Presence: Entering And Leaving Layers
+
+The content of a layer (an `Overlay`, a `Popup` or a `Modal`) is mounted when the layer opens, so the animation an
+element in it plays is how it enters. `.exit_animation(...)` names the animation an element leaves with:
+
+```rust
+use lurq::{
+  animation::{AnimatableProperty, Animation, Keyframes, KeyframesId},
+  components::{Column, Popup},
+};
+
+const FADE_IN: KeyframesId = KeyframesId::new(10);
+const FADE_OUT: KeyframesId = KeyframesId::new(11);
+
+tree.register_keyframes(
+  Keyframes::new(FADE_IN)
+    .frame(0.0, |f| {
+      f.set(AnimatableProperty::Opacity, 0.0);
+    })
+    .frame(1.0, |f| {
+      f.set(AnimatableProperty::Opacity, 1.0);
+    }),
+);
+tree.register_keyframes(
+  Keyframes::new(FADE_OUT)
+    .frame(0.0, |f| {
+      f.set(AnimatableProperty::Opacity, 1.0);
+    })
+    .frame(1.0, |f| {
+      f.set(AnimatableProperty::Opacity, 0.0);
+    }),
+);
+
+let menu = Column::new()
+  .animation(Animation::new(FADE_IN).duration_ms(120))
+  .exit_animation(Animation::new(FADE_OUT).duration_ms(90));
+Popup::new(anchor, menu).open(open.clone())
+```
+
+When a layer closes, by its open state or because what declared it is no longer rendered, lurq keeps what the layer
+showed on screen until the longest exit animation in it ends, and drops it in the first pass after that. A layer with
+no exit animation in it is gone with the pass that closes it, as before.
+
+- Any element in the layer can have its own: a dialog's backdrop can fade while its panel fades and scales. An exit
+  animation that ends before the longest holds its last pose until the layer is dropped, whatever its fill mode, and
+  one that repeats without end plays once. An element without one stays as it was, and an animation it was playing
+  goes on.
+- An exit animation starts from its first frame, also when it uses the keyframes the element entered with, as
+  `Animation::new(FADE_IN).direction(AnimationDirection::Reverse)` does.
+- A leaving layer is only painted: it shows what it showed when it closed and is not rendered again. No press, hover
+  or wheel reaches it and what is under it takes them; focus that was in it is let go; Tab passes it by; a leaving
+  modal is not a Tab scope and traps nothing; `get_element_by_id`, `find_element` and element refs do not find what
+  is in it.
+- It keeps its place among the other layers: a popup closed inside a dialog leaves over the dialog, and a layer under
+  another stays under it.
+- Opening the layer again while it leaves mounts it anew: the new one enters over the one still leaving.
+- A popup that is hidden because its anchor scrolled out of view is still open, so it does not leave: it is gone at
+  once and comes back with its anchor.
+- An exit animation on an element that is in no layer never plays: an element removed from a `Row` or a `Column` is
+  gone with the render that removes it.
+- Exit animations are keyframe animations, so [reduced motion](#reduced-motion) leaves them to the app: use a fade,
+  or none, where `ctx.reduced_motion()` is set.
+
+Two layers are told apart by where they are declared. A popup that the press closing another one opens is another
+layer: it enters while the first leaves. Two layers declared at the same place in turn (`if a { popup_a } else {
+popup_b }`) are one layer to lurq, as two elements at one place are one element, unless their contents have different
+keys (`content.key("a")`).
+
 ## Frame Pacing
 
 Each pass that ticks the timelines also works out when they next draw something else, and the winit shell asks for the next frame then, at most one frame per display refresh:

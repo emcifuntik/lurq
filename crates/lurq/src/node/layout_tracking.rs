@@ -26,7 +26,9 @@ impl Node {
       reference.track_layout(watch);
     }
     let mut subtree = LayoutSubtree {
-      timeline: !self.transitions.is_empty() || self.animation.is_some() || !self.animation_overrides.is_empty(),
+      timeline: !self.transitions.is_empty()
+        || self.playing_animation().is_some()
+        || !self.animation_overrides.is_empty(),
       ..LayoutSubtree::default()
     };
     match self.node_kind() {

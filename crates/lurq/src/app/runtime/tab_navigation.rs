@@ -161,7 +161,8 @@ fn next_stop(scope: &Node, dropped: &[NodeId], focused: Option<NodeId>, reverse:
 
 fn collect_stops(node: &Node, dropped: &[NodeId], focus_event_id: Option<NodeId>, in_form: bool, walk: &mut Walk) {
   // Nothing in a disabled element takes focus, so Tab passes all of it by.
-  if dropped.contains(&node.node_id()) || node.is_disabled() {
+  // Nor in a layer that is on its way out, which is only painted.
+  if dropped.contains(&node.node_id()) || node.is_disabled() || node.is_leaving_layer() {
     return;
   }
   let order = walk.visited;
