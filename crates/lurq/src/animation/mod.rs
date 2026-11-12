@@ -1,3 +1,5 @@
+// The file holds the `Animation` type; its items are re-exported from here.
+#[allow(clippy::module_inception)]
 mod animation;
 mod easing;
 mod interpolate;

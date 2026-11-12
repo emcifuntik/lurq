@@ -83,6 +83,8 @@ fn main() {
     let mut built = taffy_build(spec);
     taffy_compute(&mut built);
 
+    // A local table of rows, printed below.
+    #[allow(clippy::type_complexity)]
     let mut rows: Vec<(&str, (usize, usize), (usize, usize))> = Vec::new();
 
     rows.push((

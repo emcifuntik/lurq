@@ -430,6 +430,8 @@ impl Theme {
 pub struct ThemeLens<T> {
   theme: Theme,
   getter: Arc<dyn Fn(&Theme) -> T + Send + Sync>,
+  // Reads as the pair of the getter above it.
+  #[allow(clippy::type_complexity)]
   setter: Arc<dyn Fn(&Theme, T) + Send + Sync>,
 }
 

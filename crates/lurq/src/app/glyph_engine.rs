@@ -472,6 +472,8 @@ pub(crate) struct GlyphEngine {
   face_weights: FaceWeights,
   measure_cache: HashMap<u64, Vec<(CacheKey, Size)>>,
   vertical_extents_cache: HashMap<u64, Vec<(CacheKey, Option<TextVerticalExtents>)>>,
+  // The same shape as the caches beside it.
+  #[allow(clippy::type_complexity)]
   optical_extents_cache: HashMap<u64, Vec<(CacheKey, Option<(f32, f32)>)>>,
   caret_cache: HashMap<u64, Vec<(CacheKey, CaretPositions)>>,
   rich_shaped_layout_cache: HashMap<u64, Vec<(RichTextShapeKey, CachedRichShapedLayout)>>,
@@ -3713,6 +3715,8 @@ impl AtlasPacker {
     }
   }
 
+  // It refreshes the snapshot it hands out, so it needs `&mut self`.
+  #[allow(clippy::wrong_self_convention)]
   pub(crate) fn to_atlas(&mut self) -> GlyphAtlas {
     if self.snapshot_version != self.version || self.snapshot_width != self.width || self.snapshot_height != self.height
     {

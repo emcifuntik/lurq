@@ -995,6 +995,8 @@ impl LayoutEngine {
     );
   }
 
+  // The paint state inherited down the tree, one argument per piece.
+  #[allow(clippy::too_many_arguments)]
   fn collect_quads(
     &self,
     node: &Node,
@@ -5241,6 +5243,8 @@ mod tests {
 
   /// The setters and styles of the interaction states that can move layout
   /// on their own (focus-visible needs focus, which creates the state first).
+  // A table of setter pairs for one test; an alias would only add a name.
+  #[allow(clippy::type_complexity)]
   fn interaction_states() -> [(fn(&Node, bool) -> bool, fn(Node, crate::node::Style) -> Node); 4] {
     [
       (Node::set_style_hovered, Node::hovered_style),

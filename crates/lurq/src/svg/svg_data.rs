@@ -85,6 +85,8 @@ impl SvgData {
     }
   }
 
+  // Public constructor that cannot fail; `FromStr` would need an error type and a trait in scope.
+  #[allow(clippy::should_implement_trait)]
   pub fn from_str(svg: &str) -> Self {
     Self::from_bytes(svg.as_bytes())
   }

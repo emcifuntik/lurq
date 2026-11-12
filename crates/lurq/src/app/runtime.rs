@@ -6486,7 +6486,9 @@ impl Tree {
     let now = Instant::now();
     let elapsed = now.duration_since(self.perf_overlay_last_sample);
     if elapsed >= PERF_SAMPLE_INTERVAL {
-      self.perf_overlay_stats = PerfMeterStats {
+      // Without `perf_profile` the profiling fields are compiled out and the default fills them.
+      #[allow(clippy::needless_update)]
+      let stats = PerfMeterStats {
         fps: (self.perf_overlay_frames_since_sample as f32 / elapsed.as_secs_f32()).round() as u32,
         #[cfg(feature = "perf_profile")]
         total_ms: ms(self.last_profile.total),
@@ -6514,6 +6516,7 @@ impl Tree {
         glyph_count: self.last_profile.glyph_count,
         ..PerfMeterStats::default()
       };
+      self.perf_overlay_stats = stats;
       self.perf_overlay_frames_since_sample = 0;
       self.perf_overlay_last_sample = now;
     }
@@ -11380,11 +11383,12 @@ fn nearest_form_path_for_path(root: &Node, path: &[usize]) -> Option<Vec<usize>>
   None
 }
 
+/// A form's submit handler and the data to hand it.
 #[cfg(feature = "form")]
-fn nearest_form_submission(
-  root: &Node,
-  path: &[usize],
-) -> Option<(Arc<dyn Fn(crate::node::FormData) + Send + Sync>, crate::node::FormData)> {
+type FormSubmission = (Arc<dyn Fn(crate::node::FormData) + Send + Sync>, crate::node::FormData);
+
+#[cfg(feature = "form")]
+fn nearest_form_submission(root: &Node, path: &[usize]) -> Option<FormSubmission> {
   let form_path = nearest_form_path_for_path(root, path)?;
   let form = find_node_by_path(root, &form_path)?;
   let handler = form.submit_handler()?;
@@ -12241,6 +12245,8 @@ fn scaled_radii(border_radius: Option<BorderRadius>, scale: f32, width: f32, hei
     .unwrap_or([0.0; 4])
 }
 
+// The geometry of one border, passed as the caller already holds it.
+#[allow(clippy::too_many_arguments)]
 fn push_border_rects(
   rects: &mut Vec<RectCmd>,
   order: usize,

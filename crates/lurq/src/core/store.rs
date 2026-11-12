@@ -57,6 +57,8 @@ impl<T: SignalValue + Clone + Send + Sync + 'static> Clone for Store<T> {
 pub struct Lens<T: SignalValue + Send + Sync + 'static, R: SignalValue> {
   signal: Signal<T>,
   getter: Arc<dyn Fn(&T) -> R + Send + Sync>,
+  // Reads as the pair of the getter above it.
+  #[allow(clippy::type_complexity)]
   setter: Arc<dyn Fn(&mut T, R) + Send + Sync>,
 }
 

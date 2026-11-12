@@ -152,6 +152,8 @@ fn a_highlight_is_under_a_selection_of_the_same_text() {
 }
 
 thread_local! {
+  // One slot for the two signals of this test.
+  #[allow(clippy::type_complexity)]
   static SIGNALS: RefCell<Option<(Signal<f32>, Signal<Vec<TextHighlight>>)>> = const { RefCell::new(None) };
 }
 

@@ -27,6 +27,8 @@ impl<T> PartialEq for Shared<T> {
 #[derive(Clone, Debug, PartialEq, lurq::DevtoolsInspectable)]
 struct PanelProps {
   #[devtools_ignore]
+  // One slot for the two signals of this test.
+  #[allow(clippy::type_complexity)]
   signals_out: Shared<Mutex<Option<(Signal<String>, Signal<u32>)>>>,
 }
 
