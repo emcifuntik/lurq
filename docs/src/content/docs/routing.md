@@ -172,6 +172,9 @@ through, blurred by `blur`. What is under it depends on the screen:
   or without.
 - **Any other screen** is laid out under the bar, as if the bar took room: nothing of it is behind the bar.
 
+A screen's toolbar is over the screen the same way, at the bottom: `ctx.safe_area().bottom` is as much more for
+that screen, and its list goes on under the toolbar.
+
 A bar with an opaque `background` hides what is under it, and `blur(0.0)` leaves it sharp.
 
 A screen with a large title puts its content in `StackOutlet::large_title_scroll(ctx, content)`, which draws
@@ -187,7 +190,9 @@ ctx.navigation_item(NavigationItem::new("Inbox").large_title(true));
 StackOutlet::large_title_scroll(ctx, messages)
 ```
 
-A search field is drawn by `large_title_scroll` too, under the title, and scrolls away with the content.
+A search field is drawn by `large_title_scroll` too, under the title, and scrolls away with the content. While it
+is searched in, the field takes the bar's place and a large title goes, as the platform's search does;
+`NavigationSearch::hides_bar(false)` leaves the bar and the title where they are.
 `NavigationSearch::new(signal)` takes the signal the typed text is kept in, which the screen reads to choose
 what it shows. While the field is typed into, and after while it holds text, it takes the bar's place: the bar
 and a large title go, and beside the field comes a way to cancel, which clears the text and puts the keyboard
@@ -264,7 +269,8 @@ NavigationBar {
 | `NavigationBar` | Default | |
 |-----------------|---------|--|
 | `background`, `tint`, `title`, `border` | light, or `dark()` | The bar's colors |
-| `blur` | 40 | How much a screen's list is blurred where it shows through the bar; see [Blur](../blur/) |
+| `blur` | 40 | How much a screen's list is blurred where it shows through the bar, the toolbar and the list of screens under; see [Blur](../blur/) |
+| `large_title_max_scale` | 1.5 | A large title is as much larger as the person asked text to be, up to this; the bar's own text keeps its size |
 | `height`, `low_height`, `low_window` | 44, 32, 480 | The bar's height, and its height in a window lower than `low_window` |
 | `title_size`, `title_weight` | 17, semibold | The title in the bar |
 | `text_size` | 17 | The way back, a search field, the list of the screens under |
@@ -520,7 +526,8 @@ nothing else, for an app that draws a strip of tabs of its own from `Tabs::list`
 
 A `TabItem` is a title and, over it, a picture: `icon` and `selected_icon` take any element; `symbol` and
 `selected_symbol` name one of the platform's symbols, drawn in the bar's colors on iOS (with the `raster`
-feature) and left out elsewhere. `badge` is a few characters at the picture's corner.
+feature) and left out elsewhere. `badge` is a few characters at the picture's corner, and a dot when it has none. `search()` marks the tab
+to search in: a floating bar stands it apart, a round place of its own at the bar's end.
 
 | `TabBar` | Starts as | |
 | --- | --- | --- |
@@ -536,6 +543,11 @@ feature) and left out elsewhere. `badge` is a few characters at the picture's co
 | `item_max_width` | none | In a wider bar the places stand together in the middle |
 | `hides_with_keyboard` | `true` | The bar goes while the on-screen keyboard is up |
 | `hide_duration` | 250 ms | How long it takes to go and to come back |
+| `contrast_color` | darker grey | The tabs that are not chosen, when the person asked for more contrast |
+| `max_items`, `more_title`, `more_symbol` | 5, "More", `ellipsis` | With more tabs than places, the last place lists the rest: a press on one of them shows it |
+| `minimizes_on_scroll` | `false` | The bar goes as a stack screen's list is scrolled down, and comes back as it is scrolled up |
+| `floating` | `false` | A rounded bar that stands clear of the window's edges, with the chosen tab's place marked; `TabBar::new().floating()` |
+| `floating_margin`, `floating_bottom`, `floating_height`, `floating_selection` | 21, 21, 62, grey | A floating bar's room at the sides and under it, its height and the mark behind the chosen tab |
 
 The active tab's picture is its `selected_symbol`; without one, the filled one of its `symbol` where the
 platform has it (`gear.fill` for `gear`).

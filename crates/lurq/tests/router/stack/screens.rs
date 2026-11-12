@@ -157,6 +157,15 @@ impl Component for Root {
               .into()
           })
           .route("/find", |ctx| ctx.mount::<Finding>(()))
+          .route("/find-kept", |ctx| {
+            let sought = SOUGHT.with(Clone::clone);
+            ctx.navigation_item(
+              NavigationItem::new("Kept")
+                .large_title(true)
+                .search(lurq::components::NavigationSearch::new(sought).hides_bar(false)),
+            );
+            StackOutlet::large_title_scroll(ctx, Text::new("kept screen")).into()
+          })
           .route("/user/:id", |ctx| {
             let id = ctx.route_params().get("id").unwrap_or("none").to_owned();
             Text::new(&format!("user {id}")).into()
@@ -623,7 +632,7 @@ fn a_screens_list_is_clear_of_the_bar_in_its_first_frame() {
 }
 
 #[test]
-fn a_screen_over_its_toolbar_has_nothing_to_keep_clear_of_at_the_bottom() {
+fn a_screen_under_its_toolbar_keeps_clear_of_it_and_no_more() {
   let (mut tree, router) = setup();
   tree.window().set_safe_area(lurq::app::window::SafeAreaInsets {
     bottom: 34.0,
@@ -631,10 +640,8 @@ fn a_screen_over_its_toolbar_has_nothing_to_keep_clear_of_at_the_bottom() {
   });
   router.push("/tools");
   settle(&mut tree);
-  assert!(
-    shows(&mut tree, "clear of 0"),
-    "the toolbar is over the home indicator's room"
-  );
+  // The home indicator's room, the toolbar and the line over it: the indicator's room once, not twice.
+  assert!(shows(&mut tree, "clear of 78.5"), "the toolbar is over the screen");
   assert!(router.back());
   settle(&mut tree);
 }
@@ -653,4 +660,83 @@ fn a_screen_that_gives_the_bar_an_element_is_not_rendered_without_end() {
     rendered,
     "at rest nothing renders the screen again"
   );
+}
+
+fn asked(tree: &mut Tree, change: impl FnOnce(&mut lurq::app::window::SystemSettings)) {
+  let mut system = lurq::app::window::SystemSettings::default();
+  change(&mut system);
+  tree.window().set_system_settings(system);
+}
+
+/// The alpha of the bar's own color as it is drawn.
+fn bar_alpha(tree: &mut Tree) -> Option<u8> {
+  crate::support::render_pass(tree)
+    .rects
+    .iter()
+    .find(|rect| (rect.color.r(), rect.color.g(), rect.color.b()) == (249, 249, 249) && rect.y < 1.0)
+    .map(|rect| rect.color.a())
+}
+
+#[test]
+fn with_transparency_reduced_the_bar_is_all_there() {
+  let (mut tree, router) = setup();
+  router.push("/second");
+  settle(&mut tree);
+  assert!(
+    bar_alpha(&mut tree).is_some_and(|alpha| alpha < 255),
+    "glass by default"
+  );
+
+  asked(&mut tree, |system| system.reduce_transparency = true);
+  settle(&mut tree);
+  assert_eq!(bar_alpha(&mut tree), Some(255));
+}
+
+#[test]
+fn with_motion_reduced_a_screen_comes_in_where_it_stands() {
+  let (mut tree, router) = setup();
+  asked(&mut tree, |system| system.reduce_motion = true);
+  run_pass(&mut tree);
+  router.push("/second");
+  // Its first frame: with motion it is a window's width to the right, out of view and not drawn.
+  let glyphs = crate::support::render_pass(&mut tree).glyphs;
+  assert!(
+    glyphs.iter().all(|glyph| glyph.x < 400.0),
+    "nothing is drawn off to the side"
+  );
+  settle(&mut tree);
+  assert!(shows(&mut tree, "second screen"));
+}
+
+#[test]
+fn a_search_field_told_to_leaves_the_bar_and_the_large_title_where_they_are() {
+  let (mut tree, router) = setup();
+  router.push("/find-kept");
+  settle(&mut tree);
+  let title = large_title_width(&mut tree);
+  assert!(title > 0.0);
+  let (x, y, width, height) = tree
+    .find_element(|element| element.id() == Some("navigation-search"))
+    .expect("the search field")
+    .rect();
+
+  crate::support::pointer_click(
+    &mut tree,
+    x + width / 2.0,
+    y + height / 2.0,
+    lurq::app::events::MouseButton::Left,
+  );
+  settle(&mut tree);
+  assert!(
+    tree
+      .find_element(|element| element.id() == Some("navigation-search-cancel"))
+      .is_some(),
+    "it is searched in"
+  );
+  assert_eq!(large_title_width(&mut tree), title, "the large title stays");
+  let field = tree
+    .find_element(|element| element.id() == Some("navigation-search"))
+    .expect("the search field")
+    .rect();
+  assert_eq!(field.1, y, "and the field stays under it");
 }

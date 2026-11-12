@@ -76,17 +76,22 @@ fn dpi_scaled_intrinsic_text_does_not_gain_a_paint_only_wrap() {
 #[test]
 fn dpi_scaled_wrapped_text_does_not_exceed_its_measured_rows() {
   let style = studio_style();
+  let text = "Point PW Studio at your game element folder. We'll scan and validate the required files.";
+  // How wide the sentence is in the system's font, which is not the same on every platform: the column is
+  // narrower than that by enough to wrap it whatever the font.
+  let mut measure = Tree::new();
+  measure.resize(4096, 300);
+  measure.set_root(Column::new().width(4096.0).child(Text::styled(text, style.clone())));
+  render_pass(&mut measure);
+  let intrinsic_width = measure.last_layout().unwrap().children[0].result.size.width;
   let mut tree = Tree::new();
   tree.set_scale_factor(SCALE);
   tree.resize(900, 300);
   tree.set_root(
     Column::new()
       .align_items(Alignment::Center)
-      .width(450.0)
-      .child(Text::styled(
-        "Point PW Studio at your game element folder. We'll scan and validate the required files.",
-        style.clone(),
-      )),
+      .width((intrinsic_width * 0.7).min(450.0))
+      .child(Text::styled(text, style.clone())),
   );
 
   let snapshot = render_pass(&mut tree);

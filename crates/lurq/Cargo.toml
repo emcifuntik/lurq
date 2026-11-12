@@ -137,6 +137,8 @@ libc = { version = "0.2", optional = true }
 # iOS: the winit shell reaches UIKit for what winit leaves out (a display link, the status bar's tap).
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
+# The reply of the system's check of who the person is; see `app::biometry`.
+block2 = "0.6"
 # The scripts cosmic-text asks a fallback font for; see `glyph_engine::ios_fallback`.
 unicode-script = "0.5"
 

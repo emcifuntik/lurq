@@ -910,3 +910,51 @@ pub(super) fn watch_orientation() {
     push_app_event(AppEvent::Rotated(orientation));
   }
 }
+
+use crate::app::window::{Appearance, SystemSettings};
+
+#[link(name = "UIKit", kind = "framework")]
+unsafe extern "C" {
+  fn UIAccessibilityIsBoldTextEnabled() -> bool;
+  fn UIAccessibilityIsReduceMotionEnabled() -> bool;
+  fn UIAccessibilityDarkerSystemColorsEnabled() -> bool;
+  fn UIAccessibilityIsReduceTransparencyEnabled() -> bool;
+  fn UIAccessibilityShouldDifferentiateWithoutColor() -> bool;
+  fn UIAccessibilityButtonShapesEnabled() -> bool;
+  fn UIAccessibilityIsOnOffSwitchLabelsEnabled() -> bool;
+}
+
+/// What the person set for the whole system, as it is now. Main thread only.
+///
+/// The appearance is the scene's: winit's window was made outside the scene, and a window made in it says
+/// what the scene is in. The text scale is what the system makes of a size of 100 for the person's text
+/// size, the body style's curve.
+pub(super) fn system_settings(view: NonNull<c_void>) -> SystemSettings {
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  unsafe {
+    let probe = SAFE_AREA_PROBE.load(Ordering::Acquire);
+    let traits: Retained<AnyObject> = match probe.as_ref() {
+      Some(probe) => msg_send![probe, traitCollection],
+      None => msg_send![view, traitCollection],
+    };
+    // `UIUserInterfaceStyleDark`.
+    let style: isize = msg_send![&*traits, userInterfaceStyle];
+    let metrics: Retained<AnyObject> = msg_send![class!(UIFontMetrics), defaultMetrics];
+    let scaled: f64 = msg_send![&*metrics, scaledValueForValue: 100.0f64, compatibleWithTraitCollection: &*traits];
+    SystemSettings {
+      appearance: if style == 2 {
+        Appearance::Dark
+      } else {
+        Appearance::Light
+      },
+      text_scale: (scaled / 100.0) as f32,
+      bold_text: UIAccessibilityIsBoldTextEnabled(),
+      reduce_motion: UIAccessibilityIsReduceMotionEnabled(),
+      increase_contrast: UIAccessibilityDarkerSystemColorsEnabled(),
+      reduce_transparency: UIAccessibilityIsReduceTransparencyEnabled(),
+      differentiate_without_color: UIAccessibilityShouldDifferentiateWithoutColor(),
+      button_shapes: UIAccessibilityButtonShapesEnabled(),
+      on_off_labels: UIAccessibilityIsOnOffSwitchLabelsEnabled(),
+    }
+  }
+}

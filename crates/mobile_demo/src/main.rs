@@ -8,12 +8,15 @@
 //! `ios/MobileDemo.xcodeproj` wraps it in an app bundle for a simulator or a phone: its only build phase runs
 //! `ios/build-rust.sh`, which builds this binary with cargo, and Xcode signs the result.
 
+mod auth;
 mod gestures;
 mod home;
 mod inputs;
+mod lists;
 mod more;
 mod scroll;
 mod sheets;
+mod system;
 mod touch;
 mod ui;
 mod virtual_list;
@@ -24,6 +27,7 @@ use lurq::{
     component::Component,
     ctx::Ctx,
     events::{HistoryDirection, HistorySwipeEvent},
+    theme::{PaletteColor, ThemePalette},
     wgpu_render::WgpuRenderEngine,
     window::Orientation,
     winit_shell::WinitWindow,
@@ -77,6 +81,20 @@ impl Component for MobileDemo {
           .selected_symbol("ellipsis.circle.fill"),
         more,
       );
+    // The tab to search in, which a floating bar stands apart from the others.
+    let search = ctx.router(more::search_routes());
+    search.replace("/");
+    tabs.add("search", TabItem::new("Search").search(), search);
+    // Tabs to add from the second tab's screen, until the bar has more than it has places for.
+    more::set_spares(
+      (1..=4)
+        .map(|number| {
+          let router = ctx.router(more::spare_routes(number));
+          router.replace("/");
+          router
+        })
+        .collect(),
+    );
     Self { tabs }
   }
 
@@ -85,6 +103,10 @@ impl Component for MobileDemo {
     let tabs = self.tabs.clone();
     SheetHost::mount(ctx, move |ctx| {
       let bar = TabBar::dark()
+        // A bar that floats over the content, as the newest system's does, and gets out of the way of a
+        // list that is being read.
+        .floating()
+        .minimizes_on_scroll(true)
         // Not all there: what scrolls under the bar shows through it, blurred.
         .background(Color::new(30, 41, 59, 190))
         .border(Color::from_hex(BORDER))
@@ -115,6 +137,13 @@ fn routes() -> Routes {
       })
       .route("/scroll", |ctx| {
         screen(ctx, "/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
+      })
+      .route("/system", |ctx| screen(ctx, "/system", system::system))
+      .route("/auth", |ctx| {
+        screen(ctx, "/auth", |ctx| ctx.mount::<auth::AuthScreen>(()))
+      })
+      .route("/lists", |ctx| {
+        screen(ctx, "/lists", |ctx| ctx.mount::<lists::ListsScreen>(()))
       })
       .route("/sheets", |ctx| {
         screen(ctx, "/sheets", |ctx| ctx.mount::<sheets::SheetsScreen>(()))
@@ -185,7 +214,7 @@ fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) 
     .padding_left(safe_area.left)
     .padding_right(safe_area.right)
     // The home screen's list goes on under the bar of tabs, and shows through it: it pads its own content.
-    .padding_bottom(if path == "/" { 0.0 } else { safe_area.bottom })
+    .padding_bottom(if matches!(path, "/" | "/system" | "/lists") { 0.0 } else { safe_area.bottom })
     .into()
 }
 
@@ -207,6 +236,16 @@ fn main() {
       handle.token()
     );
   }
+  // A palette for each appearance: the theme is in the system's, and the System screen shows it.
+  let mut dark = ThemePalette::default();
+  for (role, color) in [
+    (PaletteColor::SurfaceBase, "#1c1c1e"),
+    (PaletteColor::Border, "#38383a"),
+    (PaletteColor::TextPrimary, "#ffffff"),
+  ] {
+    dark.set(role, Color::from_hex(color));
+  }
+  app.theme().set_palettes(ThemePalette::default(), dark);
   tree.mount_root::<MobileDemo>(&mut app, ());
   let window = WinitWindow::new(app, tree)
     .with_title("lurq mobile demo")
