@@ -1675,10 +1675,24 @@ impl Ctx {
 
   #[cfg(feature = "router")]
   pub fn route_state<T: std::any::Any + Send + Sync>(&mut self) -> Option<std::sync::Arc<T>> {
+    // A screen of a stack keeps its own entry's state under the screens pushed over it.
+    if let Some(state) = self.use_context::<crate::router::route_match::StackState>() {
+      return state.0?.downcast::<T>().ok();
+    }
     let nav = self.use_context::<crate::router::Navigator>()?;
     // Subscribe to navigations so this re-runs when the location (and its state) changes.
     let _ = nav.path().get();
     nav.state::<T>()
+  }
+
+  /// Says what the bar of the [`StackOutlet`](crate::components::StackOutlet) this screen is in shows for it:
+  /// its title, what the way back to it says, what is at the bar's end. Call it in the screen's `render`.
+  /// It does nothing outside a stack.
+  #[cfg(feature = "router")]
+  pub fn navigation_item(&mut self, item: crate::components::NavigationItem) {
+    if let Some(slot) = self.use_context::<crate::components::stack_outlet::NavigationSlot>() {
+      slot.set(item);
+    }
   }
 
   /// Returns the client provided by a stable ancestor or this root context.

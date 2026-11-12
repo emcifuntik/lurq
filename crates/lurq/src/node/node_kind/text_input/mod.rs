@@ -66,6 +66,9 @@ struct TextInputInner {
   min_rows: Option<usize>,
   max_rows: Option<usize>,
   mask: Option<char>,
+  keyboard: KeyboardKind,
+  return_key: ReturnKey,
+  content: ContentKind,
   focused: bool,
   /// An input method composition in progress, shown at the caret.
   composition: Option<Composition>,
@@ -138,6 +141,9 @@ impl TextInputState {
         min_rows: None,
         max_rows: None,
         mask: None,
+        keyboard: KeyboardKind::default(),
+        return_key: ReturnKey::default(),
+        content: ContentKind::default(),
         focused: false,
         composition: None,
         undo_stack: Vec::new(),
@@ -305,6 +311,40 @@ impl TextInputState {
     inner.token_affinity = None;
     drop(inner);
     self.mark_layout_dirty_keeping_scroll();
+  }
+
+  pub(crate) fn set_keyboard(&self, keyboard: KeyboardKind) {
+    self.inner.lock().keyboard = keyboard;
+  }
+
+  pub(crate) fn set_return_key(&self, return_key: ReturnKey) {
+    self.inner.lock().return_key = return_key;
+  }
+
+  pub(crate) fn set_content(&self, content: ContentKind) {
+    self.inner.lock().content = content;
+  }
+
+  /// What the input holds, for the platform to fill in: the kind it was given, or the one its keyboard and
+  /// mask stand for.
+  pub(crate) fn content(&self) -> ContentKind {
+    let inner = self.inner.lock();
+    match inner.content {
+      ContentKind::Auto if inner.mask.is_some() => ContentKind::Password,
+      ContentKind::Auto => match inner.keyboard {
+        KeyboardKind::Email => ContentKind::Email,
+        KeyboardKind::Phone => ContentKind::Phone,
+        KeyboardKind::Url => ContentKind::Url,
+        _ => ContentKind::None,
+      },
+      content => content,
+    }
+  }
+
+  /// The on-screen keyboard the input asks for and what its Return key says.
+  pub(crate) fn keyboard(&self) -> (KeyboardKind, ReturnKey) {
+    let inner = self.inner.lock();
+    (inner.keyboard, inner.return_key)
   }
 
   /// The configured display mask, if this is a masked input.

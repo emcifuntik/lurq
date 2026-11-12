@@ -116,7 +116,7 @@ impl Tree {
   }
 
   /// Delivers a swipe to the elements under `(x, y)`, innermost first, until one stops its propagation.
-  fn dispatch_history_swipe(&mut self, x: f32, y: f32, direction: HistoryDirection) {
+  pub(super) fn dispatch_history_swipe(&mut self, x: f32, y: f32, direction: HistoryDirection) {
     let (Some(root), Some(layout)) = (&self.root, &self.last_layout) else {
       return;
     };

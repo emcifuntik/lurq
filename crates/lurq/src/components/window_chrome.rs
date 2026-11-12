@@ -699,6 +699,7 @@ mod tests {
       is_full_screen: false,
       is_decorated: false,
       is_focused: true,
+      safe_area: Default::default(),
     }
   }
 

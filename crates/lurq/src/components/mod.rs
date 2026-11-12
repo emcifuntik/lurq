@@ -29,6 +29,8 @@ mod slider;
 mod slot;
 mod spacer;
 mod stack;
+#[cfg(feature = "router")]
+pub(crate) mod stack_outlet;
 #[cfg(feature = "markdown")]
 pub(crate) mod styled_text;
 #[cfg(feature = "svg")]
@@ -82,6 +84,11 @@ pub use slider::Slider;
 pub use slot::Slot;
 pub use spacer::Spacer;
 pub use stack::Stack;
+#[cfg(feature = "router")]
+pub use stack_outlet::{
+  NavigationBar, NavigationBarBuilder, NavigationBarScreen, NavigationBarState, NavigationItem, StackOutlet,
+  StackOutletProps,
+};
 #[cfg(feature = "markdown")]
 pub use styled_text::{
   LinkClick, MarkPresence, SelectionStyle, SpanStyle, StyledChange, StyledEdit, StyledSpan, StyledText, TextMark,
@@ -89,7 +96,7 @@ pub use styled_text::{
 #[cfg(feature = "svg")]
 pub use svg::Svg;
 pub use text::{Text, TextOverflow};
-pub use text_input::{TextInput, TextInputOverflow, TextInputOverflowAnchor};
+pub use text_input::{ContentKind, KeyboardKind, ReturnKey, TextInput, TextInputOverflow, TextInputOverflowAnchor};
 pub use text_input_controller::{InputEditError, InputSelection, TextInputController};
 pub use text_input_tokens::{InputToken, InputTokenError, InputTokenStyle, InputTokens};
 #[cfg(feature = "raster")]
@@ -738,6 +745,128 @@ macro_rules! impl_into_node {
 
       pub fn off_history_swipe(mut self, f: impl $crate::node::IntoHistorySwipeEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::off_history_swipe(node, f));
+        self
+      }
+
+      /// A finger landed on this element; see [`TouchEvent`]. A handler that calls `prevent_default` takes the finger
+      /// for itself: no mouse events, click or scrolling follow for this touch.
+      pub fn on_touch_start(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_touch_start(node, f));
+        self
+      }
+
+      pub fn off_touch_start(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_touch_start(node, f));
+        self
+      }
+
+      /// A finger that landed on this element moved, wherever it now is; see [`TouchEvent`].
+      pub fn on_touch_move(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_touch_move(node, f));
+        self
+      }
+
+      pub fn off_touch_move(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_touch_move(node, f));
+        self
+      }
+
+      /// A finger that landed on this element lifted; see [`TouchEvent`].
+      pub fn on_touch_end(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_touch_end(node, f));
+        self
+      }
+
+      pub fn off_touch_end(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_touch_end(node, f));
+        self
+      }
+
+      /// The system took away a finger that landed on this element; see [`TouchEvent`].
+      pub fn on_touch_cancel(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_touch_cancel(node, f));
+        self
+      }
+
+      pub fn off_touch_cancel(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_touch_cancel(node, f));
+        self
+      }
+
+      /// A finger rested on this element for half a second; see [`LongPressEvent`].
+      pub fn on_long_press(mut self, f: impl $crate::node::IntoLongPressEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_long_press(node, f));
+        self
+      }
+
+      pub fn off_long_press(mut self, f: impl $crate::node::IntoLongPressEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_long_press(node, f));
+        self
+      }
+
+      /// Two fingers on this element moved apart or together; see [`PinchEvent`].
+      pub fn on_pinch(mut self, f: impl $crate::node::IntoPinchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_pinch(node, f));
+        self
+      }
+
+      pub fn off_pinch(mut self, f: impl $crate::node::IntoPinchEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_pinch(node, f));
+        self
+      }
+
+      /// Two fingers on this element turned about their middle; see [`RotateEvent`].
+      pub fn on_rotate(mut self, f: impl $crate::node::IntoRotateEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_rotate(node, f));
+        self
+      }
+
+      pub fn off_rotate(mut self, f: impl $crate::node::IntoRotateEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_rotate(node, f));
+        self
+      }
+
+      /// One or more fingers tapped this element; see [`TapEvent`].
+      pub fn on_tap(mut self, f: impl $crate::node::IntoTapEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_tap(node, f));
+        self
+      }
+
+      pub fn off_tap(mut self, f: impl $crate::node::IntoTapEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_tap(node, f));
+        self
+      }
+
+      /// Fingers flicked across this element; see [`SwipeEvent`].
+      pub fn on_swipe(mut self, f: impl $crate::node::IntoSwipeEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_swipe(node, f));
+        self
+      }
+
+      pub fn off_swipe(mut self, f: impl $crate::node::IntoSwipeEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_swipe(node, f));
+        self
+      }
+
+      /// Fingers are travelling over this element; see [`PanEvent`].
+      pub fn on_pan(mut self, f: impl $crate::node::IntoPanEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_pan(node, f));
+        self
+      }
+
+      pub fn off_pan(mut self, f: impl $crate::node::IntoPanEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_pan(node, f));
+        self
+      }
+
+      /// A finger came in from an edge of the window over this element; see [`EdgePanEvent`].
+      pub fn on_edge_pan(mut self, f: impl $crate::node::IntoEdgePanEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::on_edge_pan(node, f));
+        self
+      }
+
+      pub fn off_edge_pan(mut self, f: impl $crate::node::IntoEdgePanEventHandler) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::off_edge_pan(node, f));
         self
       }
 

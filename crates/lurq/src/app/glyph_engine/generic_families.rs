@@ -9,6 +9,10 @@
 //! cosmic-text's name, so it draws as the default family (the empty name)
 //! does, and `cursive` and `fantasy` keep fontdb's.
 //!
+//! iOS names `sans-serif` too: cosmic-text has no fallback fonts for it, so
+//! without a name the default family would draw with whichever font comes
+//! first.
+//!
 //! [`GenericFamily`]: crate::layout::text_style::GenericFamily
 
 use cosmic_text::fontdb::Database;
@@ -25,7 +29,21 @@ mod platform {
   pub(super) const SERIF: &[&str] = &["Times", "Times New Roman"];
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "ios")]
+mod platform {
+  pub(super) const SANS_SERIF: &[&str] = &[
+    ".SF UI",
+    ".SF UI Text",
+    ".SF NS",
+    "Helvetica Neue",
+    "Helvetica",
+    "Arial",
+  ];
+  pub(super) const MONOSPACE: &[&str] = &["Menlo", "Courier New", "Courier"];
+  pub(super) const SERIF: &[&str] = &["Times New Roman", "Georgia"];
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
 mod platform {
   pub(super) const MONOSPACE: &[&str] = &["DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono"];
   pub(super) const SERIF: &[&str] = &["DejaVu Serif", "Noto Serif", "Liberation Serif"];
@@ -34,6 +52,10 @@ mod platform {
 /// Names the platform's installed fonts for the generic `monospace` and
 /// `serif` families in `db`. Call it after the system fonts are loaded.
 pub(super) fn set_generic_families(db: &mut Database) {
+  #[cfg(target_os = "ios")]
+  if let Some(family) = first_installed(db, platform::SANS_SERIF) {
+    db.set_sans_serif_family(family);
+  }
   if let Some(family) = first_installed(db, platform::MONOSPACE) {
     db.set_monospace_family(family);
   }

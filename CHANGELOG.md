@@ -15,6 +15,34 @@ Behaviour changes:
 - `LayerCmd` has a new public field, `blur: Option<LayerBlur>`, `RenderList` a new public field, `backdrops: Vec<BackdropCmd>`, `AnimatableProperty` two new variants and `QuadContent` a new variant, `Backdrop`: code that builds a `LayerCmd` or a `RenderList` with every field named, or matches `AnimatableProperty` or `QuadContent` without a wildcard arm, must add them. A custom `RenderEngine` that ignores `RenderList::backdrops` draws the frame without its backdrop blurs. A custom `RenderEngine` that paints `RenderList::layers` should paint a blurred layer for `LayerCmd::painted()` (larger than `bounds`, and possibly outside the window) and blur it by `LayerBlur::sigma`; one that ignores the field draws the layer unblurred, clipped to `bounds`.
 - A layer around a blurred one covers the blur's spread, so `LayerCmd::bounds` of a faded group can be larger than its own rects and glyphs.
 
+## 0.60.0 — 2026-11-11
+
+Added:
+
+- DevTools' **Profiler** tab records real sessions. **Start recording** and **Stop recording** bound a recording that keeps every pass of the inspected windows in between (none skipped, merged or capped to a count), and the tab shows it as a frame timeline on a time axis with a 16.7 ms budget line, a range you select by dragging, and the selected frame's phases and figures. Under it: a **flame chart** (wheel to zoom, drag to pan, click to select), a **call tree** and a **bottom-up** table with total and self times. The tab's buttons are in a toolbar of its own that wraps in a narrow window. See [DevTools](docs/src/content/docs/devtools.md) and [profiling](docs/src/content/docs/profiling.md).
+- Recording sessions in the profiling service: `ProfilingHandle::start_recording(RecordingOptions)` keeps every sample until it is ended or reaches `max_bytes` (1 GiB by default), where it stops with `stopped_at_limit` instead of dropping samples. Bounded sessions (`SessionOptions`, MCP's `lurq_profile_*`) work as before.
+- Passes carry their phases as spans with start and end times (`PassSample::spans`), so a phase's place in the frame is known, not only its total. `lurq::app::profiler::SpanForest` (`forest_of`, `call_tree`, `bottom_up`) aggregates them outside the UI.
+- **Components** (a detailed recording, `RecordingOptions::detailed`): each component render and `after_layout` hook is a span named by the component's type, each pass counts the nodes laid out again per component, and each UI update names what made its components render (a signal, memo, store, context, props or a mount, by type name). Type names only: no values, keys or ids.
+- Input latency: an input sample has the delay before its dispatch, the dispatch time, and the time from the shell receiving the event to the present of the first frame after it, with that frame's id. Passes carry their present time, the interval since the previous frame and the vsyncs they missed inside a run of frames, and the reasons the pass ran.
+- Counters per captured pass: nodes, draw calls (wgpu and the native DX12 renderer), the runtime's memory estimate and cache sizes, shown as tracks under the timeline.
+- `lurq::app::profiler::CountingAllocator`, behind the new `counting_allocator` feature: a global allocator wrapper an application installs in one line, so passes report their allocations, frees and bytes. Without it the allocation track says unavailable.
+- GPU time on the wgpu renderer, from timestamp queries issued only while a session is active: the UI and Canvas passes of each frame, matched to its sample by frame id. An adapter without timestamp queries, and the native DX12 renderer, report it unavailable with the reason.
+- **Screenshots** in a recording (off by default): at most four presented frames a second, downscaled, with sensitive text covered as in a node screenshot, shown as a filmstrip over the timeline; the frames that paid for a copy are marked.
+- Recording files and a Firefox Profiler export: **Save** and **Load** in the tab (`ProfileReport::to_recording_file`, `from_recording_file`), and **Export for Firefox Profiler** (`to_firefox_profile`), which [profiler.firefox.com](https://profiler.firefox.com) opens with its call tree, flame graph and frame, input and UI update markers. The converters are plain functions, without a window or a file dialog.
+
+Behaviour changes:
+
+- The `devtools` feature now enables `perf_profile`. A DevTools build pays the profiler's idle cost on every pass: about 0.2–0.35 µs on the bench's static scene, measured with `cargo bench -p lurq --bench profiler_idle`. A build without `devtools` and `perf_profile` is unchanged.
+- The Profiler tab no longer shows the commit list and ranked chart it had; its "what caused this render" list is now the render causes of a detailed recording.
+- MCP's profiling JSON stays `schema_version` 1 with fields added to it: `spans`, `dropped_spans`, `reasons`, `present`, `counters`, `screenshot` and `gpu_timing_ms` on passes, `interaction_id`, `presented_frame_id` and `latency_ms` on input samples, and GPU timestamp availability per window. `gpu_timing_ms` and `coverage.gpu_execution` were always null and false and now carry measurements on wgpu. An input sample is published once the frame after it is presented, so its `sequence` follows that pass; its `started_ms` and `completed_ms` are its dispatch, as before.
+- `RenderProfile` has a new public field `draw_calls` and `CanvasProfile` a new field `asset_cache_bytes`: code that builds them with every field named must add them.
+- The native DX12 renderer reads a frame capture back on a worker thread and waits up to 5 s for the copy, instead of up to 250 ms on the frame's thread.
+
+Internal:
+
+- The current phase of a pass is published without the collector's mutex.
+- `scripts/check.ps1` also runs the suite with `devtools,mcp,perf_profile,counting_allocator`.
+
 ## 0.59.1 — 2026-11-11
 
 Dependencies:

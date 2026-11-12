@@ -10,6 +10,7 @@ pub mod mouse_event;
 pub mod paste_event;
 pub mod scroll_event;
 pub mod text_input_event;
+pub mod touch_event;
 
 pub use clipboard_content::*;
 pub use drag_event::*;
@@ -23,3 +24,4 @@ pub use mouse_event::*;
 pub use paste_event::*;
 pub use scroll_event::*;
 pub use text_input_event::*;
+pub use touch_event::*;

@@ -20,11 +20,23 @@ impl WindowHandle {
     self.window.inner.write().unwrap().close_handler = Some(Arc::new(handler));
   }
 
+  /// Replace this window's handler of what the system says of the app: that it came to the front or left it,
+  /// that it was opened with a link or a shortcut. Runs on the event-loop thread. What the app was started
+  /// with is told once a handler is there, so register it in the root component's `create`.
+  pub fn on_app_event(&self, handler: impl Fn(&crate::app::window::AppEvent) + Send + Sync + 'static) {
+    self.window.set_app_event_handler(Some(Arc::new(handler)));
+  }
+
   pub fn clear_close_requested_handler(&self) {
     self.window.inner.write().unwrap().close_handler = None;
   }
 
   /// Queue a vetoable request; unlike `close`, this invokes the handler.
+  /// Plays a tap of the device's haptic engine, where there is one.
+  pub fn haptic(&self, haptic: crate::app::window::Haptic) {
+    self.window.push_command(WindowCommand::Haptic(haptic));
+  }
+
   pub fn request_close(&self) {
     self
       .window

@@ -1,9 +1,28 @@
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Easing {
   Linear,
-  CubicBezier { x1: f64, y1: f64, x2: f64, y2: f64 },
-  Steps { count: u32, position: StepPosition },
+  CubicBezier {
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+  },
+  Steps {
+    count: u32,
+    position: StepPosition,
+  },
+  /// A spring that comes to rest without going past: quick at first, settling slowly, as the platform's own
+  /// moves of screens and sheets are. `velocity` is the speed the value already has when the run starts, as
+  /// a share of the way per duration: 0 from rest, and 2 for something let go while moving at a speed that
+  /// would cover the way twice in the duration. A speed too great for the spring to take without passing
+  /// the end is taken as the greatest it can.
+  Spring {
+    velocity: f64,
+  },
 }
+
+/// How stiff [`Easing::Spring`] is: by the end of the duration it is within a twentieth of a percent of rest.
+const SPRING_RATE: f64 = 10.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StepPosition {
@@ -53,6 +72,19 @@ impl Easing {
         bezier_y(u, *y1, *y2)
       }
       Self::Steps { count, position } => evaluate_steps(t, *count, *position),
+      Self::Spring { velocity } => {
+        if t <= 0.0 {
+          return 0.0;
+        }
+        if t >= 1.0 {
+          return 1.0;
+        }
+        // A critically damped spring from 0 to 1 that starts at `velocity`: 1 - (1 + (w - v) t) e^(-w t),
+        // which never passes 1 while v <= w. Scaled to end at 1 exactly.
+        let velocity = velocity.clamp(0.0, SPRING_RATE);
+        let at = |t: f64| 1.0 - (1.0 + (SPRING_RATE - velocity) * t) * (-SPRING_RATE * t).exp();
+        at(t) / at(1.0)
+      }
     }
   }
 

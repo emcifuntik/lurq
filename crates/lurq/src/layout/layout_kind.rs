@@ -55,6 +55,20 @@ pub struct ScrollState {
   inner: Arc<Mutex<ScrollStateInner>>,
 }
 
+/// A thumb at `start`, `length` long, while the content is drawn `overscroll` past an end: it shortens by as
+/// much against that end, as a scroll indicator of the platform does, down to a dot as wide as the bar.
+fn squeezed_thumb(start: f32, length: f32, overscroll: f32, bar_width: f32) -> (f32, f32) {
+  if overscroll == 0.0 {
+    return (start, length);
+  }
+  let squeezed = (length - overscroll.abs()).max(bar_width.min(length));
+  if overscroll < 0.0 {
+    (start, squeezed)
+  } else {
+    (start + length - squeezed, squeezed)
+  }
+}
+
 #[derive(Clone, Copy)]
 enum PendingScroll {
   Offset(f32),
@@ -96,6 +110,13 @@ struct ScrollPassStart {
 struct ScrollStateInner {
   scroll_x: f32,
   scroll_y: f32,
+  /// How far the content is drawn past its ends; see [`ScrollState::set_overscroll`].
+  overscroll_x: f32,
+  overscroll_y: f32,
+  /// See [`ScrollState::set_scrolls_to_top`].
+  scrolls_to_top: bool,
+  /// See [`ScrollState::set_dismisses_keyboard`].
+  dismisses_keyboard: bool,
   pending_scroll_x: Option<PendingScroll>,
   pending_scroll_y: Option<PendingScroll>,
   max_scroll_x: f32,
@@ -150,6 +171,10 @@ impl ScrollState {
       inner: Arc::new(Mutex::new(ScrollStateInner {
         scroll_x: 0.0,
         scroll_y: 0.0,
+        overscroll_x: 0.0,
+        overscroll_y: 0.0,
+        scrolls_to_top: true,
+        dismisses_keyboard: false,
         pending_scroll_x: None,
         pending_scroll_y: None,
         max_scroll_x: 0.0,
@@ -184,6 +209,57 @@ impl ScrollState {
 
   pub fn scroll_x(&self) -> f32 {
     self.inner.lock().unwrap().scroll_x
+  }
+
+  /// Whether a tap on a phone's status bar scrolls this container to its top; it does unless set otherwise.
+  /// The tap scrolls one container: the outermost under the middle of the window that scrolls down, is away
+  /// from its top and takes the tap. A screen with more than one such list turns it off on those the tap is
+  /// not for.
+  pub fn set_scrolls_to_top(&self, scrolls_to_top: bool) {
+    self.inner.lock().unwrap().scrolls_to_top = scrolls_to_top;
+  }
+
+  pub fn scrolls_to_top(&self) -> bool {
+    self.inner.lock().unwrap().scrolls_to_top
+  }
+
+  /// Whether a finger that starts to scroll this container puts a phone's on-screen keyboard away, by taking
+  /// the focus from the text input being typed into; it does not unless set. A tap outside a text input leaves
+  /// the keyboard up, so a screen of inputs that scrolls wants this, or a control that puts it away.
+  pub fn set_dismisses_keyboard(&self, dismisses_keyboard: bool) {
+    self.inner.lock().unwrap().dismisses_keyboard = dismisses_keyboard;
+  }
+
+  pub fn dismisses_keyboard(&self) -> bool {
+    self.inner.lock().unwrap().dismisses_keyboard
+  }
+
+  /// How far the content is drawn past its ends, along each axis: negative before the start, positive beyond
+  /// the end. The offset itself stays within the content.
+  pub fn overscroll(&self) -> (f32, f32) {
+    let inner = self.inner.lock().unwrap();
+    (inner.overscroll_x, inner.overscroll_y)
+  }
+
+  /// Draws the content past its ends: what a touch shell does while a finger pulls a list beyond its end, and
+  /// while the list springs back. Drawn in the next frame.
+  pub fn set_overscroll(&self, x: f32, y: f32) {
+    let mut inner = self.inner.lock().unwrap();
+    if (inner.overscroll_x, inner.overscroll_y) == (x, y) {
+      return;
+    }
+    (inner.overscroll_x, inner.overscroll_y) = (x, y);
+    inner.scroll_dirty = true;
+    inner.layout_subscribers.mark();
+  }
+
+  /// Where the content is laid out relative to the viewport: the scroll offset and the overscroll.
+  pub(crate) fn content_offset(&self) -> crate::layout::offset::Offset {
+    let inner = self.inner.lock().unwrap();
+    crate::layout::offset::Offset::new(
+      -(inner.scroll_x + inner.overscroll_x),
+      -(inner.scroll_y + inner.overscroll_y),
+    )
   }
 
   pub fn scroll_y(&self) -> f32 {
@@ -473,19 +549,21 @@ impl ScrollState {
   /// and never changes by itself.
   pub(crate) fn reveal_scrollbar(&self, style: &ScrollBarStyle, now: Instant) -> ScrollBarRevealFrame {
     let mut inner = self.inner.lock().unwrap();
-    let offset = (inner.scroll_x, inner.scroll_y);
+    // Content pulled past an end moves as content that scrolls does.
+    let offset = (inner.scroll_x + inner.overscroll_x, inner.scroll_y + inner.overscroll_y);
     let scrolled = inner
       .painted_scroll
       .replace(offset)
       .is_some_and(|painted| painted != offset);
-    if style.visible != ScrollBarVisibility::OnHover {
+    if !style.visible.fades() {
       inner.reveal = ScrollBarReveal::default();
       return ScrollBarRevealFrame {
         opacity: 1.0,
         next_change: None,
       };
     }
-    let held = inner.pointer_over || inner.dragging;
+    // A finger's indicator is shown by content that moves, not by a pointer over it.
+    let held = (style.visible == ScrollBarVisibility::OnHover && inner.pointer_over) || inner.dragging;
     let overflows = inner.content_width > inner.viewport_width || inner.content_height > inner.viewport_height;
     inner.reveal.advance(style, now, held, scrolled, overflows)
   }
@@ -600,14 +678,16 @@ impl ScrollState {
     let inner = self.inner.lock().unwrap();
     match (style.visible, axis) {
       (ScrollBarVisibility::Never, _) => return None,
-      (ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover, ScrollAxis::Horizontal)
-        if inner.content_width <= inner.viewport_width =>
-      {
+      (
+        ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover | ScrollBarVisibility::WhileScrolling,
+        ScrollAxis::Horizontal,
+      ) if inner.content_width <= inner.viewport_width => {
         return None;
       }
-      (ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover, ScrollAxis::Vertical)
-        if inner.content_height <= inner.viewport_height =>
-      {
+      (
+        ScrollBarVisibility::Auto | ScrollBarVisibility::OnHover | ScrollBarVisibility::WhileScrolling,
+        ScrollAxis::Vertical,
+      ) if inner.content_height <= inner.viewport_height => {
         return None;
       }
       _ => {}
@@ -632,6 +712,7 @@ impl ScrollState {
           0.0
         };
         let thumb_x = track_x + (track_width - thumb_width) * scroll_ratio;
+        let (thumb_x, thumb_width) = squeezed_thumb(thumb_x, thumb_width, inner.overscroll_x, style.width);
 
         Some(ScrollBarGeometry {
           track_x,
@@ -662,6 +743,7 @@ impl ScrollState {
           0.0
         };
         let thumb_y = track_y + (track_height - thumb_height) * scroll_ratio;
+        let (thumb_y, thumb_height) = squeezed_thumb(thumb_y, thumb_height, inner.overscroll_y, style.width);
 
         Some(ScrollBarGeometry {
           track_x,
@@ -697,7 +779,7 @@ impl ScrollState {
     if !overflows {
       return None;
     }
-    if style.visible == ScrollBarVisibility::OnHover && !self.inner.lock().unwrap().reveal.is_shown() {
+    if style.visible.fades() && !self.inner.lock().unwrap().reveal.is_shown() {
       return None;
     }
     self

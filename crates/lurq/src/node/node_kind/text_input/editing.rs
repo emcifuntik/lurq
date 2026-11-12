@@ -92,7 +92,7 @@ impl TextInputState {
       let mut value = self.value();
       let caret = clamp_to_char_boundary(&value, caret);
       if caret > 0 {
-        let previous = previous_char_boundary(&value, caret);
+        let previous = previous_delete_boundary(&value, caret);
         value.replace_range(previous..caret, "");
       }
       value
@@ -106,7 +106,7 @@ impl TextInputState {
     self.value.update(|value| {
       caret = clamp_to_char_boundary(value, caret);
       if caret > 0 {
-        let previous = previous_char_boundary(value, caret);
+        let previous = previous_delete_boundary(value, caret);
         value.replace_range(previous..caret, "");
         removed = previous..caret;
         caret = previous;
@@ -136,7 +136,7 @@ impl TextInputState {
     }
     if !self.fire_input(keyboard, || {
       let mut value = value.clone();
-      let next = next_char_boundary(&value, caret);
+      let next = next_delete_boundary(&value, caret);
       value.replace_range(caret..next, "");
       value
     }) {
@@ -147,7 +147,7 @@ impl TextInputState {
     let styled = self.styled_before_edit();
     let mut removed = caret..caret;
     self.value.update(|value| {
-      let next = next_char_boundary(value, caret);
+      let next = next_delete_boundary(value, caret);
       value.replace_range(caret..next, "");
       removed = caret..next;
     });

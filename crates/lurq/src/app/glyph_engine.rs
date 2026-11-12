@@ -21,6 +21,10 @@ mod carets;
 mod face_weight;
 mod generic_families;
 pub(crate) mod input_tokens;
+#[cfg(target_os = "ios")]
+mod ios_emoji;
+#[cfg(target_os = "ios")]
+mod ios_fallback;
 mod letter_spacing;
 mod reflow;
 mod scaler;
@@ -495,6 +499,12 @@ impl GlyphEngine {
     let mut font_system = FontSystem::new();
     load_platform_fonts(&mut font_system);
     generic_families::set_generic_families(font_system.db_mut());
+    // The same fonts, with the fallback lists cosmic-text has no iOS for.
+    #[cfg(target_os = "ios")]
+    let font_system = {
+      let (locale, db) = font_system.into_locale_and_db();
+      FontSystem::new_with_locale_and_db_and_fallback(locale, db, ios_fallback::IosFallback)
+    };
 
     Self {
       font_system,
@@ -596,8 +606,7 @@ impl GlyphEngine {
     self
       .canvas_text
       .get_or_insert_with(|| {
-        let fonts =
-          FontSystem::new_with_locale_and_db(self.font_system.locale().to_owned(), self.font_system.db().clone());
+        let fonts = platform_font_system(self.font_system.locale().to_owned(), self.font_system.db().clone());
         let aliases = self.font_aliases.clone();
         let engine = if self.canvas_text_framed {
           crate::canvas::CanvasTextEngine::framed(fonts, aliases)
@@ -3149,7 +3158,7 @@ fn render_glyph_image(context: &mut ScaleContext, font: &Font, cache_key: GlyphC
     .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC)
     .then(|| SwashTransform::skew(Angle::from_degrees(14.0), Angle::from_degrees(0.0)));
 
-  Render::new(&[
+  let image = Render::new(&[
     Source::ColorOutline(0),
     Source::ColorBitmap(StrikeWith::BestFit),
     Source::Outline,
@@ -3157,7 +3166,15 @@ fn render_glyph_image(context: &mut ScaleContext, font: &Font, cache_key: GlyphC
   .format(Format::Alpha)
   .offset(offset)
   .transform(transform)
-  .render(&mut scaler, cache_key.glyph_id)
+  .render(&mut scaler, cache_key.glyph_id);
+  // An emoji's picture on iOS is in a format swash does not read: the system draws it; see `ios_emoji`.
+  #[cfg(target_os = "ios")]
+  let image = if ios_emoji::has_pictures(font) && image.as_ref().is_none_or(ios_emoji::is_blank) {
+    ios_emoji::draw(cache_key.glyph_id, f32::from_bits(cache_key.font_size_bits)).or(image)
+  } else {
+    image
+  };
+  image
 }
 
 fn is_bounded_text_width(max_width: f32) -> bool {
@@ -3456,6 +3473,14 @@ fn write_subpixel_row_as_rgba(data: &mut [u8], dst_start: usize, subpixel: &[u8]
   }
 }
 
+/// A font system over `db` with the platform's fallback fonts.
+fn platform_font_system(locale: String, db: cosmic_text::fontdb::Database) -> FontSystem {
+  #[cfg(target_os = "ios")]
+  return FontSystem::new_with_locale_and_db_and_fallback(locale, db, ios_fallback::IosFallback);
+  #[cfg(not(target_os = "ios"))]
+  FontSystem::new_with_locale_and_db(locale, db)
+}
+
 fn load_platform_fonts(font_system: &mut FontSystem) {
   #[cfg(target_os = "windows")]
   {
@@ -3469,7 +3494,15 @@ fn load_platform_fonts(font_system: &mut FontSystem) {
     }
   }
 
-  #[cfg(not(target_os = "windows"))]
+  // fontdb knows the font directories of macOS, not of iOS. A simulator runs on the host, where the runtime's
+  // files are under `IPHONE_SIMULATOR_ROOT`.
+  #[cfg(target_os = "ios")]
+  {
+    let root = std::env::var_os("IPHONE_SIMULATOR_ROOT").map_or_else(|| "/".into(), std::path::PathBuf::from);
+    font_system.db_mut().load_fonts_dir(root.join("System/Library/Fonts"));
+  }
+
+  #[cfg(not(any(target_os = "windows", target_os = "ios")))]
   {
     let _ = font_system;
   }

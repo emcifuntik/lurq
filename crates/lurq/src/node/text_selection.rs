@@ -898,6 +898,41 @@ pub(crate) fn next_char_boundary(value: &str, index: usize) -> usize {
     .unwrap_or(value.len())
 }
 
+/// Where Backspace at `index` deletes back to: one character, or the whole of an emoji made of several. A
+/// thumbs-up with a skin tone, a flag, a face with a variation selector and a family joined by zero-width
+/// joiners are each one picture, typed with one key and deleted with one. An accent on a letter is still
+/// deleted on its own, as editors do: it was typed on its own.
+pub(crate) fn previous_delete_boundary(value: &str, index: usize) -> usize {
+  use unicode_segmentation::UnicodeSegmentation;
+  let index = clamp_to_char_boundary(value, index);
+  match value[..index].grapheme_indices(true).next_back() {
+    Some((start, cluster)) if is_emoji_sequence(cluster) => start,
+    _ => previous_char_boundary(value, index),
+  }
+}
+
+/// Where Delete at `index` deletes up to; see [`previous_delete_boundary`].
+pub(crate) fn next_delete_boundary(value: &str, index: usize) -> usize {
+  use unicode_segmentation::UnicodeSegmentation;
+  let index = clamp_to_char_boundary(value, index);
+  match value[index..].graphemes(true).next() {
+    Some(cluster) if is_emoji_sequence(cluster) => index + cluster.len(),
+    _ => next_char_boundary(value, index),
+  }
+}
+
+/// Whether a grapheme cluster of several characters is an emoji: it has a pictograph, a regional indicator, a
+/// variation selector that asks for the emoji form, a zero-width joiner or a keycap mark.
+fn is_emoji_sequence(cluster: &str) -> bool {
+  cluster.chars().nth(1).is_some()
+    && cluster.chars().any(|character| {
+      matches!(
+        character,
+        '\u{FE0F}' | '\u{200D}' | '\u{20E3}' | '\u{1F1E6}'..='\u{1F1FF}' | '\u{1F300}'..='\u{1FAFF}'
+      )
+    })
+}
+
 pub(crate) fn clamp_to_char_boundary(value: &str, index: usize) -> usize {
   let mut index = index.min(value.len());
   while index > 0 && !value.is_char_boundary(index) {
@@ -935,3 +970,37 @@ fn char_at_or_after(value: &str, index: usize) -> Option<(usize, char)> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod delete_boundary_tests {
+  use super::{next_delete_boundary, previous_delete_boundary};
+
+  /// What one Backspace at the end of `text` leaves.
+  fn backspaced(text: &str) -> &str {
+    &text[..previous_delete_boundary(text, text.len())]
+  }
+
+  #[test]
+  fn backspace_deletes_an_emoji_of_several_characters_whole() {
+    // A variation selector, a skin tone, a flag, a family joined by zero-width joiners, a keycap.
+    for emoji in ["✌\u{fe0f}", "👍🏽", "🇺🇦", "👨\u{200d}👩\u{200d}👧", "1\u{fe0f}\u{20e3}"] {
+      assert_eq!(backspaced(&format!("ab{emoji}")), "ab", "{emoji}");
+    }
+    assert_eq!(backspaced("ab😀"), "ab");
+  }
+
+  #[test]
+  fn backspace_deletes_an_accent_on_its_own_and_one_letter_at_a_time() {
+    assert_eq!(backspaced("cafe\u{301}"), "cafe");
+    assert_eq!(backspaced("привіт"), "приві");
+    assert_eq!(backspaced(""), "");
+  }
+
+  #[test]
+  fn delete_takes_the_emoji_after_the_caret_whole() {
+    let text = "a👍🏽b";
+    assert_eq!(&text[next_delete_boundary(text, 1)..], "b");
+    assert_eq!(&text[next_delete_boundary(text, 0)..], "👍🏽b");
+    assert_eq!(next_delete_boundary(text, text.len()), text.len());
+  }
+}

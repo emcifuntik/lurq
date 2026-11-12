@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Lets an iPhone with a 120 Hz display draw above 60 frames a second. Xcode adds the generated keys to these. -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
+	<!-- The app's one scene. lurq makes the delegate's class; without this UIKit refuses to start an app built
+	     with the iOS 27 SDK. -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Default</string>
+					<key>UISceneDelegateClassName</key>
+					<string>LurqSceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<!-- A link of the app's own, `lurqdemo://anything`, to see that the app hears what it is opened with. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>lurqdemo</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

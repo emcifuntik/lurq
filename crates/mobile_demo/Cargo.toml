@@ -1,0 +1,13 @@
+[package]
+name = "mobile_demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = []
+# Lets an agent drive the app and take screenshots of it; see `lurq::mcp`.
+mcp = ["lurq/mcp"]
+
+[dependencies]
+lurq = { version = "=0.60.0", path = "../lurq", default-features = false, features = ["winit", "wgpu", "router", "raster"] }

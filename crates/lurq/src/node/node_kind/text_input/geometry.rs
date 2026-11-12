@@ -88,6 +88,19 @@ impl TextInputState {
     });
   }
 
+  /// Every place a caret can be, up to `limit` of them: its index in the displayed text and where it is in the
+  /// input's text coordinates, as [`caret_x`](Self::caret_x) and [`caret_y`](Self::caret_y) are for the caret.
+  pub(crate) fn caret_table(&self, limit: usize) -> Vec<(usize, f32, f32)> {
+    let inner = self.inner.lock();
+    let (scroll_x, scroll_y) = (inner.scroll_x, inner.scroll_y());
+    inner
+      .caret_positions
+      .iter()
+      .take(limit)
+      .map(|position| (position.index, position.x - scroll_x, position.y - scroll_y))
+      .collect()
+  }
+
   pub(crate) fn caret_x(&self) -> f32 {
     let inner = self.inner.lock();
     inner.caret_x - inner.scroll_x
