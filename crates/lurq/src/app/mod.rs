@@ -1,4 +1,6 @@
 pub mod app_state;
+#[cfg(all(test, windows, feature = "screenshot", any(feature = "wgpu", feature = "dx12")))]
+mod backdrop_blur_readback_tests;
 #[cfg(all(
   test,
   windows,
@@ -46,6 +48,8 @@ pub(crate) mod hit_test;
 pub mod i18n;
 #[cfg(all(target_os = "ios", feature = "raster"))]
 pub(crate) mod ios_symbol;
+#[cfg(all(test, windows, feature = "screenshot", any(feature = "wgpu", feature = "dx12")))]
+mod layer_blur_readback_tests;
 #[cfg(all(test, windows, feature = "screenshot", any(feature = "wgpu", feature = "dx12")))]
 mod opacity_layer_readback_tests;
 pub(crate) mod profile_support;

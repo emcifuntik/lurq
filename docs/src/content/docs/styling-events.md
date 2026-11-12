@@ -33,6 +33,8 @@ Common visual modifiers:
 | `.border_outside(width, color)` | Border outside the element bounds from a concrete width or `BorderSize`. |
 | `.box_shadow(shadow)` | Drop or inset shadows from a `ShadowStyle` role, a `BoxShadow`, or a list. See [Box Shadows](#box-shadows). |
 | `.opacity(value)` | Fade the element and its subtree as one group. See [Opacity](#opacity). |
+| `.blur(radius)` | Blur the element and its subtree as one layer. See [Blur](../blur/). |
+| `.backdrop_blur(radius)` | Blur what is painted behind the element: frosted glass. See [Blur](../blur/#frosted-glass). |
 | `.clip()` | Clip descendants to this element. |
 | `.overflow_visible()` | Allow descendants to paint outside this element. |
 
@@ -76,6 +78,29 @@ Stack::new()
 - `RenderList::layers` lists the layers of a frame (`LayerCmd`: the render orders a layer groups, its opacity and pixel
   bounds). A custom `RenderEngine` composites each layer's draws into its own target, or draws them without a layer
   and loses the flattening.
+
+## Blur
+
+`.blur(radius)` blurs an element together with everything inside it, as CSS `filter: blur()` does, and
+`.backdrop_blur(radius)` blurs what is painted behind an element, inside its box, as CSS `backdrop-filter: blur()`
+does: frosted glass for an element with a translucent background.
+
+```rust
+use lurq::components::{Column, Text};
+
+// A glass toolbar over whatever scrolls under it.
+Column::new()
+  .padding(12.0)
+  .background("#ffffff40")
+  .rounded(12.0)
+  .backdrop_blur(16.0)
+  .child(Text::new("Toolbar"))
+```
+
+The radius is in logical pixels, with the Gaussian's deviation at half of it, as for a shadow's blur radius; `0` (the
+default) is no blur. Both change painting only, follow the element's transforms and the clips it is under, and
+animate with `Transition::blur()` and `Transition::backdrop_blur()`. [Blur](../blur/) has the rules for edges,
+clips, layers and cost.
 
 ## Gradients
 

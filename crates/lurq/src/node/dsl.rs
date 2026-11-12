@@ -87,6 +87,8 @@ fn make_scroll(child: Node, direction: ScrollDirection) -> Node {
     style_state: crate::node::interaction_state::InteractionState::new(),
     state_styles: crate::node::lazy_box::LazyBox::new(),
     opacity: DEFAULT_SCROLL_OPACITY,
+    blur: 0.0,
+    backdrop_blur: 0.0,
     transform: crate::node::transform::Transform2D::IDENTITY,
     animation_overrides: crate::node::lazy_box::LazyBox::new(),
     transitions: crate::node::lazy_box::LazyBox::new(),

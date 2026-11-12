@@ -32,6 +32,10 @@ pub(crate) fn visual_content() -> Element {
     .child(radius_showcase())
     .child(section_title("Box Shadows"))
     .child(shadow_showcase())
+    .child(section_title("Layer Blur"))
+    .child(blur_showcase())
+    .child(section_title("Backdrop Blur"))
+    .child(backdrop_blur_showcase())
     .child(section_title("Clipping (Overflow)"))
     .child(clip_showcase());
 
@@ -217,6 +221,84 @@ fn shadow_showcase() -> Element {
     .width(FILL_WIDTH)
     .background("#e2e8f0")
     .rounded(CARD_RADIUS)
+    .into()
+}
+
+/// The same card blurred as one layer by growing radii, and once faded too.
+fn blur_showcase() -> Element {
+  let blur_card = |label: &str, radius: f32, opacity: f32| {
+    lurq::components::Column::new()
+      .spacing(10.0)
+      .align_items(Alignment::Center)
+      .overflow_visible()
+      .child(
+        lurq::components::Column::new()
+          .size(120.0, 64.0)
+          .padding(10.0)
+          .spacing(6.0)
+          .background("#ffffff")
+          .border_inside(1.0, BORDER)
+          .rounded(10.0)
+          .child(text("Blurred", 14.0, FontWeight::Bold, "#0f172a"))
+          .child(lurq::components::Rect::new(64.0, 10.0).background(PRIMARY).rounded(5.0))
+          .opacity(opacity)
+          .blur(radius),
+      )
+      .child(text(label, 11.0, FontWeight::Normal, "#475569"))
+      .flex(1.0)
+  };
+
+  lurq::components::Row::new()
+    .spacing(24.0)
+    .overflow_visible()
+    .child(blur_card("blur(0)", 0.0, 1.0))
+    .child(blur_card("blur(2)", 2.0, 1.0))
+    .child(blur_card("blur(6)", 6.0, 1.0))
+    .child(blur_card("blur(16)", 16.0, 1.0))
+    .child(blur_card("blur(6) + opacity(0.5)", 6.0, 0.5))
+    .width(FILL_WIDTH)
+    .into()
+}
+
+/// Frosted glass: panels that blur the stripes and the label behind them by
+/// growing radii.
+fn backdrop_blur_showcase() -> Element {
+  let stripes = lurq::components::Row::new().with_children(
+    (0..12)
+      .map(|index| lurq::components::Rect::new(40.0, 96.0).background(if index % 2 == 0 { PRIMARY } else { SECONDARY }))
+      .collect::<Vec<_>>(),
+  );
+  let glass = |label: &str, radius: f32| {
+    lurq::components::Column::new()
+      .size(96.0, 64.0)
+      .padding(10.0)
+      .background("#ffffff40")
+      .border_inside(1.0, "#ffffff99")
+      .rounded(12.0)
+      .backdrop_blur(radius)
+      .child(text(label, 11.0, FontWeight::Bold, TEXT))
+  };
+
+  lurq::components::Stack::new()
+    .size(480.0, 96.0)
+    .rounded(CARD_RADIUS)
+    .clip()
+    .child(stripes)
+    .child(lurq::components::Column::new().padding(16.0).child(text(
+      "Behind the glass",
+      22.0,
+      FontWeight::Bold,
+      "#ffffff",
+    )))
+    .child(
+      lurq::components::Row::new()
+        .padding(16.0)
+        .spacing(16.0)
+        .child(glass("blur 0", 0.0))
+        .child(glass("blur 4", 4.0))
+        .child(glass("blur 12", 12.0))
+        .child(glass("turned", 12.0).transform(lurq::node::transform::Transform2D::rotate_deg(-8.0))),
+    )
     .into()
 }
 

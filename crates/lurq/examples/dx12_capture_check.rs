@@ -94,6 +94,7 @@ fn main() {
     #[cfg(feature = "svg")]
     svgs: Vec::new(),
     layers: Vec::new(),
+    backdrops: Vec::new(),
     atlas: GlyphAtlas {
       data: std::sync::Arc::from([].as_slice()),
       width: 0,

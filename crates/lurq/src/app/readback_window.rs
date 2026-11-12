@@ -97,6 +97,7 @@ pub(super) fn empty_list() -> RenderList {
     #[cfg(feature = "svg")]
     svgs: Vec::new(),
     layers: Vec::new(),
+    backdrops: Vec::new(),
     atlas: GlyphAtlas {
       data: Arc::from([0_u8; 4].as_slice()),
       width: 1,
