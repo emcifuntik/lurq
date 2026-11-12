@@ -141,16 +141,13 @@ impl ThemeTypography {
 }
 
 impl ThemeTypography {
-  /// These styles as a person who asked the system for larger or bolder text has them: every size
-  /// multiplied by `scale`, and every weight a step and a half heavier when `bold`.
-  pub fn adjusted(&self, scale: f32, bold: bool) -> Self {
+  /// These styles as a person who asked the system for larger text has them: every size multiplied by
+  /// `scale`.
+  pub fn scaled(&self, scale: f32) -> Self {
     let adjust = |style: &TextStyle| {
       let mut style = style.clone();
       style.font_size *= scale;
       style.letter_spacing *= scale;
-      if bold {
-        style.weight = FontWeight::Numeric((style.weight.value() + 200).min(900));
-      }
       style
     };
     Self {

@@ -704,6 +704,12 @@ impl Component for TabOutlet {
       });
     }
 
+    // A bar that gets out of a list's way: a floating one draws in to the tab that is shown, and any other
+    // goes out of view.
+    let minimized =
+      matches!(&props.bar, Some(Bar::Standard(bar)) if bar.minimizes_on_scroll) && scrolled && !self.more_open.get();
+    let drawn_in = minimized && matches!(&props.bar, Some(Bar::Standard(bar)) if bar.floating);
+    let minimized = minimized && !drawn_in;
     let bar: Option<Element> = match &props.bar {
       None => None,
       _ if away && !over => None,
@@ -726,7 +732,15 @@ impl Component for TabOutlet {
             bar.color = bar.contrast_color;
           }
         }
-        Some(standard_bar(&bar, &tabs, &entries, safe_area, low, &self.more_open))
+        Some(standard_bar(
+          &bar,
+          &tabs,
+          &entries,
+          safe_area,
+          low,
+          &self.more_open,
+          drawn_in,
+        ))
       }
     };
     // The tabs with no place in the bar, listed over the tab that is shown while the bar's last place is
@@ -738,7 +752,6 @@ impl Component for TabOutlet {
       }
       _ => None,
     };
-    let minimized = matches!(&props.bar, Some(Bar::Standard(bar)) if bar.minimizes_on_scroll) && scrolled && !more_open;
     let whole = Stack::new().size(FILL, FILL);
     match (bar, place) {
       (None, _) => whole.child(screens),
@@ -768,6 +781,7 @@ impl Component for TabOutlet {
         let bar = Row::new()
           .ref_element(self.bar.clone())
           .width(FILL)
+          .hit_test(crate::node::HitTestBehavior::ContentOnly)
           .child(bar)
           .transform(Transform2D::translate(0.0, share * bar_height))
           .transition(Transition::transform().duration(pace).easing(curve));
@@ -925,9 +939,26 @@ fn standard_bar(
   safe_area: SafeAreaInsets,
   low: bool,
   more_open: &Signal<bool>,
+  drawn_in: bool,
 ) -> Element {
   let floating = bar.floating && bar.place == TabBarPlace::Bottom;
   let (shown, rest) = placed(bar, entries);
+  // Drawn in, the bar is the place of the tab that is shown, with no title, and the tab to search in: a
+  // press on it opens the bar again.
+  let active: Vec<TabEntry> = if drawn_in {
+    entries
+      .iter()
+      .filter(|entry| entry.active || entry.item.search)
+      .cloned()
+      .map(|mut entry| {
+        entry.item.title = String::new();
+        entry
+      })
+      .collect()
+  } else {
+    Vec::new()
+  };
+  let (shown, rest): (&[TabEntry], &[TabEntry]) = if drawn_in { (&active, &[]) } else { (shown, rest) };
   let height = if floating {
     bar.floating_height
   } else if low {
@@ -965,11 +996,16 @@ fn standard_bar(
   for entry in shown {
     let chosen = entry.active && !opened;
     let (tabs, key, open) = (tabs.clone(), entry.key.clone(), more_open.clone());
+    let (scrolled, opens) = (entry.scrolled.clone(), drawn_in && entry.active);
     let made = place(
       format!("tab-{}", entry.key),
       place_content(bar, &entry.item, chosen, low),
       chosen,
       Box::new(move || {
+        if opens {
+          scrolled.set(false);
+          return;
+        }
         open.set(false);
         tabs.press(&key);
       }),
@@ -1007,22 +1043,32 @@ fn standard_bar(
   }
 
   if floating {
-    let capsule = places
-      .flex(1.0)
+    let capsule = if drawn_in {
+      places.width(height + 16.0)
+    } else {
+      places.flex(1.0)
+    };
+    let capsule = capsule
       .height(height)
       .padding(4.0)
       .rounded(height / 2.0)
       .background(bar.background)
       .backdrop_blur(bar.blur)
       .border_inside(0.5, bar.border);
+    // The room around the bar is the content's: a touch there goes to what is under.
     let mut row = Row::new()
       .width(FILL)
+      .hit_test(crate::node::HitTestBehavior::ContentOnly)
       .spacing(10.0)
       .padding_left(safe_area.left + bar.floating_margin)
       .padding_right(safe_area.right + bar.floating_margin)
       .padding_bottom(bar.floating_bottom)
       .child(capsule);
     if let Some(apart) = apart {
+      if drawn_in {
+        // The tab to search in keeps its place at the bar's end.
+        row = row.child(Row::new().flex(1.0).pointer_events_none());
+      }
       row = row.child(apart);
     }
     return row.into();

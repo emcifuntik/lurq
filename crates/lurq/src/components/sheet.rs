@@ -300,6 +300,11 @@ struct Behind {
   receded: Signal<Receded>,
 }
 
+/// The list a sheet's own content scrolls in, for a sheet that was not told it: a stack of screens in the
+/// sheet says which list its top screen has, and a finger at that list's top is the sheet's.
+#[derive(Clone, Default)]
+pub(crate) struct SheetScroll(pub(crate) Arc<Mutex<Option<ScrollState>>>);
+
 /// No finger has the sheet.
 const NO_DRAG: f32 = f32::MIN;
 
@@ -313,6 +318,7 @@ pub struct Sheet {
   begin: Timeout,
   settle: Timeout,
   content: ElementRef,
+  scroll: SheetScroll,
 }
 
 impl Sheet {
@@ -370,6 +376,8 @@ impl Component for Sheet {
   fn create(ctx: &mut Ctx) -> Self {
     // The sheet keeps its content clear of the window's edges itself.
     ctx.provide(crate::app::ctx::SafeAreaTaken);
+    let scroll = SheetScroll::default();
+    ctx.provide(scroll.clone());
     let state = Arc::new(Mutex::new(State {
       phase: Phase::Closed,
       begin_due: false,
@@ -417,6 +425,7 @@ impl Component for Sheet {
       begin,
       settle,
       content: ElementRef::default(),
+      scroll,
     }
   }
 
@@ -621,7 +630,7 @@ impl Component for Sheet {
       .on_pan({
         let (state, drag, changed) = (self.state.clone(), self.drag.clone(), self.changed.clone());
         let (open, detent, settle) = (props.open.clone(), detent.clone(), self.settle.clone());
-        let (scroll, dismissable) = (props.scroll.clone(), props.dismissable);
+        let (told, found, dismissable) = (props.scroll.clone(), self.scroll.clone(), props.dismissable);
         move |event: PanEvent| {
           let mut state = state.lock();
           match event.phase {
@@ -637,7 +646,8 @@ impl Component for Sheet {
               let at_highest = top <= highest + 0.5;
               let takes = if event.translation_y > 0.0 {
                 // Down: the content's while it has something above to show.
-                scroll.as_ref().is_none_or(|scroll| scroll.scroll_y() <= 0.0)
+                let scroll = told.clone().or_else(|| found.0.lock().clone());
+                scroll.is_none_or(|scroll| scroll.scroll_y() <= 0.0)
               } else {
                 !at_highest
               };

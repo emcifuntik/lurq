@@ -54,15 +54,15 @@ fn a_style_set_while_text_is_scaled_is_set_at_its_own_size() {
 }
 
 #[test]
-fn bold_text_makes_every_style_heavier() {
+fn bold_text_is_the_themes_to_tell_and_leaves_the_styles_as_set() {
   let theme = Theme::new();
-  assert_eq!(theme.typography_style(TypographyStyle::Body).weight.value(), 400);
   theme.apply_system(&asked(|system| system.bold_text = true));
-  assert_eq!(theme.typography_style(TypographyStyle::Body).weight.value(), 600);
+  assert!(theme.bold_text());
+  // The weight is added where text is drawn, for every text: a style's own weight is not also raised.
+  assert_eq!(theme.typography_style(TypographyStyle::Body).weight.value(), 400);
   assert_eq!(
     theme.typography_style(TypographyStyle::Heading).weight.value(),
-    FontWeight::Black.value(),
-    "bold is as heavy as there is"
+    FontWeight::Bold.value()
   );
 }
 
@@ -97,4 +97,50 @@ fn a_theme_that_does_not_follow_the_system_keeps_its_own() {
   }));
   assert_eq!(theme.typography_style(TypographyStyle::Body).font_size, body);
   assert_eq!(theme.appearance(), Appearance::Light);
+}
+
+/// How wide a word is laid out in a tree of its own.
+fn laid_out(app: &mut lurq::app::App, tree: &mut lurq::app::Tree) -> f32 {
+  tree.pass_headless(app);
+  tree
+    .find_element(|element| element.text_content() == Some("Heavier words"))
+    .expect("the text")
+    .rect()
+    .2
+}
+
+#[test]
+fn bold_text_makes_text_with_a_weight_of_its_own_heavier_too() {
+  use lurq::{components::Text, layout::text_style::TextStyle};
+  let styled = |weight: FontWeight| {
+    Text::styled(
+      "Heavier words",
+      TextStyle {
+        weight,
+        ..TextStyle::default()
+      },
+    )
+  };
+  let mut app = lurq::app::App::new();
+  let mut tree = lurq::app::Tree::new();
+  tree.resize(600, 200);
+  tree.set_root(styled(FontWeight::Normal));
+  let normal = laid_out(&mut app, &mut tree);
+  tree.set_root(styled(FontWeight::SemiBold));
+  let heavy = laid_out(&mut app, &mut tree);
+  if (heavy - normal).abs() < 0.01 {
+    // The platform's font has one weight here: nothing to see.
+    return;
+  }
+
+  tree.set_root(styled(FontWeight::Normal));
+  app.theme().set_bold_text(true);
+  let bold = laid_out(&mut app, &mut tree);
+  assert!(
+    (bold - heavy).abs() < 0.01,
+    "two weights up: {normal} to {bold}, not {heavy}"
+  );
+
+  app.theme().set_bold_text(false);
+  assert!((laid_out(&mut app, &mut tree) - normal).abs() < 0.01, "and back");
 }

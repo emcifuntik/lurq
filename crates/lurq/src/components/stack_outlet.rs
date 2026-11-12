@@ -761,6 +761,8 @@ struct Shown {
   /// tabs that gets out of the way of a list being read is told so.
   last_scroll: f32,
   scrolled_down: bool,
+  /// The sheet the stack is in, which is told the top screen's list.
+  sheet: Option<super::sheet::SheetScroll>,
 }
 
 pub struct StackOutlet {
@@ -793,6 +795,7 @@ impl Component for StackOutlet {
       tab_link: None,
       last_scroll: 0.0,
       scrolled_down: false,
+      sheet: None,
     }));
     let changed = Signal::new(0u64);
     let drag = Signal::new(NO_DRAG);
@@ -1123,6 +1126,7 @@ impl Component for StackOutlet {
       let hidden = front_hides * (1.0 - out) + hides(back).unwrap_or(front_hides) * out;
       shown.tab_bar = super::tabs::BarMove { hidden, pace, curve };
       shown.tab_link = ctx.use_context::<super::tabs::TabBarLink>();
+      shown.sheet = ctx.use_context::<super::sheet::SheetScroll>();
     }
 
     let Some(bar) = props.bar else {
@@ -1508,6 +1512,19 @@ impl Component for StackOutlet {
       && link.0.get_untracked() != shown.tab_bar
     {
       link.0.set(shown.tab_bar);
+    }
+    // A sheet the stack is in gives a finger to its top screen's list, and takes it at that list's top.
+    if let (Some(sheet), Some(top)) = (&shown.sheet, shown.layers.last()) {
+      let list = top.bar.under.load(Ordering::Acquire).then(|| top.bar.scroll.clone());
+      let mut told = sheet.0.lock();
+      let same = match (&*told, &list) {
+        (Some(a), Some(b)) => a.same(b),
+        (None, None) => true,
+        _ => false,
+      };
+      if !same {
+        *told = list;
+      }
     }
     // Which way the top screen's list last went, by more than a finger's tremble; at its top it has gone
     // nowhere.

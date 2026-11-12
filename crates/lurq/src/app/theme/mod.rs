@@ -61,7 +61,7 @@ struct ThemeInner {
   breakpoints: ThemeBreakpoints,
   caret: ThemeCaret,
   scrollbar: ScrollBarStyle,
-  /// The styles as they are used: `set_typography`'s, at `text_scale` and with `bold_text`.
+  /// The styles as they are used: `set_typography`'s, at `text_scale`.
   typography: ThemeTypography,
   base_typography: ThemeTypography,
   text_scale: f32,
@@ -81,7 +81,7 @@ struct ThemeInner {
 
 impl ThemeInner {
   fn adjust_typography(&mut self) {
-    self.typography = self.base_typography.adjusted(self.text_scale, self.bold_text);
+    self.typography = self.base_typography.scaled(self.text_scale);
   }
 }
 
@@ -342,7 +342,8 @@ impl Theme {
     size * self.text_scale()
   }
 
-  /// The typography's styles are drawn heavier: a person asked the system for bold text.
+  /// Every text is drawn two weights heavier, whatever set its weight: a person asked the system for bold
+  /// text.
   pub fn bold_text(&self) -> bool {
     self.inner.read().unwrap().bold_text
   }
@@ -351,10 +352,7 @@ impl Theme {
     if self.bold_text() == bold {
       return;
     }
-    self.mutate_inner(|inner| {
-      inner.bold_text = bold;
-      inner.adjust_typography();
-    });
+    self.mutate_inner(|inner| inner.bold_text = bold);
   }
 
   /// Gives the theme a palette for each appearance: the one for the appearance it is in is its palette, now
