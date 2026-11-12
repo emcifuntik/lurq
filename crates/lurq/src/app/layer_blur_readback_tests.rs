@@ -36,6 +36,7 @@ fn rect(order: usize, [x, y, width, height]: [f32; 4], color: Color) -> RectCmd 
     radii: [0.0; 4],
     stroke: [0.0; 4],
     stroke_color: Color::new(0, 0, 0, 0),
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform: [1.0, 0.0, 0.0, 1.0],
     transform_origin: [width * 0.5, height * 0.5],
     clip: ClipRect::default(),

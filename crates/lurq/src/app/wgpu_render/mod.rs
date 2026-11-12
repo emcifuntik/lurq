@@ -1684,7 +1684,13 @@ impl RenderEngine for WgpuRenderEngine {
           radii_h: r.radii,
           radii_v: r.radii,
           stroke: r.stroke,
-          pattern: [0.0; 4],
+          // A stroke's pattern: its dash, its gap, and the edge its radii are at.
+          pattern: [
+            0.0,
+            r.stroke_style.dash[0],
+            r.stroke_style.dash[1],
+            r.stroke_style.radii_at,
+          ],
           transform: r.transform,
           xf_origin: r.transform_origin,
           shadow_sigma: 0.0,

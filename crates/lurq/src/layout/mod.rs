@@ -13,6 +13,7 @@ pub mod render_list;
 pub mod scrollbar;
 pub mod size;
 pub mod stack_alignment;
+pub mod stroke;
 pub mod text_style;
 
 pub use alignment::*;

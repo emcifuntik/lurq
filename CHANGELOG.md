@@ -4,6 +4,8 @@
 
 Added:
 
+- Dashed borders: `Border::dashed()` and `Border::dash(dash, gap)`, with `BorderDash`. The dashes run along the element's outline, around its corners, and the period is fitted so the pattern closes. Both native backends and the software screenshot renderer draw them. See [styling](docs/src/content/docs/styling-events.md#dashed-borders).
+- `layout::stroke`: the formulas a rect's stroke is painted with (`StrokeShape`, `stroke_coverage`, `outline_position`, `dash_coverage`), which both quad shaders mirror, and `layout::render_list::StrokeStyle`.
 - `PaletteColor::Foreground` and `ThemePalette::foreground`: the color of text that names none. A `Text`, a `TextInput` and a Markdown document whose style keeps the default text color are drawn in it, unless an element above sets a `.foreground(...)`. It is black by default, the color text had, so nothing changes until a theme sets it. See [styling](docs/src/content/docs/styling-events.md#the-themes-foreground).
 - Presence: `.exit_animation(animation)` on nodes and components names the keyframe animation an element leaves with. When an `Overlay`, a `Popup` or a `Modal` closes, what it showed stays on screen until the longest exit animation in it ends; each element plays its own, so a dialog's backdrop and panel can leave differently. The leaving layer is only painted: it takes no pointer, focus or Tab, is no modal, and nothing in it is found by id or by element ref. The animation an element plays from its mount is how it enters, as before. See [animation](docs/src/content/docs/animation-transforms.md#presence-entering-and-leaving-layers).
 - `examples/presence.rs` shows two menus and a dialog entering and leaving; `--capture <dir>` runs them by a script and saves a frame at each step.
@@ -25,6 +27,11 @@ Added:
 
 Behaviour changes:
 
+- A border on one side of a rounded element follows the corners at its ends and thins out where it meets a side without a border, as CSS draws it. It was a square band that stuck out past the rounded corners.
+- A border outside or centered on a rounded element has the element's corners on its inner edge and is rounder on its outer edge by its width. Its outer edge had the element's radius and its inner edge a smaller one, which left a gap between the border and the element's background at each corner.
+- Where the sides of a border have different widths, each inner corner is shaped by the two sides that meet there. Every inner corner was cut by the widest side of the four.
+- A side of a border that has no width paints nothing at its edge. At a fraction of a pixel, as on a display scaled by 1.25 or 1.5, the three other sides of a border could leave a faint line there.
+- `Border` and `ResolvedBorder` have a new public field, `dash`, and `RectCmd` a new public field, `stroke_style`: code that builds one with every field named must add it. `Border::new`, `inside`, `outside` and `center` are unchanged. A custom `RenderEngine` that ignores `RectCmd::stroke_style` draws dashed borders solid and the corners of an outside border as before.
 - `PaletteColor` has a new variant, `Foreground`, and `ThemePalette` a new public field, `foreground`: code that matches the enum without a wildcard arm, or builds a `ThemePalette` with every field named, must add them (`..ThemePalette::default()` takes care of the field).
 - An open layer is the layer the same declaration opened in the last pass, wherever it is among the others. Layers without a key were matched by their place, so when the first of two open popups closed, the second took over the first one's scroll offset, focus and node ids. Layers are still matched by place when the declaring element is new. A layer that plays a keyframe animation or has an exit animation is never matched to another declaration's layer: a popup opened as another closes is mounted anew.
 - On a machine whose user asked the system for less motion, transitions of place and size no longer animate, sheets and stack navigation included. `Theme::set_reduced_motion(Some(false))` restores them.

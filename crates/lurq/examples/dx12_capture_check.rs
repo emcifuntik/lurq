@@ -82,6 +82,7 @@ fn main() {
       radii: [0.0; 4],
       stroke: [0.0; 4],
       stroke_color: Color::new(0, 0, 0, 0),
+      stroke_style: lurq::layout::render_list::StrokeStyle::default(),
       transform: [1.0, 0.0, 0.0, 1.0],
       transform_origin: [0.0, 0.0],
       clip: ClipRect::default(),

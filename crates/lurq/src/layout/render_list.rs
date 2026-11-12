@@ -35,6 +35,9 @@ pub struct RectCmd {
   pub radii: [f32; 4],
   pub stroke: [f32; 4],
   pub stroke_color: Color,
+  /// How the stroke is drawn beyond its widths and color; `StrokeStyle::default()` is a solid line whose
+  /// outer edge has the rect's `radii`.
+  pub stroke_style: StrokeStyle,
   pub transform: [f32; 4],
   pub transform_origin: [f32; 2],
   pub clip: ClipRect,
@@ -42,6 +45,19 @@ pub struct RectCmd {
   /// Paints a box shadow of this rect instead of filling it; `color` is the
   /// shadow colour and `stroke`/`gradient` are unused. See [`RectShadow`].
   pub shadow: Option<RectShadow>,
+}
+
+/// How a [`RectCmd`]'s stroke is drawn beyond its widths and color. The shape is described in
+/// [`crate::layout::stroke`], which holds the formulas the renderers paint with.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StrokeStyle {
+  /// The length of a dash and of the gap after it along the rect's outline, in physical pixels. A stroke
+  /// with no dash or no gap is a solid line.
+  pub dash: [f32; 2],
+  /// Which edge of the stroke `RectCmd::radii` are the corner radii of: 0 for its outer edge, the rect's
+  /// own (a border inside an element's box), 1 for the edge of its hole (a border outside the box, whose
+  /// rect is the box grown by the widths), 0.5 for the middle of the stroke (a centered border).
+  pub radii_at: f32,
 }
 
 /// A box shadow cast by a [`RectCmd`]'s box (x, y, width, height, `radii`).

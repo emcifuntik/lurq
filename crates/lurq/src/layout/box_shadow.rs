@@ -127,6 +127,7 @@ pub(crate) fn shadow_rect_cmd(
     radii,
     stroke: [0.0; 4],
     stroke_color: crate::node::color::Color::new(0, 0, 0, 0),
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform: quad.transform.matrix_2x2(),
     transform_origin: quad
       .transform_origin

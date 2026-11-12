@@ -2860,6 +2860,7 @@ impl Tree {
             radii,
             stroke: [0.0; 4],
             stroke_color: TRANSPARENT_COLOR,
+            stroke_style: crate::layout::render_list::StrokeStyle::default(),
             transform: xf,
             transform_origin: xf_origin,
             clip: scaled_clip,
@@ -10087,51 +10088,30 @@ fn screenshot_draw_rect(
 
 #[cfg(feature = "devtools")]
 fn draw_screenshot_stroke(pixels: &mut [u8], bounds: DevtoolsScreenshotBounds, rect: &RectCmd, color: [u8; 4]) {
-  let top = rect.stroke[0].max(0.0);
-  let right = rect.stroke[1].max(0.0);
-  let bottom = rect.stroke[2].max(0.0);
-  let left = rect.stroke[3].max(0.0);
-  let radii = screenshot_effective_rect_radii(bounds, rect);
   let Some(draw) = screenshot_draw_rect(bounds, rect.x, rect.y, rect.width, rect.height, rect.clip) else {
     return;
   };
-
-  let inner_x = rect.x + left;
-  let inner_y = rect.y + top;
-  let inner_width = (rect.width - left - right).max(0.0);
-  let inner_height = (rect.height - top - bottom).max(0.0);
-  let inner_radii = [
-    (radii[0] - left.max(top)).max(0.0),
-    (radii[1] - right.max(top)).max(0.0),
-    (radii[2] - right.max(bottom)).max(0.0),
-    (radii[3] - left.max(bottom)).max(0.0),
-  ];
+  // The ring and its dashes are the ones the quad shaders paint.
+  let shape = crate::layout::stroke::StrokeShape {
+    half: [rect.width * 0.5, rect.height * 0.5],
+    radii: screenshot_effective_rect_radii(bounds, rect),
+    stroke: rect.stroke,
+    style: rect.stroke_style,
+  };
+  let centre = (rect.x + shape.half[0], rect.y + shape.half[1]);
 
   for py in draw.y0..draw.y1 {
     for px in draw.x0..draw.x1 {
-      let coverage = screenshot_sample_coverage(bounds, px, py, |world_x, world_y| {
-        if !screenshot_window_clip_contains(bounds, world_x, world_y)
-          || !screenshot_clip_contains(rect.clip, world_x, world_y)
-          || !screenshot_rounded_rect_contains(world_x, world_y, rect.x, rect.y, rect.width, rect.height, radii)
-        {
-          return false;
-        }
-        if inner_width > 0.0
-          && inner_height > 0.0
-          && screenshot_rounded_rect_contains(
-            world_x,
-            world_y,
-            inner_x,
-            inner_y,
-            inner_width,
-            inner_height,
-            inner_radii,
-          )
-        {
-          return false;
-        }
-        true
+      let clipped = screenshot_sample_coverage(bounds, px, py, |world_x, world_y| {
+        screenshot_window_clip_contains(bounds, world_x, world_y)
+          && screenshot_clip_contains(rect.clip, world_x, world_y)
       });
+      if clipped <= 0.0 {
+        continue;
+      }
+      let world_x = bounds.x as f32 + px as f32 + 0.5;
+      let world_y = bounds.y as f32 + py as f32 + 0.5;
+      let coverage = clipped * crate::layout::stroke::stroke_coverage(world_x - centre.0, world_y - centre.1, &shape);
       if coverage > 0.0 {
         blend_screenshot_pixel(
           pixels,
@@ -11905,6 +11885,7 @@ fn devtools_overlay_rect_cmd(order: usize, rect: DevtoolsOverlayRect, color: Col
     radii: [0.0; 4],
     stroke: [1.0; 4],
     stroke_color,
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform: [1.0, 0.0, 0.0, 1.0],
     transform_origin: [0.0, 0.0],
     clip: ClipRect::default(),
@@ -11962,6 +11943,7 @@ fn push_devtools_size_label(
     radii: [3.0 * scale; 4],
     stroke: [1.0; 4],
     stroke_color: Color::new(96, 165, 250, 235),
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform: [1.0, 0.0, 0.0, 1.0],
     transform_origin: [0.0, 0.0],
     clip: ClipRect::default(),
@@ -12011,6 +11993,7 @@ fn push_perf_meter(
     radii: [6.0 * scale; 4],
     stroke: [1.0; 4],
     stroke_color: Color::from_hex("#374151"),
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform: [1.0, 0.0, 0.0, 1.0],
     transform_origin: [0.0, 0.0],
     clip: ClipRect::default(),
@@ -12236,7 +12219,15 @@ fn push_border_rect(
     return;
   }
 
-  if let Some(side) = single_stroke_side(stroke) {
+  // A border on one side of a box with square corners at its ends is a filled band, which lands on whole
+  // pixels. With a round corner there it follows the corner, and dashed it is cut: both are strokes.
+  let radii = scaled_radii(border_radius, scale, base_w, base_h);
+  let dashed = border.dash[0] > 0.0 && border.dash[1] > 0.0;
+  if let Some(side) = single_stroke_side(stroke)
+    && !dashed
+    && radii[side] <= 0.0
+    && radii[(side + 1) % 4] <= 0.0
+  {
     push_single_side_border_rect(
       rects,
       order,
@@ -12256,21 +12247,24 @@ fn push_border_rect(
   }
 
   let (mut x, mut y, mut w, mut h) = (base_x, base_y, base_w, base_h);
-  match border.placement {
+  // The radii are the box's own, and the stroke is told which of its edges they are the corners of.
+  let radii_at = match border.placement {
     BorderPlacement::Outside => {
       x -= stroke[3];
       y -= stroke[0];
       w += stroke[1] + stroke[3];
       h += stroke[0] + stroke[2];
+      1.0
     }
     BorderPlacement::Center => {
       x -= stroke[3] * 0.5;
       y -= stroke[0] * 0.5;
       w += (stroke[1] + stroke[3]) * 0.5;
       h += (stroke[0] + stroke[2]) * 0.5;
+      0.5
     }
-    _ => {}
-  }
+    BorderPlacement::Inside => 0.0,
+  };
 
   rects.push(RectCmd {
     order,
@@ -12279,9 +12273,13 @@ fn push_border_rect(
     width: w,
     height: h,
     color: TRANSPARENT_COLOR,
-    radii: scaled_radii(border_radius, scale, w, h),
+    radii,
     stroke,
     stroke_color: apply_opacity(border.color, opacity),
+    stroke_style: crate::layout::render_list::StrokeStyle {
+      dash: border.dash.map(|length| length * scale),
+      radii_at,
+    },
     transform,
     transform_origin: [origin_abs[0] - x, origin_abs[1] - y],
     clip,
@@ -12346,6 +12344,7 @@ fn push_single_side_border_rect(
     radii: [0.0; 4],
     stroke: [0.0; 4],
     stroke_color: TRANSPARENT_COLOR,
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform,
     transform_origin: [origin_abs[0] - x, origin_abs[1] - y],
     clip,

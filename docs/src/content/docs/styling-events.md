@@ -32,6 +32,7 @@ Common visual modifiers:
 | `.border_inside(width, color)` | Border inside the element bounds from a concrete width or `BorderSize`. |
 | `.border_center(width, color)` | Border centered on the element edge from a concrete width or `BorderSize`. |
 | `.border_outside(width, color)` | Border outside the element bounds from a concrete width or `BorderSize`. |
+| `.border(border)`, `.border_top(border)` … | A `Border` on every side or on one, solid or dashed. See [Borders](#borders). |
 | `.box_shadow(shadow)` | Drop or inset shadows from a `ShadowStyle` role, a `BoxShadow`, or a list. See [Box Shadows](#box-shadows). |
 | `.outline(outline)` | A line around the element, outside its box, that takes no room in layout. See [Outline](#outline). |
 | `.opacity(value)` | Fade the element and its subtree as one group. See [Opacity](#opacity). |
@@ -95,6 +96,44 @@ A style that keeps the default text color names no color, and the theme's foregr
 A typography style with a color of its own keeps it, and so does a text with `Text::color(...)`. A `.foreground(...)`
 above a text comes first, as described above. To draw text in exactly the default black under another foreground, name
 it: `Text::color("#000000")`.
+
+## Borders
+
+`.border_inside`, `.border_center` and `.border_outside` draw a line of one width on all four sides, inside the
+element's box, centered on its edge, or outside it. `.border(border)` takes a `Border`, and `.border_top`,
+`.border_right`, `.border_bottom` and `.border_left` set one side each:
+
+```rust
+use lurq::{components::Row, node::border::Border};
+
+// A card with an accent on its left edge and a dashed drop target.
+Row::new().rounded(8.0).border_left(Border::inside(3.0, "#2563eb"));
+Row::new().rounded(8.0).border(Border::inside(1.0, "#94a3b8").dashed());
+```
+
+- A border follows the element's corner radii. The corner of its inner edge is the corner's radius less the widths of
+  the two sides that meet there, as CSS shapes a padding box, so sides of different widths meet in a smooth curve.
+- A border on one side of a rounded element follows the corners at its ends and thins out to nothing where it meets a
+  side that has none, as in CSS. Between two square corners it is a plain band.
+- A border outside or centered on a rounded element keeps the element's corners for its inner edge and is rounder on
+  its outer edge by its width. A square corner stays square.
+- Sides that differ in width only are painted as one shape; sides of different colors, placements or dashes are painted
+  apart, each as a border of its own.
+
+### Dashed borders
+
+`Border::dashed()` cuts the line into dashes three times its width long, with gaps as long.
+`Border::dash(dash, gap)` sets both lengths, in logical pixels:
+
+```rust
+Border::inside(2.0, "#64748b").dashed();        // 6 on, 6 off
+Border::inside(1.0, "#64748b").dash(4.0, 2.0);
+```
+
+The dashes run along the element's outline, around its corners, clockwise from the start of its top edge. The period is
+fitted to the outline's length, so the last dash meets the first with a whole gap between them and the lengths drawn
+can differ a little from the ones given. A dashed border on some sides only shows the dashes that fall on them; the
+dashes of a single side run to its ends. A border with no dash or no gap is a solid line.
 
 ## Opacity
 

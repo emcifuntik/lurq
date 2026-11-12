@@ -59,6 +59,8 @@ pub mod profiler;
 mod readback_window;
 pub mod render_engine;
 pub mod runtime;
+#[cfg(all(test, windows, feature = "screenshot", any(feature = "wgpu", feature = "dx12")))]
+mod stroke_readback_tests;
 pub mod synthetic_input;
 pub mod theme;
 #[cfg(feature = "wgpu")]

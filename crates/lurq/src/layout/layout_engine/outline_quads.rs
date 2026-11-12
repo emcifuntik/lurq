@@ -107,6 +107,7 @@ impl LayoutEngine {
       width: outline.width,
       color: outline.color,
       placement: BorderPlacement::Inside,
+      dash: [0.0; 2],
     });
     let (x, y, quad_transform, transform_origin) = transformed_quad_frame(abs_x - grow, abs_y - grow, transform);
     let clip = self.outline_clip(clip, grow);

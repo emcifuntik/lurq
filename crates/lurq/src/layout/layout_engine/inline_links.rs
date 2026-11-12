@@ -293,6 +293,7 @@ impl LayoutEngine {
         width: ring.width,
         color: ring.color,
         placement: BorderPlacement::Inside,
+        dash: [0.0; 2],
       };
       let borders = ResolvedBorders {
         top: Some(border),

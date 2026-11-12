@@ -222,21 +222,192 @@ float rounded_fill_alpha(float2 local, float2 half_size, float4 radii_h, float4 
   return saturate(0.5 - dist / subsample_aa_width(dist));
 }
 
-float rounded_stroke_alpha(float2 local, float2 half_size, float4 radii_h, float4 radii_v, float4 stroke, float max_stroke)
+// Strokes. The same formulas as `layout/stroke.rs`, which describes the
+// shape, and `quad.wgsl`; keep the three in step.
+
+// How far the hole of a stroke reaches past an edge whose side has no
+// stroke, so the ring has no coverage there.
+static const float HOLE_MARGIN = 1.0;
+
+float stroke_inset(float width)
 {
+  return width > 0.0 ? width : -HOLE_MARGIN;
+}
+
+// How much nearer the second of two edges that meet at a corner has to be for
+// a point to be taken as that edge's.
+static const float CORNER_BIAS = 0.01;
+
+// Whether a point `first` away from one edge of a corner and `second` from
+// the other is taken as the first edge's: the nearer one, and always the one
+// that has a stroke where the other has none.
+bool first_edge(float first, float second, float first_width, float second_width)
+{
+  if (second_width <= 0.0)
+  {
+    return true;
+  }
+  if (first_width <= 0.0)
+  {
+    return false;
+  }
+  return first <= second + CORNER_BIAS;
+}
+
+// Where along the rect's outline the part of it nearest `p` is, in pixels
+// clockwise from the start of the top edge (`.x`), and the outline's whole
+// length (`.y`). `radii` are circular, in the order TL, TR, BR, BL; `stroke`
+// is the widths of the sides (top, right, bottom, left).
+float2 outline_position(float2 p, float2 hs, float4 radii, float4 stroke)
+{
+  float limit = max(min(hs.x, hs.y), 0.0);
+  float4 r = clamp(radii, float4(0.0, 0.0, 0.0, 0.0), float4(limit, limit, limit, limit));
+  float quarter = 1.57079632679;
+  float top = max(2.0 * hs.x - r.x - r.y, 0.0);
+  float right = max(2.0 * hs.y - r.y - r.z, 0.0);
+  float bottom = max(2.0 * hs.x - r.z - r.w, 0.0);
+  float left = max(2.0 * hs.y - r.w - r.x, 0.0);
+  // Where each part of the outline starts.
+  float right_arc = top;
+  float right_edge = right_arc + quarter * r.y;
+  float bottom_arc = right_edge + right;
+  float bottom_edge = bottom_arc + quarter * r.z;
+  float left_arc = bottom_edge + bottom;
+  float left_edge = left_arc + quarter * r.w;
+  float top_arc = left_edge + left;
+  float total = top_arc + quarter * r.x;
+
+  float on_top = clamp(p.x + hs.x - r.x, 0.0, top);
+  float on_right = right_edge + clamp(p.y + hs.y - r.y, 0.0, right);
+  float on_bottom = bottom_edge + clamp(hs.x - r.z - p.x, 0.0, bottom);
+  float on_left = left_edge + clamp(hs.y - r.w - p.y, 0.0, left);
+  float position;
+  if (p.y < 0.0)
+  {
+    if (p.x < 0.0)
+    {
+      float2 c = float2(-hs.x + r.x, -hs.y + r.x);
+      if (p.x < c.x && p.y < c.y)
+      {
+        position = top_arc + atan2(c.y - p.y, c.x - p.x) * r.x;
+      }
+      else if (first_edge(p.x + hs.x, p.y + hs.y, stroke.w, stroke.x))
+      {
+        position = on_left;
+      }
+      else
+      {
+        position = on_top;
+      }
+    }
+    else
+    {
+      float2 c = float2(hs.x - r.y, -hs.y + r.y);
+      if (p.x > c.x && p.y < c.y)
+      {
+        position = right_arc + atan2(p.x - c.x, c.y - p.y) * r.y;
+      }
+      else if (first_edge(p.y + hs.y, hs.x - p.x, stroke.x, stroke.y))
+      {
+        position = on_top;
+      }
+      else
+      {
+        position = on_right;
+      }
+    }
+  }
+  else
+  {
+    if (p.x < 0.0)
+    {
+      float2 c = float2(-hs.x + r.w, hs.y - r.w);
+      if (p.x < c.x && p.y > c.y)
+      {
+        position = left_arc + atan2(c.x - p.x, p.y - c.y) * r.w;
+      }
+      else if (first_edge(hs.y - p.y, p.x + hs.x, stroke.z, stroke.w))
+      {
+        position = on_bottom;
+      }
+      else
+      {
+        position = on_left;
+      }
+    }
+    else
+    {
+      float2 c = float2(hs.x - r.z, hs.y - r.z);
+      if (p.x > c.x && p.y > c.y)
+      {
+        position = bottom_arc + atan2(p.y - c.y, p.x - c.x) * r.z;
+      }
+      else if (first_edge(hs.x - p.x, hs.y - p.y, stroke.y, stroke.z))
+      {
+        position = on_right;
+      }
+      else
+      {
+        position = on_bottom;
+      }
+    }
+  }
+  return float2(position, total);
+}
+
+// How much of a dashed stroke shows at `position` along an outline of length
+// `total`: 1 in a dash, 0 in a gap, a ramp of a pixel between. The period is
+// fitted to the outline a whole number of times.
+float dash_coverage(float position, float total, float dash, float gap)
+{
+  if (dash <= 0.0 || gap <= 0.0 || total <= 0.0)
+  {
+    return 1.0;
+  }
+  float period = dash + gap;
+  float fitted = total / max(floor(total / period + 0.5), 1.0);
+  float on = dash * fitted / period;
+  float phase = position - floor(position / fitted) * fitted;
+  float d = phase <= on ? -min(phase, on - phase) : min(phase - on, fitted - phase);
+  return saturate(0.5 - d);
+}
+
+// The ring of a stroke: inside the outer edge and outside the hole. `stroke`
+// is the widths (top, right, bottom, left); `radii_at` says which edge of the
+// stroke the radii are the corners of (0 outer, 1 the hole's).
+float rounded_stroke_alpha(float2 local, float2 half_size, float4 radii_h, float4 radii_v, float4 stroke, float radii_at)
+{
+  float4 widths = max(stroke, float4(0.0, 0.0, 0.0, 0.0));
   float2 radius = pick_radius(local, radii_h, radii_v);
-  float outer_dist = sd_rounded_box(local, half_size, radius);
-  float2 inner_half = max(float2(
-    half_size.x - 0.5 * (stroke.y + stroke.w),
-    half_size.y - 0.5 * (stroke.x + stroke.z)
+  // The sides that meet at this quadrant's corner.
+  float across = local.x < 0.0 ? widths.w : widths.y;
+  float along = local.y < 0.0 ? widths.x : widths.z;
+
+  float2 outer_radius = float2(0.0, 0.0);
+  float2 hole_radius = float2(0.0, 0.0);
+  if (radius.x > 0.0)
+  {
+    outer_radius.x = radius.x + radii_at * across;
+    hole_radius.x = max(outer_radius.x - stroke_inset(across), 0.0);
+  }
+  if (radius.y > 0.0)
+  {
+    outer_radius.y = radius.y + radii_at * along;
+    hole_radius.y = max(outer_radius.y - stroke_inset(along), 0.0);
+  }
+  float outer_dist = sd_rounded_box(local, half_size, outer_radius);
+
+  float top = stroke_inset(widths.x);
+  float right = stroke_inset(widths.y);
+  float bottom = stroke_inset(widths.z);
+  float left = stroke_inset(widths.w);
+  float2 hole_half = max(float2(
+    half_size.x - 0.5 * (left + right),
+    half_size.y - 0.5 * (top + bottom)
   ), float2(0.0, 0.0));
-  float2 inner_center = float2(
-    0.5 * (stroke.w - stroke.y),
-    0.5 * (stroke.x - stroke.z)
-  );
-  float2 inner_radius = max(radius - float2(max_stroke, max_stroke), float2(0.0, 0.0));
-  float inner_dist = sd_rounded_box(local - inner_center, inner_half, inner_radius);
-  float dist = max(outer_dist, -inner_dist);
+  float2 hole_center = float2(0.5 * (left - right), 0.5 * (top - bottom));
+  float hole_dist = sd_rounded_box(local - hole_center, hole_half, hole_radius);
+  float dist = max(outer_dist, -hole_dist);
   return saturate(0.5 - dist / subsample_aa_width(dist));
 }
 
@@ -250,13 +421,13 @@ float supersampled_fill_alpha(float2 local, float2 half_size, float4 radii_h, fl
   ) * 0.25;
 }
 
-float supersampled_stroke_alpha(float2 local, float2 half_size, float4 radii_h, float4 radii_v, float4 stroke, float max_stroke)
+float supersampled_stroke_alpha(float2 local, float2 half_size, float4 radii_h, float4 radii_v, float4 stroke, float radii_at)
 {
   return (
-    rounded_stroke_alpha(local + float2(-0.25, -0.25), half_size, radii_h, radii_v, stroke, max_stroke) +
-    rounded_stroke_alpha(local + float2(0.25, -0.25), half_size, radii_h, radii_v, stroke, max_stroke) +
-    rounded_stroke_alpha(local + float2(-0.25, 0.25), half_size, radii_h, radii_v, stroke, max_stroke) +
-    rounded_stroke_alpha(local + float2(0.25, 0.25), half_size, radii_h, radii_v, stroke, max_stroke)
+    rounded_stroke_alpha(local + float2(-0.25, -0.25), half_size, radii_h, radii_v, stroke, radii_at) +
+    rounded_stroke_alpha(local + float2(0.25, -0.25), half_size, radii_h, radii_v, stroke, radii_at) +
+    rounded_stroke_alpha(local + float2(-0.25, 0.25), half_size, radii_h, radii_v, stroke, radii_at) +
+    rounded_stroke_alpha(local + float2(0.25, 0.25), half_size, radii_h, radii_v, stroke, radii_at)
   ) * 0.25;
 }
 
@@ -383,6 +554,12 @@ float4 ps_main(VsOut input) : SV_TARGET
     return encode_srgb(float4(base_color.rgb, base_color.a * fill_alpha * clip_alpha_value));
   }
 
-  float alpha = supersampled_stroke_alpha(input.local, input.half_size, input.radii_h, input.radii_v, input.stroke, max_stroke);
+  // A stroke's pattern holds its dash (y), its gap (z) and the edge its radii are at (w).
+  float alpha = supersampled_stroke_alpha(input.local, input.half_size, input.radii_h, input.radii_v, input.stroke, input.pattern.w);
+  if (alpha > 0.0 && input.pattern.y > 0.0 && input.pattern.z > 0.0)
+  {
+    float2 place = outline_position(input.local, input.half_size, input.radii_h, input.stroke);
+    alpha *= dash_coverage(place.x, place.y, input.pattern.y, input.pattern.z);
+  }
   return encode_srgb(float4(input.color.rgb, input.color.a * alpha * clip_alpha_value));
 }

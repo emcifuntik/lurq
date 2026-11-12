@@ -2417,7 +2417,13 @@ fn rect_instances(rect: &RectCmd, gradient_offset: f32) -> ([QuadInstance; 2], u
       radii_h: rect.radii,
       radii_v: rect.radii,
       stroke: rect.stroke,
-      pattern: [0.0; 4],
+      // A stroke's pattern: its dash, its gap, and the edge its radii are at.
+      pattern: [
+        0.0,
+        rect.stroke_style.dash[0],
+        rect.stroke_style.dash[1],
+        rect.stroke_style.radii_at,
+      ],
       transform: rect.transform,
       xf_origin: rect.transform_origin,
       shadow_sigma: 0.0,
