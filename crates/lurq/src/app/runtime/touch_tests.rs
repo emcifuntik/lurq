@@ -512,10 +512,12 @@ fn a_finger_scrolls_from_a_scroll_indicator_and_drags_a_bar_that_is_always_there
         .size(100.0, 100.0),
     );
     tree.pass(&mut app, &HeadlessSurface);
-    // Scrolling shows an indicator; then a frame paints it.
+    // Scrolling shows an indicator; then a frame paints it, which is when a list takes its bar's style: a
+    // pass with no window stops after layout.
     tree.touch_scroll_begin(50.0, 50.0, 0.0, -10.0);
     tree.touch_scroll(50.0, 50.0, 0.0, -10.0, ScrollPhase::Scroll, false);
     tree.pass(&mut app, &HeadlessSurface);
+    tree.painted_quads();
     tree
   };
   // On the bar, at the list's right edge. A phone's default bar is an indicator, so this one says it stays.
