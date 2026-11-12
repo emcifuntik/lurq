@@ -36,6 +36,8 @@ pub(crate) mod stack_outlet;
 pub(crate) mod styled_text;
 #[cfg(feature = "svg")]
 mod svg;
+#[cfg(feature = "router")]
+pub(crate) mod tabs;
 mod text;
 mod text_input;
 mod text_input_controller;
@@ -97,6 +99,8 @@ pub use styled_text::{
 };
 #[cfg(feature = "svg")]
 pub use svg::Svg;
+#[cfg(feature = "router")]
+pub use tabs::{TabBar, TabBarBuilder, TabBarPlace, TabBarState, TabEntry, TabItem, TabOutlet, TabOutletProps, Tabs};
 pub use text::{Text, TextOverflow};
 pub use text_input::{ContentKind, KeyboardKind, ReturnKey, TextInput, TextInputOverflow, TextInputOverflowAnchor};
 pub use text_input_controller::{InputEditError, InputSelection, TextInputController};

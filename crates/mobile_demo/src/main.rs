@@ -11,6 +11,7 @@
 mod gestures;
 mod home;
 mod inputs;
+mod more;
 mod scroll;
 mod sheets;
 mod touch;
@@ -28,18 +29,19 @@ use lurq::{
     winit_shell::WinitWindow,
   },
   components::{
-    Column, NavigationBar, NavigationItem, NavigationSearch, Router, Row, SheetHost, StackOutlet, StackOutletProps,
+    Column, NavigationBar, NavigationItem, NavigationSearch, Row, SheetHost, StackOutlet, StackOutletProps, TabBar,
+    TabItem, TabOutlet, TabOutletProps, Tabs,
   },
   core::Signal,
   layout::{layout_kind::Justify, text_style::FontWeight},
   node::{Element, color::Color},
-  router::{RouterHandle, Routes},
+  router::Routes,
 };
 
 use crate::ui::{BG, BORDER, FILL, PRIMARY, SURFACE, TEXT};
 
 struct MobileDemo {
-  router: RouterHandle,
+  tabs: Tabs,
 }
 
 impl Component for MobileDemo {
@@ -53,16 +55,41 @@ impl Component for MobileDemo {
         said.truncate(6);
       });
     });
-    let router = ctx.router(routes());
-    // The first entry of the history: the screen at the bottom of the stack, which the others go back to.
-    router.replace("/");
-    Self { router }
+    // Two tabs, each a stack of screens with a history of its own. The first entry of a history is the
+    // screen at the bottom of its stack, which the others go back to.
+    let checks = ctx.router(routes());
+    checks.replace("/");
+    let more = ctx.router(more::routes());
+    more.replace("/");
+    let tabs = Tabs::new();
+    tabs
+      .add(
+        "checks",
+        TabItem::new("Checks")
+          .symbol("checklist")
+          .selected_symbol("checklist.checked"),
+        checks,
+      )
+      .add(
+        "more",
+        TabItem::new("More")
+          .symbol("ellipsis.circle")
+          .selected_symbol("ellipsis.circle.fill"),
+        more,
+      );
+    Self { tabs }
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
     // The whole app draws back behind a sheet that takes all the room.
-    let router = self.router.clone();
-    SheetHost::mount(ctx, move |ctx| Router::mount(ctx, router.clone()))
+    let tabs = self.tabs.clone();
+    SheetHost::mount(ctx, move |ctx| {
+      let bar = TabBar::dark()
+        .background(Color::from_hex(SURFACE))
+        .border(Color::from_hex(BORDER))
+        .tint(Color::from_hex(PRIMARY));
+      TabOutlet::mount(ctx, TabOutletProps::new(tabs.clone()).bar(bar))
+    })
   }
 }
 
@@ -102,7 +129,7 @@ fn routes() -> Routes {
 
 /// The stack of screens under its bar. A finger in from the left edge takes the top screen back with it; from
 /// the right edge, or a trackpad's swipe, the history moves as the event says.
-fn shell(ctx: &mut Ctx) -> Element {
+pub(crate) fn shell(ctx: &mut Ctx) -> Element {
   let navigator = ctx.navigator();
   let bar = NavigationBar::dark()
     .background(Color::from_hex(SURFACE))
@@ -148,7 +175,8 @@ fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) 
     ),
     _ => item,
   });
-  let safe_area = ctx.window().safe_area;
+  // Under the bar of tabs there is nothing more to keep clear of at the bottom.
+  let safe_area = ctx.safe_area();
   Column::new()
     .child(content(ctx))
     .size(FILL, FILL)

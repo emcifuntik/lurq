@@ -758,8 +758,10 @@ impl Component for StackOutlet {
       return ctx.children().first().cloned().unwrap_or_else(Element::new);
     }
 
+    // What a bar of tabs under the stack already keeps clear is not the stack's to keep clear again.
+    let safe_area = ctx.safe_area();
     let window = ctx.window();
-    let (width, safe_area) = (window.logical_width(), window.safe_area);
+    let width = window.logical_width();
     // A window too low for it has no large titles, as a phone on its side has none.
     let style = Arc::new(match &props.bar {
       Some(Bar::Standard(bar)) => bar.clone(),

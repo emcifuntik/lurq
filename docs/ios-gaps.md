@@ -61,7 +61,10 @@ inside its input.
   no stack of screens inside a sheet with a bar of its own; the corners of the app drawn back are rounded at
   once and not little by little; and the numbers (the radii, the dim, the spring, how small the app gets)
   were set by eye.
-- **Tabs:** a tab bar with a stack of screens for each tab. Not there.
+- **Tabs** are there (`Tabs`, `TabOutlet`, `TabBar`), with these differences from the platform's: the bar is
+  the plain one across the bottom, not the floating glass one of the newest system, and there is no blur
+  behind it; a bar that is hidden or comes back does so at once, with no move; there is no "More" tab for
+  those that do not fit, and no sidebar in a wide window.
 
 ## Touch
 

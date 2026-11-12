@@ -147,6 +147,10 @@ is no haptic engine.
 finger from the left edge drags the top screen back, the screens under stay alive, and a navigation bar shows
 the title and the way back. See [A Stack Of Screens](../routing/#a-stack-of-screens).
 
+`TabOutlet` puts several such stacks side by side under a bar of tabs, each kept as it was left. See
+[Tabs](../routing/#tabs). Under the bar a screen pads its content by `ctx.safe_area()`, which leaves out what
+the bar already covers.
+
 `Sheet` brings content up from the bottom over the screens and the bar: it stands at its heights, and a finger
 drags it between them and away. See [Sheets](../modals/#sheets).
 

@@ -709,6 +709,14 @@ struct ElementRequests {
   focus: Option<ElementRef>,
   scroll_into_view: Option<ElementRef>,
   blur: bool,
+  scroll_to_top: bool,
+}
+
+/// The edges of the window a component keeps its descendants clear of itself: [`Ctx::safe_area`] is zero
+/// there for them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct InsetsTaken {
+  pub(crate) bottom: bool,
 }
 
 pub struct Ctx {
@@ -2177,7 +2185,7 @@ impl Ctx {
   /// Whether a focus or scroll-into-view request is waiting for the runtime.
   pub(crate) fn has_element_request(&self) -> bool {
     let requests = self.element_requests.lock();
-    requests.focus.is_some() || requests.scroll_into_view.is_some() || requests.blur
+    requests.focus.is_some() || requests.scroll_into_view.is_some() || requests.blur || requests.scroll_to_top
   }
 
   /// Takes the focus from whatever has it, after the current render: a text input being typed into is left,
@@ -2189,6 +2197,32 @@ impl Ctx {
 
   pub(crate) fn take_blur_request(&self) -> bool {
     std::mem::take(&mut self.element_requests.lock().blur)
+  }
+
+  /// Scrolls the page to its top, after the current render, as a tap on a phone's status bar does: the
+  /// outermost list at the middle of the window that scrolls down and is away from its top, unless it is left
+  /// out with `ScrollState::set_scrolls_to_top(false)`.
+  pub fn scroll_to_top(&self) {
+    self.element_requests.lock().scroll_to_top = true;
+    self.wake_window();
+  }
+
+  pub(crate) fn take_scroll_to_top_request(&self) -> bool {
+    std::mem::take(&mut self.element_requests.lock().scroll_to_top)
+  }
+
+  /// How far in from each edge of the window this component's content stays clear of what is over the
+  /// window there: the window's [`safe_area`](crate::app::window::WindowInfo), less what a component around
+  /// this one already keeps clear, as a [`TabOutlet`](crate::components::TabOutlet) with its bar over the
+  /// home indicator's room does the bottom.
+  pub fn safe_area(&mut self) -> crate::app::window::SafeAreaInsets {
+    let mut safe_area = self.window().safe_area;
+    if let Some(taken) = self.use_context::<InsetsTaken>() {
+      if taken.bottom {
+        safe_area.bottom = 0.0;
+      }
+    }
+    safe_area
   }
 
   pub(crate) fn focus_request(&self) -> Option<ElementRef> {

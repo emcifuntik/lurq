@@ -451,3 +451,79 @@ For link behavior, send pointer down/up through the tree. Click events are synth
 tree.mouse_down(x, y, MouseButton::Left);
 tree.mouse_up(x, y, MouseButton::Left);
 ```
+
+## Tabs
+
+Added after **lurq 0.60.0**. `Tabs` is a set of places side by side, each a router with a history of its own, one
+of them shown. A tab that is not shown stays as it was, with its screens, their state and their scroll: it is
+kept out of layout, painting and input until it is shown again. `TabOutlet` shows the active one.
+
+```rust
+use lurq::components::{TabBar, TabItem, TabOutlet, TabOutletProps, Tabs};
+
+fn create(ctx: &mut Ctx) -> Self {
+  let inbox = ctx.router(inbox_routes());
+  inbox.replace("/");
+  let settings = ctx.router(settings_routes());
+  settings.replace("/");
+  let tabs = Tabs::new();
+  tabs
+    .add("inbox", TabItem::new("Inbox").symbol("tray").badge("3"), inbox)
+    .add("settings", TabItem::new("Settings").symbol("gear"), settings);
+  Self { tabs }
+}
+
+fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+  TabOutlet::mount(ctx, TabOutletProps::new(self.tabs.clone()).bar(TabBar::new()))
+}
+```
+
+Each tab's routes are an ordinary router's: with a `StackOutlet` as their layout a tab is a stack of screens,
+and going back moves in that tab alone.
+
+### The set
+
+| `Tabs` | |
+| --- | --- |
+| `add(key, item, router)`, `insert(index, ..)` | A tab, told from the others by its key. The first added is the active one |
+| `remove(key)` | Takes a tab out with its history; the next one is shown if it was the active one |
+| `select(key)` | Shows a tab |
+| `press(key)` | What a press on a tab's place does: shows it, or, for the active one, goes back to its first screen, and once there scrolls its page to the top |
+| `active()`, `active_signal()` | The key of the tab that is shown |
+| `list()` | The tabs in order, each with its item, its router and whether it is the active one |
+| `router(key)`, `active_router()` | A tab's router: where a link opened from outside the tabs goes |
+| `set_item(key, item)`, `set_badge(key, badge)` | Changes what a tab's place shows |
+| `set_bar_hidden(hidden)` | Takes the outlet's bar out of view, for a screen that has the whole window |
+
+A component inside the outlet gets the set with `ctx.use_context::<Tabs>()`.
+
+### The bar
+
+`TabOutletProps::bar(TabBar)` draws a bar to choose a tab with; without it the outlet shows the active tab and
+nothing else, for an app that draws a strip of tabs of its own from `Tabs::list`.
+
+A `TabItem` is a title and, over it, a picture: `icon` and `selected_icon` take any element; `symbol` and
+`selected_symbol` name one of the platform's symbols, drawn in the bar's colors on iOS (with the `raster`
+feature) and left out elsewhere. `badge` is a few characters at the picture's corner.
+
+| `TabBar` | Starts as | |
+| --- | --- | --- |
+| `place` | `Bottom` | `Bottom`, over the home indicator's room, or `Top`, under the status bar's |
+| `background`, `border` | the platform's light | `TabBar::dark()` has the dark ones |
+| `tint`, `color` | blue, grey | The active tab's picture and title, and the others' |
+| `height` | 49 | Without the room of the home indicator |
+| `title_size`, `title_weight` | 10, medium | |
+| `symbol_size`, `spacing` | 18, 2 | |
+| `badge_background`, `badge_color`, `badge_size` | red, white, 13 | |
+| `item_max_width` | none | In a wider bar the places stand together in the middle |
+| `hides_with_keyboard` | `true` | The bar goes while the on-screen keyboard is up |
+
+`TabOutletProps::bar_with(place, builder)` draws a bar of the app's own from a `TabBarState`: the set, the
+tabs in order and the window's safe area. A press on a place calls `Tabs::press`.
+
+### The safe area under a bar
+
+A bar across the bottom covers the home indicator's room, so the screens over it have nothing more to keep
+clear of there. `ctx.safe_area()` says what is left for the component that asks: the window's safe area, with
+no bottom under such a bar. A screen pads its content by that and not by `ctx.window().safe_area`; while the
+bar is hidden or the keyboard is up the bottom is the window's again.
