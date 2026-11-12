@@ -171,6 +171,56 @@ One gesture scrolls one container, the innermost that has room in the finger's d
 
 `VirtualizedList` scrolls the same way.
 
+### Pull to refresh
+
+`PullToRefresh` goes around a list. Pulled down past its top far enough, the list sets its signal and calls
+`on_refresh`; it stays down with a spinner over it until the app clears the signal.
+
+```rust
+let list = ScrollVertical::new(rows).with_scroll_state(self.scroll.clone());
+PullToRefresh::mount(
+  ctx,
+  PullToRefreshProps::new(self.refreshing.clone(), self.scroll.clone()).on_refresh(move || load()),
+  list,
+)
+```
+
+- Around a stack screen's list the state is `StackOutlet::screen_scroll(ctx)`, and `.top(StackOutlet::bar_inset(ctx))`
+  puts the spinner under the navigation bar.
+- `PullToRefreshStyle`: `threshold` (100), how far the list is pulled before it asks; `hold` (60), how far
+  down it stays meanwhile; `spinner_size`, `spinner_color`, `duration` and `haptic`. `dark()` has the dark
+  spinner.
+- `ActivityIndicator` is the spinner by itself: `ActivityIndicator::mount(ctx, ActivityIndicatorProps::new())`.
+  It draws frames only while it goes round.
+
+### Swipe actions
+
+`SwipeRow` goes around a row of a list. Swiped towards the leading edge it shows its trailing actions, and
+the other way its leading ones.
+
+```rust
+SwipeRow::mount_keyed(
+  ctx,
+  &message.id,
+  SwipeRowProps::new()
+    .trailing([
+      SwipeAction::destructive("Delete", move || delete(id)),
+      SwipeAction::new("Flag", move || flag(id)),
+    ])
+    .leading([SwipeAction::new("Read", move || read(id))]),
+  row_content,
+)
+```
+
+- Let go far enough, or thrown, the row stays open; a press on an action does it and closes the row, and a
+  press on the open row closes it.
+- A swipe all the way (`SwipeRowStyle::full_swipe`, 0.6 of the row's width) does the first action of that
+  side at once, with a tick of the device.
+- The first action given is the one at the edge. `SwipeAction::icon` puts a picture over the title.
+- `SwipeRowProps::open(signal)` says which side is open (-1 trailing, 0, 1 leading), for a list that closes
+  the other rows when one opens.
+- The content paints its own background: the actions are behind it.
+
 ## Text inputs
 
 A focused `TextInput` brings the on-screen keyboard up, and loses it with the focus. The platform does the

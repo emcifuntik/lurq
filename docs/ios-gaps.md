@@ -81,7 +81,11 @@ inside its input.
 - **The scroll indicator** is as wide to a finger as it is drawn, 3 pt; the platform's is easier to catch.
 - **The status bar's tap** scrolls the outermost list under the middle of the window. An app can turn a list
   off for it (`ScrollState::set_scrolls_to_top`) but not name the one it is for.
-- Not there at all: pull to refresh, paging, pinch to zoom inside a scroll, swipe actions on a row.
+- **Pull to refresh** (`PullToRefresh`) and **swipe actions** (`SwipeRow`) are there, written without a device
+  to pull and swipe on: only their tests have run. The spinner is drawn by lurq, not the platform's; an
+  action does not stretch as the row is pulled past it; and opening one row does not close another unless
+  the app ties them with `SwipeRowProps::open`.
+- Not there at all: paging, pinch to zoom inside a scroll.
 
 ## The platform
 
@@ -103,13 +107,12 @@ What a person sets for the whole system reaches a lurq app (`ctx.window().system
 the bars and the sheets follow it. Tried in a simulator: the appearance and the text size, changed while the
 app runs. Not checked on a device, and bold text, reduced motion and reduced transparency not checked at all.
 
-- **Dynamic Type** is the theme's typography, and a stack's large title: a size an app gives itself does
-  not change unless it asks (`theme.scaled`). The navigation bar's and the bar of tabs' own text keeps its
-  size, as the platform's does, but the platform shows a tab large when it is held, which lurq does not. The
-  styles of a form and of Markdown carry sizes of their own, which do not follow.
+- **Dynamic Type** is the theme's typography, what is made from it (a form's labels, Markdown's sizes, which
+  are shares of it) and a stack's large title: a size an app gives itself does not change unless it asks
+  (`theme.scaled`). The navigation bar's and the bar of tabs' own text keeps its size, as the platform's
+  does, but the platform shows a tab large when it is held, which lurq does not.
 - **Light and dark:** a theme follows with a palette for each. The demo app is dark in both.
-- **Bold Text** is the typography's weights; text with a weight of the app's own keeps it, where the
-  platform makes every text heavier.
+- **Bold Text** makes every text two weights heavier, where the font has the weights.
 - **Reduce Motion:** the stack and a sheet fade. A text input's caret, a scroll's momentum and an app's own
   transitions are as always.
 - **Increase Contrast** makes the bars solid and their lines and unchosen tabs stand out; **Button Shapes**

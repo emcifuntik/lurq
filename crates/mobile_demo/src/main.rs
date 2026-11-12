@@ -11,6 +11,7 @@
 mod gestures;
 mod home;
 mod inputs;
+mod lists;
 mod more;
 mod scroll;
 mod sheets;
@@ -137,6 +138,9 @@ fn routes() -> Routes {
         screen(ctx, "/scroll", |ctx| ctx.mount::<scroll::ScrollScreen>(()))
       })
       .route("/system", |ctx| screen(ctx, "/system", system::system))
+      .route("/lists", |ctx| {
+        screen(ctx, "/lists", |ctx| ctx.mount::<lists::ListsScreen>(()))
+      })
       .route("/sheets", |ctx| {
         screen(ctx, "/sheets", |ctx| ctx.mount::<sheets::SheetsScreen>(()))
       })
@@ -206,7 +210,7 @@ fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) 
     .padding_left(safe_area.left)
     .padding_right(safe_area.right)
     // The home screen's list goes on under the bar of tabs, and shows through it: it pads its own content.
-    .padding_bottom(if matches!(path, "/" | "/system") { 0.0 } else { safe_area.bottom })
+    .padding_bottom(if matches!(path, "/" | "/system" | "/lists") { 0.0 } else { safe_area.bottom })
     .into()
 }
 

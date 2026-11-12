@@ -701,7 +701,7 @@ The theme follows three of them by itself:
   with no style of its own, a form's labels. A size the app gives itself, `TextStyle { font_size: 17.0, .. }`,
   stays as given, as a fixed size does on the platform; `theme.scaled(17.0)` is that size at the person's
   scale. `theme.set_typography_style(..)` takes a style at its own size, whatever the scale is.
-- **Bold text.** Every style of the typography is two weights heavier.
+- **Bold text.** Every text is drawn two weights heavier, whatever set its weight, where the font has them.
 
 `theme.set_follows_system(false)` leaves all three to the app, which sets them with `set_appearance`,
 `set_text_scale` and `set_bold_text`: an app with a look of its own, or with its own setting for them.

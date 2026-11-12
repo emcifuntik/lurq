@@ -2003,6 +2003,13 @@ impl StackOutlet {
     ctx.use_context::<NavigationSlot>().map(|slot| slot.searching)
   }
 
+  /// How much of this screen the bar is over, from the top: what the list of
+  /// [`large_title_scroll`](Self::large_title_scroll) keeps its content clear of. 0 outside a stack. For what
+  /// stands over that list at its top, as the spinner of a [`PullToRefresh`](super::PullToRefresh) does.
+  pub fn bar_inset(ctx: &mut Ctx) -> f32 {
+    ctx.use_context::<NavigationSlot>().map_or(0.0, |slot| slot.top.get())
+  }
+
   /// The state of the list [`large_title_scroll`](Self::large_title_scroll) makes for this screen, to set it
   /// up or to scroll it; `None` outside a stack.
   pub fn screen_scroll(ctx: &mut Ctx) -> Option<ScrollState> {

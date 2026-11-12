@@ -44,6 +44,11 @@ pub(crate) const SCREENS: &[Screen] = &[
     checks: "Content that comes up from the bottom: its heights, a finger that drags it, a list inside it",
   },
   Screen {
+    path: "/lists",
+    title: "Lists",
+    checks: "Pull down to load the list anew, and swipe a row aside for what can be done with it",
+  },
+  Screen {
     path: "/system",
     title: "System",
     checks: "The appearance, text size, bold text and reduced motion the person set, and what follows them",
