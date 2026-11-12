@@ -164,8 +164,10 @@ One gesture scrolls one container, the innermost that has room in the finger's d
   the content, shown while it scrolls.
 - **A tap on the status bar** scrolls the outermost vertical list to its top.
   `ScrollState::set_scrolls_to_top(false)` leaves a list out of it.
-- **The keyboard** stays up when a list is scrolled, unless the list says otherwise:
-  `ScrollState::set_dismisses_keyboard(true)` puts it away when a finger starts to scroll.
+- **The keyboard** stays up when a list is scrolled, unless the list says otherwise with
+  `ScrollState::set_keyboard_dismissal(..)`: `KeyboardDismissal::OnDrag` puts it away when a finger starts
+  to scroll, and `Interactive` has it go down with the finger once the finger reaches it, and come back if
+  the finger goes back up. `set_dismisses_keyboard(true)` is `OnDrag`.
 - **Momentum** can be changed for the whole window with `Tree::set_touch_momentum(TouchMomentum { .. })`:
   the deceleration rate, and the slowest and fastest speeds. The defaults are the platform's.
 
@@ -249,7 +251,26 @@ TextInput::new(email)
 focus from the one being typed into. A screen of inputs gives a way to put it away, such as a list that
 dismisses the keyboard when scrolled (above).
 
-Saved passwords are not offered yet.
+### Saved passwords
+
+Over an input that hides what is typed (`mask()`), or says it is for a password, the keyboard offers the
+person's saved logins. One that is chosen fills the input, and the other inputs of the login with it: every
+text input in the tree whose `content` is `Username`, `Email`, `Password` or `NewPassword`.
+
+```rust
+TextInput::new(name).single_line().content(ContentKind::Username)
+TextInput::new(password).single_line().mask().content(ContentKind::Password)
+```
+
+What the keyboard does around a saved login is the system's, and the same as for a text field of its own.
+Its bar of saved logins goes for a few frames as the keyboard moves between two of a login's inputs. And when
+the login comes from another app's list that had a keyboard up, a password manager's, the input is left and
+the keyboard stays down; from the system's own list the keyboard comes back, with the caret after the
+password.
+
+Which logins are offered first, and whether the system offers to save a new one, depends on the app's
+associated domains (`webcredentials:` in its entitlements, and the domain's `apple-app-site-association`):
+that is the app's to set up, and nothing of lurq's.
 
 ## The app and the system
 

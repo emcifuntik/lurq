@@ -341,6 +341,9 @@ struct ManagedWindow {
   text_input: Option<ios_text::TextInput>,
   #[cfg(target_os = "ios")]
   keyboard_probe: Option<ios::KeyboardProbe>,
+  /// The scroll view whose finger takes the keyboard down with it; see `ios::KeyboardDrag`.
+  #[cfg(target_os = "ios")]
+  keyboard_drag: Option<ios::KeyboardDrag>,
   /// The move of the keyboard during which a finger last landed; see `ios::keyboard_move`.
   #[cfg(target_os = "ios")]
   touched_during_keyboard_move: Option<u64>,
@@ -395,6 +398,8 @@ impl ManagedWindow {
       text_input: None,
       #[cfg(target_os = "ios")]
       keyboard_probe: None,
+      #[cfg(target_os = "ios")]
+      keyboard_drag: None,
       #[cfg(target_os = "ios")]
       touched_during_keyboard_move: None,
     }
@@ -510,6 +515,7 @@ impl ManagedWindow {
         ios::hear_hardware_keys(handle.ui_view);
         ios::apply_orientations(handle.ui_view);
         self.status_bar_tap = Some(ios::StatusBarTap::new(handle.ui_view));
+        self.keyboard_drag = Some(ios::KeyboardDrag::new(handle.ui_view));
         self.text_input = Some(ios_text::TextInput::new(handle.ui_view));
         // The platform draws the focused input's caret and selection; see `ios_text`.
         self.tree.set_native_text_selection(true);
@@ -1127,6 +1133,15 @@ impl ManagedWindow {
         let scale = f64::from(self.tree.scale_factor());
         if touch.phase == TouchPhase::Started && ios::keyboard_moving() {
           self.touched_during_keyboard_move = Some(ios::keyboard_move());
+        }
+        // Whether the keyboard follows this finger down, said before the finger moves: a list under it asks.
+        if touch.phase == TouchPhase::Started
+          && let Some(drag) = &mut self.keyboard_drag
+        {
+          let follows = self
+            .tree
+            .touch_keyboard_follows_at(touch.location.x as f32, touch.location.y as f32);
+          drag.set_interactive(follows);
         }
         // The finger's own events come first. One a handler took is the app's, and not the pointer.
         let phase = match touch.phase {

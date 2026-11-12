@@ -205,6 +205,36 @@ impl Tree {
     })
   }
 
+  /// Whether the keyboard is to follow a finger that lands at the point, in physical pixels: a text input is
+  /// typed into, and a list under the point asks for it
+  /// ([`KeyboardDismissal::Interactive`](crate::layout::layout_kind::KeyboardDismissal)).
+  pub fn touch_keyboard_follows_at(&mut self, x: f32, y: f32) -> bool {
+    if !self.focused_text_input() {
+      return false;
+    }
+    let scale = self.scale_factor();
+    let (lx, ly) = (x / scale, y / scale);
+    self.rebuild_if_dirty();
+    let (Some(root), Some(layout)) = (&self.root, &self.last_layout) else {
+      return false;
+    };
+    let mut hits = Vec::new();
+    hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+    hits.iter().any(|(node, _)| {
+      node.scroll_container().is_some_and(|(state, _)| {
+        state.keyboard_dismissal() == crate::layout::layout_kind::KeyboardDismissal::Interactive
+      })
+    })
+  }
+
+  /// The platform put the keyboard away itself, as it does when a finger takes it down: the text input that
+  /// was typed into is left.
+  pub fn keyboard_was_put_away(&mut self) {
+    if self.focused_text_input() {
+      self.blur_focus();
+    }
+  }
+
   /// Starts a finger's scroll gesture at the point, in physical pixels, with the finger's first travel. One
   /// scroll container takes the whole gesture, its momentum included, as a scroll view of the platform does:
   /// the innermost one under the point that scrolls along the travel's main axis and has room to move that
