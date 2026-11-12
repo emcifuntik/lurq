@@ -56,7 +56,8 @@ const GLYPH_LAYOUT_CACHE_LIMIT: usize = 1024;
 const PLAIN_BUFFER_CACHE_LIMIT: usize = 64;
 // Keep logical and physical document layouts together at fractional display scales.
 const PLAIN_BUFFER_CACHE_BYTES: usize = 48 * 1024 * 1024;
-const GLYPH_ATLAS_PADDING: u32 = 2;
+/// Transparent texels the atlas keeps around every glyph it packs.
+pub(crate) const GLYPH_ATLAS_PADDING: u32 = 2;
 const GLYPH_ATLAS_BYTES_PER_PIXEL: usize = 4;
 const DIRTY_RECT_MAX_HORIZONTAL_GAP: u32 = GLYPH_ATLAS_PADDING * 4;
 const DIRTY_RECT_MERGE_WASTE_NUMERATOR: u64 = 3;
