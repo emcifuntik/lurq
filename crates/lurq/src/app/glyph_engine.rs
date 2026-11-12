@@ -558,6 +558,15 @@ impl GlyphEngine {
     }
   }
 
+  /// Does ahead of time what the first text drawn with `style` makes
+  /// cosmic-text do: score every face of the font database for the style's
+  /// family, weight and slant (once per combination, and milliseconds with a
+  /// desktop's fonts), and load the face that wins. Size, colour and spacing
+  /// do not matter.
+  pub(crate) fn warm_style(&mut self, style: &TextStyle) {
+    self.measure_text("Ag", style, f32::MAX);
+  }
+
   pub(crate) fn load_font(&mut self, data: Vec<u8>) {
     self.font_system.db_mut().load_font_data(data);
     self.clear_text_caches();
@@ -2080,7 +2089,7 @@ impl GlyphEngine {
 
   /// Snapshots of the atlas (`atlas()`) still held somewhere; while there is
   /// one, the next new glyph is packed into a copy of the atlas's pixels.
-  #[cfg(test)]
+  #[cfg(all(test, feature = "screenshot", feature = "raster"))]
   pub(crate) fn atlas_snapshots_held(&self) -> usize {
     std::sync::Arc::strong_count(&self.atlas_packer.data) - 1
   }

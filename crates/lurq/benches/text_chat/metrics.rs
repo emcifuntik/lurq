@@ -78,6 +78,14 @@ const SCENARIOS: &[Scenario] = &[
     },
   },
   Scenario {
+    name: "cold_first_frame_warmed",
+    frames: 1,
+    setup: fonts_warmed,
+    step: |chat, _| {
+      chat.pass();
+    },
+  },
+  Scenario {
     name: "cold_second_frame",
     frames: 1,
     setup: first_frame_drawn,

@@ -158,6 +158,14 @@ fn style(size: f32, weight: FontWeight, color: &str) -> TextStyle {
   }
 }
 
+/// A style of each font face the screen draws with: regular and bold.
+pub fn font_styles() -> [TextStyle; 2] {
+  [
+    style(BODY_SIZE, FontWeight::Normal, "#0f172a"),
+    style(BODY_SIZE, FontWeight::Bold, "#0f172a"),
+  ]
+}
+
 pub struct MessageRow;
 
 impl Component for MessageRow {

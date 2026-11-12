@@ -9,6 +9,8 @@
 //!
 //! - `cold_first_frame`: the first pass of a new app and tree (fonts loaded, nothing shaped or rasterised). The list
 //!   shows its first rows.
+//! - `cold_first_frame_warmed`: the same after `App::warm_text_styles` prepared the screen's two font faces, as an
+//!   application does on another thread while its window is created.
 //! - `cold_second_frame`: the pass after it, which fills the list.
 //! - `idle_frame`: a redraw with nothing changed.
 //! - `hover`: the pointer moves to another message row, whose background changes; no text changes.
@@ -103,12 +105,29 @@ fn timed<T>(iters: u64, mut prepare: impl FnMut() -> T, mut step: impl FnMut(T))
   total
 }
 
+/// A new chat whose fonts were prepared before its first frame.
+fn fonts_warmed() -> Chat {
+  let chat = chat(CHANNEL_MESSAGES);
+  chat.app.warm_text_styles(&screen::font_styles());
+  chat
+}
+
 fn bench_text_chat(c: &mut Criterion) {
   let mut group = c.benchmark_group("text_chat");
 
   group.bench_function("cold_first_frame", |b| {
     b.iter_batched(
       || chat(CHANNEL_MESSAGES),
+      |mut chat| {
+        chat.pass();
+        chat
+      },
+      BatchSize::PerIteration,
+    );
+  });
+  group.bench_function("cold_first_frame_warmed", |b| {
+    b.iter_batched(
+      fonts_warmed,
       |mut chat| {
         chat.pass();
         chat
