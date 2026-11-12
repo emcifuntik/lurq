@@ -124,6 +124,3 @@ app runs. Not checked on a device, and bold text, reduced motion and reduced tra
 - **Late frames.** While a finger drags content or an animation runs, 2 to 5 frames in a hundred come a
   refresh late on an iPhone 17; it was a third of them before the display link was left running between
   frames. Whether a desktop has late frames of its own was not looked into.
-- Six tests fail when every test target is run together, on `master` as well, and pass run alone
-  (`window_chrome` twice, `generic_family_serif`, `give_way_drop_below`, `dpi_scaled_wrapped_text`,
-  `building_a_tree_allocates_no_box_or_watch_per_node`). Not looked into.
