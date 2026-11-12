@@ -34,7 +34,12 @@ fn searched(ctx: &mut Ctx) -> Element {
   ctx.navigation_item(
     NavigationItem::new("Search")
       .large_title(true)
-      .search(NavigationSearch::new(sought()).placeholder("Search the rows")),
+      // The title stays while the tab is searched in; the home screen's field takes the bar's place.
+      .search(
+        NavigationSearch::new(sought())
+          .placeholder("Search the rows")
+          .hides_bar(false),
+      ),
   );
   let sought = sought().get().to_lowercase();
   let mut content = Column::new();

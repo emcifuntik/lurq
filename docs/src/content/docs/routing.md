@@ -190,7 +190,9 @@ ctx.navigation_item(NavigationItem::new("Inbox").large_title(true));
 StackOutlet::large_title_scroll(ctx, messages)
 ```
 
-A search field is drawn by `large_title_scroll` too, under the title, and scrolls away with the content.
+A search field is drawn by `large_title_scroll` too, under the title, and scrolls away with the content. While it
+is searched in, the field takes the bar's place and a large title goes, as the platform's search does;
+`NavigationSearch::hides_bar(false)` leaves the bar and the title where they are.
 `NavigationSearch::new(signal)` takes the signal the typed text is kept in, which the screen reads to choose
 what it shows. While the field is typed into, and after while it holds text, it takes the bar's place: the bar
 and a large title go, and beside the field comes a way to cancel, which clears the text and puts the keyboard

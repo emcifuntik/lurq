@@ -335,7 +335,11 @@ impl Component for Many {
   }
 
   fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
-    let bar = if self.floating { TabBar::new().floating() } else { TabBar::new() };
+    let bar = if self.floating {
+      TabBar::new().floating()
+    } else {
+      TabBar::new()
+    };
     TabOutlet::mount(ctx, TabOutletProps::new(self.tabs.clone()).bar(bar))
   }
 }
@@ -370,7 +374,10 @@ fn tabs_that_do_not_fit_are_listed_by_the_bars_last_place() {
   let (x, y) = centre_of(&mut tree, "tab-more-places");
   pointer_click(&mut tree, x, y, MouseButton::Left);
   run_pass(&mut tree);
-  assert!(shows(&mut tree, "Tab 5") && shows(&mut tree, "Tab 7"), "the rest are listed");
+  assert!(
+    shows(&mut tree, "Tab 5") && shows(&mut tree, "Tab 7"),
+    "the rest are listed"
+  );
 
   let (x, y) = centre_of(&mut tree, "tab-t6");
   pointer_click(&mut tree, x, y, MouseButton::Left);

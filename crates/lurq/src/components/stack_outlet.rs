@@ -309,6 +309,9 @@ pub struct NavigationSearch {
   pub placeholder: String,
   /// What the way to cancel says.
   pub cancel: String,
+  /// While the field is searched in, it takes the bar's place and a large title goes, as the platform's
+  /// search does unless told not to. With `false` the bar and the title stay where they are.
+  pub hides_bar: bool,
 }
 
 impl NavigationSearch {
@@ -317,7 +320,14 @@ impl NavigationSearch {
       text,
       placeholder: "Search".to_owned(),
       cancel: "Cancel".to_owned(),
+      hides_bar: true,
     }
+  }
+
+  /// Whether the bar and a large title give way to the field while it is searched in.
+  pub fn hides_bar(mut self, hides: bool) -> Self {
+    self.hides_bar = hides;
+    self
   }
 
   pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
@@ -331,8 +341,8 @@ impl NavigationSearch {
   }
 
   /// What tells one search field from another.
-  fn key(&self) -> (usize, &str, &str) {
-    (self.text.id(), &self.placeholder, &self.cancel)
+  fn key(&self) -> (usize, &str, &str, bool) {
+    (self.text.id(), &self.placeholder, &self.cancel, self.hides_bar)
   }
 }
 
@@ -2035,8 +2045,10 @@ impl Component for SearchField {
     // The search goes on while the field has the focus, and after, while something is typed in it: until it
     // is cancelled. The outlet and the screen are told when that changes.
     let searching = self.focused.get() || !props.search.text.get().is_empty();
-    if props.searching.get_untracked() != searching {
-      props.searching.set(searching);
+    // A field that leaves the bar where it is does not say it is searched in: nothing gives way to it.
+    let takes_bar = searching && props.search.hides_bar;
+    if props.searching.get_untracked() != takes_bar {
+      props.searching.set(takes_bar);
     }
     // A tap on the way to cancel puts the keyboard away: the field loses the focus after this render.
     let cancelled = self.cancelled.get();
@@ -2081,7 +2093,7 @@ impl Component for SearchField {
       .width(FILL)
       .align_items(Alignment::Center)
       .padding_horizontal(bar.inset)
-      .padding_top(if searching { 8.0 } else { 0.0 })
+      .padding_top(if takes_bar { 8.0 } else { 0.0 })
       .padding_bottom(8.0)
       .spacing(12.0)
       .child(field);

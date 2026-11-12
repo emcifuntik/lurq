@@ -157,6 +157,15 @@ impl Component for Root {
               .into()
           })
           .route("/find", |ctx| ctx.mount::<Finding>(()))
+          .route("/find-kept", |ctx| {
+            let sought = SOUGHT.with(Clone::clone);
+            ctx.navigation_item(
+              NavigationItem::new("Kept")
+                .large_title(true)
+                .search(lurq::components::NavigationSearch::new(sought).hides_bar(false)),
+            );
+            StackOutlet::large_title_scroll(ctx, Text::new("kept screen")).into()
+          })
           .route("/user/:id", |ctx| {
             let id = ctx.route_params().get("id").unwrap_or("none").to_owned();
             Text::new(&format!("user {id}")).into()
@@ -697,4 +706,37 @@ fn with_motion_reduced_a_screen_comes_in_where_it_stands() {
   );
   settle(&mut tree);
   assert!(shows(&mut tree, "second screen"));
+}
+
+#[test]
+fn a_search_field_told_to_leaves_the_bar_and_the_large_title_where_they_are() {
+  let (mut tree, router) = setup();
+  router.push("/find-kept");
+  settle(&mut tree);
+  let title = large_title_width(&mut tree);
+  assert!(title > 0.0);
+  let (x, y, width, height) = tree
+    .find_element(|element| element.id() == Some("navigation-search"))
+    .expect("the search field")
+    .rect();
+
+  crate::support::pointer_click(
+    &mut tree,
+    x + width / 2.0,
+    y + height / 2.0,
+    lurq::app::events::MouseButton::Left,
+  );
+  settle(&mut tree);
+  assert!(
+    tree
+      .find_element(|element| element.id() == Some("navigation-search-cancel"))
+      .is_some(),
+    "it is searched in"
+  );
+  assert_eq!(large_title_width(&mut tree), title, "the large title stays");
+  let field = tree
+    .find_element(|element| element.id() == Some("navigation-search"))
+    .expect("the search field")
+    .rect();
+  assert_eq!(field.1, y, "and the field stays under it");
 }
