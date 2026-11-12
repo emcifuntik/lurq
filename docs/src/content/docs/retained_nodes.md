@@ -242,6 +242,8 @@ The tree resolves target nodes from the latest layout and updates hover, active,
 
 `Tree::needs_redraw()` reports whether the shell should request a frame. `WinitWindow` handles this automatically.
 
+A pointer move that only moves the hover between elements that show no hover asks for no frame: `needs_redraw()` stays false (see [Mouse Events](../styling-events/#mouse-events) for the hovers that are drawn). The cursor is no part of a frame: a manual shell reads `Tree::cursor()` after each pointer event, and after each pass, which moves the hover when the content moved under a pointer that held still.
+
 Animations and transitions do not set `needs_redraw`: after a pass, `Tree::next_timeline_change()` says when they next draw something else. A continuous animation returns the time of the last pass, so its next frame is due at once. Manual shells pace these frames as `WinitWindow` does: the frame for a change at `changes_at` is due at `max(changes_at, presented + T/2, started + 3T/4)`, where `T` is the display's refresh interval and `started` and `presented` are when the last frame's pass started and when its present returned.
 
 ```rust

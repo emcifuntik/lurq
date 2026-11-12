@@ -74,6 +74,8 @@ mod file_drag;
 mod focus_visible;
 mod history_swipe;
 mod hover;
+#[cfg(all(test, feature = "devtools"))]
+mod hover_devtools_tests;
 mod ime;
 pub use ime::{KeyboardTraits, TextInputGeometry, TextInputSnapshot};
 #[cfg(all(test, feature = "markdown"))]
@@ -2132,7 +2134,7 @@ impl Tree {
 
   pub fn mount_root<C: Component>(&mut self, app: &mut App, props: C::Props) {
     self.clear_focus();
-    self.clear_hover_path();
+    self.unhover_replaced_root();
     if let Some(component) = self.root_component.take() {
       component.on_unmounted();
     }
@@ -2243,7 +2245,7 @@ impl Tree {
 
   pub fn set_root(&mut self, element: impl Into<Element>) {
     self.clear_focus();
-    self.clear_hover_path();
+    self.unhover_replaced_root();
     if let Some(component) = self.root_component.take() {
       component.on_unmounted();
     }
@@ -5179,7 +5181,8 @@ impl Tree {
 
     let current_ids: Vec<NodeId> = hits.iter().map(|(n, _)| n.node_id()).collect();
 
-    if hover::move_hover(root, &self.hover_path, &hits) {
+    let moved = hover::move_hover(root, &self.hover_path, &hits);
+    if self.draws_hover(moved) {
       self.cached_render_list = None;
       self.needs_redraw = true;
     }
@@ -7199,27 +7202,37 @@ impl Tree {
     }
   }
 
-  fn clear_hover_path(&mut self) {
+  /// Takes the hover from the nodes of a root that is about to be replaced. What was under the pointer goes with
+  /// that root, whatever it looked like, so a frame is asked for whenever something was hovered.
+  fn unhover_replaced_root(&mut self) {
+    if self.clear_hover_path() {
+      self.needs_redraw = true;
+    }
+  }
+
+  /// Takes the hover from every hovered node, as when the pointer leaves the window, and asks for a frame if that
+  /// shows (see the `hover` module). Returns whether a node was hovered.
+  fn clear_hover_path(&mut self) -> bool {
     let hover_path = std::mem::take(&mut self.hover_path);
+    self.cursor = CursorIcon::Default;
     if hover_path.is_empty() {
-      self.cursor = CursorIcon::Default;
-      return;
+      return false;
     }
 
+    let mut moved = hover::HoverMove::default();
     if let Some(root) = self.root.as_ref() {
       for node_id in hover_path {
         if let Some(node) = find_node_by_id(root, node_id) {
-          set_node_hovered(node, false);
-          self.cached_render_list = None;
-          for handler in &node.events.on_mouse_leave {
-            handler.call();
-          }
+          moved.changed = true;
+          moved.shows |= hover::leave(node);
         }
       }
     }
-
-    self.cursor = CursorIcon::Default;
-    self.needs_redraw = true;
+    if self.draws_hover(moved) {
+      self.cached_render_list = None;
+      self.needs_redraw = true;
+    }
+    true
   }
 
   fn refresh_interaction_state(&mut self) {
@@ -10408,8 +10421,10 @@ struct FocusTarget {
   event_id: NodeId,
 }
 
-fn set_node_hovered(node: &Node, hovered: bool) {
-  node.set_style_hovered(hovered);
+/// Sets `node`'s hover, for its styles, its scrollbar, a slider it holds and what the app reads of it. Returns
+/// whether that dirtied its layout: one of its state styles sizes it.
+fn set_node_hovered(node: &Node, hovered: bool) -> bool {
+  let relaid = node.set_style_hovered(hovered);
   // Mouse dispatch hovers a scrollbar under the pointer; leaving the
   // container (or the window) leaves its scrollbar too.
   if let Some((state, _)) = node.scroll_container() {
@@ -10427,6 +10442,7 @@ fn set_node_hovered(node: &Node, hovered: bool) {
   if let Some(ref element_ref) = node.element_ref {
     element_ref.set_hovered(hovered);
   }
+  relaid
 }
 
 /// The cursor of the innermost of the hovered `nodes` that sets one. A
