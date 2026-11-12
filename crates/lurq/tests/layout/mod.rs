@@ -32,6 +32,7 @@ mod flex_constraints;
 mod flex_shrink_relayout;
 mod font_features;
 mod font_weight;
+mod foreground;
 mod frame;
 mod frame_constraints;
 mod generic_family;

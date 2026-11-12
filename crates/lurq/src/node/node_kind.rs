@@ -271,6 +271,13 @@ impl TextStyleSource {
     self.color = Some(color.into());
   }
 
+  /// Whether the text names its color: one set on it, or the color of the
+  /// style it was built from. Otherwise its color is its typography style's,
+  /// which a foreground above it replaces.
+  pub(crate) fn names_color(&self) -> bool {
+    self.color.is_some() || matches!(self.base, TextStyleBase::Explicit(_))
+  }
+
   pub(crate) fn set_text_align(&mut self, align: impl Into<TextAlign>) {
     self.text_align = Some(align.into());
   }

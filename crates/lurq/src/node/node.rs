@@ -536,6 +536,7 @@ pub(crate) trait NodeUpdate {
   fn shrink_drop_below(&mut self, size: f32);
   fn background(&mut self, color: impl Into<BackgroundColor>);
   fn background_gradient(&mut self, gradient: impl Into<Gradient>);
+  fn foreground(&mut self, color: impl Into<TextColor>);
   fn caret_color(&mut self, color: impl Into<TextColor>);
   fn selection_color(&mut self, color: impl Into<TextColor>);
   fn text_input_caret_mode(&mut self, mode: CaretMode);
@@ -869,6 +870,8 @@ pub struct EventHandlers {
 pub(crate) struct RareStyle {
   pub(crate) gradient: Option<Gradient>,
   pub(crate) box_shadow: Option<BoxShadowValue>,
+  /// The text color the node gives itself and its subtree; see [`Node::foreground`].
+  pub(crate) foreground: Option<TextColor>,
   pub(crate) caret_color: Option<TextColor>,
   pub(crate) selection_color: Option<TextColor>,
   pub(crate) caret_mode: Option<CaretMode>,
@@ -1254,6 +1257,10 @@ impl NodeUpdate for Node {
 
   fn background_gradient(&mut self, gradient: impl Into<Gradient>) {
     self.rare_style.gradient = Some(gradient.into());
+  }
+
+  fn foreground(&mut self, color: impl Into<TextColor>) {
+    self.rare_style.foreground = Some(color.into());
   }
 
   fn caret_color(&mut self, color: impl Into<TextColor>) {
@@ -2818,6 +2825,18 @@ impl Node {
     self
   }
 
+  /// Sets the color of the text in this node and under it, like CSS `color`:
+  /// a `Text` that names no color of its own is drawn in the foreground of
+  /// its nearest ancestor that has one, and in its typography style's color
+  /// when none does. `Text::color`, and a `Text::styled` style, are a text's
+  /// own color and win. It is paint only: it changes no size or position.
+  /// The content of an overlay (a popup, a modal, a select's menu) starts
+  /// again from no foreground.
+  pub fn foreground(mut self, color: impl Into<TextColor>) -> Self {
+    self.rare_style.foreground = Some(color.into());
+    self
+  }
+
   pub(crate) fn caret_color(mut self, color: impl Into<TextColor>) -> Self {
     self.set_caret_color(color.into());
     self
@@ -4344,6 +4363,10 @@ impl Node {
     self.background_color().and_then(BackgroundColor::as_color)
   }
 
+  pub(crate) fn foreground_value(&self) -> Option<&TextColor> {
+    self.rare_style.foreground.as_ref()
+  }
+
   pub(crate) fn caret_color_value(&self) -> Option<TextColor> {
     self.rare_style.caret_color.clone()
   }
@@ -5778,6 +5801,16 @@ mod tests {
     new.set_component_key(Some("message-2"));
 
     assert!(!new.layout_signature_matches(&old));
+  }
+
+  #[test]
+  fn foreground_keeps_layout_cache_signature() {
+    use crate::node::color::Color;
+
+    let old = Node::text("Hi").foreground(Color::new(200, 30, 30, 255));
+    let new = Node::text("Hi").foreground(Color::new(30, 60, 200, 255));
+
+    assert!(new.layout_signature_matches(&old));
   }
 
   #[test]

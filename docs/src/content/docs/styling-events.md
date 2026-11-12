@@ -26,6 +26,7 @@ Common visual modifiers:
 | --- | --- |
 | `.background(color)` | Background color from a concrete color or `PaletteColor`. |
 | `.background_gradient(gradient)` | Linear, radial, or conic gradient fill. See [Gradients](#gradients). |
+| `.foreground(color)` | Color of the text in the element and under it. See [Foreground](#foreground). |
 | `.rounded(radius)` | Uniform corner radius from `f32` or `RadiusSize`. |
 | `.corner_radius_*` | Per-corner radius from `f32` or `RadiusSize`. |
 | `.border_inside(width, color)` | Border inside the element bounds from a concrete width or `BorderSize`. |
@@ -41,6 +42,36 @@ Common visual modifiers:
 Translucent colors (`"#000000a6"`, `.opacity(...)`, anti-aliased edges, text, images) blend on the sRGB-encoded
 channels, as CSS and design tools do: a `#000000a6` scrim over `#eeeeee` shows `#535353`. Both native backends render
 through a non-sRGB target to get this; the devtools screenshot renderer blends the same way.
+
+## Foreground
+
+`.foreground(color)` sets the color of the text in an element and under it, as CSS `color` does. A `Text` that names no
+color of its own is drawn in the foreground of its nearest ancestor that has one:
+
+```rust
+use lurq::{
+  app::theme::PaletteColor,
+  components::{Row, Text},
+};
+
+// Both labels are white; the count is the muted role.
+Row::new()
+  .background("#171717")
+  .foreground("#fafafa")
+  .child(Text::new("Inbox"))
+  .child(Text::new("Unread"))
+  .child(Text::new("12").color(PaletteColor::TextMuted))
+```
+
+- The color is a concrete color or a `PaletteColor`, which follows the theme.
+- A text's own color wins: `Text::color(...)`, and the color of the style given to `Text::styled(...)`.
+- A text with a typography variant and no color of its own takes the foreground in place of the variant's color.
+- With no foreground above it a text keeps its typography style's color, as before.
+- `.foreground(...)` on a `Text` sets the color of that text.
+- A `TextInput` and Markdown draw in their own styles and do not read it.
+- The content of an overlay (a popup, a modal, a select's menu) is painted outside the element that declares it and
+  starts from no foreground. Set one on the overlay's content.
+- It is paint only: it changes no size or position. On a live element use `ElementHandle::set_foreground`.
 
 ## Opacity
 

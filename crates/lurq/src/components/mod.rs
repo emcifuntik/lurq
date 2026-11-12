@@ -198,6 +198,15 @@ macro_rules! impl_into_node {
         self
       }
 
+      /// Sets the color of the text in this element and under it, like CSS
+      /// `color`: a `Text` that names no color of its own is drawn in the
+      /// foreground of its nearest ancestor that has one (see
+      /// `Node::foreground`).
+      pub fn foreground(mut self, color: impl Into<$crate::node::TextColor>) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::foreground(node, color));
+        self
+      }
+
       /// CSS-like `box-shadow`: a [`ShadowStyle`](crate::app::theme::ShadowStyle)
       /// theme role, one [`BoxShadow`](crate::node::BoxShadow), or a list
       /// (the first on top). Paint only: it does not change layout or hit testing.

@@ -42,6 +42,7 @@ use crate::{
 mod box_shadow_quads;
 mod control_fill;
 mod flex_shrink;
+mod foreground;
 #[cfg(feature = "markdown")]
 pub(crate) mod inline_links;
 mod input_layout;
@@ -250,6 +251,8 @@ pub(crate) struct LayoutEngine {
   text_marks: RefCell<Arc<crate::app::theme::ThemeTextMarks>>,
   /// Open state of the `Select` whose trigger is being painted, if any.
   select_open: Cell<Option<bool>>,
+  /// The foreground the node being painted inherits, if an ancestor set one.
+  foreground: Cell<Option<Color>>,
   /// Caret of the focused text input recorded by the last quad resolution,
   /// where an input method places its candidate window.
   ime_cursor_area: Cell<Option<crate::app::events::ImeCursorArea>>,
@@ -545,6 +548,7 @@ impl LayoutEngine {
       #[cfg(feature = "markdown")]
       text_marks: RefCell::new(Arc::new(crate::app::theme::ThemeTextMarks::default())),
       select_open: Cell::new(None),
+      foreground: Cell::new(None),
       ime_cursor_area: Cell::new(None),
       opacity_groups: RefCell::new(Vec::new()),
       #[cfg(feature = "screenshot")]
@@ -919,6 +923,7 @@ impl LayoutEngine {
     self.sensitive_quads.borrow_mut().clear();
     self.ime_cursor_area.set(None);
     self.text_input_frame.set(None);
+    self.foreground.set(None);
     self.collect_quads(
       node,
       result,
@@ -1043,6 +1048,7 @@ impl LayoutEngine {
     } else {
       (clip, cull_clip)
     };
+    let foreground_scope = self.enter_foreground_scope(node);
     let frame = self.push_node_quads(
       node,
       result,
@@ -1107,6 +1113,7 @@ impl LayoutEngine {
     self.leave_select_scope(select_scope);
 
     self.push_node_overlay_quads(node, result, abs_x, abs_y, &frame, clip, quads);
+    self.leave_foreground_scope(foreground_scope);
     let opacity = node.effective_opacity();
     if opacity < DEFAULT_QUAD_OPACITY || blur > 0.0 {
       self.close_opacity_group(opacity, blur, group_clip, group_start, quads);
@@ -1166,7 +1173,7 @@ impl LayoutEngine {
         style,
         transform_mode,
       } => {
-        let resolved_style = style.resolve(&self.typography.borrow(), &self.palette.borrow());
+        let resolved_style = self.painted_text_style(style);
         let vertical_align = resolved_style.vertical_align;
         QuadContent::Text {
           text: state.display_text().map_or_else(
@@ -4120,6 +4127,7 @@ fn node_is_plain_logical_wrapper(node: &Node) -> bool {
     && node.border_radius.as_ref().is_none()
     && node.border.as_ref().is_none()
     && node.rare_style.box_shadow.is_none()
+    && node.rare_style.foreground.is_none()
     && node.rare_style.caret_color.is_none()
     && node.rare_style.caret_mode.is_none()
     && node.scrollbar_style.as_ref().is_none()

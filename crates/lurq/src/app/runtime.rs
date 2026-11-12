@@ -8695,6 +8695,13 @@ impl<'t> ElementHandle<'t> {
     self.invalidate_render();
   }
 
+  /// Sets the color of the text in the element and under it; see `Node::foreground`.
+  pub fn set_foreground(&mut self, color: impl Into<crate::node::TextColor>) {
+    let Some(node) = self.node_mut() else { return };
+    NodeUpdate::foreground(node, color);
+    self.invalidate_render();
+  }
+
   /// Replaces the node's text content. On `TextInput` nodes use
   /// [`ElementHandle::as_text_input`] + `set_value` instead — the input's
   /// signal-backed value overwrites raw text content on the next pass.
