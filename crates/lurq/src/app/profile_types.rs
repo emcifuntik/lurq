@@ -181,9 +181,17 @@ pub struct LayerProfile {
   pub blur_draws: usize,
   /// Backdrop blurs the frame ran.
   pub backdrops_blurred: usize,
-  /// Textures the layer pool holds after the frame, and their bytes.
+  /// Backdrop blurs the frame put back from the result of an earlier frame,
+  /// without running them.
+  pub backdrops_reused: usize,
+  /// Textures the layer pool holds after the frame, and their bytes, the
+  /// kept ones included.
   pub textures: usize,
   pub texture_bytes: usize,
+  /// Textures that hold a kept backdrop blur after the frame, and their
+  /// bytes.
+  pub kept_textures: usize,
+  pub kept_texture_bytes: usize,
 }
 
 impl RenderProfile {

@@ -11,10 +11,17 @@
 //! [`LAYER_SIZE_STEP`]) only when none does, and textures unused for
 //! [`LAYER_IDLE_FRAMES`] frames are released. Nothing is created until a
 //! frame has a layer.
+//!
+//! The finished blur of a backdrop is kept out of the pool for as long as
+//! the pixels it was blurred from stay the same (see
+//! [`crate::layout::backdrop_reuse`]): a frame that finds it kept puts it
+//! back with two draws in the target's pass, and takes no other texture for
+//! that blur.
 
 use super::vertex::QuadVertex;
 use crate::layout::{
   backdrop::BackdropRegion,
+  backdrop_reuse::{BackdropCache, BackdropInputs, BackdropUse},
   opacity_layer::{BlurPlan, LayerBlur, LayerBlurPass, LayerCmd, LayerComposite, TargetSpace},
 };
 
@@ -37,6 +44,17 @@ pub(super) struct LayerCompositor {
   format: wgpu::TextureFormat,
   slots: Vec<LayerSlot>,
   frame: u64,
+  /// The backdrop blurs whose finished texture is kept, by the textures'
+  /// ids.
+  backdrops: BackdropCache,
+  /// The id of the texture created last.
+  last_texture: u64,
+  /// What the frame does for each of its backdrop blurs, and the textures
+  /// the cache gave back: scratch of [`Self::acquire_backdrops`].
+  backdrop_uses: Vec<Option<BackdropUse>>,
+  released: Vec<u64>,
+  /// Backdrop blurs the frame put back from a kept texture.
+  backdrops_reused: usize,
 }
 
 /// The textures a blurred layer's passes paint, beside the one it is painted
@@ -52,13 +70,25 @@ pub(super) struct BlurSlots {
   blurred: usize,
 }
 
-/// The textures of a backdrop blur: the copy of its target's pixels, and the
-/// textures of the blur run on it.
+/// The textures of a backdrop blur: the finished blur, kept from an earlier
+/// frame or painted by this one, and for a blur that runs the copy of its
+/// target's pixels and the textures of the passes between.
 #[derive(Clone, Copy)]
 pub(super) struct BackdropSlots {
   region: BackdropRegion,
+  plan: BlurPlan,
+  blurred: usize,
+  /// `None` when the kept blur is put back as it is.
+  work: Option<BackdropWork>,
+}
+
+/// The textures a backdrop blur paints on its way to the finished one.
+#[derive(Clone, Copy)]
+struct BackdropWork {
+  blur: LayerBlur,
   copied: usize,
-  blur: BlurSlots,
+  reduced: Option<usize>,
+  horizontal: usize,
 }
 
 impl BackdropSlots {
@@ -66,9 +96,18 @@ impl BackdropSlots {
   pub(super) fn bounds(&self) -> crate::layout::opacity_layer::LayerBounds {
     self.region.layer.bounds
   }
+
+  /// Whether the frame runs the blur: it stops the target's pass for it.
+  /// Otherwise the kept result is put back inside the pass.
+  pub(super) fn runs(&self) -> bool {
+    self.work.is_some()
+  }
 }
 
 struct LayerSlot {
+  /// Names the texture to what outlives a frame: slots move as the pool
+  /// releases others.
+  id: u64,
   texture: wgpu::Texture,
   view: wgpu::TextureView,
   /// Holds the uniforms of the one pass that reads this texture in a frame:
@@ -80,6 +119,16 @@ struct LayerSlot {
   height: u32,
   in_use: bool,
   last_used: u64,
+  /// Holds a kept backdrop blur: no frame takes it for anything else, and
+  /// it is not released for being idle.
+  kept: bool,
+}
+
+impl LayerSlot {
+  /// The bytes the texture holds, at four a texel.
+  fn bytes(&self) -> usize {
+    self.width as usize * self.height as usize * 4
+  }
 }
 
 impl LayerCompositor {
@@ -269,6 +318,11 @@ impl LayerCompositor {
       format,
       slots: Vec::new(),
       frame: 0,
+      backdrops: BackdropCache::default(),
+      last_texture: 0,
+      backdrop_uses: Vec::new(),
+      released: Vec::new(),
+      backdrops_reused: 0,
     }
   }
 
@@ -279,7 +333,12 @@ impl LayerCompositor {
   pub(super) fn begin_frame(&mut self) {
     self.frame += 1;
     for slot in &mut self.slots {
-      slot.in_use = false;
+      // A kept blur is not the frame's to paint over, and is in use for as
+      // long as it is kept.
+      slot.in_use = slot.kept;
+      if slot.kept {
+        slot.last_used = self.frame;
+      }
     }
   }
 
@@ -292,15 +351,41 @@ impl LayerCompositor {
       .filter(|(_, slot)| !slot.in_use && slot.width >= width && slot.height >= height)
       .min_by_key(|(_, slot)| u64::from(slot.width) * u64::from(slot.height))
       .map(|(index, _)| index);
+    self.take(device, fitting, width, height)
+  }
+
+  /// A free texture for a `width` x `height` blur that may be kept: one of
+  /// the size a new one would have, so that a small blur does not keep a
+  /// large texture out of the pool.
+  fn acquire_to_keep(&mut self, device: &wgpu::Device, width: u32, height: u32) -> usize {
+    let size = Self::slot_size(device, width, height);
+    let fitting = self
+      .slots
+      .iter()
+      .position(|slot| !slot.in_use && [slot.width, slot.height] == size);
+    self.take(device, fitting, width, height)
+  }
+
+  /// The size of a new texture for a `width` x `height` layer.
+  fn slot_size(device: &wgpu::Device, width: u32, height: u32) -> [u32; 2] {
+    let limit = device.limits().max_texture_dimension_2d;
+    [width, height].map(|value| {
+      value
+        .div_ceil(LAYER_SIZE_STEP)
+        .saturating_mul(LAYER_SIZE_STEP)
+        .min(limit)
+    })
+  }
+
+  /// Takes the free texture `fitting` for this frame, or a new one for a
+  /// `width` x `height` layer.
+  fn take(&mut self, device: &wgpu::Device, fitting: Option<usize>, width: u32, height: u32) -> usize {
     let index = fitting.unwrap_or_else(|| {
-      let limit = device.limits().max_texture_dimension_2d;
-      let size = |value: u32| {
-        value
-          .div_ceil(LAYER_SIZE_STEP)
-          .saturating_mul(LAYER_SIZE_STEP)
-          .min(limit)
-      };
-      self.slots.push(self.create_slot(device, size(width), size(height)));
+      let [width, height] = Self::slot_size(device, width, height);
+      self.last_texture += 1;
+      self
+        .slots
+        .push(self.create_slot(device, self.last_texture, width, height));
       self.slots.len() - 1
     });
     let slot = &mut self.slots[index];
@@ -309,7 +394,7 @@ impl LayerCompositor {
     index
   }
 
-  fn create_slot(&self, device: &wgpu::Device, width: u32, height: u32) -> LayerSlot {
+  fn create_slot(&self, device: &wgpu::Device, id: u64, width: u32, height: u32) -> LayerSlot {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
       label: Some("lurq_opacity_layer"),
       size: wgpu::Extent3d {
@@ -368,6 +453,7 @@ impl LayerCompositor {
       ],
     });
     LayerSlot {
+      id,
       texture,
       view,
       uniform,
@@ -377,6 +463,7 @@ impl LayerCompositor {
       height,
       in_use: false,
       last_used: 0,
+      kept: false,
     }
   }
 
@@ -409,15 +496,109 @@ impl LayerCompositor {
     &self.slots[slot].texture
   }
 
-  /// The textures the backdrop blur `region` uses this frame.
-  pub(super) fn acquire_backdrop(&mut self, device: &wgpu::Device, region: BackdropRegion) -> Option<BackdropSlots> {
-    let blur = region.layer.blur?;
-    let copied = self.acquire(device, blur.width, blur.height);
-    Some(BackdropSlots {
-      region,
-      copied,
-      blur: self.acquire_blur(device, &blur),
-    })
+  /// The textures of the frame's backdrop blurs (`slots`, by the blurs'
+  /// index; `None` for one without a region): `regions` are the blurs'
+  /// regions and `inputs` what each of them reads, in a window of `window`
+  /// pixels. A blur whose kept result is still the blur of what it reads
+  /// takes that texture alone; any other takes the textures of its passes,
+  /// and the texture kept for its place or a new one for the result, which
+  /// is kept from then on if the cache has room for it.
+  pub(super) fn acquire_backdrops(
+    &mut self,
+    device: &wgpu::Device,
+    regions: &[Option<BackdropRegion>],
+    inputs: &BackdropInputs,
+    window: [u32; 2],
+    slots: &mut Vec<Option<BackdropSlots>>,
+  ) {
+    let mut uses = std::mem::take(&mut self.backdrop_uses);
+    let mut released = std::mem::take(&mut self.released);
+    self.backdrops.begin_frame(
+      regions,
+      inputs,
+      BackdropCache::budget_of(window),
+      &mut uses,
+      &mut released,
+    );
+    self.release_kept(&released);
+    slots.clear();
+    self.backdrops_reused = 0;
+    for (index, (region, used)) in regions.iter().zip(&uses).enumerate() {
+      let (Some(region), Some(used)) = (region, used) else {
+        slots.push(None);
+        continue;
+      };
+      let Some(blur) = region.layer.blur else {
+        slots.push(None);
+        continue;
+      };
+      let plan = BlurPlan::new(&blur);
+      let kept = match used {
+        BackdropUse::Reuse { texture } | BackdropUse::Refresh { texture } => {
+          self.slots.iter().position(|slot| slot.id == *texture)
+        }
+        BackdropUse::Blur { .. } => None,
+      };
+      let work = match (used, kept) {
+        (BackdropUse::Reuse { .. }, Some(_)) => None,
+        _ => Some(BackdropWork {
+          blur,
+          copied: self.acquire(device, blur.width, blur.height),
+          reduced: (plan.reduction > 1).then(|| self.acquire(device, plan.size[0], plan.size[1])),
+          horizontal: self.acquire(device, plan.size[0], plan.size[1]),
+        }),
+      };
+      let blurred = kept.unwrap_or_else(|| {
+        let slot = self.acquire_to_keep(device, plan.size[0], plan.size[1]);
+        let (id, bytes) = (self.slots[slot].id, self.slots[slot].bytes());
+        if matches!(used, BackdropUse::Blur { keep: true }) && self.backdrops.keep(inputs, index, id, bytes) {
+          self.slots[slot].kept = true;
+        }
+        slot
+      });
+      self.backdrops_reused += usize::from(work.is_none());
+      slots.push(Some(BackdropSlots {
+        region: *region,
+        plan,
+        blurred,
+        work,
+      }));
+    }
+    self.backdrop_uses = uses;
+    self.released = released;
+  }
+
+  /// Gives the kept textures `released` back to the pool, free for this
+  /// frame.
+  fn release_kept(&mut self, released: &[u64]) {
+    for slot in &mut self.slots {
+      if slot.kept && released.contains(&slot.id) {
+        slot.kept = false;
+        slot.in_use = false;
+      }
+    }
+  }
+
+  /// The frame's commands were handed to the GPU: the backdrop blurs it ran
+  /// into kept textures can be put back from them.
+  pub(super) fn frame_submitted(&mut self) {
+    self.backdrops.commit();
+  }
+
+  /// Keeps no backdrop blur any longer: their textures go back to the pool.
+  pub(super) fn forget_backdrops(&mut self) {
+    let mut released = std::mem::take(&mut self.released);
+    released.clear();
+    self.backdrops.clear(&mut released);
+    self.release_kept(&released);
+    self.released = released;
+  }
+
+  /// Backdrop blurs the frame put back from a kept texture, then the kept
+  /// textures and their bytes.
+  #[cfg_attr(not(any(test, feature = "perf_profile")), allow(dead_code))]
+  pub(super) fn backdrop_stats(&self) -> (usize, usize, usize) {
+    (self.backdrops_reused, self.backdrops.len(), self.backdrops.bytes())
   }
 
   /// Runs a backdrop blur up to compositing, between two passes of its
@@ -434,7 +615,10 @@ impl LayerCompositor {
     target_origin: [i32; 2],
     slots: &BackdropSlots,
   ) -> usize {
-    let blur = slots.blur.blur;
+    let Some(work) = slots.work else {
+      return 0;
+    };
+    let blur = work.blur;
     encoder.copy_texture_to_texture(
       wgpu::TexelCopyTextureInfo {
         texture: target,
@@ -447,7 +631,7 @@ impl LayerCompositor {
         aspect: wgpu::TextureAspect::All,
       },
       wgpu::TexelCopyTextureInfo {
-        texture: &self.slots[slots.copied].texture,
+        texture: &self.slots[work.copied].texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
@@ -458,11 +642,19 @@ impl LayerCompositor {
         depth_or_array_layers: 1,
       },
     );
-    self.prepare_blur(queue, encoder, vertices, indices, slots.copied, &slots.blur)
+    let passes = BlurSlots {
+      blur,
+      plan: slots.plan,
+      reduced: work.reduced,
+      horizontal: work.horizontal,
+      blurred: slots.blurred,
+    };
+    self.prepare_blur(queue, encoder, vertices, indices, work.copied, &passes)
   }
 
   /// Puts a blurred backdrop back into the pass painting `parent`, inside
-  /// the node's box: what [`Self::prepare_backdrop`] left in `slots`.
+  /// the node's box: what [`Self::prepare_backdrop`] left in `slots`, or
+  /// what an earlier frame's did.
   pub(super) fn composite_backdrop(
     &self,
     queue: &wgpu::Queue,
@@ -470,8 +662,8 @@ impl LayerCompositor {
     slots: &BackdropSlots,
     parent: &TargetSpace,
   ) {
-    let blurred = slots.blur.blurred;
-    let uniforms = LayerBlurPass::backdrop(&slots.region, &slots.blur.plan, parent, self.size(blurred));
+    let blurred = slots.blurred;
+    let uniforms = LayerBlurPass::backdrop(&slots.region, &slots.plan, parent, self.size(blurred));
     let slot = &self.slots[blurred];
     queue.write_buffer(&slot.uniform, 0, bytemuck::bytes_of(&uniforms));
     pass.set_bind_group(0, &slot.blur_bind_group, &[]);
@@ -621,7 +813,7 @@ impl LayerCompositor {
     let frame = self.frame;
     self
       .slots
-      .retain(|slot| slot.in_use || frame.saturating_sub(slot.last_used) <= LAYER_IDLE_FRAMES);
+      .retain(|slot| slot.in_use || slot.kept || frame.saturating_sub(slot.last_used) <= LAYER_IDLE_FRAMES);
   }
 
   #[cfg(all(test, feature = "screenshot"))]

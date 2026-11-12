@@ -852,9 +852,82 @@ pub(crate) fn resolve_layers(
 }
 
 /// Axis-aligned bounds `[x0, y0, x1, y1]` in physical pixels.
-type Extent = [f32; 4];
+pub(crate) type Extent = [f32; 4];
 
 const EMPTY_EXTENT: Extent = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+
+/// The pixels a rect can paint: its box under its transform, as far as its
+/// anti-aliasing and its shadow reach, inside its clip.
+pub(crate) fn rect_extent(rect: &RectCmd) -> Extent {
+  let reach = AA_REACH + rect.shadow.map_or(0.0, |shadow| shadow.outset());
+  let extent = transformed_extent(
+    rect.x,
+    rect.y,
+    rect.width,
+    rect.height,
+    rect.transform,
+    rect.transform_origin,
+    reach,
+  );
+  clipped(extent, rect.clip)
+}
+
+/// How far past its box a glyph can paint: its anti-aliasing, and its
+/// blurred shadow.
+pub(crate) fn glyph_reach(glyph: &GlyphCmd) -> f32 {
+  // The glyph pipeline pads a blurred shadow by `ceil(2 * sigma) + 1`.
+  if glyph.shadow_sigma > 0.0 {
+    (glyph.shadow_sigma * 2.0).ceil() + 1.0 + AA_REACH
+  } else {
+    AA_REACH
+  }
+}
+
+/// The pixels a glyph can paint, with its blurred shadow, inside its clip.
+pub(crate) fn glyph_extent(glyph: &GlyphCmd) -> Extent {
+  let reach = glyph_reach(glyph);
+  let extent = transformed_extent(
+    glyph.x,
+    glyph.y,
+    glyph.width,
+    glyph.height,
+    glyph.transform,
+    glyph.transform_origin,
+    reach,
+  );
+  clipped(extent, glyph.clip)
+}
+
+/// The pixels an image can paint, inside its clip.
+#[cfg(feature = "raster")]
+pub(crate) fn image_extent(image: &crate::images::ImageCmd) -> Extent {
+  let extent = transformed_extent(
+    image.x,
+    image.y,
+    image.width,
+    image.height,
+    image.transform,
+    image.transform_origin,
+    AA_REACH,
+  );
+  clipped(extent, image.clip)
+}
+
+/// The pixels an SVG's mesh can paint, inside its clip.
+#[cfg(feature = "svg")]
+pub(crate) fn svg_extent(svg: &crate::svg::SvgCmd) -> Extent {
+  let mesh = svg.mesh.vertices.iter().fold(EMPTY_EXTENT, |extent, vertex| {
+    let [x, y] = vertex.position;
+    union(extent, [svg.x + x, svg.y + y, svg.x + x, svg.y + y])
+  });
+  let extent = [
+    mesh[0] - AA_REACH,
+    mesh[1] - AA_REACH,
+    mesh[2] + AA_REACH,
+    mesh[3] + AA_REACH,
+  ];
+  clipped(extent, svg.clip)
+}
 
 fn union(a: Extent, b: Extent) -> Extent {
   [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
@@ -875,73 +948,29 @@ impl LayerBoundsBuilder {
     }
   }
 
-  fn add(&mut self, order: usize, extent: Extent, clip: ClipRect) {
+  fn add(&mut self, order: usize, extent: Extent) {
     let Some(slot) = self.extents.get_mut(order) else {
       return;
     };
-    *slot = union(*slot, clipped(extent, clip));
+    *slot = union(*slot, extent);
   }
 
   fn add_rect(&mut self, rect: &RectCmd) {
-    let reach = AA_REACH + rect.shadow.map_or(0.0, |shadow| shadow.outset());
-    let extent = transformed_extent(
-      rect.x,
-      rect.y,
-      rect.width,
-      rect.height,
-      rect.transform,
-      rect.transform_origin,
-      reach,
-    );
-    self.add(rect.order, extent, rect.clip);
+    self.add(rect.order, rect_extent(rect));
   }
 
   fn add_glyph(&mut self, glyph: &GlyphCmd) {
-    // The glyph pipeline pads a blurred shadow by `ceil(2 * sigma) + 1`.
-    let reach = if glyph.shadow_sigma > 0.0 {
-      (glyph.shadow_sigma * 2.0).ceil() + 1.0 + AA_REACH
-    } else {
-      AA_REACH
-    };
-    let extent = transformed_extent(
-      glyph.x,
-      glyph.y,
-      glyph.width,
-      glyph.height,
-      glyph.transform,
-      glyph.transform_origin,
-      reach,
-    );
-    self.add(glyph.order, extent, glyph.clip);
+    self.add(glyph.order, glyph_extent(glyph));
   }
 
   #[cfg(feature = "raster")]
   fn add_image(&mut self, image: &crate::images::ImageCmd) {
-    let extent = transformed_extent(
-      image.x,
-      image.y,
-      image.width,
-      image.height,
-      image.transform,
-      image.transform_origin,
-      AA_REACH,
-    );
-    self.add(image.order, extent, image.clip);
+    self.add(image.order, image_extent(image));
   }
 
   #[cfg(feature = "svg")]
   fn add_svg(&mut self, svg: &crate::svg::SvgCmd) {
-    let mesh = svg.mesh.vertices.iter().fold(EMPTY_EXTENT, |extent, vertex| {
-      let [x, y] = vertex.position;
-      union(extent, [svg.x + x, svg.y + y, svg.x + x, svg.y + y])
-    });
-    let extent = [
-      mesh[0] - AA_REACH,
-      mesh[1] - AA_REACH,
-      mesh[2] + AA_REACH,
-      mesh[3] + AA_REACH,
-    ];
-    self.add(svg.order, extent, svg.clip);
+    self.add(svg.order, svg_extent(svg));
   }
 
   /// Layers for `groups`, outer layers first.
@@ -1003,7 +1032,7 @@ fn transformed_extent(
   })
 }
 
-fn clipped(extent: Extent, clip: ClipRect) -> Extent {
+pub(crate) fn clipped(extent: Extent, clip: ClipRect) -> Extent {
   if !clip.active {
     return extent;
   }

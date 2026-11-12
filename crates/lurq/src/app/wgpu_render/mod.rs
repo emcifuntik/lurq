@@ -41,6 +41,8 @@ use crate::{
     render_engine::RenderEngine,
   },
   layout::{
+    backdrop::BackdropRegion,
+    backdrop_reuse::{BackdropInputs, PaintedDraw, backdrop_regions},
     opacity_layer::{LayerPlan, LayerStep, TargetSpace},
     render_list::RenderList,
   },
@@ -144,6 +146,20 @@ enum OrderedDraw {
   Image(usize),
   #[cfg(feature = "svg")]
   Svg(usize),
+}
+
+impl OrderedDraw {
+  /// The draw as the inputs of backdrop blurs are told from it.
+  fn painted(&self) -> PaintedDraw {
+    match *self {
+      Self::Rect(index) => PaintedDraw::Rect(index),
+      Self::Glyph { start, count } => PaintedDraw::Glyphs { start, count },
+      #[cfg(feature = "raster")]
+      Self::Image(index) => PaintedDraw::Image(index),
+      #[cfg(feature = "svg")]
+      Self::Svg(index) => PaintedDraw::Svg(index),
+    }
+  }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -394,6 +410,10 @@ pub struct WgpuRenderEngine {
   scratch_layer_slots: Vec<Option<usize>>,
   scratch_blur_slots: Vec<Option<layers::BlurSlots>>,
   scratch_backdrop_slots: Vec<Option<layers::BackdropSlots>>,
+  scratch_backdrop_regions: Vec<Option<BackdropRegion>>,
+  /// What each backdrop blur of the frame reads, to tell whether its kept
+  /// result is still the blur of it.
+  backdrop_inputs: BackdropInputs,
   width: u32,
   height: u32,
   frame_extensions: Vec<WgpuFrameExtensionEntry>,
@@ -501,6 +521,8 @@ impl WgpuRenderEngine {
       scratch_layer_slots: Vec::new(),
       scratch_blur_slots: Vec::new(),
       scratch_backdrop_slots: Vec::new(),
+      scratch_backdrop_regions: Vec::new(),
+      backdrop_inputs: BackdropInputs::default(),
       width: 800,
       height: 600,
       frame_extensions: Vec::new(),
@@ -516,6 +538,16 @@ impl WgpuRenderEngine {
       .layer_compositor
       .as_ref()
       .map_or(0, layers::LayerCompositor::texture_count)
+  }
+
+  /// Backdrop blurs the last frame put back from a kept texture, then the
+  /// textures kept.
+  #[cfg(all(test, feature = "screenshot"))]
+  pub(crate) fn backdrop_reuse(&self) -> (usize, usize) {
+    self.layer_compositor.as_ref().map_or((0, 0), |compositor| {
+      let (reused, kept, _) = compositor.backdrop_stats();
+      (reused, kept)
+    })
   }
 
   /// Select backends before rendering the first frame. Instance creation is lazy,
@@ -725,6 +757,10 @@ impl WgpuRenderEngine {
       config.width = self.width;
       config.height = self.height;
       surface.configure(device, config);
+    }
+    // A window of another size has other pixels behind its glass.
+    if let Some(compositor) = self.layer_compositor.as_mut() {
+      compositor.forget_backdrops();
     }
   }
 
@@ -1879,7 +1915,6 @@ impl RenderEngine for WgpuRenderEngine {
     self.scratch_layer_slots.clear();
     self.scratch_blur_slots.clear();
     self.scratch_backdrop_slots.clear();
-    self.scratch_backdrop_slots.resize(list.backdrops.len(), None);
     if layer_plan.has_layers() || layer_plan.has_backdrops() {
       let format = render_target_format(config.format);
       if self
@@ -1904,20 +1939,25 @@ impl RenderEngine for WgpuRenderEngine {
             .map(|blur| compositor.acquire_blur(device, &blur)),
         );
       }
-      // A backdrop blur reads the target its step is in.
-      for target in layer_plan.targets() {
-        let (origin, size) = match target.layer {
-          Some(layer) => list.layers[layer].painted(),
-          None => ([0, 0], [config.width, config.height]),
-        };
-        for step in layer_plan.steps(target) {
-          if let LayerStep::Backdrop(index) = step {
-            self.scratch_backdrop_slots[*index] =
-              crate::layout::backdrop::BackdropRegion::new(&list.backdrops[*index], origin, size)
-                .and_then(|region| compositor.acquire_backdrop(device, region));
-          }
-        }
-      }
+      // A backdrop blur reads the target its step is in. One whose kept
+      // result is still the blur of what it reads takes that; the others run.
+      let window = [config.width, config.height];
+      backdrop_regions(list, &layer_plan, window, &mut self.scratch_backdrop_regions);
+      self.backdrop_inputs.describe(
+        list,
+        &layer_plan,
+        ordered_draws.len(),
+        |index| ordered_draws[index].1.painted(),
+        &self.scratch_backdrop_regions,
+        window,
+      );
+      compositor.acquire_backdrops(
+        device,
+        &self.scratch_backdrop_regions,
+        &self.backdrop_inputs,
+        window,
+        &mut self.scratch_backdrop_slots,
+      );
     }
 
     let mut encoder = device.create_command_encoder(&Default::default());
@@ -1941,9 +1981,9 @@ impl RenderEngine for WgpuRenderEngine {
           wgpu_clear_color(list.clear_color),
         ),
       };
-      // A backdrop blur ends the target's pass, reads what it painted and
-      // starts another that keeps it, so a target is painted in one pass
-      // more than it has backdrop blurs.
+      // A backdrop blur that runs ends the target's pass, reads what it
+      // painted and starts another that keeps it, so a target is painted in
+      // one pass more than it has backdrop blurs that run.
       #[cfg_attr(
         not(feature = "perf_profile"),
         allow(unused_variables, unused_assignments, unused_mut)
@@ -1953,7 +1993,7 @@ impl RenderEngine for WgpuRenderEngine {
         .iter()
         .filter(|step| {
           matches!(step, LayerStep::Backdrop(index)
-            if self.scratch_backdrop_slots.get(*index).copied().flatten().is_some())
+            if self.scratch_backdrop_slots.get(*index).copied().flatten().is_some_and(|slots| slots.runs()))
         })
         .count();
       macro_rules! begin_target_pass {
@@ -2001,33 +2041,44 @@ impl RenderEngine for WgpuRenderEngine {
             ) else {
               continue;
             };
-            let (target_texture, target_origin) = match (target.layer, layer_slot) {
-              (Some(layer), Some(slot)) => (compositor.texture(slot), list.layers[layer].painted().0),
-              _ => (output.texture(), [0, 0]),
-            };
-            drop(pass);
-            let _blur_passes = compositor.prepare_backdrop(
-              queue,
-              &mut encoder,
-              vtx_buf,
-              idx_buf,
-              target_texture,
-              target_origin,
-              &backdrop,
-            );
-            backdrops_left -= 1;
-            pass = begin_target_pass!(wgpu::LoadOp::Load, false);
-            profile_if! {
-              _layers.render_passes += _blur_passes + 1;
-              _layers.blur_draws += _blur_passes;
-              _layers.target_copies += 1;
-              _layers.backdrops_blurred += 1;
+            if backdrop.runs() {
+              let (target_texture, target_origin) = match (target.layer, layer_slot) {
+                (Some(layer), Some(slot)) => (compositor.texture(slot), list.layers[layer].painted().0),
+                _ => (output.texture(), [0, 0]),
+              };
+              drop(pass);
+              let _blur_passes = compositor.prepare_backdrop(
+                queue,
+                &mut encoder,
+                vtx_buf,
+                idx_buf,
+                target_texture,
+                target_origin,
+                &backdrop,
+              );
+              backdrops_left -= 1;
+              pass = begin_target_pass!(wgpu::LoadOp::Load, false);
+              profile_if! {
+                _layers.render_passes += _blur_passes + 1;
+                _layers.blur_draws += _blur_passes;
+                _layers.target_copies += 1;
+                _layers.backdrops_blurred += 1;
+              }
+              // A new pass starts with nothing bound.
+              active_vertex_buffer = None;
+              active_index_buffer = None;
+            } else {
+              // Its kept result is put back in the pass, as it is.
+              profile_if! { _layers.backdrops_reused += 1; }
             }
-            // A new pass starts with nothing bound.
-            pass.set_vertex_buffer(0, vtx_buf.slice(..));
-            active_vertex_buffer = Some(ActiveVertexBuffer::CommonQuad);
-            pass.set_index_buffer(idx_buf.slice(..), wgpu::IndexFormat::Uint16);
-            active_index_buffer = Some(ActiveIndexBuffer::CommonU16);
+            if active_vertex_buffer != Some(ActiveVertexBuffer::CommonQuad) {
+              pass.set_vertex_buffer(0, vtx_buf.slice(..));
+              active_vertex_buffer = Some(ActiveVertexBuffer::CommonQuad);
+            }
+            if active_index_buffer != Some(ActiveIndexBuffer::CommonU16) {
+              pass.set_index_buffer(idx_buf.slice(..), wgpu::IndexFormat::Uint16);
+              active_index_buffer = Some(ActiveIndexBuffer::CommonU16);
+            }
             active_pipeline = Some(ActivePipeline::Layer);
             if set_scissor(&mut pass, space.layer_rect(backdrop.bounds()), &space) {
               compositor.composite_backdrop(queue, &mut pass, &backdrop, &space);
@@ -2572,6 +2623,7 @@ impl RenderEngine for WgpuRenderEngine {
       compositor.end_frame();
       profile_if! {
         (_layers.textures, _layers.texture_bytes) = compositor.texture_stats();
+        (_, _layers.kept_textures, _layers.kept_texture_bytes) = compositor.backdrop_stats();
       }
     }
     if self.clip_globals.end_frame() {
@@ -2605,6 +2657,10 @@ impl RenderEngine for WgpuRenderEngine {
       .as_ref()
       .map(|context| context.phase(crate::app::profiler::Phase::RenderSubmit));
     queue.submit(std::iter::once(encoder.finish()));
+    // The textures the frame blurred backdrops into hold them from here on.
+    if let Some(compositor) = self.layer_compositor.as_mut() {
+      compositor.frame_submitted();
+    }
     let _submit_dur = profile_elapsed!(_submit_start);
     #[cfg(feature = "perf_profile")]
     drop(_submit_phase);

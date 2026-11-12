@@ -22,7 +22,10 @@
 //!
 //! Each number is the median over a run's frames; the table gives the median
 //! of the runs and, in brackets, their lowest and highest. `cpu` is the pass
-//! without the time it waited for a frame slot or in the present call.
+//! without the time it waited for a frame slot or in the present call,
+//! `blurred` and `reused` the backdrop blurs a frame ran and the ones it put
+//! back from a kept result, `tex` the layer pool's textures and `kept` the
+//! part of them that holds kept results.
 #[cfg(windows)]
 fn main() {
   use std::{
@@ -288,7 +291,7 @@ fn main() {
 
   /// The medians of one run's frames, in the order of `COLUMNS`.
   type Medians = Vec<f64>;
-  const COLUMNS: [&str; 17] = [
+  const COLUMNS: [&str; 19] = [
     "cpu_us",
     "layout_us",
     "quads_us",
@@ -306,6 +309,8 @@ fn main() {
     "textures",
     "texture_mib",
     "gpu_frames",
+    "reused",
+    "kept_mib",
   ];
 
   fn median(values: &mut [f64]) -> f64 {
@@ -492,6 +497,8 @@ fn main() {
         column(&|_, _, layers| Some(layers.textures as f64)),
         column(&|_, _, layers| Some(layers.texture_bytes as f64 / (1024.0 * 1024.0))),
         passes.iter().filter(|pass| pass.gpu.is_some()).count() as f64,
+        column(&|_, _, layers| Some(layers.backdrops_reused as f64)),
+        column(&|_, _, layers| Some(layers.kept_texture_bytes as f64 / (1024.0 * 1024.0))),
       ]
     }
   }
@@ -591,9 +598,23 @@ fn main() {
   }
   csv.push('\n');
   println!(
-    "{:<5} {:>5} {:>6} {:<7} {:>20} {:>20} {:>20} {:>20} {:>6} {:>6} {:>6} {:>6} {:>7} {:>8}",
-    "back", "scale", "radius", "frame", "cpu us", "encode us", "submit us", "gpu us", "draws", "passes", "copies",
-    "blurs", "blurred", "tex MiB"
+    "{:<5} {:>5} {:>6} {:<7} {:>20} {:>20} {:>20} {:>20} {:>6} {:>6} {:>6} {:>6} {:>7} {:>6} {:>8} {:>8}",
+    "back",
+    "scale",
+    "radius",
+    "frame",
+    "cpu us",
+    "encode us",
+    "submit us",
+    "gpu us",
+    "draws",
+    "passes",
+    "copies",
+    "blurs",
+    "blurred",
+    "reused",
+    "tex MiB",
+    "kept MiB"
   );
   for backend in &backends {
     for &scale in &scales {
@@ -638,7 +659,7 @@ fn main() {
           };
           let count = |column: usize| format!("{:.0}", spread(column).0);
           println!(
-            "{:<5} {:>5} {:>6} {:<7} {:>20} {:>20} {:>20} {:>20} {:>6} {:>6} {:>6} {:>6} {:>7} {:>8.1}",
+            "{:<5} {:>5} {:>6} {:<7} {:>20} {:>20} {:>20} {:>20} {:>6} {:>6} {:>6} {:>6} {:>7} {:>6} {:>8.1} {:>8.1}",
             backend,
             scale,
             radius,
@@ -652,7 +673,9 @@ fn main() {
             count(11),
             count(12),
             count(13),
-            spread(15).0
+            count(17),
+            spread(15).0,
+            spread(18).0
           );
         }
       }
