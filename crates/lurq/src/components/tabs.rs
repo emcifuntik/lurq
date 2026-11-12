@@ -718,7 +718,10 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
         .and_then(|name| symbol(name, bar.symbol_size, color))
     });
 
-    let mut content = Column::new().align_items(Alignment::Center).spacing(bar.spacing);
+    let mut content = Column::new()
+      .align_items(Alignment::Center)
+      .spacing(bar.spacing)
+      .overflow_visible();
     let badge = item.badge.as_ref().map(|badge| {
       Row::new()
         .min_width(bar.badge_size + 5.0)
@@ -753,13 +756,21 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
     match (picture, badge) {
       (Some(picture), badge) => {
         // The badge at the picture's upper corner, half over it.
-        let mut over = Stack::new().stack_align(StackAlignment::TopEnd).child(picture);
+        // The badge reaches past the picture's box, and past the place's own in a low bar.
+        let mut over = Stack::new()
+          .stack_align(StackAlignment::TopEnd)
+          .overflow_visible()
+          .child(picture);
         if let Some(badge) = badge {
           over = over.child(badge.transform(Transform2D::translate(bar.badge_size * 0.7, -bar.badge_size * 0.3)));
         }
         if low {
           // In a low bar the title stands beside the picture.
-          let mut row = Row::new().align_items(Alignment::Center).spacing(6.0).child(over);
+          let mut row = Row::new()
+            .align_items(Alignment::Center)
+            .spacing(6.0)
+            .overflow_visible()
+            .child(over);
           if !item.title.is_empty() {
             row = row.child(title);
           }
@@ -788,6 +799,7 @@ fn standard_bar(bar: &TabBar, tabs: &Tabs, entries: &[TabEntry], safe_area: Safe
         .height(FILL)
         .align_items(Alignment::Center)
         .justify(Justify::Center)
+        .overflow_visible()
         .child(content)
         .on_click(move |_| tabs.press(&key)),
     );
