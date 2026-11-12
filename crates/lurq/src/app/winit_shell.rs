@@ -742,8 +742,9 @@ impl ManagedWindow {
           .keyboard_probe
           .as_ref()
           .map_or(0.0, |probe| probe.overlap(logical_height)) as f32;
+        // With no keyboard its guide rests at the bottom safe area: what it covers over that is the keyboard's.
+        safe_area.keyboard = (keyboard - safe_area.bottom).max(0.0);
         safe_area.bottom = safe_area.bottom.max(keyboard);
-        safe_area.keyboard = keyboard;
         if keyboard != self.keyboard_overlap {
           self.keyboard_overlap = keyboard;
           // It is coming up, or changed its height: the input being typed into stays in view, frame by frame as

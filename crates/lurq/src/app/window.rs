@@ -156,8 +156,8 @@ pub struct SafeAreaInsets {
   pub right: f32,
   pub bottom: f32,
   pub left: f32,
-  /// How much of the window the on-screen keyboard covers, from the bottom: `bottom` is no less while it is
-  /// up. What stands at the bottom of the window, as a sheet does, rises by it.
+  /// How much more `bottom` is for the on-screen keyboard being up: 0 with the keyboard down. What stands at
+  /// the bottom of the window, as a sheet does, rises by it.
   pub keyboard: f32,
 }
 
