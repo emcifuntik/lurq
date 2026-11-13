@@ -60,6 +60,24 @@ impl Component for FlowLongTextRoot {
   }
 }
 
+struct TwinTextsRoot;
+
+impl Component for TwinTextsRoot {
+  type Props = Vec<String>;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let mut column = Column::new();
+    for text in ctx.props::<Self::Props>() {
+      column = column.child(Text::styled(text, TextStyle::default()).width(MARKDOWN_WIDTH));
+    }
+    column
+  }
+}
+
 struct BenchSurface;
 
 impl HasWindowHandle for BenchSurface {
@@ -136,6 +154,21 @@ fn unique_long_text_source() -> String {
     }
   }
   source
+}
+
+/// Paragraphs of one length that differ in one byte, where the fingerprint of
+/// a long text does not look: it reads the first, the middle and the last 128
+/// bytes of a text over 384 bytes. `twins` is false for the same paragraphs
+/// with the byte inside the first of those samples.
+fn paragraphs_alike(twins: bool) -> Vec<String> {
+  let differs_at = if twins { 200 } else { 100 };
+  (0..8)
+    .map(|index| {
+      let mut text = "The quick brown fox jumps over the lazy dog. ".repeat(14);
+      text.replace_range(differs_at..differs_at + 1, &index.to_string());
+      text
+    })
+    .collect()
 }
 
 #[cfg(feature = "perf_profile")]
@@ -325,6 +358,23 @@ fn bench_text_pipeline(c: &mut Criterion) {
       BatchSize::SmallInput,
     );
   });
+
+  // Eight long paragraphs drawn again: once told apart by their fingerprints,
+  // once sharing one.
+  for (name, twins) in [
+    ("warm_long_paragraphs_alike", false),
+    ("warm_long_paragraphs_with_one_fingerprint", true),
+  ] {
+    group.bench_function(name, |b| {
+      let mut app = App::new();
+      let mut tree = realistic_viewport_tree();
+      tree.mount_root::<TwinTextsRoot>(&mut app, paragraphs_alike(twins));
+      run_pass(&mut tree, &mut app);
+      b.iter(|| {
+        run_pass(&mut tree, &mut app);
+      });
+    });
+  }
 
   for (name, skip, selectable) in [
     ("edit_document_paragraph", 0, false),
