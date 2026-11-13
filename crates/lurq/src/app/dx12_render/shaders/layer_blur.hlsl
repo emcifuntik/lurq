@@ -2,10 +2,11 @@
 // `layout::opacity_layer::LayerBlurPass`).
 //
 // A blurred layer is painted like any other, then blurred on its way into
-// its parent: a horizontal Gaussian into an intermediate texture, and a
-// vertical one drawn straight into the parent at the layer's opacity. A wide
-// blur first reduces the layer with a box filter, and both Gaussians run on
-// the reduced copy; the last pass then also scales it back up.
+// its parent: a horizontal Gaussian and a vertical one between intermediate
+// textures, and a pass that draws the result into the parent at the layer's
+// opacity, one read per pixel. A wide blur first reduces the layer with a
+// box filter, and both Gaussians run on the reduced copy; the last pass then
+// also scales it back up, with the sampler's interpolation.
 //
 // Every texture holds premultiplied colour and was cleared to transparent,
 // so the premultiplied source-over blend of the pipeline writes an
@@ -24,7 +25,7 @@ cbuffer BlurPass : register(b0)
   float4 target; // target size, then the offset added to a target pixel
   float4 source; // offset target pixel -> source texel scale, then 1 / source texture size
   float4 kernel; // Gaussian axis in source texels, sigma in source texels, opacity
-  float4 mode;   // x = 0: Gaussian; otherwise box taps per axis. y, z: mask and clip scale
+  float4 mode;   // x = 0: Gaussian; otherwise box taps per axis. y, z: mask and clip scale. w = 1: one read
   float4 limit;  // lowest, then highest source texel centre a tap may read
   float4 mask;         // backdrop: the box to fill: centre in target pixels, half size
   float4 mask_inverse; // 2x2 from a target-pixel offset to the box's own axes
@@ -84,8 +85,9 @@ float4 reduce(float2 center, int taps)
 // A Gaussian along `axis`, centred on the texel centre `center`. Texels `i`
 // and `i + 1` are read with one bilinear tap between them, placed so the
 // filter weighs them as the Gaussian does; that only holds from a texel
-// centre.
-float4 gaussian_at(float2 center, float2 axis, float sigma)
+// centre, which is where a Gaussian pass reads: its target has its source's
+// texels.
+float4 gaussian(float2 center, float2 axis, float sigma)
 {
   float4 sum = read(center);
   float total = 1.0;
@@ -110,29 +112,15 @@ float4 gaussian_at(float2 center, float2 axis, float sigma)
   return sum / total;
 }
 
-// A Gaussian along `axis` at `center`. The pass that scales a reduced layer
-// back up reads between texel centres along the axis: there the Gaussian is
-// taken at the texel centre on either side and the two are interpolated.
-// (Across the axis the sampler interpolates.)
-float4 gaussian(float2 center, float2 axis, float sigma)
-{
-  float along = dot(center, axis) - 0.5;
-  float between = along - floor(along);
-  float2 before = center - axis * between;
-  if (between < 0.001)
-  {
-    return gaussian_at(before, axis, sigma);
-  }
-  if (between > 0.999)
-  {
-    return gaussian_at(before + axis, axis, sigma);
-  }
-  return lerp(gaussian_at(before, axis, sigma), gaussian_at(before + axis, axis, sigma), between);
-}
-
 float4 blurred(float2 pixel)
 {
   float2 center = (pixel + target.zw) * source.xy;
+  // The pass that composites a finished blur: the sampler interpolates
+  // between the texels of a reduced layer as it scales it back up.
+  if (mode.w > 0.5)
+  {
+    return read(center);
+  }
   int taps = int(mode.x);
   if (taps > 0)
   {

@@ -166,6 +166,34 @@ pub struct CanvasProfile {
   pub asset_cache_uncached_bytes: usize,
 }
 
+/// What the opacity layers and blurs of a frame cost its renderer (see
+/// [`RenderEngine::layer_profile`](crate::app::render_engine::RenderEngine::layer_profile)).
+/// Counts and sizes only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayerProfile {
+  /// Render passes of the frame's UI: the window's, one more for each
+  /// backdrop blur that stops it, each layer's, and each pass of a blur.
+  pub render_passes: usize,
+  /// Copies of a target's pixels, made for backdrop blurs.
+  pub target_copies: usize,
+  /// Draws of the blur shader: its passes, and the draws that composite a
+  /// blurred layer or put a blurred backdrop back.
+  pub blur_draws: usize,
+  /// Backdrop blurs the frame ran.
+  pub backdrops_blurred: usize,
+  /// Backdrop blurs the frame put back from the result of an earlier frame,
+  /// without running them.
+  pub backdrops_reused: usize,
+  /// Textures the layer pool holds after the frame, and their bytes, the
+  /// kept ones included.
+  pub textures: usize,
+  pub texture_bytes: usize,
+  /// Textures that hold a kept backdrop blur after the frame, and their
+  /// bytes.
+  pub kept_textures: usize,
+  pub kept_texture_bytes: usize,
+}
+
 impl RenderProfile {
   pub fn upload_total(self) -> Duration {
     self.globals_upload + self.atlas_upload + self.buffer_upload + self.image_upload

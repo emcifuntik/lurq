@@ -125,11 +125,16 @@ use crate::{
     render_engine::RenderEngine,
   },
   layout::{
+    backdrop::BackdropRegion,
+    backdrop_reuse::{BackdropInputs, PaintedDraw, backdrop_regions},
     opacity_layer::{LayerPlan, LayerStep, TargetSpace},
     quad::ClipRect,
     render_list::{GlyphCmd, RectCmd, RenderList},
   },
-  render::gpu::{Globals, GlyphInstance, QuadInstance, QuadVertex},
+  render::{
+    glyph_batch::{GlyphRun, batch_glyph_runs, glyph_runs},
+    gpu::{Globals, GlyphInstance, QuadInstance, QuadVertex},
+  },
 };
 
 const FRAME_COUNT: usize = 2;
@@ -353,6 +358,17 @@ impl Dx12RenderEngine {
       .as_ref()
       .and_then(|state| state.layer_compositor.as_ref())
       .map_or(0, layers::LayerCompositor::texture_count)
+  }
+
+  /// Backdrop blurs the last frame put back from a kept texture, then the
+  /// textures kept.
+  #[cfg(all(test, feature = "screenshot"))]
+  pub(crate) fn backdrop_reuse(&self) -> (usize, usize) {
+    self
+      .state
+      .as_ref()
+      .and_then(|state| state.layer_compositor.as_ref())
+      .map_or((0, 0), layers::LayerCompositor::backdrop_reuse)
   }
 
   /// How many charged bytes of uploaded Canvas images and text this renderer
@@ -860,6 +876,11 @@ impl RenderEngine for Dx12RenderEngine {
   fn last_profile(&self) -> Option<RenderProfile> {
     Some(self.last_profile)
   }
+
+  #[cfg(feature = "perf_profile")]
+  fn layer_profile(&self) -> Option<crate::app::profile_types::LayerProfile> {
+    self.state.as_ref().map(|state| state.layer_profile)
+  }
 }
 
 struct Dx12State {
@@ -918,13 +939,22 @@ struct Dx12State {
   space: TargetSpace,
   layer_plan: LayerPlan,
   layer_slots: Vec<Option<usize>>,
+  /// The instances of the glyph draw being recorded, kept between draws.
+  glyph_instances: Vec<GlyphInstance>,
   /// Offscreen targets of faded subtrees; created by the first frame that
   /// has one.
   layer_compositor: Option<layers::LayerCompositor>,
+  /// The regions of the frame's backdrop blurs and what each of them reads,
+  /// to tell whether its kept result is still the blur of it.
+  backdrop_regions: Vec<Option<BackdropRegion>>,
+  backdrop_inputs: BackdropInputs,
   /// Draw calls `encode_frame` recorded for the render list, layer
   /// composites included; Canvas draws are not counted.
   #[cfg(feature = "perf_profile")]
   draw_calls: usize,
+  /// What the layers and blurs of the frame `encode_frame` recorded cost.
+  #[cfg(feature = "perf_profile")]
+  layer_profile: crate::app::profile_types::LayerProfile,
 }
 
 /// A recorded-but-not-yet-read screenshot: the readback buffer the back
@@ -2437,23 +2467,32 @@ fn rect_instances(rect: &RectCmd, gradient_offset: f32) -> ([QuadInstance; 2], u
 /// A draw of the render list, in paint order.
 enum OrderedDraw {
   Rect(usize),
-  Glyph {
-    start: usize,
-    count: usize,
-  },
+  Glyph(GlyphRun),
   #[cfg(feature = "raster")]
   Image(usize),
   #[cfg(feature = "svg")]
   Svg(usize),
 }
 
-fn same_clip(a: ClipRect, b: ClipRect) -> bool {
-  a.active == b.active
-    && a.x == b.x
-    && a.y == b.y
-    && a.width == b.width
-    && a.height == b.height
-    && a.border_radius == b.border_radius
+impl OrderedDraw {
+  /// The draw as the inputs of backdrop blurs are told from it.
+  fn painted(&self) -> PaintedDraw {
+    match *self {
+      Self::Rect(index) => PaintedDraw::Rect(index),
+      Self::Glyph(GlyphRun { start, count, .. }) => PaintedDraw::Glyphs { start, count },
+      #[cfg(feature = "raster")]
+      Self::Image(index) => PaintedDraw::Image(index),
+      #[cfg(feature = "svg")]
+      Self::Svg(index) => PaintedDraw::Svg(index),
+    }
+  }
+
+  fn glyph_run(&self) -> Option<GlyphRun> {
+    match self {
+      Self::Glyph(run) => Some(*run),
+      _ => None,
+    }
+  }
 }
 
 /// Globals for a draw clipped by `clip`, already in `space`'s pixels.
@@ -2804,9 +2843,14 @@ impl Dx12State {
       space: TargetSpace::window(width.max(1) as f32, height.max(1) as f32),
       layer_plan: LayerPlan::default(),
       layer_slots: Vec::new(),
+      glyph_instances: Vec::new(),
       layer_compositor: None,
+      backdrop_regions: Vec::new(),
+      backdrop_inputs: BackdropInputs::default(),
       #[cfg(feature = "perf_profile")]
       draw_calls: 0,
+      #[cfg(feature = "perf_profile")]
+      layer_profile: Default::default(),
     };
     state.create_render_targets()?;
     state.frame_index = state.swapchain.GetCurrentBackBufferIndex() as usize;
@@ -2834,6 +2878,8 @@ impl Dx12State {
     )?;
     self.width = width;
     self.height = height;
+    // A window of another size has other pixels behind its glass.
+    self.forget_backdrops();
     self.create_render_targets()?;
     self.frame_index = self.swapchain.GetCurrentBackBufferIndex() as usize;
     Ok(())
@@ -2926,6 +2972,8 @@ impl Dx12State {
       .map(|context| context.phase(crate::app::profiler::Phase::RenderSubmit));
     let command_list: ID3D12CommandList = dx12_context(self.command_list.cast(), "cast dx12 command list")?;
     self.command_queue.ExecuteCommandLists(&[Some(command_list)]);
+    // The textures the frame blurred backdrops into hold them from here on.
+    self.layer_frame_submitted();
     #[cfg(feature = "canvas")]
     if let Some(renderer) = &mut self.canvas_renderer {
       renderer.submitted();
@@ -2989,7 +3037,14 @@ impl Dx12State {
   }
 
   unsafe fn encode_frame(&mut self, list: &RenderList) -> Result<(GlyphAtlasUploadStats, std::time::Duration)> {
-    profile_if! { self.draw_calls = 0; }
+    profile_if! {
+      self.draw_calls = 0;
+      // The window is one pass, whatever else the frame takes.
+      self.layer_profile = crate::app::profile_types::LayerProfile {
+        render_passes: 1,
+        ..Default::default()
+      };
+    }
     let target = self.current_render_target();
     self.transition_resource(
       &target,
@@ -3210,26 +3265,21 @@ impl Dx12State {
     for (index, rect) in list.rects.iter().enumerate() {
       ordered_draws.push((rect.order, OrderedDraw::Rect(index)));
     }
-    let mut glyph_start = 0;
-    while glyph_start < list.glyphs.len() {
-      let order = list.glyphs[glyph_start].order;
-      let clip = list.glyphs[glyph_start].clip;
-      let mut glyph_end = glyph_start + 1;
-      while glyph_end < list.glyphs.len()
-        && list.glyphs[glyph_end].order == order
-        && same_clip(list.glyphs[glyph_end].clip, clip)
-      {
-        glyph_end += 1;
-      }
-      ordered_draws.push((
-        order,
-        OrderedDraw::Glyph {
-          start: glyph_start,
-          count: glyph_end - glyph_start,
-        },
-      ));
-      glyph_start = glyph_end;
-    }
+    let (window_width, window_height) = (self.width as f32, self.height as f32);
+    glyph_runs(
+      &list.glyphs,
+      |clip| {
+        scissor_rect(clip, window_width, window_height).map(|scissor| {
+          [
+            scissor.left as f32,
+            scissor.top as f32,
+            scissor.right as f32,
+            scissor.bottom as f32,
+          ]
+        })
+      },
+      |order, run| ordered_draws.push((order, OrderedDraw::Glyph(run))),
+    );
     #[cfg(feature = "raster")]
     for (index, image) in list.images.iter().enumerate() {
       ordered_draws.push((image.order, OrderedDraw::Image(index)));
@@ -3265,30 +3315,33 @@ impl Dx12State {
     slots: &mut Vec<Option<usize>>,
   ) -> Result<()> {
     slots.clear();
-    let layered = plan.has_layers() || plan.has_backdrops();
+    // A frame after one that kept a backdrop blur asks for it too: a glass
+    // that is gone gives its texture back.
+    let layered = plan.has_layers() || plan.has_backdrops() || self.keeps_backdrops();
     if layered {
       let targets: Vec<_> = plan
         .targets()
         .iter()
         .map(|target| target.layer.map(|layer| &list.layers[layer]))
         .collect();
-      // A backdrop blur reads the target its step is in.
-      let mut backdrops = vec![None; list.backdrops.len()];
-      for target in plan.targets() {
-        let (origin, size) = match target.layer {
-          Some(layer) => list.layers[layer].painted(),
-          None => ([0, 0], [self.width, self.height]),
-        };
-        for step in plan.steps(target) {
-          if let LayerStep::Backdrop(index) = step {
-            backdrops[*index] = crate::layout::backdrop::BackdropRegion::new(&list.backdrops[*index], origin, size);
-          }
-        }
-      }
-      dx12_context(
-        self.begin_layer_frame(&targets, &backdrops, slots),
-        "prepare dx12 opacity layers",
-      )?;
+      // A backdrop blur reads the target its step is in. One whose kept
+      // result is still the blur of what it reads takes that; the others run.
+      let window = [self.width, self.height];
+      let mut regions = std::mem::take(&mut self.backdrop_regions);
+      let mut inputs = std::mem::take(&mut self.backdrop_inputs);
+      backdrop_regions(list, plan, window, &mut regions);
+      inputs.describe(
+        list,
+        plan,
+        draws.len(),
+        |index| draws[index].1.painted(),
+        &regions,
+        window,
+      );
+      let begun = self.begin_layer_frame(&targets, &regions, &inputs, window, slots);
+      self.backdrop_regions = regions;
+      self.backdrop_inputs = inputs;
+      dx12_context(begun, "prepare dx12 opacity layers")?;
     }
     for (target_index, target) in plan.targets().iter().enumerate() {
       let layer_slot = slots.get(target_index).copied().flatten();
@@ -3300,8 +3353,30 @@ impl Dx12State {
       for step in plan.steps(target) {
         match step {
           LayerStep::Draws(range) => {
-            for (_, draw) in &draws[range.clone()] {
-              self.draw_one(list, draw)?;
+            let draws = &draws[range.clone()];
+            let mut next_draw = 0;
+            while let Some((_, draw)) = draws.get(next_draw) {
+              next_draw += 1;
+              // The texts painted next join this draw: those under its clip,
+              // or any that no clip cuts when none cuts this one.
+              if let OrderedDraw::Glyph(run) = *draw {
+                let following = draws[next_draw..].iter().map(|(_, draw)| draw.glyph_run());
+                let batch = batch_glyph_runs(&list.glyphs, run, following, self.space.is_window());
+                next_draw += batch.joined;
+                let start = run.start;
+                let glyphs = &list.glyphs[start..start + batch.count];
+                let clip = if batch.unclipped {
+                  ClipRect::default()
+                } else {
+                  glyphs[0].clip
+                };
+                dx12_context(
+                  self.draw_glyphs(glyphs, clip),
+                  format_args!("draw dx12 glyph runs start={start} count={}", batch.count),
+                )?;
+              } else {
+                self.draw_one(list, draw)?;
+              }
             }
           }
           LayerStep::Backdrop(index) => {
@@ -3336,8 +3411,8 @@ impl Dx12State {
         self.draw_rect(&list.rects[index]),
         format_args!("draw dx12 rect #{index}"),
       ),
-      OrderedDraw::Glyph { start, count } => dx12_context(
-        self.draw_glyphs(&list.glyphs[start..start + count]),
+      OrderedDraw::Glyph(GlyphRun { start, count, .. }) => dx12_context(
+        self.draw_glyphs(&list.glyphs[start..start + count], list.glyphs[start].clip),
         format_args!("draw dx12 glyph run start={start} count={count}"),
       ),
       #[cfg(feature = "raster")]
@@ -3424,7 +3499,9 @@ impl Dx12State {
     Ok(())
   }
 
-  unsafe fn draw_glyphs(&mut self, glyphs: &[GlyphCmd]) -> Result<()> {
+  /// Draws `glyphs`, the runs of one batch, under `clip`: the clip they
+  /// share, or none when no clip cuts them.
+  unsafe fn draw_glyphs(&mut self, glyphs: &[GlyphCmd], clip: ClipRect) -> Result<()> {
     if glyphs.is_empty() {
       return Ok(());
     }
@@ -3439,9 +3516,8 @@ impl Dx12State {
       }
       return Ok(());
     }
-    let Some(scissor) = scissor_rect(self.space.clip(glyphs[0].clip), self.space.width, self.space.height) else {
+    let Some(scissor) = scissor_rect(self.space.clip(clip), self.space.width, self.space.height) else {
       if crate::app::glyph_engine::glyph_debug_marker().is_some() {
-        let clip = glyphs[0].clip;
         eprintln!(
           "[glyph-debug] dx12 SKIPPED batch of {} glyphs: degenerate scissor from clip ({}, {}, {}x{}, active={}) surface {}x{}",
           glyphs.len(),
@@ -3459,13 +3535,14 @@ impl Dx12State {
 
     let atlas = self.glyph_atlas.as_ref().unwrap();
     let atlas_inverse = [1.0 / atlas.width.max(1) as f32, 1.0 / atlas.height.max(1) as f32];
-    let instances: Vec<GlyphInstance> = glyphs
-      .iter()
-      .map(|glyph| glyph_instance(glyph, atlas_inverse))
-      .collect();
-    let instance_upload = self.upload_frame_pod_slice(&instances, 16)?;
-    let instance_view = instance_upload.vertex_view::<GlyphInstance>();
-    let globals = globals_for_clip(self.space.clip(glyphs[0].clip), &self.space);
+    let mut instances = std::mem::take(&mut self.glyph_instances);
+    instances.clear();
+    instances.extend(glyphs.iter().map(|glyph| glyph_instance(glyph, atlas_inverse)));
+    let instance_upload = self.upload_frame_pod_slice(&instances, 16);
+    let instance_count = instances.len() as u32;
+    self.glyph_instances = instances;
+    let instance_view = instance_upload?.vertex_view::<GlyphInstance>();
+    let globals = globals_for_clip(self.space.clip(clip), &self.space);
     let globals_upload = self.upload_frame_constant(&globals)?;
 
     let descriptor_heaps = [Some(self.srv_heap.heap.clone()), Some(self.sampler_heap.heap.clone())];
@@ -3489,7 +3566,7 @@ impl Dx12State {
     self.command_list.IASetVertexBuffers(0, Some(&vertex_views));
     self
       .command_list
-      .DrawIndexedInstanced(QuadVertex::INDICES.len() as u32, instances.len() as u32, 0, 0, 0);
+      .DrawIndexedInstanced(QuadVertex::INDICES.len() as u32, instance_count, 0, 0, 0);
     profile_if! { self.draw_calls += 1; }
 
     Ok(())

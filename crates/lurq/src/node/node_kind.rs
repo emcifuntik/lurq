@@ -223,6 +223,32 @@ pub(crate) enum NodeKind {
   },
 }
 
+impl NodeKind {
+  /// Whether a node of this kind is painted differently under the pointer, whatever `hovered` style it has: a
+  /// checkbox's box, a slider's parts, a select's trigger, a link's look in its paragraph. A hover that shows
+  /// nothing draws no frame, so every kind is listed and a new one has to say which it is.
+  pub(crate) fn paints_hover(&self) -> bool {
+    match self {
+      Self::Checkbox { .. } | Self::Slider { .. } | Self::Select { .. } => true,
+      #[cfg(feature = "markdown")]
+      Self::InlineLink { .. } => true,
+      Self::Empty | Self::Text { .. } | Self::TextInput { .. } => false,
+      #[cfg(feature = "canvas")]
+      Self::Canvas { .. } => false,
+      #[cfg(feature = "markdown")]
+      Self::RichText { .. } => false,
+      #[cfg(feature = "raster")]
+      Self::Image { .. } | Self::Video { .. } => false,
+      #[cfg(feature = "image")]
+      Self::LoadingImage { .. } | Self::ResourceImage { .. } => false,
+      #[cfg(feature = "svg")]
+      Self::Svg { .. } => false,
+      #[cfg(all(feature = "svg", feature = "resources"))]
+      Self::ResourceSvg { .. } => false,
+    }
+  }
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) struct TextStyleSource {
   base: TextStyleBase,

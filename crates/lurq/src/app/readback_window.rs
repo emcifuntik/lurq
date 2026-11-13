@@ -133,6 +133,30 @@ pub(super) fn capture_each(
     .collect()
 }
 
+/// A hidden `width` x `height` window an engine renders one frame after
+/// another into, for tests that look at the engine between its frames.
+pub(super) struct Frames {
+  window: HiddenWindow,
+  width: u32,
+  height: u32,
+}
+
+impl Frames {
+  pub(super) fn new(engine: &mut dyn RenderEngine, width: u32, height: u32) -> Self {
+    engine.resize(width, height);
+    Self {
+      window: HiddenWindow::new(width, height),
+      width,
+      height,
+    }
+  }
+
+  /// Renders `list` as the engine's next frame and captures it.
+  pub(super) fn capture(&self, engine: &mut dyn RenderEngine, list: &RenderList) -> CapturedFrame {
+    capture_frame(engine, &self.window, list, self.width, self.height)
+  }
+}
+
 fn capture_frame(
   engine: &mut dyn RenderEngine,
   window: &HiddenWindow,

@@ -286,6 +286,48 @@ impl App {
     self.shared.glyph_engine.lock().install_fonts(fonts, aliases);
   }
 
+  /// Prepares the fonts `styles` are drawn with, so that the first frame
+  /// that draws them does not have to.
+  ///
+  /// The first text of each family, weight and slant makes the text engine
+  /// score every font face on the system for it: 4 to 11 ms a combination on
+  /// a Windows desktop, on the frame that first shows it. This does it now
+  /// instead. Sizes, colours and spacing do not matter: a regular and a bold
+  /// style of a family cover every size of them.
+  ///
+  /// It blocks for that long, so call it where that costs nothing: `App` is
+  /// `Send`, and a clone of it on a thread of its own can warm the fonts
+  /// while the window and the renderer are created. Call it after the fonts
+  /// are loaded: loading a font forgets what was prepared.
+  ///
+  /// The theme's bold text (`Theme::bold_text`) draws every text two weights
+  /// heavier, and the fonts are prepared at those weights when the theme has
+  /// it. A shell that reads the setting from the system does so when its
+  /// window starts: fonts prepared before that are the lighter ones.
+  ///
+  /// ```no_run
+  /// # use lurq::{app::App, layout::text_style::{FontWeight, TextStyle}};
+  /// let app = App::new();
+  /// let warming = app.clone();
+  /// std::thread::spawn(move || {
+  ///   let bold = TextStyle {
+  ///     weight: FontWeight::Bold,
+  ///     ..TextStyle::default()
+  ///   };
+  ///   warming.warm_text_styles(&[TextStyle::default(), bold]);
+  /// });
+  /// ```
+  pub fn warm_text_styles<'a>(&self, styles: impl IntoIterator<Item = &'a crate::layout::text_style::TextStyle>) {
+    let bold_text = self.shared.theme.bold_text();
+    for style in styles {
+      // A lock per style: a frame that wants the engine gets in between.
+      let mut engine = self.shared.glyph_engine.lock();
+      // As a pass sets it, so the pass finds what is prepared here.
+      engine.set_bold_text(bold_text);
+      engine.warm_style(style);
+    }
+  }
+
   #[cfg(feature = "resources")]
   pub fn set_resource_root(&mut self, root: PathBuf) {
     self.shared.resource_loader.lock().set_root(root);
@@ -352,5 +394,66 @@ impl App {
     E: crate::persistent_storage::IntoPersistentWrite,
   {
     self.persistent_storage().write_bulk(entries)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::App;
+  use crate::layout::text_style::{FontWeight, TextStyle};
+
+  fn bold() -> TextStyle {
+    TextStyle {
+      weight: FontWeight::Bold,
+      ..TextStyle::default()
+    }
+  }
+
+  #[test]
+  fn fonts_warmed_on_another_thread_measure_as_they_would() {
+    let untouched = App::new();
+    let warmed = App::new();
+    let warming = warmed.clone();
+    std::thread::spawn(move || warming.warm_text_styles(&[TextStyle::default(), bold()]))
+      .join()
+      .expect("the warming thread");
+
+    for style in [TextStyle::default(), bold()] {
+      for text in ["Ag", "Voice and text for the team", "wrapped\nlines"] {
+        let expected = untouched
+          .shared
+          .glyph_engine
+          .lock()
+          .measure_text(text, &style, f32::MAX);
+        let measured = warmed.shared.glyph_engine.lock().measure_text(text, &style, f32::MAX);
+        assert_eq!(
+          (measured.width, measured.height),
+          (expected.width, expected.height),
+          "{text:?}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn fonts_are_warmed_at_the_weights_bold_text_draws() {
+    let app = App::new();
+    app.shared.theme.set_bold_text(true);
+    app.warm_text_styles(&[TextStyle::default()]);
+
+    let mut engine = app.shared.glyph_engine.lock();
+    // What a pass does first. The engine has the setting already, so nothing
+    // prepared is dropped, and the sample measured to warm the font is found.
+    engine.set_bold_text(true);
+    engine.measure_text("Ag", &TextStyle::default(), f32::MAX);
+    assert_eq!((engine.measure_hits, engine.measure_misses), (1, 1));
+  }
+
+  #[test]
+  fn warming_no_styles_does_nothing() {
+    let app = App::new();
+    app.warm_text_styles(&[]);
+    let engine = app.shared.glyph_engine.lock();
+    assert_eq!((engine.measure_hits, engine.measure_misses), (0, 0));
   }
 }

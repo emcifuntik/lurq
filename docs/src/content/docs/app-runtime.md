@@ -206,7 +206,19 @@ The profile records high-level timings such as layout, resolve, glyph, upload, e
 
 ## Performance Notes
 
-The plain-text pipeline reuses shaped paragraphs, wrapped layouts, and caret geometry. The current cache has a 48 MiB accounted budget per glyph engine and a 64-entry limit. See [Text Pipeline Optimization](../text-pipeline-optimization/) for implementation details and dated measurements; profile the current app and renderer before choosing the next optimization.
+The plain-text pipeline reuses shaped paragraphs, wrapped layouts, and caret geometry. Documents (plain texts of 1,024 bytes and more) share a cache with a 48 MiB accounted budget per glyph engine and a 64-entry limit; shorter texts are kept shaped in a 4 MiB cache of their own and laid out again, not shaped again, when their width or size changes. See [Text Pipeline Optimization](../text-pipeline-optimization/) for implementation details and dated measurements; profile the current app and renderer before choosing the next optimization.
+
+The first text of each font family, weight and slant is slow: the text engine scores every font face on the system for it, 4 to 11 ms a combination on a Windows desktop, on the frame that first shows it. `App::warm_text_styles` does that ahead of time. It blocks for as long, so call it on a thread of your own, after loading fonts and before the first frame:
+
+```rust
+let warming = app.clone();
+std::thread::spawn(move || {
+  let bold = TextStyle { weight: FontWeight::Bold, ..TextStyle::default() };
+  warming.warm_text_styles(&[TextStyle::default(), bold]);
+});
+```
+
+Size, colour and spacing do not matter; one style per family, weight and slant is enough. Loading a font afterwards forgets what was prepared.
 
 ## DevTools Window
 

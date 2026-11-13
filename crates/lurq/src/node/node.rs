@@ -4896,6 +4896,17 @@ impl Node {
     self.style_state.is_hovered()
   }
 
+  /// Whether the node is drawn differently under the pointer: it has a `hovered` style, its kind paints a hover
+  /// look of its own (as does a slider behind single-child wrappers, which takes the hover of each), or it
+  /// scrolls, so that its scrollbar can show for the pointer and lose the pointer with it. The hover an app
+  /// reads from an element ref or an [`InteractionState`] is no signal, so it is drawn by nothing.
+  pub(crate) fn shows_hover(&self) -> bool {
+    self.state_styles.hovered.is_some()
+      || self.node_kind.paints_hover()
+      || self.slider_state().is_some()
+      || self.scroll_container().is_some()
+  }
+
   pub(crate) fn is_style_focused(&self) -> bool {
     self.style_state.is_focused()
   }
