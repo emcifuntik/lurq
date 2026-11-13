@@ -441,6 +441,10 @@ fn menu_scrollbar_insets_clear_the_menu_corners() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn scrollbar_insets_default_to_padding() {
   let style = ScrollBarStyle::default();
   assert_eq!(style.resolved_edge_inset(), style.padding);

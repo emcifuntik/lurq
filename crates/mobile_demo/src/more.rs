@@ -94,8 +94,14 @@ fn page(ctx: &mut Ctx, content: Column) -> Element {
 fn first(ctx: &mut Ctx) -> Element {
   ctx.navigation_item(NavigationItem::new("More"));
   let tabs = ctx.use_context::<Tabs>();
+  let opener = ctx.window_opener();
   let mut content = Column::new()
-    .child(caption("A tab of its own: go to the other one and come back, and this one is as it was left.").width(FILL));
+    .child(caption("A tab of its own: go to the other one and come back, and this one is as it was left.").width(FILL))
+    .child(
+      caption("Another window of the app: a tablet shows it beside this one, a phone when a display is plugged in.")
+        .width(FILL),
+    )
+    .child(button("Open another window", move || crate::other_window::open(&opener, false)).width(FILL));
   if let Some(tabs) = tabs {
     let (more, fewer, hide) = (tabs.clone(), tabs.clone(), tabs.clone());
     let waiting = tabs

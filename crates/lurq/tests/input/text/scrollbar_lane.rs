@@ -94,6 +94,10 @@ fn select_text(runtime: &mut Tree, y: f32) {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn horizontal_press_just_above_thumb_drags_instead_of_selecting() {
   for offset in [1.0, 2.0, 3.0] {
     let (mut runtime, state) = horizontal_text_scroller(thin_overlay_bar());
@@ -108,6 +112,10 @@ fn horizontal_press_just_above_thumb_drags_instead_of_selecting() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn horizontal_press_between_thumb_and_edge_drags_instead_of_selecting() {
   let (mut runtime, state) = horizontal_text_scroller(thin_overlay_bar());
   let (x, y, width, height) = thumb(&state, ScrollAxis::Horizontal);
@@ -120,6 +128,10 @@ fn horizontal_press_between_thumb_and_edge_drags_instead_of_selecting() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn horizontal_thumb_press_arms_no_selection() {
   let (mut runtime, state) = horizontal_text_scroller(thin_overlay_bar());
   select_text(&mut runtime, 8.0);
@@ -144,6 +156,10 @@ fn horizontal_thumb_press_arms_no_selection() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn horizontal_track_press_pages_toward_the_press() {
   let (mut runtime, state) = horizontal_text_scroller(thin_tracked_bar());
   let max_scroll = state.content_width() - state.viewport_width();
@@ -179,6 +195,10 @@ fn horizontal_press_on_text_still_selects() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn hovering_a_plain_overlay_bar_hovers_only_around_its_thumb() {
   let (mut runtime, state) = horizontal_text_scroller(thin_overlay_bar());
   let (x, y, width, _) = thumb(&state, ScrollAxis::Horizontal);
@@ -193,6 +213,10 @@ fn hovering_a_plain_overlay_bar_hovers_only_around_its_thumb() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn hovering_the_lane_of_a_painted_track_hovers_the_scrollbar() {
   let (mut runtime, state) = horizontal_text_scroller(thin_tracked_bar());
   let (_, y, ..) = thumb(&state, ScrollAxis::Horizontal);
@@ -214,6 +238,10 @@ fn press_on_the_unpainted_track_of_a_plain_overlay_bar_does_not_page() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn vertical_press_just_left_of_thumb_drags_instead_of_selecting() {
   for offset in [1.0, 2.0, 3.0] {
     let (mut runtime, state) = vertical_text_scroller(thin_overlay_bar());
@@ -228,6 +256,10 @@ fn vertical_press_just_left_of_thumb_drags_instead_of_selecting() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn vertical_thumb_press_arms_no_selection() {
   let (mut runtime, state) = vertical_text_scroller(thin_overlay_bar());
   select_text(&mut runtime, 8.0);
@@ -252,6 +284,10 @@ fn vertical_thumb_press_arms_no_selection() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn vertical_track_press_pages_toward_the_press() {
   let (mut runtime, state) = vertical_text_scroller(thin_tracked_bar());
   let (x, _, width, _) = thumb(&state, ScrollAxis::Vertical);
@@ -283,6 +319,10 @@ fn vertical_press_on_text_still_selects() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn press_anywhere_in_a_reserved_gutter_drags_instead_of_selecting() {
   let state = ScrollState::new();
   let mut column = Column::new().spacing(0.0);

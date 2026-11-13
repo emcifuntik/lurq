@@ -209,6 +209,10 @@ fn assert_clip_edge(actual: f32, expected: f32, what: &str) {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_scrollbar_runs_at_the_edge_of_a_padded_input() {
   for placement in [ScrollBarPlacement::Overlay, ScrollBarPlacement::Reserved] {
     let mut editor = Editor::new(placement);
@@ -239,6 +243,10 @@ fn text_input_scrollbar_runs_at_the_edge_of_a_padded_input() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_reserved_scrollbar_keeps_the_padding_between_the_bar_and_the_text() {
   let mut reserved = Editor::new(ScrollBarPlacement::Reserved);
   let track = reserved.track();
@@ -268,6 +276,10 @@ fn text_input_reserved_scrollbar_keeps_the_padding_between_the_bar_and_the_text(
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_scrollbar_takes_the_pointer_where_it_is_drawn() {
   let mut editor = Editor::new(ScrollBarPlacement::Overlay);
   let thumb = editor.thumb();
@@ -302,6 +314,10 @@ fn text_input_scrollbar_takes_the_pointer_where_it_is_drawn() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_scrollbar_track_press_pages_the_text() {
   let mut editor = Editor::new(ScrollBarPlacement::Overlay);
   let track = editor.track();

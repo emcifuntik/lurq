@@ -92,9 +92,9 @@ impl Editor {
     self.tree.key_down(key.into(), key.into(), false, false, false);
   }
 
-  /// Ctrl+key, or Cmd+key on macOS.
+  /// Ctrl+key, or Cmd+key on macOS and iOS.
   pub(super) fn shortcut(&mut self, key: &str, code: &str, shift: bool) {
-    let (ctrl, meta) = (cfg!(not(target_os = "macos")), cfg!(target_os = "macos"));
+    let (ctrl, meta) = (cfg!(not(target_vendor = "apple")), cfg!(target_vendor = "apple"));
     self
       .tree
       .key_down_with_meta(key.into(), code.into(), shift, ctrl, false, meta);

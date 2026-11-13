@@ -1108,6 +1108,10 @@ fn on_a_virtual_clock_twelve_steps_draw_twelve_frames_a_second() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn a_middle_button_autoscroll_moves_the_content_at_every_refresh_and_then_lets_the_loop_wait() {
   use crate::{
     components::{Column, ScrollVertical},

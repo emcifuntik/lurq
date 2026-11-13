@@ -48,7 +48,7 @@ pub enum LayoutKind {
     culling: bool,
     /// A middle-button press scrolls the container by how far the pointer
     /// moves from where the button went down; see
-    /// [`Node::middle_button_autoscroll`](crate::node::node::Node::middle_button_autoscroll).
+    /// `Node::middle_button_autoscroll`.
     middle_button_autoscroll: bool,
   },
 }
@@ -133,6 +133,8 @@ struct ScrollStateInner {
   scrolls_to_top: bool,
   /// See [`ScrollState::set_keyboard_dismissal`].
   keyboard_dismissal: KeyboardDismissal,
+  /// See [`ScrollState::set_paging`].
+  paging: bool,
   pending_scroll_x: Option<PendingScroll>,
   pending_scroll_y: Option<PendingScroll>,
   max_scroll_x: f32,
@@ -204,6 +206,7 @@ impl ScrollState {
         overscroll_y: 0.0,
         scrolls_to_top: true,
         keyboard_dismissal: KeyboardDismissal::None,
+        paging: false,
         pending_scroll_x: None,
         pending_scroll_y: None,
         max_scroll_x: 0.0,
@@ -275,6 +278,34 @@ impl ScrollState {
 
   pub fn keyboard_dismissal(&self) -> KeyboardDismissal {
     self.inner.lock().unwrap().keyboard_dismissal
+  }
+
+  /// Whether a finger scrolls this container a page at a time, a page being as long as the viewport: when
+  /// the finger lifts the content goes on to the page it was thrown at, or back to the nearest, and never
+  /// further than the page beside the one the finger started on. It does not unless set. A wheel and a
+  /// scroll bar scroll as they always do.
+  pub fn set_paging(&self, paging: bool) {
+    self.inner.lock().unwrap().paging = paging;
+  }
+
+  pub fn paging(&self) -> bool {
+    self.inner.lock().unwrap().paging
+  }
+
+  /// The page the content is at along each axis, counted from 0: the nearest, while it is between two.
+  pub fn page(&self) -> (usize, usize) {
+    let inner = self.inner.lock().unwrap();
+    let page = |offset: f32, size: f32| {
+      if size > 0.0 {
+        (offset / size).round().max(0.0) as usize
+      } else {
+        0
+      }
+    };
+    (
+      page(inner.scroll_x, inner.viewport_width),
+      page(inner.scroll_y, inner.viewport_height),
+    )
   }
 
   /// How far the content is drawn past its ends, along each axis: negative before the start, positive beyond

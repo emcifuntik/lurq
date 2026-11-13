@@ -156,8 +156,13 @@ impl Component for SheetsScreen {
             // The signal sends the sheet to its other height, as a finger does.
             .child({
               let to = self.height.clone();
-              text(if height == 0 { "Taller" } else { "Lower" }, 17.0, FontWeight::Normal, PRIMARY)
-                .on_click(move |_| to.set(1 - to.get_untracked()))
+              text(
+                if height == 0 { "Taller" } else { "Lower" },
+                17.0,
+                FontWeight::Normal,
+                PRIMARY,
+              )
+              .on_click(move |_| to.set(1 - to.get_untracked()))
             }),
         )
         .child(

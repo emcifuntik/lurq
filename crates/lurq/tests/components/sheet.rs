@@ -3,7 +3,12 @@
 use std::time::{Duration, Instant};
 
 use lurq::{
-  app::{App, Tree, component::Component, ctx::Ctx, events::MouseButton, events::TouchPhase},
+  app::{
+    App, Tree,
+    component::Component,
+    ctx::Ctx,
+    events::{MouseButton, TouchPhase},
+  },
   components::{Column, Sheet, SheetDetent, SheetHost, SheetProps, SheetStyle, Spacer, Text},
   core::Signal,
   node::{Element, color::Color, dimension::Dimension},

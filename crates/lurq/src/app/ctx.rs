@@ -2218,7 +2218,7 @@ impl Ctx {
 
   /// How far in from each edge of the window this component's content stays clear of what is over it there:
   /// the window's [`safe_area`](crate::app::window::WindowInfo), and at the bottom also the bar a component
-  /// around this one draws over its content, as a [`TabOutlet`](crate::components::TabOutlet) does. Content
+  /// around this one draws over its content, as a `TabOutlet` does. Content
   /// that scrolls under such a bar is padded by this inside its list, and shows through the bar.
   pub fn safe_area(&mut self) -> crate::app::window::SafeAreaInsets {
     if self.use_context::<SafeAreaTaken>().is_some() {

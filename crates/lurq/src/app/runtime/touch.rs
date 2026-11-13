@@ -27,6 +27,10 @@ const SPRING_REST: f32 = 0.5;
 const SPRING_MIN: Duration = Duration::from_millis(100);
 /// How long a list takes to scroll to its top when the status bar is tapped.
 const TO_TOP: Duration = Duration::from_millis(350);
+/// The angular frequency, per second, of the spring that brings a list that scrolls by pages to a page, and
+/// the slowest lift, in logical pixels per second, that throws it at the next one. Both set by eye.
+const PAGE_FREQUENCY: f32 = 14.0;
+const PAGE_FLICK: f32 = 200.0;
 
 /// How a finger's scroll goes on after the finger lifts. The default is a scroll view of the platform's:
 /// `UIScrollView` at its normal deceleration rate.
@@ -118,10 +122,41 @@ struct Spring {
 impl Spring {
   /// A critically damped spring's place `elapsed` after it started.
   fn at(&self, elapsed: f32) -> (f32, f32) {
-    let decay = (-SPRING_FREQUENCY * elapsed).exp();
-    let axis = |from: f32, velocity: f32| (from + (velocity + SPRING_FREQUENCY * from) * elapsed) * decay;
+    self.at_frequency(SPRING_FREQUENCY, elapsed)
+  }
+
+  fn at_frequency(&self, frequency: f32, elapsed: f32) -> (f32, f32) {
+    let decay = (-frequency * elapsed).exp();
+    let axis = |from: f32, velocity: f32| (from + (velocity + frequency * from) * elapsed) * decay;
     (axis(self.from.0, self.velocity.0), axis(self.from.1, self.velocity.1))
   }
+}
+
+/// A list that scrolls by pages on its way to one.
+struct PageMove {
+  /// The offset of the page.
+  to: (f32, f32),
+  /// How far the content is from it, and how fast it was going when the finger lifted.
+  spring: Spring,
+}
+
+/// Along one axis: the offset of the page content at `offset` goes to when a finger that started on the page
+/// at `began` lifts at `speed`, in logical pixels per second of the offset. Thrown, it goes to the next page
+/// that way; let go, to the nearest; and no further than the page beside the one it started on.
+fn page_target(offset: f32, began: f32, size: f32, end: f32, speed: f32) -> f32 {
+  if size <= 0.0 || end <= 0.0 {
+    return offset.clamp(0.0, end.max(0.0));
+  }
+  let from = (began / size).round();
+  let at = offset / size;
+  let page = if speed > PAGE_FLICK {
+    at.ceil()
+  } else if speed < -PAGE_FLICK {
+    at.floor()
+  } else {
+    at.round()
+  };
+  (page.clamp(from - 1.0, from + 1.0) * size).clamp(0.0, end)
 }
 
 /// A finger's scroll gesture and what it left the content doing.
@@ -134,6 +169,12 @@ pub(super) struct TouchScroll {
   pull: (f32, f32),
   spring: Option<Spring>,
   to_top: Option<ToTop>,
+  /// Where the content was when the gesture started: a list that scrolls by pages goes no further than the
+  /// page beside that one.
+  began: (f32, f32),
+  page: Option<PageMove>,
+  /// The page a list was going to when a finger caught it.
+  caught_page: Option<(f32, f32)>,
 }
 
 /// A list on its way to its top.
@@ -321,14 +362,71 @@ impl Tree {
     if !caught && let Some(previous) = &previous.taker {
       previous.state.set_overscroll(0.0, 0.0);
     }
+    // A list caught on its way to a page is still of the page it was going to.
+    let began = match (&taker, previous.caught_page) {
+      (Some(_), Some(page)) if caught => page,
+      (Some(taker), _) => taker.offsets(),
+      (None, _) => (0.0, 0.0),
+    };
     self.touch_scroll = TouchScroll {
       taker,
       around,
       pull,
       spring: None,
       to_top: None,
+      began,
+      page: None,
+      caught_page: None,
     };
     self.mark_touch_scroll_moved();
+  }
+
+  /// Whether what the gesture scrolls goes by pages ([`ScrollState::set_paging`]): the shell leaves it no
+  /// momentum when the finger lifts, and tells how fast it lifted instead
+  /// ([`touch_scroll_page`](Self::touch_scroll_page)).
+  pub fn touch_scroll_pages(&self) -> bool {
+    self
+      .touch_scroll
+      .taker
+      .as_ref()
+      .is_some_and(|taker| taker.state.paging())
+  }
+
+  /// A finger let go of a list that scrolls by pages, at a velocity in physical pixels per second: the list
+  /// goes on to a page. Does nothing to content pulled past an end, which springs back to its last page.
+  pub fn touch_scroll_page(&mut self, velocity_x: f32, velocity_y: f32, now: Instant) {
+    let scale = self.scale_factor();
+    let Some(taker) = &self.touch_scroll.taker else {
+      return;
+    };
+    if !taker.state.paging() || self.touch_scroll.spring.is_some() {
+      return;
+    }
+    let (offsets, ends, viewport) = (taker.offsets(), taker.ends(), taker.viewport());
+    // A finger going up or left brings later content: the offset goes the other way from the finger.
+    let speed = (-velocity_x / scale, -velocity_y / scale);
+    let began = self.touch_scroll.began;
+    let to = (
+      page_target(offsets.0, began.0, viewport.0, ends.0, speed.0),
+      page_target(offsets.1, began.1, viewport.1, ends.1, speed.1),
+    );
+    if to == offsets {
+      return;
+    }
+    self.touch_scroll.page = Some(PageMove {
+      to,
+      spring: Spring {
+        from: (offsets.0 - to.0, offsets.1 - to.1),
+        // Along an axis the list does not move on, how fast the finger went is nothing to it.
+        velocity: (
+          if to.0 == offsets.0 { 0.0 } else { speed.0 },
+          if to.1 == offsets.1 { 0.0 } else { speed.1 },
+        ),
+        started: now,
+        released: false,
+      },
+    });
+    self.needs_redraw = true;
   }
 
   /// Scrolls what the gesture started on by a travel in physical pixels: a finger's, or its momentum's after
@@ -419,6 +517,12 @@ impl Tree {
     let Some(taker) = &self.touch_scroll.taker else {
       return false;
     };
+    // A list on its way to a page stops between two, and is still of the page it was going to.
+    if let Some(page) = self.touch_scroll.page.take() {
+      self.touch_scroll.began = page.to;
+      self.touch_scroll.caught_page = Some(page.to);
+      return true;
+    }
     if self.touch_scroll.spring.take().is_none() {
       return false;
     }
@@ -427,7 +531,8 @@ impl Tree {
     true
   }
 
-  /// Lets go of content a finger held still: past an end, it springs back from where it is.
+  /// Lets go of content a finger held still: past an end, it springs back from where it is, and between two
+  /// pages of a list that scrolls by them, it goes to the nearest.
   pub fn touch_scroll_settle(&mut self) {
     let Some(taker) = &self.touch_scroll.taker else {
       return;
@@ -441,6 +546,8 @@ impl Tree {
         started: Instant::now(),
         released: true,
       });
+    } else {
+      self.touch_scroll_page(0.0, 0.0, Instant::now());
     }
   }
 
@@ -520,6 +627,7 @@ impl Tree {
       taker.state.set_overscroll(0.0, 0.0);
     }
     self.touch_scroll.spring = None;
+    self.touch_scroll.page = None;
     self.touch_scroll.pull = (0.0, 0.0);
     self.touch_scroll.to_top = Some(ToTop {
       from: state.scroll_y(),
@@ -534,7 +642,7 @@ impl Tree {
   /// Moves content that is springing back, or on its way to its top, to where it is at `now`. `true` while it
   /// is still on its way: the shell runs another turn for the next step.
   pub fn touch_tick(&mut self, now: Instant) -> bool {
-    let to_top = self.touch_to_top_tick(now) | self.touch_tap_highlight_tick(now);
+    let to_top = self.touch_to_top_tick(now) | self.touch_tap_highlight_tick(now) | self.touch_page_tick(now);
     let (Some(taker), Some(spring)) = (&self.touch_scroll.taker, &self.touch_scroll.spring) else {
       return to_top;
     };
@@ -570,9 +678,36 @@ impl Tree {
     !done
   }
 
-  /// Whether content is springing back or on its way to its top; see [`touch_tick`](Self::touch_tick).
+  /// Moves a list that scrolls by pages to where it is at `now` on its way to a page.
+  fn touch_page_tick(&mut self, now: Instant) -> bool {
+    let (Some(taker), Some(page)) = (&self.touch_scroll.taker, &self.touch_scroll.page) else {
+      return false;
+    };
+    let elapsed = now.saturating_duration_since(page.spring.started);
+    let left = page.spring.at_frequency(PAGE_FREQUENCY, elapsed.as_secs_f32());
+    let rests = elapsed >= SPRING_MIN && left.0.abs() < SPRING_REST && left.1.abs() < SPRING_REST;
+    if rests {
+      taker.state.set_scroll(page.to.0, page.to.1);
+      self.touch_scroll.page = None;
+    } else {
+      // Thrown hard, the spring would carry the list past the page: it stops there.
+      let within = |from: f32, left: f32| if from * left < 0.0 { 0.0 } else { left };
+      taker.state.set_scroll(
+        page.to.0 + within(page.spring.from.0, left.0),
+        page.to.1 + within(page.spring.from.1, left.1),
+      );
+    }
+    self.mark_touch_scroll_moved();
+    !rests
+  }
+
+  /// Whether content is springing back, or on its way to its top or to a page; see
+  /// [`touch_tick`](Self::touch_tick).
   pub fn touch_animating(&self) -> bool {
-    self.touch_scroll.spring.is_some() || self.touch_scroll.to_top.is_some() || self.touch_tap_highlight_showing()
+    self.touch_scroll.spring.is_some()
+      || self.touch_scroll.to_top.is_some()
+      || self.touch_scroll.page.is_some()
+      || self.touch_tap_highlight_showing()
   }
 
   /// The taker's content moved: its layout and those around it place it anew, and the frame is drawn.

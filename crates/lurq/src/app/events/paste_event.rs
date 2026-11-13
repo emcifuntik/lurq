@@ -4,7 +4,7 @@ use super::{ClipboardContent, ClipboardImage, ClipboardKinds, EventControl};
 use crate::core::NodeId;
 
 /// A paste into a text input, before the text is inserted: Ctrl+V (Cmd+V on
-/// macOS), Shift+Insert, a [`WindowHandle::paste_from_clipboard`] request (an
+/// macOS), Shift+Insert, a `WindowHandle::paste_from_clipboard` request (an
 /// app's context menu) and a synthetic paste all make one.
 ///
 /// The event carries what the clipboard holds. A handler on the input, or on
@@ -13,8 +13,6 @@ use crate::core::NodeId;
 /// long text into an attachment the same way, or leaves plain text to paste
 /// as it always did. Only the text is inserted by default; an image or files
 /// without a handler do nothing.
-///
-/// [`WindowHandle::paste_from_clipboard`]: crate::app::window::WindowHandle::paste_from_clipboard
 #[derive(Clone)]
 pub struct PasteEvent {
   content: Arc<ClipboardContent>,

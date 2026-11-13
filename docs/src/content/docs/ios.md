@@ -170,8 +170,35 @@ One gesture scrolls one container, the innermost that has room in the finger's d
   the finger goes back up. `set_dismisses_keyboard(true)` is `OnDrag`.
 - **Momentum** can be changed for the whole window with `Tree::set_touch_momentum(TouchMomentum { .. })`:
   the deceleration rate, and the slowest and fastest speeds. The defaults are the platform's.
+- **By pages.** `ScrollState::set_paging(true)` has a finger scroll a list a page at a time, a page being as
+  long as the list's viewport: let go, the list goes to the nearest page; thrown, to the next one that way,
+  and never further than the page beside the one the finger started on. `ScrollState::page()` says which
+  page it is at. A wheel and a scroll bar scroll such a list as any other.
 
 `VirtualizedList` scrolls the same way.
+
+### Pinch to zoom
+
+`ZoomScroll` goes around content of a size the app says, a photo or a map: two fingers pinch it larger and
+smaller about their middle and carry it with them, a double tap goes in at the point tapped and back out,
+and one finger scrolls what is shown.
+
+```rust
+ZoomScroll::mount(
+  ctx,
+  ZoomScrollProps::new(photo_width, photo_height).range(fit, 4.0).zoom(self.zoom.clone()),
+  Image::new(photo).size(photo_width, photo_height),
+)
+```
+
+- The list fills what it is put in. `range` is the smallest and the largest scale, 1 and 4 unless set;
+  content shown smaller than the list lies in its middle.
+- `zoom(signal)` is the scale, to read and to set; `scroll(state)` is the list's `ScrollState`.
+  `double_tap(None)` leaves a double tap to the content.
+- The content is laid out once, at its own size, and drawn scaled: text in it is not laid out anew for the
+  size it is shown at.
+- A pinch stops at the smallest and the largest scale, where the platform's gives and springs back, and a
+  double tap changes the scale at once, with no move.
 
 ### Pull to refresh
 
@@ -294,6 +321,46 @@ ctx.window().on_app_event(move |event| match event {
 | `Shortcut(kind)` | The app was opened by one of its home screen shortcuts |
 | `Rotated(orientation)` | The way the content is turned: at the start, and whenever it changes |
 
+### More than one window
+
+A window an app opens with `ctx.window_opener()` is a scene of its own on iOS: a tablet shows it beside the
+first, or in its place, and the person moves between them as between the windows of any app. On a phone
+there is one scene, and a further window waits until a display is plugged in.
+
+```rust
+let opener = ctx.window_opener();
+ctx.window().on_app_event(move |event| {
+  // The person asked the system for another window, or plugged a display in.
+  if let AppEvent::WindowAsked { external } = event {
+    opener.open("Notes", 480, 640, move |app, tree| tree.mount_root::<Notes>(app, *external));
+  }
+});
+```
+
+- `AppEvent::WindowAsked` says the system has a place with no window in it: the next window the app opens is
+  shown there. While the app opens none the place is empty, and a display shows what the device does.
+- A window the person closes, and one on a display that is unplugged, is closed for the app too. A window
+  the app closes takes its scene with it, and the first window comes back in front.
+- The app's `Info.plist` allows several scenes, and names the delegate for a display's:
+
+```xml
+<key>UIApplicationSupportsMultipleScenes</key>
+<true/>
+<!-- in UISceneConfigurations, beside UIWindowSceneSessionRoleApplication -->
+<key>UIWindowSceneSessionRoleExternalDisplayNonInteractive</key>
+<array>
+  <dict>
+    <key>UISceneConfigurationName</key>
+    <string>Display</string>
+    <key>UISceneDelegateClassName</key>
+    <string>LurqSceneDelegate</string>
+  </dict>
+</array>
+```
+
+A finger presses and scrolls in a further window as in the first. It has no keyboard: a text input in it is
+not typed into. `Active`, `Background` and the rest are told of the first window alone.
+
 ### What the person set for the system
 
 The appearance, the text size, bold text, reduced motion and the rest of what a person sets for every app are
@@ -329,6 +396,35 @@ biometry::authenticate("Open your notes", AuthPolicy::BiometryOrPasscode, move |
 ```
 
 Off a phone there is nothing to ask: `available()` is `Biometry::None` and the answer is `Unavailable` at once.
+
+#### A secret behind the check
+
+An ask of the app's own guards nothing by itself: what it guards is in the app, which can be made to skip the
+ask. A token or a key an app logs in with is kept in the device's keychain instead, where the system asks for
+the face or the finger before it gives the secret back.
+
+```rust
+use lurq::app::biometry::{self, AuthPolicy, SecretError};
+
+biometry::keep_secret("session", token.as_bytes(), AuthPolicy::BiometryOrPasscode)?;
+
+let session = self.session.clone();
+biometry::read_secret("session", "Log you in", move |answer| match answer {
+  Ok(token) => session.set(Some(token)),
+  Err(SecretError::NotFound) => session.set(None), // nothing kept: ask for the password
+  Err(SecretError::Auth(_)) => {}                  // not let through
+});
+```
+
+- `keep_secret` asks nothing and replaces what was kept under the name. `read_secret` shows the system's
+  prompt, and answers on another thread. `has_secret` and `forget_secret` ask nothing either.
+- The secret stays on the device and out of its backups, and a device with no passcode keeps none
+  (`AuthError::Unavailable`).
+- With `AuthPolicy::BiometryOnly` the secret is for the faces or the fingers the device knows when it is kept:
+  once those change it is gone (`NotFound`), and the app asks for the password again.
+- In a simulator the keychain takes an app's secrets only when the entitlements Xcode makes up for a
+  simulator are in the binary. A binary cargo builds has none: `crates/mobile_demo/ios/build-rust.sh` shows
+  how they are linked in.
 
 ### Turning
 

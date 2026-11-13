@@ -14,7 +14,7 @@ use crate::ui::{BG, BORDER, FILL, MUTED, PRIMARY, SURFACE, TAP_TARGET, TEXT, cap
 
 const ROWS: usize = 10_000;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, lurq::DevtoolsInspectable)]
 struct Status {
   taps: u32,
   last_tap: Option<usize>,
@@ -68,7 +68,7 @@ impl Component for VirtualListScreen {
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, lurq::DevtoolsInspectable)]
 struct RowProps {
   index: usize,
   taps: Signal<Status>,

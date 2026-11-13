@@ -500,7 +500,7 @@ fn a_list_that_does_not_scroll_to_top_leaves_the_status_bars_tap_alone() {
 
 #[test]
 fn a_finger_scrolls_from_a_scroll_indicator_and_drags_a_bar_that_is_always_there() {
-  use crate::layout::scrollbar::ScrollBarStyle;
+  use crate::layout::scrollbar::{ScrollBarStyle, ScrollBarVisibility};
 
   let list_with = |style: ScrollBarStyle| {
     let mut app = App::new();
@@ -512,16 +512,19 @@ fn a_finger_scrolls_from_a_scroll_indicator_and_drags_a_bar_that_is_always_there
         .size(100.0, 100.0),
     );
     tree.pass(&mut app, &HeadlessSurface);
-    // Scrolling shows an indicator; then a frame paints it.
+    // Scrolling shows an indicator; then a frame paints it, which is when a list takes its bar's style: a
+    // pass with no window stops after layout.
     tree.touch_scroll_begin(50.0, 50.0, 0.0, -10.0);
     tree.touch_scroll(50.0, 50.0, 0.0, -10.0, ScrollPhase::Scroll, false);
     tree.pass(&mut app, &HeadlessSurface);
+    tree.painted_quads();
     tree
   };
-  // On the bar, at the list's right edge.
+  // On the bar, at the list's right edge. A phone's default bar is an indicator, so this one says it stays.
   let mut bar = list_with(ScrollBarStyle {
     width: 12.0,
     padding: 0.0,
+    visible: ScrollBarVisibility::Auto,
     ..ScrollBarStyle::thin()
   });
   assert!(!bar.touch_scrolls_at(96.0, 10.0), "a bar is dragged");
@@ -608,4 +611,161 @@ fn a_list_the_keyboard_follows_a_finger_over_keeps_the_focus_until_the_platform_
 
   tree.keyboard_was_put_away();
   assert!(!tree.focused_text_input(), "the finger took the keyboard down");
+}
+
+/// Five pages 100 wide, side by side, in a list that scrolls by pages.
+fn pages() -> (Tree, App, crate::layout::layout_kind::ScrollState) {
+  use crate::components::ScrollHorizontal;
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(200, 200);
+  let state = crate::layout::layout_kind::ScrollState::new();
+  state.set_paging(true);
+  tree.set_root(
+    ScrollHorizontal::new(Spacer::new().width(500.0).height(100.0))
+      .with_scroll_state(state.clone())
+      .size(100.0, 100.0),
+  );
+  tree.pass(&mut app, &HeadlessSurface);
+  (tree, app, state)
+}
+
+/// A finger drags the pages by `travel` and lifts at `velocity`; then the list is left to come to rest.
+fn drag_pages(tree: &mut Tree, travel: f32, velocity: f32) {
+  use std::time::{Duration, Instant};
+  tree.touch_scroll_begin(50.0, 50.0, travel.signum(), 0.0);
+  tree.touch_scroll(50.0, 50.0, travel, 0.0, ScrollPhase::Scroll, false);
+  tree.touch_scroll(50.0, 50.0, 0.0, 0.0, ScrollPhase::End, false);
+  assert!(tree.touch_scroll_pages());
+  let lifted = Instant::now();
+  tree.touch_scroll_page(velocity, 0.0, lifted);
+  tree.touch_tick(lifted + Duration::from_secs(3));
+  assert!(!tree.touch_animating());
+}
+
+#[test]
+fn a_list_that_scrolls_by_pages_goes_to_the_nearest_when_let_go() {
+  let (mut tree, _app, state) = pages();
+
+  drag_pages(&mut tree, -40.0, 0.0);
+  assert_eq!(state.scroll_x(), 0.0, "less than half a page: back");
+
+  drag_pages(&mut tree, -60.0, 0.0);
+  assert_eq!(state.scroll_x(), 100.0, "more than half: on");
+  assert_eq!(state.page(), (1, 0));
+}
+
+#[test]
+fn a_list_that_scrolls_by_pages_goes_to_the_next_when_thrown_and_no_further() {
+  let (mut tree, _app, state) = pages();
+
+  // A finger going left brings the next page, however little it travelled.
+  drag_pages(&mut tree, -10.0, -900.0);
+  assert_eq!(state.scroll_x(), 100.0);
+
+  // Thrown as hard as can be, it is still the page beside.
+  drag_pages(&mut tree, -30.0, -20_000.0);
+  assert_eq!(state.scroll_x(), 200.0);
+
+  // Thrown back.
+  drag_pages(&mut tree, 10.0, 900.0);
+  assert_eq!(state.scroll_x(), 100.0);
+
+  // Dragged on, then thrown back: the page it started on.
+  drag_pages(&mut tree, -30.0, 900.0);
+  assert_eq!(state.scroll_x(), 100.0);
+}
+
+#[test]
+fn a_list_on_its_way_to_a_page_moves_there_over_time_and_is_caught_by_a_finger() {
+  use std::time::{Duration, Instant};
+  let (mut tree, _app, state) = pages();
+
+  tree.touch_scroll_begin(50.0, 50.0, -1.0, 0.0);
+  tree.touch_scroll(50.0, 50.0, -60.0, 0.0, ScrollPhase::Scroll, false);
+  tree.touch_scroll(50.0, 50.0, 0.0, 0.0, ScrollPhase::End, false);
+  let lifted = Instant::now();
+  tree.touch_scroll_page(0.0, 0.0, lifted);
+  assert!(tree.touch_tick(lifted + Duration::from_millis(50)), "still on its way");
+  let between = state.scroll_x();
+  assert!(between > 60.0 && between < 100.0, "between the two: {between}");
+
+  // A finger lands: the list stops where it is, and let go without a move it goes on to the nearest page.
+  assert!(tree.touch_scroll_catch());
+  assert!(!tree.touch_animating());
+  assert_eq!(state.scroll_x(), between);
+  tree.touch_scroll_settle();
+  tree.touch_tick(Instant::now() + Duration::from_secs(3));
+  assert_eq!(state.scroll_x(), 100.0);
+}
+
+#[test]
+fn a_list_that_does_not_scroll_by_pages_is_left_where_the_finger_left_it() {
+  let (mut tree, _app, state) = pages();
+  state.set_paging(false);
+
+  tree.touch_scroll_begin(50.0, 50.0, -1.0, 0.0);
+  tree.touch_scroll(50.0, 50.0, -40.0, 0.0, ScrollPhase::Scroll, false);
+  tree.touch_scroll(50.0, 50.0, 0.0, 0.0, ScrollPhase::End, false);
+  assert!(!tree.touch_scroll_pages());
+  tree.touch_scroll_page(-900.0, 0.0, std::time::Instant::now());
+
+  assert!(!tree.touch_animating());
+  assert_eq!(state.scroll_x(), 40.0);
+}
+
+#[test]
+fn pages_inside_a_page_that_scrolls_go_to_the_next_as_a_shell_sends_a_throw() {
+  use std::time::{Duration, Instant};
+
+  use crate::components::ScrollHorizontal;
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.set_scale_factor(3.0);
+  tree.resize(600, 900);
+  let state = crate::layout::layout_kind::ScrollState::new();
+  state.set_paging(true);
+  // A strip of five pages 200 wide in a page 200 wide that scrolls down, as an app has it.
+  tree.set_root(
+    ScrollVertical::new(
+      Column::new()
+        .child(Spacer::new().width(200.0).height(40.0))
+        .child(
+          ScrollHorizontal::new(Spacer::new().width(1000.0).height(100.0))
+            .with_scroll_state(state.clone())
+            .width(200.0),
+        )
+        .child(Spacer::new().width(200.0).height(2000.0)),
+    )
+    .size(200.0, 300.0),
+  );
+  tree.pass(&mut app, &HeadlessSurface);
+
+  // What a shell sends for a finger that goes 40 logical pixels left on the strip and lifts while moving:
+  // the gesture, its last event, then the start and the end of the momentum it does not leave.
+  let (x, y) = (300.0, 270.0);
+  tree.touch_scroll_begin(x, y, -12.0, 1.0);
+  tree.touch_scroll(x, y, 0.0, 0.0, ScrollPhase::Start, false);
+  for _ in 0..10 {
+    tree.touch_scroll(x, y, -12.0, 0.0, ScrollPhase::Scroll, false);
+    tree.pass(&mut app, &HeadlessSurface);
+  }
+  assert_eq!(state.scroll_x(), 40.0, "the strip follows the finger");
+  tree.touch_scroll(x, y, 0.0, 0.0, ScrollPhase::End, false);
+  tree.touch_scroll(x, y, 0.0, 0.0, ScrollPhase::Start, false);
+  assert!(tree.touch_scroll_pages());
+  tree.touch_scroll(x, y, 0.0, 0.0, ScrollPhase::End, false);
+  let lifted = Instant::now();
+  tree.touch_scroll_page(-2400.0, 30.0, lifted);
+
+  // Frames go by, each laid out after a step.
+  let mut frames = 0;
+  while tree.touch_animating() {
+    frames += 1;
+    assert!(frames < 400, "the strip never came to rest: at {}", state.scroll_x());
+    tree.touch_tick(lifted + Duration::from_millis(8 * frames));
+    tree.pass(&mut app, &HeadlessSurface);
+  }
+  assert_eq!(state.scroll_x(), 200.0, "the next page");
+  assert!(frames > 5, "over some frames, not at once: {frames}");
 }
