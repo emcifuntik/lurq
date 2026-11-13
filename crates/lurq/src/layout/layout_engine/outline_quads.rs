@@ -1,4 +1,16 @@
-//! Paint of a node's outline: a ring around its box, drawn over its content.
+//! Paint of a node's outline: a ring around its box, drawn over its content
+//! and over what is painted after the node.
+//!
+//! Of two buttons side by side, the second is painted after the first: a ring
+//! painted with the first would be covered where it lies over the second. So
+//! a node's outline is kept (`pending_outlines`) and painted at the end of
+//! the scope the node is in, over everything in that scope:
+//!
+//! - a scroll container, whose border and bars are over what scrolls;
+//! - an element with an opacity or a blur, which is painted as one layer;
+//! - the siblings that scroll under an element that sticks;
+//! - the page, and each layer over it: a menu, a dialog;
+//! - failing these, the tree.
 //!
 //! Containers clip their content to their bounds by default, and a control
 //! often fills its container to the edge: clipped as content is, its ring
@@ -70,10 +82,19 @@ impl LayoutEngine {
     intersect_clip(self.scroll_clip.get(), let_out)
   }
 
-  /// Pushes the node's outline: a quad grown past the node's box by the
-  /// outline's offset and width, with the line as its inside border. The
-  /// corners follow the node's, grown by the same amount; a square corner
-  /// stays square.
+  /// Paints the outlines kept since `mark`, a length of `pending_outlines`
+  /// taken when a scope began: the end of that scope.
+  pub(super) fn paint_pending_outlines(&self, mark: usize, quads: &mut Vec<Quad>) {
+    let mut pending = self.pending_outlines.borrow_mut();
+    if pending.len() > mark {
+      quads.extend(pending.drain(mark..));
+    }
+  }
+
+  /// Keeps the node's outline for the end of the scope the node is in: a
+  /// quad grown past the node's box by the outline's offset and width, with
+  /// the line as its inside border. The corners follow the node's, grown by
+  /// the same amount; a square corner stays square.
   #[inline(never)]
   #[allow(clippy::too_many_arguments)]
   pub(super) fn push_outline_quad(
@@ -85,7 +106,6 @@ impl LayoutEngine {
     opacity: f32,
     transform: Transform2D,
     clip: ClipRect,
-    quads: &mut Vec<Quad>,
   ) {
     let Some(outline) = self.resolved_outline(node) else {
       return;
@@ -111,7 +131,7 @@ impl LayoutEngine {
     });
     let (x, y, quad_transform, transform_origin) = transformed_quad_frame(abs_x - grow, abs_y - grow, transform);
     let clip = self.outline_clip(clip, grow);
-    quads.push(Quad {
+    self.pending_outlines.borrow_mut().push(Quad {
       x,
       y,
       width,

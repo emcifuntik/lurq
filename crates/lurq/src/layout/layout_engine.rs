@@ -31,7 +31,7 @@ use crate::{
     border::{BorderPlacement, BorderRadius, ResolvedBorder, ResolvedBorders},
     color::Color,
     dimension::Dimension,
-    node::Node,
+    node::{Node, SyntheticNodeRole},
     node_kind::{NodeKind, SelectState, SliderPartRect, TextInputOverflow, TextInputState, TextOverflow},
     padding::Padding,
     slider_style::SliderPartStyle,
@@ -303,6 +303,10 @@ pub(crate) struct LayoutEngine {
   /// clips that cut a node's outline where they cut the node. The bounds a
   /// plain container clips its content to let an outline past by its reach.
   scroll_clip: Cell<ClipRect>,
+  /// Outlines of the nodes painted so far that are not painted yet: an
+  /// outline is painted over what follows its node, at the end of the scope
+  /// the node is in. See `outline_quads`.
+  pending_outlines: RefCell<Vec<Quad>>,
   /// Caret of the focused text input recorded by the last quad resolution,
   /// where an input method places its candidate window.
   ime_cursor_area: Cell<Option<crate::app::events::ImeCursorArea>>,
@@ -600,6 +604,7 @@ impl LayoutEngine {
       select_open: Cell::new(None),
       foreground: Cell::new(None),
       scroll_clip: Cell::new(ClipRect::default()),
+      pending_outlines: RefCell::new(Vec::new()),
       ime_cursor_area: Cell::new(None),
       opacity_groups: RefCell::new(Vec::new()),
       #[cfg(feature = "screenshot")]
@@ -980,6 +985,7 @@ impl LayoutEngine {
     self.text_input_frame.set(None);
     self.foreground.set(None);
     self.scroll_clip.set(viewport);
+    self.pending_outlines.borrow_mut().clear();
     self.collect_quads(
       node,
       result,
@@ -993,6 +999,7 @@ impl LayoutEngine {
       true,
       quads,
     );
+    self.paint_pending_outlines(0, quads);
   }
 
   // The paint state inherited down the tree, one argument per piece.
@@ -1050,6 +1057,8 @@ impl LayoutEngine {
           (clip, cull_clip, culling_enabled)
         };
 
+      let outlines = self.pending_outlines.borrow().len();
+      let layers = node.has_synthetic_role(SyntheticNodeRole::OverlayHost);
       // What sticks is painted after its siblings, which scroll under it.
       for stuck in [false, true] {
         let mut sticks_later = false;
@@ -1087,10 +1096,16 @@ impl LayoutEngine {
             child_culling_enabled,
             quads,
           );
+          // The page, and each layer over it, is painted whole before the next.
+          if layers {
+            self.paint_pending_outlines(outlines, quads);
+          }
         }
         if !sticks_later {
           break;
         }
+        // The outlines of what scrolls under what sticks are under it too.
+        self.paint_pending_outlines(outlines, quads);
       }
       return;
     }
@@ -1149,6 +1164,8 @@ impl LayoutEngine {
 
     let select_scope = self.enter_select_scope(node);
     let scroll_scope = frame.scroll_viewport.map(|viewport| self.scroll_clip.replace(viewport));
+    let outlines = self.pending_outlines.borrow().len();
+    let layers = node.has_synthetic_role(SyntheticNodeRole::OverlayHost);
     // What sticks is painted after its siblings, which scroll under it.
     for stuck in [false, true] {
       let mut sticks_later = false;
@@ -1186,20 +1203,30 @@ impl LayoutEngine {
           child_culling_enabled,
           quads,
         );
+        // The page, and each layer over it, is painted whole before the next.
+        if layers {
+          self.paint_pending_outlines(outlines, quads);
+        }
       }
       if !sticks_later {
         break;
       }
+      // The outlines of what scrolls under what sticks are under it too.
+      self.paint_pending_outlines(outlines, quads);
     }
     self.leave_select_scope(select_scope);
     if let Some(outer) = scroll_scope {
       self.scroll_clip.set(outer);
+      // What scrolls is painted whole, outlines and all, under the border and the bars of its container.
+      self.paint_pending_outlines(outlines, quads);
     }
 
     self.push_node_overlay_quads(node, result, abs_x, abs_y, &frame, clip, quads);
     self.leave_foreground_scope(foreground_scope);
     let opacity = node.effective_opacity();
     if opacity < DEFAULT_QUAD_OPACITY || blur > 0.0 {
+      // A layer holds the outlines of what is in it, and its own.
+      self.paint_pending_outlines(outlines, quads);
       self.close_opacity_group(opacity, blur, group_clip, group_start, quads);
     }
   }
@@ -2089,7 +2116,7 @@ impl LayoutEngine {
         clip,
       });
     }
-    self.push_outline_quad(node, result, abs_x, abs_y, opacity, transform, clip, quads);
+    self.push_outline_quad(node, result, abs_x, abs_y, opacity, transform, clip);
 
     if let Some((state, direction)) = node.scroll_container() {
       state.set_viewport_position(abs_x, abs_y);

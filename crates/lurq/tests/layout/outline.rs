@@ -326,3 +326,166 @@ fn a_scroll_container_cuts_the_outline_at_its_viewport() {
     "the viewport, not a pixel more"
   );
 }
+
+/// Where the first rectangle filled with `color` is in the paint order.
+fn fill_at(quads: &[Quad], color: Color) -> usize {
+  quads
+    .iter()
+    .position(|quad| matches!(&quad.content, QuadContent::Rect { color: fill, .. } if *fill == color))
+    .expect("the rectangle is painted")
+}
+
+/// Where the ring of `color` is in the paint order.
+fn ring_at(quads: &[Quad], color: Color) -> usize {
+  quads
+    .iter()
+    .position(|quad| quad.border.and_then(|border| border.top).map(|side| side.color) == Some(color))
+    .expect("the outline is painted")
+}
+
+const NEXT: Color = Color::new(20, 160, 60, 255);
+const AFTER: Color = Color::new(120, 60, 200, 255);
+
+#[test]
+fn an_outline_is_painted_over_the_elements_after_its_own() {
+  let mut app = App::new();
+  // Two buttons side by side with no gap: the ring of the first lies over the second.
+  let tree = painted(
+    &mut app,
+    lurq::components::Row::new()
+      .child(
+        Rect::new(100.0, 40.0)
+          .background(OTHER)
+          .outline(Outline::new(2.0, RING).offset(2.0)),
+      )
+      .child(Rect::new(100.0, 40.0).background(NEXT)),
+  );
+  let quads = quads(&tree);
+  assert!(ring_at(&quads, RING) > fill_at(&quads, NEXT));
+}
+
+#[test]
+fn an_outline_is_painted_over_what_follows_the_element_it_is_in() {
+  let mut app = App::new();
+  // Each button is in a wrapper of its own, as a component's root or a tooltip's anchor is.
+  let tree = painted(
+    &mut app,
+    lurq::components::Row::new()
+      .child(
+        Column::new().background("#ffffff").child(
+          Rect::new(100.0, 40.0)
+            .background(OTHER)
+            .outline(Outline::new(2.0, RING).offset(2.0)),
+        ),
+      )
+      .child(
+        Column::new()
+          .background("#ffffff")
+          .child(Rect::new(100.0, 40.0).background(NEXT)),
+      ),
+  );
+  let quads = quads(&tree);
+  assert!(ring_at(&quads, RING) > fill_at(&quads, NEXT));
+}
+
+#[test]
+fn an_outline_in_a_scroll_container_is_painted_with_what_scrolls() {
+  let mut app = App::new();
+  let tree = painted(
+    &mut app,
+    Column::new()
+      .child(
+        lurq::components::ScrollVertical::new(
+          Column::new()
+            .child(
+              Rect::new(100.0, 40.0)
+                .background(OTHER)
+                .outline(Outline::new(2.0, RING).offset(2.0)),
+            )
+            .child(Rect::new(100.0, 400.0).background(NEXT)),
+        )
+        .size(100.0, 100.0),
+      )
+      .child(Rect::new(100.0, 40.0).background(AFTER)),
+  );
+  let quads = quads(&tree);
+  let ring = ring_at(&quads, RING);
+  assert!(ring > fill_at(&quads, NEXT), "over what scrolls with it");
+  assert!(
+    ring < fill_at(&quads, AFTER),
+    "under what is painted after the container"
+  );
+}
+
+#[test]
+fn an_outline_is_painted_under_what_sticks_over_its_element() {
+  use lurq::layout::layout_kind::Sticky;
+  let mut app = App::new();
+  let tree = painted(
+    &mut app,
+    lurq::components::ScrollVertical::new(
+      Column::new()
+        .child(Rect::new(100.0, 20.0).background(AFTER).sticky(Sticky::top(0.0)))
+        .child(
+          Rect::new(100.0, 40.0)
+            .background(OTHER)
+            .outline(Outline::new(2.0, RING).offset(2.0)),
+        )
+        .child(Rect::new(100.0, 400.0).background(NEXT)),
+    )
+    .size(100.0, 100.0),
+  );
+  let quads = quads(&tree);
+  let ring = ring_at(&quads, RING);
+  assert!(ring > fill_at(&quads, NEXT), "over the rows after its own");
+  assert!(ring < fill_at(&quads, AFTER), "under the header the rows scroll under");
+}
+
+#[test]
+fn an_outline_in_a_faded_element_is_painted_in_its_layer() {
+  let mut app = App::new();
+  let tree = painted(
+    &mut app,
+    Column::new()
+      .child(
+        lurq::components::Row::new()
+          .opacity(0.5)
+          .child(
+            Rect::new(100.0, 40.0)
+              .background(OTHER)
+              .outline(Outline::new(2.0, RING).offset(2.0)),
+          )
+          .child(Rect::new(100.0, 40.0).background(NEXT)),
+      )
+      .child(Rect::new(100.0, 40.0).background(AFTER)),
+  );
+  let quads = quads(&tree);
+  let ring = ring_at(&quads, RING);
+  assert!(ring > fill_at(&quads, NEXT));
+  assert!(ring < fill_at(&quads, AFTER), "with what fades with it");
+}
+
+#[test]
+fn an_outline_on_the_page_is_painted_under_a_layer_over_the_page() {
+  use lurq::components::{Modal, Root};
+  let mut app = App::new();
+  let tree = painted(
+    &mut app,
+    Column::new()
+      .child(
+        Rect::new(100.0, 40.0)
+          .background(OTHER)
+          .outline(Outline::new(2.0, RING).offset(2.0)),
+      )
+      .child(Rect::new(100.0, 40.0).background(NEXT))
+      .child(
+        Modal::new(Rect::new(300.0, 200.0).background(AFTER))
+          .open(lurq::core::Signal::new(true))
+          .target(Root),
+      ),
+  );
+  let quads = quads(&tree);
+  let ring = ring_at(&quads, RING);
+  assert!(ring > fill_at(&quads, NEXT));
+  assert!(ring < fill_at(&quads, AFTER), "under the dialog");
+}

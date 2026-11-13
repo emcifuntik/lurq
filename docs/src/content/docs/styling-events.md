@@ -322,7 +322,11 @@ Button::new("Save")
 - The line follows the element's corner radii, grown by the offset and the width, so the ring stays concentric with a
   rounded control. A square corner stays square.
 - A negative offset draws the line inside the box.
-- It is painted over the element's own content. A sibling painted later still covers it where they overlap.
+- It is painted over the element's own content and over the elements painted after it, as CSS paints an outline: of
+  two buttons side by side with no gap, the ring of the first lies over the second. It stays with what its element is
+  painted with: under the border and the bars of the scroll container it scrolls in, under an element that
+  [sticks](../layout/#sticky-elements) over it, inside the layer of an ancestor with an opacity or a blur, and under
+  a menu or a dialog over the page.
 - A container clips its content to its bounds, but not the ring of what touches its edge: an outline reaches past the
   containers its element is in by its own offset and width, so a button that fills its row keeps its whole ring with no
   padding around it. An element that is itself cut by a container is cut with its ring.
