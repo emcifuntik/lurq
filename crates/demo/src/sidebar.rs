@@ -27,6 +27,11 @@ pub(crate) enum DemoTab {
   Reactivity,
   Components,
   Context,
+  Borders,
+  Grid,
+  Sticky,
+  Presence,
+  Style,
 }
 
 impl DemoTab {
@@ -51,6 +56,11 @@ impl DemoTab {
       Self::Reactivity => "React.",
       Self::Components => "Comps.",
       Self::Context => "Context",
+      Self::Borders => "Borders",
+      Self::Grid => "Grid",
+      Self::Sticky => "Sticky",
+      Self::Presence => "Presence",
+      Self::Style => "Style",
     }
   }
 
@@ -75,6 +85,11 @@ impl DemoTab {
       Self::Reactivity => "/reactivity",
       Self::Components => "/components",
       Self::Context => "/context",
+      Self::Borders => "/borders",
+      Self::Grid => "/grid",
+      Self::Sticky => "/sticky",
+      Self::Presence => "/presence",
+      Self::Style => "/style",
     }
   }
 
@@ -98,6 +113,11 @@ impl DemoTab {
       "/reactivity" => Self::Reactivity,
       "/components" => Self::Components,
       "/context" => Self::Context,
+      "/borders" => Self::Borders,
+      "/grid" => Self::Grid,
+      "/sticky" => Self::Sticky,
+      "/presence" => Self::Presence,
+      "/style" => Self::Style,
       _ => Self::Layout,
     }
   }
@@ -125,6 +145,11 @@ pub(crate) fn sidebar(ctx: &mut Ctx, selected: DemoTab, theme: DemoTheme) -> Ele
     DemoTab::Reactivity,
     DemoTab::Components,
     DemoTab::Context,
+    DemoTab::Borders,
+    DemoTab::Grid,
+    DemoTab::Sticky,
+    DemoTab::Presence,
+    DemoTab::Style,
   ];
 
   let mut children = Vec::new();
