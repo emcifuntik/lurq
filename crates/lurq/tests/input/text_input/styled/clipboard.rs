@@ -112,7 +112,7 @@ fn styled_a_modifier_click_on_a_link_reports_its_target_and_range() {
     .find(|glyph| glyph.color == LINK.to_linear_f32_array())
     .expect("a link glyph");
   let (x, y) = (glyph.x + glyph.width / 2.0, glyph.y + glyph.height / 2.0);
-  let (ctrl, meta) = (cfg!(not(target_os = "macos")), cfg!(target_os = "macos"));
+  let (ctrl, meta) = (cfg!(not(target_vendor = "apple")), cfg!(target_vendor = "apple"));
 
   // A plain click places the caret and reports nothing.
   editor.tree.mouse_down(x, y, MouseButton::Left);

@@ -45,9 +45,22 @@ pub enum LayoutKind {
     culling: bool,
     /// A middle-button press scrolls the container by how far the pointer
     /// moves from where the button went down; see
-    /// [`Node::middle_button_autoscroll`](crate::node::node::Node::middle_button_autoscroll).
+    /// `Node::middle_button_autoscroll`.
     middle_button_autoscroll: bool,
   },
+}
+
+/// What a finger that scrolls a list does to a phone's on-screen keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum KeyboardDismissal {
+  /// Nothing: the keyboard stays up.
+  #[default]
+  None,
+  /// The keyboard goes away when the finger starts to scroll.
+  OnDrag,
+  /// The keyboard goes down with the finger once the finger reaches it, and comes back if the finger goes
+  /// back up: the platform's own, where there is a platform to do it. Elsewhere it is nothing.
+  Interactive,
 }
 
 #[derive(Clone)]
@@ -115,8 +128,10 @@ struct ScrollStateInner {
   overscroll_y: f32,
   /// See [`ScrollState::set_scrolls_to_top`].
   scrolls_to_top: bool,
-  /// See [`ScrollState::set_dismisses_keyboard`].
-  dismisses_keyboard: bool,
+  /// See [`ScrollState::set_keyboard_dismissal`].
+  keyboard_dismissal: KeyboardDismissal,
+  /// See [`ScrollState::set_paging`].
+  paging: bool,
   pending_scroll_x: Option<PendingScroll>,
   pending_scroll_y: Option<PendingScroll>,
   max_scroll_x: f32,
@@ -181,7 +196,8 @@ impl ScrollState {
         overscroll_x: 0.0,
         overscroll_y: 0.0,
         scrolls_to_top: true,
-        dismisses_keyboard: false,
+        keyboard_dismissal: KeyboardDismissal::None,
+        paging: false,
         pending_scroll_x: None,
         pending_scroll_y: None,
         max_scroll_x: 0.0,
@@ -234,11 +250,53 @@ impl ScrollState {
   /// the focus from the text input being typed into; it does not unless set. A tap outside a text input leaves
   /// the keyboard up, so a screen of inputs that scrolls wants this, or a control that puts it away.
   pub fn set_dismisses_keyboard(&self, dismisses_keyboard: bool) {
-    self.inner.lock().unwrap().dismisses_keyboard = dismisses_keyboard;
+    self.set_keyboard_dismissal(if dismisses_keyboard {
+      KeyboardDismissal::OnDrag
+    } else {
+      KeyboardDismissal::None
+    });
   }
 
   pub fn dismisses_keyboard(&self) -> bool {
-    self.inner.lock().unwrap().dismisses_keyboard
+    self.keyboard_dismissal() == KeyboardDismissal::OnDrag
+  }
+
+  /// What a finger that scrolls this container does to a phone's on-screen keyboard; see
+  /// [`KeyboardDismissal`]. Nothing, unless set.
+  pub fn set_keyboard_dismissal(&self, dismissal: KeyboardDismissal) {
+    self.inner.lock().unwrap().keyboard_dismissal = dismissal;
+  }
+
+  pub fn keyboard_dismissal(&self) -> KeyboardDismissal {
+    self.inner.lock().unwrap().keyboard_dismissal
+  }
+
+  /// Whether a finger scrolls this container a page at a time, a page being as long as the viewport: when
+  /// the finger lifts the content goes on to the page it was thrown at, or back to the nearest, and never
+  /// further than the page beside the one the finger started on. It does not unless set. A wheel and a
+  /// scroll bar scroll as they always do.
+  pub fn set_paging(&self, paging: bool) {
+    self.inner.lock().unwrap().paging = paging;
+  }
+
+  pub fn paging(&self) -> bool {
+    self.inner.lock().unwrap().paging
+  }
+
+  /// The page the content is at along each axis, counted from 0: the nearest, while it is between two.
+  pub fn page(&self) -> (usize, usize) {
+    let inner = self.inner.lock().unwrap();
+    let page = |offset: f32, size: f32| {
+      if size > 0.0 {
+        (offset / size).round().max(0.0) as usize
+      } else {
+        0
+      }
+    };
+    (
+      page(inner.scroll_x, inner.viewport_width),
+      page(inner.scroll_y, inner.viewport_height),
+    )
   }
 
   /// How far the content is drawn past its ends, along each axis: negative before the start, positive beyond

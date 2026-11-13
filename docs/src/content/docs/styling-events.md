@@ -737,7 +737,7 @@ Slider::new(value)
 
 ### Select
 
-`Select::new` binds a `Signal<T>` for one value and `Select::multiple` a `Signal<Vec<T>>`. Options are `(value, label)` tuples or `SelectOption`s, which add a detail line under the label and a disabled state:
+`Select::new` binds a `Signal<T>` for one value and `Select::multiple` a `Signal<Vec<T>>`. Options are `(value, label)` tuples or `SelectOption`s, which add a detail line under the label, an element before or after the label, and a disabled state:
 
 ```rust
 use lurq::components::{Select, SelectOption};
@@ -754,6 +754,32 @@ Select::new(plan.clone())
 ```
 
 A disabled option cannot be chosen by pointer or keyboard, never takes the hover or keyboard highlight, and is skipped by arrow keys, `Home`/`End` and type-ahead.
+
+`leading(element)` draws an element before the label and `trailing(element)` one after it, at the row's end: a brand mark, a status dot, a badge. An option can have both:
+
+```rust
+SelectOption::new(Connection::Claude, "Claude Code")
+  .detail("work account · Max")
+  .leading(Svg::from_str(CLAUDE_MARK).width(16.0).height(16.0))
+  .trailing(Text::new("default"))
+```
+
+- The element keeps its own size and sits `SelectStyle::option_adornment_gap` (default 8) from the label. It is centred on the label's line, also when the option has a detail line.
+- The closed field of a single-select shows the selected option's elements around its label. A multi-select field shows none. A custom `Select::trigger` gets them as `state.leading` and `state.trailing`.
+- A disabled option's elements get the row's disabled look (the default `option_disabled` opacity).
+- The elements are decorative: type-ahead and automation keep using the label. Like a `SelectIcon::element`, they are plain nodes: pass an icon, SVG, text or layout element, not a stateful component.
+
+`leading(element)` draws the same element in every state. `leading_with` and `trailing_with` take a builder instead, called each time the row or the field is built, so a mark can follow the label's look:
+
+```rust
+SelectOption::new(Connection::Codex, "Codex").leading_with(|state| {
+  // The label's colour in this state, when the style sets one.
+  let color = state.text_color.clone().unwrap_or(PaletteColor::TextPrimary.into());
+  mark(CODEX_MARK, color)
+})
+```
+
+The builder receives a `SelectAdornmentState`: `selected`, `highlighted` (the keyboard highlight) and `disabled` for the option, `in_field` when the element is built for the closed field instead of a menu row, and `text_color`, the `text_color` of the row's resolved part (`option` with its state parts merged, or the trigger part on the field; `None` when the part sets none). The pointer hover is not a state: as for the label, it repaints the row's fill, border and shadow without rebuilding it.
 
 A pointer press on the trigger opens the menu without a highlight. On the focused select:
 
@@ -820,7 +846,7 @@ SelectStyle::new()
 - Option rows are at least 34 px tall unless the option part sets `min_height`. The default option part pads labels by 10 px horizontally, like the trigger.
 - The chevron defaults to the glyph `▾` at `chevron_size` (default 10) in the trigger's text style. `chevron` replaces it with a `SelectIcon`: `SelectIcon::text` (a glyph in the part's explicit text style), `SelectIcon::glyph` (a glyph in a typography role, such as an icon font) or `SelectIcon::element` (an app-built element; the supplier receives the configured colour). `chevron_open` is drawn instead while the menu is open.
 - Multi-select marks chosen options with a checkmark. `single_checkmark(true)` also shows it on a single-select's selected option. It is off by default: a single-select marks its selection with `option_selected` only. When checkmarks are shown, every option reserves the checkmark slot (`checkmark_size`, default 16 wide), so labels do not shift. `checkmark_position` puts the slot before or after the label, `checkmark_gap` (default 6) separates them, and `checkmark` replaces the `✓` glyph with a `SelectIcon`.
-- `Select::trigger(|state| ...)` replaces the trigger content. It receives the label, placeholder and selection.
+- `Select::trigger(|state| ...)` replaces the trigger content. It receives the label, placeholder and selection, and a single-select's selected option's `leading` and `trailing` elements.
 - The trigger's fill is its part's `background`: the theme's `SurfaceInput` in the default `SelectStyle`. A trigger part without a `background`, as in `SelectStyle::unstyled()` or a part passed to `.trigger(...)` that sets none, paints no fill, like a button or text input without a background, so an app that styles the trigger itself (or puts it on a surface of its own) sees that surface. Its border, radius and shadows still paint. `Tree::painted_quads()` shows the fill in tests (see [Testing](../testing/#painted-output-without-a-window)).
 
 ## Programmatic Interaction

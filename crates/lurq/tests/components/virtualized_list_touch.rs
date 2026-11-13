@@ -264,14 +264,13 @@ fn the_row_under_the_finger_stays_under_it_while_the_list_measures_rows_it_had_o
 #[derive(Clone)]
 struct Tappable(usize, lurq::core::Signal<Vec<usize>>);
 
+impl lurq::app::component::DevtoolsInspectable for Tappable {}
+
 impl PartialEq for Tappable {
   fn eq(&self, other: &Self) -> bool {
     self.0 == other.0
   }
 }
-
-#[cfg(feature = "devtools")]
-impl lurq::app::component::DevtoolsInspectable for Tappable {}
 
 struct TappableRow;
 

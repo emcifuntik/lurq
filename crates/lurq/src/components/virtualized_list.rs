@@ -272,7 +272,7 @@ impl<'a, T> VirtualizedList<'a, T> {
   /// Middle-button autoscroll, off by default: pressing the middle button
   /// over the list and moving the pointer away scrolls it, faster the farther
   /// the pointer is, until the release. See
-  /// [`Node::middle_button_autoscroll`](crate::node::node::Node::middle_button_autoscroll).
+  /// `Node::middle_button_autoscroll`.
   pub fn middle_button_autoscroll(mut self, enabled: bool) -> Self {
     self.options.middle_button_autoscroll = enabled;
     self

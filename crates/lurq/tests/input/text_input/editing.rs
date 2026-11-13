@@ -12,7 +12,7 @@ fn pointer_click(runtime: &mut Tree, x: f32, y: f32) {
 }
 
 fn shortcut_key_down(runtime: &mut Tree, key: &str, code: &str, shift: bool) {
-  let (ctrl, meta) = if cfg!(target_os = "macos") {
+  let (ctrl, meta) = if cfg!(target_vendor = "apple") {
     (false, true)
   } else {
     (true, false)
@@ -21,7 +21,7 @@ fn shortcut_key_down(runtime: &mut Tree, key: &str, code: &str, shift: bool) {
 }
 
 fn word_nav_key_down(runtime: &mut Tree, key: &str, code: &str, shift: bool) {
-  let (ctrl, alt) = if cfg!(target_os = "macos") {
+  let (ctrl, alt) = if cfg!(target_vendor = "apple") {
     (false, true)
   } else {
     (true, false)

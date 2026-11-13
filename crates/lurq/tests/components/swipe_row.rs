@@ -9,7 +9,12 @@ use std::{
 };
 
 use lurq::{
-  app::{App, Tree, component::Component, ctx::Ctx, events::MouseButton, events::TouchPhase},
+  app::{
+    App, Tree,
+    component::Component,
+    ctx::Ctx,
+    events::{MouseButton, TouchPhase},
+  },
   components::{Column, Row, SwipeAction, SwipeRow, SwipeRowProps, Text},
   core::Signal,
   node::{Element, color::Color, dimension::Dimension},

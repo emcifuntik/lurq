@@ -64,6 +64,8 @@ fn input_tokens_rtl_public_filtered_row_contract_probe() {
     ("שלום \u{2066}{{task.title}} world\u{2069} עולם", 60.0),
   ];
   let mut fonts = FontSystem::new();
+  // The fonts lurq shapes with: on iOS cosmic-text finds none by itself.
+  crate::app::glyph_engine::load_platform_fonts(&mut fonts);
   for (source, width) in samples {
     let mut buffer = Buffer::new(&mut fonts, Metrics::new(13.0, 19.0));
     buffer.set_size(Some(width), None);

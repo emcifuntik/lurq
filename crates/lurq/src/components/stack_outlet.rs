@@ -7,8 +7,8 @@
 //!
 //! - A push brings the new screen in from the right, over the one before, which gives way a little and dims.
 //! - Going back takes the top screen out to the right, and it is unmounted when it is gone.
-//! - A finger in from the left edge drags the top screen with it; lifted far enough or fast enough it goes
-//!   back, and otherwise the screen returns.
+//! - A finger in from the left edge drags the top screen with it; lifted far enough or fast enough it goes back, and
+//!   otherwise the screen returns.
 //! - A replace, and any other change of the history, swaps the screens without a move.
 //!
 //! With a [`NavigationBar`] the outlet draws a bar over its screens: the top screen's title, and the way back
@@ -1652,7 +1652,8 @@ impl Flight {
       .nowrap()
       // Laid out at the outlet's corner, scaled about its middle and then put where it goes.
       .transform(
-        Transform2D::translate(centre.0 - laid.0 / 2.0, centre.1 - laid.1 / 2.0).then(&Transform2D::scale_uniform(scale)),
+        Transform2D::translate(centre.0 - laid.0 / 2.0, centre.1 - laid.1 / 2.0)
+          .then(&Transform2D::scale_uniform(scale)),
       )
       .opacity(opacity)
       .transition(Transition::transform().duration(pace).easing(curve))
@@ -1794,17 +1795,13 @@ fn bar_item(
                 .opacity(if part.label_hidden { 0.0 } else { 1.0 }),
             )
             // With button shapes asked for, a line under the label says it can be pressed.
-            .child(
-              Row::new()
-                .width(FILL)
-                .height(1.0)
-                .background(bar.tint)
-                .opacity(if part.button_shapes && !part.label_hidden && !says.is_empty() {
-                  1.0
-                } else {
-                  0.0
-                }),
-            ),
+            .child(Row::new().width(FILL).height(1.0).background(bar.tint).opacity(
+              if part.button_shapes && !part.label_hidden && !says.is_empty() {
+                1.0
+              } else {
+                0.0
+              },
+            )),
         )
         .on_click({
           let menu = menu.clone();
