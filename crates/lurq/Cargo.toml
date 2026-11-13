@@ -207,6 +207,10 @@ name = "spinner_pacing"
 required-features = ["winit", "wgpu"]
 
 [[example]]
+name = "hover_frames_probe"
+required-features = ["winit", "wgpu", "perf_profile"]
+
+[[example]]
 name = "styled_editor"
 required-features = ["markdown", "winit", "wgpu", "clipboard"]
 
