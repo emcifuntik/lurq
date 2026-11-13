@@ -282,4 +282,10 @@ cargo bench -p lurq --bench text_pipeline --features markdown
 
 Its fixtures include the root `README.md`, so documentation changes can alter workload size. Compare the same fixture and source/toolchain metadata before interpreting historical numbers. Use benchmarks when changing layout caching, smart relayout, retained-node reconciliation, render command generation, or text rasterization.
 
+`text_chat` draws a chat screen of short texts (a channel list, a member list, a panel of messages) one scripted frame at a time: cold, idle, hover, scroll, channel switch, resize, typing and a scale factor change. It needs no feature; built with `perf_profile,counting_allocator` and run with `LURQ_CHAT_METRICS=<csv>` it writes each frame's phases, allocations and cache sizes instead, and `examples/text_chat_gpu_probe.rs` runs the same frames through the wgpu and DX12 renderers. See [Chat Screen Text Optimization](/lurq/text-chat-optimization/).
+
+```powershell
+cargo bench -p lurq --bench text_chat
+```
+
 Text pipeline optimization notes and benchmark history live in [Text Pipeline Optimization](/lurq/text-pipeline-optimization/).

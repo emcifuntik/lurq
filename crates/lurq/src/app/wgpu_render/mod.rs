@@ -44,6 +44,7 @@ use crate::{
     opacity_layer::{LayerPlan, LayerStep, TargetSpace},
     render_list::RenderList,
   },
+  render::glyph_batch::{GlyphRun, batch_glyph_runs, glyph_runs},
 };
 
 struct DynamicBuffer {
@@ -136,14 +137,20 @@ struct PreparedDraw {
 
 enum OrderedDraw {
   Rect(usize),
-  Glyph {
-    start: usize,
-    count: usize,
-  },
+  Glyph(GlyphRun),
   #[cfg(feature = "raster")]
   Image(usize),
   #[cfg(feature = "svg")]
   Svg(usize),
+}
+
+impl OrderedDraw {
+  fn glyph_run(&self) -> Option<GlyphRun> {
+    match self {
+      Self::Glyph(run) => Some(*run),
+      _ => None,
+    }
+  }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1829,26 +1836,14 @@ impl RenderEngine for WgpuRenderEngine {
     for (index, rect) in list.rects.iter().enumerate() {
       self.scratch_ordered_draws.push((rect.order, OrderedDraw::Rect(index)));
     }
-    let mut glyph_start = 0;
-    while glyph_start < list.glyphs.len() {
-      let order = list.glyphs[glyph_start].order;
-      let clip = list.glyphs[glyph_start].clip;
-      let mut glyph_end = glyph_start + 1;
-      while glyph_end < list.glyphs.len()
-        && list.glyphs[glyph_end].order == order
-        && same_clip(list.glyphs[glyph_end].clip, clip)
-      {
-        glyph_end += 1;
-      }
-      self.scratch_ordered_draws.push((
-        order,
-        OrderedDraw::Glyph {
-          start: glyph_start,
-          count: glyph_end - glyph_start,
-        },
-      ));
-      glyph_start = glyph_end;
-    }
+    glyph_runs(
+      &list.glyphs,
+      |clip| {
+        scissor_rect(clip, vw, vh)
+          .map(|(x, y, width, height)| [x as f32, y as f32, (x + width) as f32, (y + height) as f32])
+      },
+      |order, run| self.scratch_ordered_draws.push((order, OrderedDraw::Glyph(run))),
+    );
     #[cfg(feature = "raster")]
     for (index, image) in list.images.iter().enumerate() {
       self
@@ -2050,7 +2045,10 @@ impl RenderEngine for WgpuRenderEngine {
             continue;
           }
         };
-        for (_, draw) in &ordered_draws[range] {
+        let draws = &ordered_draws[range];
+        let mut next_draw = 0;
+        while let Some((_, draw)) = draws.get(next_draw) {
+          next_draw += 1;
           match draw {
             OrderedDraw::Rect(index) => {
               let r = &list.rects[*index];
@@ -2099,19 +2097,30 @@ impl RenderEngine for WgpuRenderEngine {
               pass.draw_indexed(0..6, 0, 0..prepared.count as u32);
               profile_if! { _draw_calls += 1; }
             }
-            OrderedDraw::Glyph { start, count } => {
-              let glyph_slice = &list.glyphs[*start..*start + *count];
-              if glyph_slice.is_empty() || !set_scissor(&mut pass, space.clip(glyph_slice[0].clip), &space) {
+            OrderedDraw::Glyph(run) => {
+              // The texts painted next join this draw: those under its clip,
+              // or any that no clip cuts when none cuts this one.
+              let following = draws[next_draw..].iter().map(|(_, draw)| draw.glyph_run());
+              let batch = batch_glyph_runs(&list.glyphs, *run, following, space.is_window());
+              next_draw += batch.joined;
+              let (start, count) = (run.start, batch.count);
+              let glyph_slice = &list.glyphs[start..start + count];
+              let clip = if batch.unclipped {
+                crate::layout::quad::ClipRect::default()
+              } else {
+                glyph_slice[0].clip
+              };
+              if glyph_slice.is_empty() || !set_scissor(&mut pass, space.clip(clip), &space) {
                 continue;
               }
-              let start_byte = (*start * std::mem::size_of::<GlyphInstance>()) as wgpu::BufferAddress;
-              let end_byte = ((*start + *count) * std::mem::size_of::<GlyphInstance>()) as wgpu::BufferAddress;
+              let start_byte = (start * std::mem::size_of::<GlyphInstance>()) as wgpu::BufferAddress;
+              let end_byte = ((start + count) * std::mem::size_of::<GlyphInstance>()) as wgpu::BufferAddress;
               if active_pipeline != Some(ActivePipeline::Glyph) {
                 pass.set_pipeline(self.glyph_pipeline.as_ref().unwrap());
                 active_pipeline = Some(ActivePipeline::Glyph);
               }
-              if needs_clip_globals(glyph_slice[0].clip, &space) {
-                let (clip_key, clip_globals) = self.clip_globals.get(device, glyph_slice[0].clip, &space);
+              if needs_clip_globals(clip, &space) {
+                let (clip_key, clip_globals) = self.clip_globals.get(device, clip, &space);
                 let clip_bind_group = self.glyph_clip_bind_groups.entry(clip_key).or_insert_with(|| {
                   device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("lurq_glyph_clip_bg"),
@@ -2145,7 +2154,7 @@ impl RenderEngine for WgpuRenderEngine {
                 pass.set_index_buffer(idx_buf.slice(..), wgpu::IndexFormat::Uint16);
                 active_index_buffer = Some(ActiveIndexBuffer::CommonU16);
               }
-              pass.draw_indexed(0..6, 0, 0..*count as u32);
+              pass.draw_indexed(0..6, 0, 0..count as u32);
               profile_if! { _draw_calls += 1; }
             }
             #[cfg(feature = "raster")]
@@ -2797,15 +2806,6 @@ fn encode_wgpu_frame_capture(
     padded_bytes_per_row,
     capture,
   })
-}
-
-fn same_clip(a: crate::layout::quad::ClipRect, b: crate::layout::quad::ClipRect) -> bool {
-  a.active == b.active
-    && a.x == b.x
-    && a.y == b.y
-    && a.width == b.width
-    && a.height == b.height
-    && a.border_radius == b.border_radius
 }
 
 #[cfg(feature = "raster")]

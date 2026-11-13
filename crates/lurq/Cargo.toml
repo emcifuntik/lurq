@@ -65,7 +65,8 @@ mcp = [
 [dependencies]
 arboard = { version = "3", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
-cosmic-text = "0.19"
+# `shape-run-cache` keeps the glyphs of shaped words: a word shaped in one text is not shaped again in the next.
+cosmic-text = { version = "0.19", features = ["shape-run-cache"] }
 parking_lot.workspace = true
 paste = "1"
 png = { version = "0.18", optional = true }
@@ -222,6 +223,10 @@ name = "dx12_glyph_atlas_probe"
 required-features = ["screenshot", "dx12", "perf_profile"]
 
 [[example]]
+name = "text_chat_gpu_probe"
+required-features = ["screenshot", "wgpu", "dx12", "perf_profile"]
+
+[[example]]
 name = "counting_allocator"
 required-features = ["counting_allocator"]
 
@@ -267,6 +272,10 @@ required-features = ["markdown"]
 name = "styled_input"
 harness = false
 required-features = ["markdown"]
+
+[[bench]]
+name = "text_chat"
+harness = false
 
 [[test]]
 name = "native_macos"

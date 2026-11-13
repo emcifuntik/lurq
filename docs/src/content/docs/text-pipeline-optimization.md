@@ -12,6 +12,14 @@ This page tracks text pipeline benchmark results and optimization work.
 - DX12 stages full glyph-atlas uploads in frame upload arenas. The full-upload correctness workaround remains, but the later staging optimization replaces the older allocation/copy path.
 - Detailed counters require `perf_profile`. The workspace's eleven development dependency overrides do not propagate to consuming applications; configure their own workspace profiles when reproducing those dev-build measurements.
 
+Changed after 0.60.0 by the [Chat Screen Text Optimization](/lurq/text-chat-optimization/) round:
+
+- The 64-entry buffer cache above now holds documents only: plain texts of 1,024 bytes and more. Shorter texts (labels, chat messages) are kept shaped by their text and face in a 4 MiB least-recently-used cache of their own, and laid out again, not shaped again, for a new width, size, wrapping or scale factor.
+- Each laid-out plain text has one cache entry holding its size, vertical extents, carets and glyphs, found with one fast hash of the text. A full cache drops the entries no pass used for 16 passes; it never empties at once.
+- cosmic-text's `shape-run-cache` keeps shaped words across texts; the glyph engine trims it.
+- A new glyph is packed into the atlas in place: the frame's snapshot shares the atlas's pixels and is released once drawn.
+- The wgpu and DX12 renderers draw texts that follow one another in one instanced draw where their clips cut nothing off them.
+
 The measurements below and in linked reports are historical observations from their stated fixtures, revisions, and machines. They are not new measurements of 0.20.0. Absolute `F:/codex-tmp/...` paths identify original local artifacts, which are not shipped with the repository.
 
 ## Measurement history
@@ -35,6 +43,8 @@ The subsequent [Text Cache Budget](/lurq/text-cache-budget/) comparison raises t
 [Stable Text Reflow](/lurq/text-stable-reflow/) preserves wrapped layouts and caret geometry while width changes stay within unchanged wrap decisions. At 150% scale, CPU resizing rebuilds a median 72 of 1,728 paragraphs for the caret layout. The report includes native DX12 checks, the 54 KiB metadata cost, and separately labeled timing observations under external compiler load.
 
 [DX12 Atlas Upload Reuse](/lurq/text-atlas-upload/) stages full atlas updates in existing frame memory. It removes the temporary atlas-sized vector and dedicated upload allocation in the normal path. All 24 before/after pixel captures match exactly; the native comparison observes scroll atlas preparation/upload falling from 3.90 to 0.25 ms under external compiler load.
+
+[Chat Screen Text Optimization](/lurq/text-chat-optimization/) (November 12, 2026) measures a different workload in release builds: a chat screen of 206 short texts instead of one document, with the `text_chat` benchmark, a per-frame metrics mode and a probe through both native renderers. It shares draws between texts, stops copying the atlas for a new glyph, replaces the five plain-text caches with one, keeps short texts shaped across widths and sizes, reuses shaped words, and lets an application prepare its fonts before the first frame. An idle frame of that screen goes from 198 to 159 µs, a resize frame from 1.67 to 0.49 ms, a wheel step through 10,000 messages from 1.46 to 1.18 ms (its 99th percentile from 3.4 to 1.6 ms), the first frame from 19.7 to 2.5 ms with the fonts prepared, and 210 draw calls become 9. The report has the baseline and final numbers of every scenario and phase, what was tried and dropped, and what remains.
 
 ## Benchmark
 
@@ -426,13 +436,15 @@ The experiment was not kept. The stateless whitespace-cluster skip covers the re
 
 ## Current Storage Model
 
-Fully shaped plain-text Cosmic buffers are retained across measurement, vertical alignment, and painting. This cache holds at most 64 entries under a 48 MiB charged-storage budget; see the [budget comparison and memory accounting limits](/lurq/text-cache-budget/). Identical complete paragraphs can also reuse shaped data within a newly built full buffer. Buffers containing only a clipped prefix are not retained as full layouts.
+Fully shaped plain-text Cosmic buffers are retained across measurement, vertical alignment, and painting. For documents (plain texts of 1,024 bytes and more) this cache holds at most 64 entries under a 48 MiB charged-storage budget; see the [budget comparison and memory accounting limits](/lurq/text-cache-budget/). Identical complete paragraphs can also reuse shaped data within a newly built full buffer. Buffers containing only a clipped prefix are not retained as full layouts.
 
 Unchanged paragraphs can transfer from a compatible prior document version after an edit or width change. Under memory pressure, older entries can discard wrapped layout while retaining paragraph shaping; full layout is reconstructed before use. This lets logical and physical text sizes share the budget at fractional DPI.
 
-The engine additionally stores derived glyph layout data:
+Plain texts under 1,024 bytes have a cache of their own (`glyph_engine::shaped_texts`), keyed by what shapes a text: the text, family, weight, slant, font features and tracking in ems. It holds 4 MiB of buffers, least recently used first out. A buffer taken from it for another size, width, wrapping or alignment is laid out again by Cosmic without being shaped again. `GlyphEngineProfile::plain_cache_bytes` and `plain_cache_budget` cover both caches. Cosmic's own `shape-run-cache` additionally keeps the glyphs of shaped words; it is trimmed every 256 passes or newly laid out texts and is not part of lurq's accounting.
 
-- plain text: `CacheKey -> Vec<CachedGlyph>`
+The engine additionally stores derived layout data:
+
+- plain text: one `TextEntry` per `CacheKey` (`glyph_engine::text_cache`) with the text's measured size, vertical and optical extents, carets and `Vec<CachedGlyph>`, each filled in by the first request for it; entries not used for 16 passes are dropped when the cache is full
 - rich text: `RichTextCacheKey -> Vec<CachedRichGlyph>`
 - baked transformed text: `CacheKey -> Vec<CachedTransformedGlyph>`
 
@@ -444,6 +456,7 @@ Markdown input stores rich text spans. It does not store shaped runs.
 2. Reproduce and fix DX12's partial atlas upload defect before removing its full-upload workaround. The later [atlas upload report](/lurq/text-atlas-upload/) reduced staging cost to 0.25 ms in its measured scroll fixture; the earlier 3–4 ms figure describes the old staging path, not the current implementation.
 3. Reassess persistent workers or GPU glyph generation if new workloads show rasterization dominating; after the dev font dependency changes it is under 1 ms in the measured regular viewport cases.
 4. Refresh optimized Criterion results separately from the development-profile measurements above.
+5. For screens of many short texts, see "What remains" in [Chat Screen Text Optimization](/lurq/text-chat-optimization/): the first use of a font face an application did not prepare with `App::warm_text_styles` (cosmic-text scores every face of the font database, 4 to 11 ms a combination of family, weight and style), the copy of every text into its quad, and rich text's caches, which the short-text work did not touch.
 
 ## Updating This Page
 
