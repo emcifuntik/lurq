@@ -5,7 +5,7 @@ use std::{collections::HashMap, ffi::c_void, sync::Mutex};
 
 use objc2::{
   class,
-  encode::{Encode, Encoding},
+  encode::{Encode, Encoding, RefEncode},
   msg_send,
   rc::Retained,
   runtime::AnyObject,
@@ -34,6 +34,22 @@ struct CGRect {
   width: f64,
   height: f64,
 }
+
+/// What `-[UIImage CGImage]` returns a pointer to. The message is checked against the method's own types in a
+/// debug build, where a pointer to nothing in particular is not one to a `CGImage`.
+#[repr(C)]
+struct CGImage {
+  _opaque: [u8; 0],
+}
+
+unsafe impl RefEncode for CGImage {
+  const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("CGImage", &[]));
+}
+
+// `UIImage` and `UIImageSymbolConfiguration` are classes of UIKit, and nothing links UIKit into a binary that
+// names no symbol of it: one built without the winit shell, a test's for one.
+#[link(name = "UIKit", kind = "framework")]
+unsafe extern "C" {}
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
@@ -97,7 +113,8 @@ fn draw(name: &str, point_size: f32, color: Color) -> Option<Symbol> {
       msg_send![class!(UIImage), systemImageNamed: &*name, withConfiguration: &*configuration];
     let image = image?;
     let size: CGSize = msg_send![&*image, size];
-    let shape: Ref = msg_send![&*image, CGImage];
+    let shape: *const CGImage = msg_send![&*image, CGImage];
+    let shape: Ref = shape.cast();
     if shape.is_null() || size.width <= 0.0 || size.height <= 0.0 {
       return None;
     }

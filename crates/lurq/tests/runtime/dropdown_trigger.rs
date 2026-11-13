@@ -529,6 +529,10 @@ fn tracked_bar() -> ScrollBarStyle {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn a_press_on_a_scrollbar_over_a_trigger_is_consumed() {
   let state = ScrollState::new();
   let open_select = ElementRef::new();

@@ -11,7 +11,7 @@
 //! A render engine stops painting the target there, copies the pixels around
 //! the node's box out of it, blurs the copy with the passes of a layer blur
 //! (see [`crate::layout::opacity_layer`]) and puts the result back inside
-//! the box, in place of what was there ([`BackdropRegion`]).
+//! the box, in place of what was there (`BackdropRegion`).
 
 #[cfg(any(feature = "render", feature = "devtools"))]
 use crate::layout::opacity_layer::{LayerBlur, LayerBounds, LayerCmd, RoundedBox};

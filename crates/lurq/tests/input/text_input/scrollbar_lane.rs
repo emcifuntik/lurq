@@ -119,6 +119,10 @@ fn long_word(len: usize) -> String {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_reserved_scrollbar_keeps_the_text_out_of_its_lane() {
   let mut editor = Editor::new(&long_word(400), ScrollBarPlacement::Reserved, 8.0);
   let thumb = editor.thumb().expect("400 glyphs overflow three rows");
@@ -141,6 +145,10 @@ fn text_input_reserved_scrollbar_keeps_the_text_out_of_its_lane() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_reserved_scrollbar_lane_stays_while_the_text_fits() {
   let mut fits = Editor::new(&long_word(100), ScrollBarPlacement::Reserved, 8.0);
   assert!(fits.thumb().is_none(), "100 glyphs fit in three rows");
@@ -154,6 +162,10 @@ fn text_input_reserved_scrollbar_lane_stays_while_the_text_fits() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_reserved_scrollbar_lane_fits_the_hovered_bar() {
   let mut editor = Editor::new(&long_word(400), ScrollBarPlacement::Reserved, 14.0);
   let rest_row = editor.first_row_len();
@@ -178,6 +190,10 @@ fn text_input_reserved_scrollbar_lane_fits_the_hovered_bar() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_overlay_scrollbar_still_runs_over_the_text() {
   let mut editor = Editor::new(&long_word(400), ScrollBarPlacement::Overlay, 8.0);
   let thumb = editor.thumb().expect("400 glyphs overflow three rows");
@@ -188,6 +204,10 @@ fn text_input_overlay_scrollbar_still_runs_over_the_text() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_scrollbar_shows_the_default_cursor() {
   let mut editor = Editor::new(&long_word(400), ScrollBarPlacement::Reserved, 8.0);
   let thumb = editor.thumb().expect("400 glyphs overflow three rows");

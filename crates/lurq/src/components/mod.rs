@@ -49,6 +49,7 @@ mod video;
 mod virtualized_list;
 mod window_chrome;
 mod window_controls;
+pub(crate) mod zoom;
 
 pub use button::Button;
 #[cfg(feature = "canvas")]
@@ -119,6 +120,7 @@ pub use window_chrome::{
 pub use window_controls::{
   TrafficLightColors, WindowControlColors, WindowControlContent, WindowControlKind, WindowControlStyle, WindowControls,
 };
+pub use zoom::{ZoomScroll, ZoomScrollProps};
 
 pub use crate::{
   app::ctx::{CollisionStrategy, Modal, ModalTarget, OpenState, OutsidePress, Overlay, Parent, Placement, Root},
@@ -758,8 +760,8 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// A finger landed on this element; see [`TouchEvent`]. A handler that calls `prevent_default` takes the finger
-      /// for itself: no mouse events, click or scrolling follow for this touch.
+      /// A finger landed on this element; see [`TouchEvent`](crate::app::events::TouchEvent). A handler that calls
+      /// `prevent_default` takes the finger for itself: no mouse events, click or scrolling follow for this touch.
       pub fn on_touch_start(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_touch_start(node, f));
         self
@@ -770,7 +772,8 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// A finger that landed on this element moved, wherever it now is; see [`TouchEvent`].
+      /// A finger that landed on this element moved, wherever it now is; see
+      /// [`TouchEvent`](crate::app::events::TouchEvent).
       pub fn on_touch_move(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_touch_move(node, f));
         self
@@ -781,7 +784,7 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// A finger that landed on this element lifted; see [`TouchEvent`].
+      /// A finger that landed on this element lifted; see [`TouchEvent`](crate::app::events::TouchEvent).
       pub fn on_touch_end(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_touch_end(node, f));
         self
@@ -792,7 +795,7 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// The system took away a finger that landed on this element; see [`TouchEvent`].
+      /// The system took away a finger that landed on this element; see [`TouchEvent`](crate::app::events::TouchEvent).
       pub fn on_touch_cancel(mut self, f: impl $crate::node::IntoTouchEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_touch_cancel(node, f));
         self
@@ -803,7 +806,7 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// A finger rested on this element for half a second; see [`LongPressEvent`].
+      /// A finger rested on this element for half a second; see [`LongPressEvent`](crate::app::events::LongPressEvent).
       pub fn on_long_press(mut self, f: impl $crate::node::IntoLongPressEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_long_press(node, f));
         self
@@ -814,7 +817,7 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// Two fingers on this element moved apart or together; see [`PinchEvent`].
+      /// Two fingers on this element moved apart or together; see [`PinchEvent`](crate::app::events::PinchEvent).
       pub fn on_pinch(mut self, f: impl $crate::node::IntoPinchEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_pinch(node, f));
         self
@@ -825,7 +828,7 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// Two fingers on this element turned about their middle; see [`RotateEvent`].
+      /// Two fingers on this element turned about their middle; see [`RotateEvent`](crate::app::events::RotateEvent).
       pub fn on_rotate(mut self, f: impl $crate::node::IntoRotateEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_rotate(node, f));
         self
@@ -836,7 +839,7 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// One or more fingers tapped this element; see [`TapEvent`].
+      /// One or more fingers tapped this element; see [`TapEvent`](crate::app::events::TapEvent).
       pub fn on_tap(mut self, f: impl $crate::node::IntoTapEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_tap(node, f));
         self
@@ -847,7 +850,7 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// Fingers flicked across this element; see [`SwipeEvent`].
+      /// Fingers flicked across this element; see [`SwipeEvent`](crate::app::events::SwipeEvent).
       pub fn on_swipe(mut self, f: impl $crate::node::IntoSwipeEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_swipe(node, f));
         self
@@ -858,7 +861,7 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// Fingers are travelling over this element; see [`PanEvent`].
+      /// Fingers are travelling over this element; see [`PanEvent`](crate::app::events::PanEvent).
       pub fn on_pan(mut self, f: impl $crate::node::IntoPanEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_pan(node, f));
         self
@@ -869,7 +872,8 @@ macro_rules! impl_into_node {
         self
       }
 
-      /// A finger came in from an edge of the window over this element; see [`EdgePanEvent`].
+      /// A finger came in from an edge of the window over this element; see
+      /// [`EdgePanEvent`](crate::app::events::EdgePanEvent).
       pub fn on_edge_pan(mut self, f: impl $crate::node::IntoEdgePanEventHandler) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::on_edge_pan(node, f));
         self

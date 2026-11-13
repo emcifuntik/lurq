@@ -9,13 +9,13 @@
 //! and nothing is hovered: a finger has no hover.
 //!
 //! - Rested for [`PRESS_DELAY`], it presses, so what it is on shows its pressed state.
-//! - Lifted within [`TAP_SLOP`], it taps where it landed: the click comes at once, and what was tapped shows
-//!   its pressed state for [`TAP_HIGHLIGHT`] even when the tap was quicker than the delay.
-//! - Moved past the slop, it scrolls, and a press already sent ends without a click. The content starts from
-//!   where it is: the travel that told the scroll from a tap is not caught up with. The scroll goes on after
-//!   the finger lifts, slowing down, until it stops or reaches an end of the content.
-//! - Rested for [`LONG_PRESS`], it is a long press (`on_long_press`) and stays the pointer whatever it does
-//!   next: text selection and `on_drag_*` sessions over a list start this way.
+//! - Lifted within [`TAP_SLOP`], it taps where it landed: the click comes at once, and what was tapped shows its
+//!   pressed state for [`TAP_HIGHLIGHT`] even when the tap was quicker than the delay.
+//! - Moved past the slop, it scrolls, and a press already sent ends without a click. The content starts from where it
+//!   is: the travel that told the scroll from a tap is not caught up with. The scroll goes on after the finger lifts,
+//!   slowing down, until it stops or reaches an end of the content.
+//! - Rested for [`LONG_PRESS`], it is a long press (`on_long_press`) and stays the pointer whatever it does next: text
+//!   selection and `on_drag_*` sessions over a list start this way.
 //!
 //! A finger that lands while content is still moving, with momentum or springing back from past an end, catches
 //! it: the content stops, nothing is pressed, and any move scrolls on from there with no slop.
@@ -23,7 +23,8 @@
 //! A finger that lands while another scrolls joins the scroll: the content follows the middle of the fingers,
 //! and goes on with those that stay when one lifts. Before a scroll starts, further fingers are ignored.
 //!
-//! The pointer leaves the window once the gesture ends. Positions and deltas are physical pixels, as the tree's pointer input takes them.
+//! The pointer leaves the window once the gesture ends. Positions and deltas are physical pixels, as the tree's pointer
+//! input takes them.
 
 use std::{
   collections::VecDeque,
@@ -516,6 +517,20 @@ fn scroll(anchor: (f64, f64), delta: (f64, f64), phase: ScrollPhase) -> TouchAct
     dy: delta.1,
     phase,
   }
+}
+
+/// Whether the actions end a scroll: of a finger, or of its momentum.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(super) fn ends_scroll(actions: &[TouchAction]) -> bool {
+  actions.iter().any(|action| {
+    matches!(
+      action,
+      TouchAction::Scroll {
+        phase: ScrollPhase::End,
+        ..
+      }
+    )
+  })
 }
 
 /// The middle of the fingers; there is at least one.

@@ -152,7 +152,7 @@ pub struct RoundedBox {
   /// bottom left.
   pub radii: [f32; 4],
   /// The 2x2 matrix (`[a, b, c, d]`, as a
-  /// [`RectCmd`](crate::layout::render_list::RectCmd)'s transform) from an
+  /// [`RectCmd`]'s transform) from an
   /// offset in window pixels to the box's own axes. The identity for an
   /// upright box.
   pub inverse: [f32; 4],
@@ -174,7 +174,7 @@ impl RoundedBox {
 
   /// A `width` x `height` box at (`x`, `y`) under the 2x2 `transform` around
   /// `origin` (relative to the box), as a
-  /// [`RectCmd`](crate::layout::render_list::RectCmd) is placed. `None` for
+  /// [`RectCmd`] is placed. `None` for
   /// a transform that flattens the box.
   pub fn transformed(
     x: f32,
