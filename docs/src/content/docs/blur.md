@@ -110,13 +110,62 @@ blur transition lays nothing out again.
 ## Cost
 
 - `.blur(...)`: the cost follows the layer's pixels, not the radius. A wide blur runs on a reduced copy of the layer,
-  so `blur(64.0)` is not slower than `blur(8.0)`. A blurred layer takes two or three pooled textures for its frame
+  so `blur(64.0)` is not slower than `blur(8.0)`. A blurred layer takes three or four pooled textures for its frame
   and is painted for `1.5 * radius` more on each side than it shows, which is what the radius limit bounds.
-- `.backdrop_blur(...)`: each one stops the frame's drawing, copies the pixels around the box and blurs the copy. That
-  is a few passes and pooled textures of about the box's size. A handful of glass panels is cheap. A long list in
-  which every row is glass is not what it is for: blur the list's backdrop once with one element instead.
+- `.backdrop_blur(...)`: a frame that blurs a backdrop stops the frame's drawing, copies the pixels around the box and
+  blurs the copy. That is a few passes and pooled textures of about the box's size. The blurred pixels are then kept,
+  and a frame in which the same pixels are behind the glass puts them back with two draws: no copy, no pass, no
+  texture taken (see [When A Backdrop Is Blurred Again](#when-a-backdrop-is-blurred-again)). Glass over a backdrop
+  that holds still costs next to nothing, however much of the window it covers; glass over something that moves is
+  blurred in every frame it moves. A long list in which every row is glass is not what it is for: blur the list's
+  backdrop once with one element instead.
 - Textures are pooled and reused across frames, and released after a while without use. A frame without blurs
   creates none.
+
+### When A Backdrop Is Blurred Again
+
+The wgpu and the DX12 renderer keep the blurred pixels of a backdrop blur and put them back in the frames that
+follow, for as long as the blur reads the same pixels. They tell that from what the frame draws, never from the
+pixels themselves. A kept blur is put back while all of this is what it was in the frame that blurred it:
+
+- The rectangle of pixels the blur reads: the element's box inside the clips it is under, and about `1.5 * radius`
+  around it, in physical pixels. So the element's place and size, its radius and the window's scale.
+- What those pixels are in: the window, with its size and clear colour; or, for glass inside an ancestor with
+  `.opacity(...)` below 1 or a `.blur(...)`, the rectangle that ancestor's layer is painted for.
+- Everything painted before the element that can reach the rectangle, in the order it is painted: every fill,
+  border, shadow, glyph, image and SVG, each with its place and size, colours, gradient, corner radii, transform and
+  clip. A glyph is its place in the glyph atlas, with the atlas's version and size; an image its id, frame and
+  version; an SVG its mesh.
+- Every faded or blurred group that shows inside the rectangle, with everything painted into it.
+- Every other backdrop blur under this one that changes pixels inside the rectangle, with everything it reads in
+  turn.
+
+It is blurred again in a frame where any of that differs: something behind the glass changes colour, moves, appears
+or goes, the glass moves or changes size or radius, the window is resized. An animation behind the glass blurs it in
+every frame of the animation, and not after.
+
+Some pixels change without anything the frame draws changing: a video frame or a camera image in a native texture,
+a [`Canvas`](../canvas/), an external wgpu texture. Glass that can reach one of those is blurred in every frame,
+and nothing is kept for it. An image whose pixels come from memory is told by its version, so a GIF or a decoded
+video frame behind glass blurs it when a new frame is shown.
+
+These do not blur it again:
+
+- The element's own `.opacity(...)`, its corner radii and the corners of the clip it is under. They are applied as
+  the blur is put back, so glass that fades in over a still backdrop is blurred once.
+- Anything painted after the element: its own content and children, and whatever lies over it.
+- Anything that cannot reach the rectangle, however it changes; and elements added or removed elsewhere, since the
+  order things are painted in is compared, not their numbers.
+
+A new glyph anywhere changes the atlas, which blurs glass with text behind it once.
+
+The kept pixels are those of the blur's own passes: a wide blur keeps its reduced copy, a quarter of the rectangle's
+pixels or less from `backdrop_blur(32.0)` at scale 1 on. A window keeps at most 64 blurs, in textures of at most
+twice the bytes of its own pixels (1 MiB for a small window); a blur past that is not kept and runs every frame. So
+does a blur with so much painted behind it that writing those draws down takes more than 1 MiB. A kept texture goes
+back to the pool when its glass is gone, has moved or changed size, and when the window is resized.
+
+A custom `RenderEngine` keeps what it chooses to: the `RenderList` of a frame says nothing about the frame before.
 
 ## Checking The Result
 
@@ -125,6 +174,9 @@ blur transition lays nothing out again.
 - `lurq_screenshot` over MCP and frame captures read the rendered frame back, blurs included.
 - `cargo run -p lurq --example layer_blur_capture_check --features screenshot,wgpu,dx12` renders a scene of blurred
   nodes and glass through both renderers and compares the captures.
+- `cargo run -p lurq --release --example backdrop_blur_probe --features screenshot,wgpu,dx12,perf_profile` measures
+  the frames of a window of glass on both renderers, at several radii and scales: the CPU phases, wgpu's GPU time,
+  and how many backdrops each frame blurred and how many it put back from a kept result.
 
 ## For Render Engines
 

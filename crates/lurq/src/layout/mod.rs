@@ -1,5 +1,9 @@
 pub mod alignment;
 pub mod backdrop;
+// Used by the wgpu and the DX12 renderer.
+#[cfg(feature = "render")]
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
+pub(crate) mod backdrop_reuse;
 pub mod box_shadow;
 pub mod constraints;
 pub mod flex_direction;

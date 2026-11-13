@@ -125,6 +125,8 @@ use crate::{
     render_engine::RenderEngine,
   },
   layout::{
+    backdrop::BackdropRegion,
+    backdrop_reuse::{BackdropInputs, PaintedDraw, backdrop_regions},
     opacity_layer::{LayerPlan, LayerStep, TargetSpace},
     quad::ClipRect,
     render_list::{GlyphCmd, RectCmd, RenderList},
@@ -356,6 +358,17 @@ impl Dx12RenderEngine {
       .as_ref()
       .and_then(|state| state.layer_compositor.as_ref())
       .map_or(0, layers::LayerCompositor::texture_count)
+  }
+
+  /// Backdrop blurs the last frame put back from a kept texture, then the
+  /// textures kept.
+  #[cfg(all(test, feature = "screenshot"))]
+  pub(crate) fn backdrop_reuse(&self) -> (usize, usize) {
+    self
+      .state
+      .as_ref()
+      .and_then(|state| state.layer_compositor.as_ref())
+      .map_or((0, 0), layers::LayerCompositor::backdrop_reuse)
   }
 
   /// How many charged bytes of uploaded Canvas images and text this renderer
@@ -863,6 +876,11 @@ impl RenderEngine for Dx12RenderEngine {
   fn last_profile(&self) -> Option<RenderProfile> {
     Some(self.last_profile)
   }
+
+  #[cfg(feature = "perf_profile")]
+  fn layer_profile(&self) -> Option<crate::app::profile_types::LayerProfile> {
+    self.state.as_ref().map(|state| state.layer_profile)
+  }
 }
 
 struct Dx12State {
@@ -926,10 +944,17 @@ struct Dx12State {
   /// Offscreen targets of faded subtrees; created by the first frame that
   /// has one.
   layer_compositor: Option<layers::LayerCompositor>,
+  /// The regions of the frame's backdrop blurs and what each of them reads,
+  /// to tell whether its kept result is still the blur of it.
+  backdrop_regions: Vec<Option<BackdropRegion>>,
+  backdrop_inputs: BackdropInputs,
   /// Draw calls `encode_frame` recorded for the render list, layer
   /// composites included; Canvas draws are not counted.
   #[cfg(feature = "perf_profile")]
   draw_calls: usize,
+  /// What the layers and blurs of the frame `encode_frame` recorded cost.
+  #[cfg(feature = "perf_profile")]
+  layer_profile: crate::app::profile_types::LayerProfile,
 }
 
 /// A recorded-but-not-yet-read screenshot: the readback buffer the back
@@ -2444,6 +2469,18 @@ enum OrderedDraw {
 }
 
 impl OrderedDraw {
+  /// The draw as the inputs of backdrop blurs are told from it.
+  fn painted(&self) -> PaintedDraw {
+    match *self {
+      Self::Rect(index) => PaintedDraw::Rect(index),
+      Self::Glyph(GlyphRun { start, count, .. }) => PaintedDraw::Glyphs { start, count },
+      #[cfg(feature = "raster")]
+      Self::Image(index) => PaintedDraw::Image(index),
+      #[cfg(feature = "svg")]
+      Self::Svg(index) => PaintedDraw::Svg(index),
+    }
+  }
+
   fn glyph_run(&self) -> Option<GlyphRun> {
     match self {
       Self::Glyph(run) => Some(*run),
@@ -2802,8 +2839,12 @@ impl Dx12State {
       layer_slots: Vec::new(),
       glyph_instances: Vec::new(),
       layer_compositor: None,
+      backdrop_regions: Vec::new(),
+      backdrop_inputs: BackdropInputs::default(),
       #[cfg(feature = "perf_profile")]
       draw_calls: 0,
+      #[cfg(feature = "perf_profile")]
+      layer_profile: Default::default(),
     };
     state.create_render_targets()?;
     state.frame_index = state.swapchain.GetCurrentBackBufferIndex() as usize;
@@ -2831,6 +2872,8 @@ impl Dx12State {
     )?;
     self.width = width;
     self.height = height;
+    // A window of another size has other pixels behind its glass.
+    self.forget_backdrops();
     self.create_render_targets()?;
     self.frame_index = self.swapchain.GetCurrentBackBufferIndex() as usize;
     Ok(())
@@ -2923,6 +2966,8 @@ impl Dx12State {
       .map(|context| context.phase(crate::app::profiler::Phase::RenderSubmit));
     let command_list: ID3D12CommandList = dx12_context(self.command_list.cast(), "cast dx12 command list")?;
     self.command_queue.ExecuteCommandLists(&[Some(command_list)]);
+    // The textures the frame blurred backdrops into hold them from here on.
+    self.layer_frame_submitted();
     #[cfg(feature = "canvas")]
     if let Some(renderer) = &mut self.canvas_renderer {
       renderer.submitted();
@@ -2986,7 +3031,14 @@ impl Dx12State {
   }
 
   unsafe fn encode_frame(&mut self, list: &RenderList) -> Result<(GlyphAtlasUploadStats, std::time::Duration)> {
-    profile_if! { self.draw_calls = 0; }
+    profile_if! {
+      self.draw_calls = 0;
+      // The window is one pass, whatever else the frame takes.
+      self.layer_profile = crate::app::profile_types::LayerProfile {
+        render_passes: 1,
+        ..Default::default()
+      };
+    }
     let target = self.current_render_target();
     self.transition_resource(
       &target,
@@ -3257,30 +3309,33 @@ impl Dx12State {
     slots: &mut Vec<Option<usize>>,
   ) -> Result<()> {
     slots.clear();
-    let layered = plan.has_layers() || plan.has_backdrops();
+    // A frame after one that kept a backdrop blur asks for it too: a glass
+    // that is gone gives its texture back.
+    let layered = plan.has_layers() || plan.has_backdrops() || self.keeps_backdrops();
     if layered {
       let targets: Vec<_> = plan
         .targets()
         .iter()
         .map(|target| target.layer.map(|layer| &list.layers[layer]))
         .collect();
-      // A backdrop blur reads the target its step is in.
-      let mut backdrops = vec![None; list.backdrops.len()];
-      for target in plan.targets() {
-        let (origin, size) = match target.layer {
-          Some(layer) => list.layers[layer].painted(),
-          None => ([0, 0], [self.width, self.height]),
-        };
-        for step in plan.steps(target) {
-          if let LayerStep::Backdrop(index) = step {
-            backdrops[*index] = crate::layout::backdrop::BackdropRegion::new(&list.backdrops[*index], origin, size);
-          }
-        }
-      }
-      dx12_context(
-        self.begin_layer_frame(&targets, &backdrops, slots),
-        "prepare dx12 opacity layers",
-      )?;
+      // A backdrop blur reads the target its step is in. One whose kept
+      // result is still the blur of what it reads takes that; the others run.
+      let window = [self.width, self.height];
+      let mut regions = std::mem::take(&mut self.backdrop_regions);
+      let mut inputs = std::mem::take(&mut self.backdrop_inputs);
+      backdrop_regions(list, plan, window, &mut regions);
+      inputs.describe(
+        list,
+        plan,
+        draws.len(),
+        |index| draws[index].1.painted(),
+        &regions,
+        window,
+      );
+      let begun = self.begin_layer_frame(&targets, &regions, &inputs, window, slots);
+      self.backdrop_regions = regions;
+      self.backdrop_inputs = inputs;
+      dx12_context(begun, "prepare dx12 opacity layers")?;
     }
     for (target_index, target) in plan.targets().iter().enumerate() {
       let layer_slot = slots.get(target_index).copied().flatten();

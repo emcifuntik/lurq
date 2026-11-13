@@ -1,7 +1,7 @@
 //! Offscreen targets for flattened group opacity and layer blur (see
 //! [`crate::layout::opacity_layer`]) and the pipelines that composite them.
 //!
-//! A blurred layer takes one or two more textures from the same pool for the
+//! A blurred layer takes two or three more textures from the same pool for the
 //! passes between painting it and compositing it ([`BlurSlots`]). A backdrop
 //! blur (see [`crate::layout::backdrop`]) takes those and one for the copy of
 //! its target ([`BackdropSlots`]).
@@ -12,6 +12,11 @@
 //! [`LAYER_IDLE_FRAMES`] frames are retired and released once the GPU is done
 //! with the frame that last used them. Nothing is created until a frame has
 //! a layer.
+//!
+//! The finished blur of a backdrop is kept out of the pool for as long as
+//! the pixels it was blurred from stay the same (see
+//! [`crate::layout::backdrop_reuse`]): a frame that finds it kept puts it
+//! back with two draws, and takes no other texture for that blur.
 
 use std::{mem::ManuallyDrop, ptr};
 
@@ -55,6 +60,7 @@ use super::{
 };
 use crate::layout::{
   backdrop::BackdropRegion,
+  backdrop_reuse::{BackdropCache, BackdropInputs, BackdropUse},
   opacity_layer::{BlurPlan, LayerBlur, LayerBlurPass, LayerCmd, LayerComposite, TargetSpace},
 };
 
@@ -88,26 +94,51 @@ pub(super) struct LayerCompositor {
   retired: [Vec<LayerSlot>; FRAME_COUNT],
   frame: u64,
   next_srv: usize,
+  /// The backdrop blurs whose finished texture is kept, by the textures'
+  /// ids.
+  backdrops: BackdropCache,
+  /// The id of the texture created last.
+  last_texture: u64,
+  /// What the frame does for each of its backdrop blurs, and the textures
+  /// the cache gave back: scratch of [`Self::acquire_backdrops`].
+  backdrop_uses: Vec<Option<BackdropUse>>,
+  released: Vec<u64>,
+  /// Backdrop blurs the frame put back from a kept texture.
+  backdrops_reused: usize,
 }
 
 /// The textures a blurred layer's passes paint, beside the one it is painted
-/// into: the reduced copy of a wide blur, and the horizontal pass's result,
-/// which the pass compositing the layer reads.
+/// into: the reduced copy of a wide blur, the horizontal pass's result, and
+/// the vertical pass's, which is the finished blur the pass compositing the
+/// layer reads.
 #[derive(Clone, Copy)]
 struct BlurSlots {
   blur: LayerBlur,
   plan: BlurPlan,
   reduced: Option<usize>,
+  horizontal: usize,
   blurred: usize,
 }
 
-/// The textures of a backdrop blur: the copy of its target's pixels, and the
-/// textures of the blur run on it.
+/// The textures of a backdrop blur: the finished blur, kept from an earlier
+/// frame or painted by this one, and for a blur that runs the copy of its
+/// target's pixels and the textures of the passes between.
 #[derive(Clone, Copy)]
 struct BackdropSlots {
   region: BackdropRegion,
+  plan: BlurPlan,
+  blurred: usize,
+  /// `None` when the kept blur is put back as it is.
+  work: Option<BackdropWork>,
+}
+
+/// The textures a backdrop blur paints on its way to the finished one.
+#[derive(Clone, Copy)]
+struct BackdropWork {
+  blur: LayerBlur,
   copied: usize,
-  blur: BlurSlots,
+  reduced: Option<usize>,
+  horizontal: usize,
 }
 
 /// Which pipeline draws a pass of the blur shader.
@@ -120,12 +151,25 @@ enum BlurDraw {
 }
 
 struct LayerSlot {
+  /// Names the texture to what outlives a frame: slots move as the pool
+  /// retires others.
+  id: u64,
   resource: ID3D12Resource,
   rtv_heap: CpuDescriptorHeap,
   width: u32,
   height: u32,
   in_use: bool,
   last_used: u64,
+  /// Holds a kept backdrop blur: no frame takes it for anything else, and
+  /// it is not retired for being idle.
+  kept: bool,
+}
+
+impl LayerSlot {
+  /// The bytes the texture holds, at four a texel.
+  fn bytes(&self) -> usize {
+    self.width as usize * self.height as usize * 4
+  }
 }
 
 impl LayerCompositor {
@@ -170,6 +214,11 @@ impl LayerCompositor {
       retired: std::array::from_fn(|_| Vec::new()),
       frame: 0,
       next_srv: 0,
+      backdrops: BackdropCache::default(),
+      last_texture: 0,
+      backdrop_uses: Vec::new(),
+      released: Vec::new(),
+      backdrops_reused: 0,
     })
   }
 
@@ -180,30 +229,99 @@ impl LayerCompositor {
       true => Some(self.acquire(device, plan.size[0], plan.size[1])?),
       false => None,
     };
+    let horizontal = self.acquire(device, plan.size[0], plan.size[1])?;
     let blurred = self.acquire(device, plan.size[0], plan.size[1])?;
     Ok(BlurSlots {
       blur: *blur,
       plan,
       reduced,
+      horizontal,
       blurred,
     })
   }
 
-  /// The textures the backdrop blur `region` uses this frame.
-  unsafe fn acquire_backdrop(
+  /// Takes the textures of the frame's backdrop blurs (`backdrop_slots`, by
+  /// the blurs' index; `None` for one without a region): `regions` are the
+  /// blurs' regions and `inputs` what each of them reads, in a window of
+  /// `window` pixels. A blur whose kept result is still the blur of what it
+  /// reads takes that texture alone; any other takes the textures of its
+  /// passes, and the texture kept for its place or a new one for the result,
+  /// which is kept from then on if the cache has room for it.
+  unsafe fn acquire_backdrops(
     &mut self,
     device: &ID3D12Device,
-    region: BackdropRegion,
-  ) -> Result<Option<BackdropSlots>> {
-    let Some(blur) = region.layer.blur else {
-      return Ok(None);
-    };
-    let copied = self.acquire(device, blur.width, blur.height)?;
-    Ok(Some(BackdropSlots {
-      region,
-      copied,
-      blur: self.acquire_blur(device, &blur)?,
-    }))
+    regions: &[Option<BackdropRegion>],
+    inputs: &BackdropInputs,
+    window: [u32; 2],
+  ) -> Result<()> {
+    let mut uses = std::mem::take(&mut self.backdrop_uses);
+    let mut released = std::mem::take(&mut self.released);
+    self.backdrops.begin_frame(
+      regions,
+      inputs,
+      BackdropCache::budget_of(window),
+      &mut uses,
+      &mut released,
+    );
+    // Given back to the pool, free for this frame.
+    for slot in &mut self.slots {
+      if slot.kept && released.contains(&slot.id) {
+        slot.kept = false;
+        slot.in_use = false;
+      }
+    }
+    self.backdrop_slots.clear();
+    self.backdrops_reused = 0;
+    for (index, (region, used)) in regions.iter().zip(&uses).enumerate() {
+      let (Some(region), Some(used)) = (region, used) else {
+        self.backdrop_slots.push(None);
+        continue;
+      };
+      let Some(blur) = region.layer.blur else {
+        self.backdrop_slots.push(None);
+        continue;
+      };
+      let plan = BlurPlan::new(&blur);
+      let kept = match used {
+        BackdropUse::Reuse { texture } | BackdropUse::Refresh { texture } => {
+          self.slots.iter().position(|slot| slot.id == *texture)
+        }
+        BackdropUse::Blur { .. } => None,
+      };
+      let work = match (used, kept) {
+        (BackdropUse::Reuse { .. }, Some(_)) => None,
+        _ => Some(BackdropWork {
+          blur,
+          copied: self.acquire(device, blur.width, blur.height)?,
+          reduced: match plan.reduction > 1 {
+            true => Some(self.acquire(device, plan.size[0], plan.size[1])?),
+            false => None,
+          },
+          horizontal: self.acquire(device, plan.size[0], plan.size[1])?,
+        }),
+      };
+      let blurred = match kept {
+        Some(slot) => slot,
+        None => {
+          let slot = self.acquire_to_keep(device, plan.size[0], plan.size[1])?;
+          let (id, bytes) = (self.slots[slot].id, self.slots[slot].bytes());
+          if matches!(used, BackdropUse::Blur { keep: true }) && self.backdrops.keep(inputs, index, id, bytes) {
+            self.slots[slot].kept = true;
+          }
+          slot
+        }
+      };
+      self.backdrops_reused += usize::from(work.is_none());
+      self.backdrop_slots.push(Some(BackdropSlots {
+        region: *region,
+        plan,
+        blurred,
+        work,
+      }));
+    }
+    self.backdrop_uses = uses;
+    self.released = released;
+    Ok(())
   }
 
   fn size(&self, slot: usize) -> [u32; 2] {
@@ -219,16 +337,30 @@ impl LayerCompositor {
       .filter(|(_, slot)| !slot.in_use && slot.width >= width && slot.height >= height)
       .min_by_key(|(_, slot)| u64::from(slot.width) * u64::from(slot.height))
       .map(|(index, _)| index);
+    self.take(device, fitting, width, height)
+  }
+
+  /// A free texture for a `width` x `height` blur that may be kept: one of
+  /// the size a new one would have, so that a small blur does not keep a
+  /// large texture out of the pool.
+  unsafe fn acquire_to_keep(&mut self, device: &ID3D12Device, width: u32, height: u32) -> Result<usize> {
+    let size = slot_size(width, height);
+    let fitting = self
+      .slots
+      .iter()
+      .position(|slot| !slot.in_use && [slot.width, slot.height] == size);
+    self.take(device, fitting, width, height)
+  }
+
+  /// Takes the free texture `fitting` for this frame, or a new one for a
+  /// `width` x `height` layer.
+  unsafe fn take(&mut self, device: &ID3D12Device, fitting: Option<usize>, width: u32, height: u32) -> Result<usize> {
     let index = match fitting {
       Some(index) => index,
       None => {
-        let size = |value: u32| {
-          value
-            .div_ceil(LAYER_SIZE_STEP)
-            .saturating_mul(LAYER_SIZE_STEP)
-            .min(MAX_TEXTURE_DIMENSION)
-        };
-        self.slots.push(create_slot(device, size(width), size(height))?);
+        let [width, height] = slot_size(width, height);
+        self.last_texture += 1;
+        self.slots.push(create_slot(device, self.last_texture, width, height)?);
         self.slots.len() - 1
       }
     };
@@ -237,6 +369,16 @@ impl LayerCompositor {
     slot.last_used = self.frame;
     Ok(index)
   }
+}
+
+/// The size of a new texture for a `width` x `height` layer.
+fn slot_size(width: u32, height: u32) -> [u32; 2] {
+  [width, height].map(|value| {
+    value
+      .div_ceil(LAYER_SIZE_STEP)
+      .saturating_mul(LAYER_SIZE_STEP)
+      .min(MAX_TEXTURE_DIMENSION)
+  })
 }
 
 /// The pipeline of a layer shader: the unit quad drawn by `shader`'s
@@ -331,7 +473,7 @@ unsafe fn create_layer_pipeline(
   }
 }
 
-unsafe fn create_slot(device: &ID3D12Device, width: u32, height: u32) -> Result<LayerSlot> {
+unsafe fn create_slot(device: &ID3D12Device, id: u64, width: u32, height: u32) -> Result<LayerSlot> {
   let heap_properties = D3D12_HEAP_PROPERTIES {
     Type: D3D12_HEAP_TYPE_DEFAULT,
     CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
@@ -373,12 +515,14 @@ unsafe fn create_slot(device: &ID3D12Device, width: u32, height: u32) -> Result<
   )?;
   device.CreateRenderTargetView(&resource, Some(&render_target_view_desc()), rtv_heap.cpu_handle(0));
   Ok(LayerSlot {
+    id,
     resource,
     rtv_heap,
     width,
     height,
     in_use: false,
     last_used: 0,
+    kept: false,
   })
 }
 
@@ -467,6 +611,12 @@ impl LayerCompositor {
   pub(super) fn texture_count(&self) -> usize {
     self.slots.len()
   }
+
+  /// Backdrop blurs the last frame put back from a kept texture, then the
+  /// textures kept.
+  pub(super) fn backdrop_reuse(&self) -> (usize, usize) {
+    (self.backdrops_reused, self.backdrops.len())
+  }
 }
 
 /// The first SRV descriptor of `frame_index`'s layer range.
@@ -475,15 +625,17 @@ fn layer_srv_start(frame_index: usize) -> usize {
 }
 
 impl Dx12State {
-  /// Starts a frame whose plan has layers or backdrop blurs: takes a texture
-  /// for each target that is a layer (`None` for the window), and the
-  /// textures of each backdrop blur (`None` for one that changes nothing).
-  /// Releases the textures of the frame that last used this frame slot's
-  /// retired list.
+  /// Starts a frame whose plan has layers or backdrop blurs, or that follows
+  /// one that kept a backdrop blur: takes a texture for each target that is
+  /// a layer (`None` for the window), and the textures of each backdrop blur
+  /// (`backdrops` are their regions, `None` for one that changes nothing, and
+  /// `inputs` what each reads in a window of `window` pixels).
   pub(super) unsafe fn begin_layer_frame(
     &mut self,
     layers: &[Option<&LayerCmd>],
     backdrops: &[Option<BackdropRegion>],
+    inputs: &BackdropInputs,
+    window: [u32; 2],
     slots: &mut Vec<Option<usize>>,
   ) -> Result<()> {
     slots.clear();
@@ -496,7 +648,12 @@ impl Dx12State {
     compositor.frame += 1;
     compositor.next_srv = 0;
     for slot in &mut compositor.slots {
-      slot.in_use = false;
+      // A kept blur is not the frame's to paint over, and is in use for as
+      // long as it is kept.
+      slot.in_use = slot.kept;
+      if slot.kept {
+        slot.last_used = compositor.frame;
+      }
     }
     compositor.blur_slots.clear();
     for layer in layers {
@@ -513,15 +670,40 @@ impl Dx12State {
       };
       compositor.blur_slots.push(blur_slots);
     }
-    compositor.backdrop_slots.clear();
-    for region in backdrops {
-      let backdrop_slots = match region {
-        Some(region) => compositor.acquire_backdrop(&self.device, *region)?,
-        None => None,
-      };
-      compositor.backdrop_slots.push(backdrop_slots);
+    compositor.acquire_backdrops(&self.device, backdrops, inputs, window)
+  }
+
+  /// Whether a backdrop blur is kept: the next frame has to ask for it, or
+  /// give it back.
+  pub(super) fn keeps_backdrops(&self) -> bool {
+    self
+      .layer_compositor
+      .as_ref()
+      .is_some_and(|compositor| compositor.backdrops.len() > 0)
+  }
+
+  /// The frame's commands were handed to the GPU: the backdrop blurs it ran
+  /// into kept textures can be put back from them.
+  pub(super) fn layer_frame_submitted(&mut self) {
+    if let Some(compositor) = self.layer_compositor.as_mut() {
+      compositor.backdrops.commit();
     }
-    Ok(())
+  }
+
+  /// Keeps no backdrop blur any longer: their textures go back to the pool.
+  pub(super) fn forget_backdrops(&mut self) {
+    let Some(compositor) = self.layer_compositor.as_mut() else {
+      return;
+    };
+    let mut released = std::mem::take(&mut compositor.released);
+    released.clear();
+    compositor.backdrops.clear(&mut released);
+    for slot in &mut compositor.slots {
+      if slot.kept && released.contains(&slot.id) {
+        slot.kept = false;
+      }
+    }
+    compositor.released = released;
   }
 
   /// Retires layer textures unused for a while; they are released when this
@@ -534,9 +716,17 @@ impl Dx12State {
     let frame = compositor.frame;
     let (kept, idle): (Vec<_>, Vec<_>) = std::mem::take(&mut compositor.slots)
       .into_iter()
-      .partition(|slot| slot.in_use || frame.saturating_sub(slot.last_used) <= LAYER_IDLE_FRAMES);
+      .partition(|slot| slot.in_use || slot.kept || frame.saturating_sub(slot.last_used) <= LAYER_IDLE_FRAMES);
     compositor.slots = kept;
     compositor.retired[frame_index].extend(idle);
+    #[cfg(feature = "perf_profile")]
+    {
+      self.layer_profile.textures = compositor.slots.len();
+      self.layer_profile.texture_bytes = compositor.slots.iter().map(LayerSlot::bytes).sum();
+      self.layer_profile.backdrops_reused = compositor.backdrops_reused;
+      self.layer_profile.kept_textures = compositor.backdrops.len();
+      self.layer_profile.kept_texture_bytes = compositor.backdrops.bytes();
+    }
   }
 
   /// Drops the layer textures retired by the frame that last used this frame
@@ -572,6 +762,10 @@ impl Dx12State {
     self.command_list.OMSetRenderTargets(1, Some(&rtv), false, None);
     self.command_list.ClearRenderTargetView(rtv, &[0.0; 4], None);
     self.set_target_viewport(space);
+    #[cfg(feature = "perf_profile")]
+    {
+      self.layer_profile.render_passes += 1;
+    }
   }
 
   /// Finishes painting `slot`'s layer so it can be composited.
@@ -602,8 +796,8 @@ impl Dx12State {
 
   /// Runs the passes of a blur that come before compositing, on the layer
   /// just painted into `painted` as the frame's target `target`: the
-  /// reduction of a wide blur, then the horizontal Gaussian. Does nothing
-  /// for a layer without a blur.
+  /// reduction of a wide blur, then the horizontal Gaussian and the vertical
+  /// one. Does nothing for a layer without a blur.
   pub(super) unsafe fn prepare_layer_blur(&mut self, target: usize, painted: usize) -> Result<()> {
     let Some(compositor) = self.layer_compositor.as_ref() else {
       return Ok(());
@@ -633,15 +827,24 @@ impl Dx12State {
     let Some(compositor) = self.layer_compositor.as_ref() else {
       return Ok(());
     };
-    let constants = LayerBlurPass::horizontal(&slots.plan, compositor.size(source), compositor.size(slots.blurred));
-    self.run_blur_pass(source, slots.blurred, &constants, slots.plan.size)
+    let constants = LayerBlurPass::horizontal(&slots.plan, compositor.size(source), compositor.size(slots.horizontal));
+    self.run_blur_pass(source, slots.horizontal, &constants, slots.plan.size)?;
+    let Some(compositor) = self.layer_compositor.as_ref() else {
+      return Ok(());
+    };
+    let constants = LayerBlurPass::vertical(
+      &slots.plan,
+      compositor.size(slots.horizontal),
+      compositor.size(slots.blurred),
+    );
+    self.run_blur_pass(slots.horizontal, slots.blurred, &constants, slots.plan.size)
   }
 
-  /// Runs the backdrop blur `index` of the frame on the current target, in
-  /// the middle of painting it: copies the pixels the blur reads out of the
-  /// target, blurs the copy, and puts the result back inside the node's box.
-  /// `layer` is the layer the target paints and the texture it paints into;
-  /// `None` for the window.
+  /// Blurs the backdrop `index` of the frame on the current target, in the
+  /// middle of painting it, and puts the result back inside the node's box:
+  /// the result an earlier frame kept, or, for a blur that runs, that of the
+  /// pixels it reads out of the target now. `layer` is the layer the target
+  /// paints and the texture it paints into; `None` for the window.
   pub(super) unsafe fn blur_backdrop(&mut self, index: usize, layer: Option<(&LayerCmd, usize)>) -> Result<()> {
     let parent = self.space;
     let Some(compositor) = self.layer_compositor.as_ref() else {
@@ -650,11 +853,37 @@ impl Dx12State {
     let Some(slots) = compositor.backdrop_slots.get(index).copied().flatten() else {
       return Ok(());
     };
+    // A blur that runs fills the texture it is kept in, whether or not any
+    // of it shows.
+    if let Some(work) = slots.work {
+      self.run_backdrop_blur(&slots, work, layer)?;
+    }
     let Some(scissor) = super::scissor_rect(
       parent.layer_rect(slots.region.layer.bounds),
       parent.width,
       parent.height,
     ) else {
+      return Ok(());
+    };
+    let Some(compositor) = self.layer_compositor.as_ref() else {
+      return Ok(());
+    };
+    let constants = LayerBlurPass::backdrop(&slots.region, &slots.plan, &parent, compositor.size(slots.blurred));
+    self.draw_layer_blur(slots.blurred, &constants, scissor, BlurDraw::BackdropErase)?;
+    self.draw_layer_blur(slots.blurred, &constants, scissor, BlurDraw::BackdropAdd)
+  }
+
+  /// Copies the pixels a backdrop blur reads out of the current target and
+  /// blurs the copy into `slots.blurred`, then makes the target current
+  /// again.
+  unsafe fn run_backdrop_blur(
+    &mut self,
+    slots: &BackdropSlots,
+    work: BackdropWork,
+    layer: Option<(&LayerCmd, usize)>,
+  ) -> Result<()> {
+    let parent = self.space;
+    let Some(compositor) = self.layer_compositor.as_ref() else {
       return Ok(());
     };
     let (target, target_rtv, target_origin) = match layer {
@@ -664,8 +893,8 @@ impl Dx12State {
       }
       None => (self.current_render_target(), self.current_rtv_handle(), [0, 0]),
     };
-    let copied = compositor.slots[slots.copied].resource.clone();
-    let blur = slots.blur.blur;
+    let copied = compositor.slots[work.copied].resource.clone();
+    let blur = work.blur;
 
     self.transition_resource(
       &target,
@@ -713,23 +942,24 @@ impl Dx12State {
       D3D12_RESOURCE_STATE_RENDER_TARGET,
     );
 
-    let prepared = self.prepare_blur(slots.copied, slots.blur);
+    let passes = BlurSlots {
+      blur,
+      plan: slots.plan,
+      reduced: work.reduced,
+      horizontal: work.horizontal,
+      blurred: slots.blurred,
+    };
+    let prepared = self.prepare_blur(work.copied, passes);
     // Back to the target, as it was: the blur's passes painted elsewhere.
     self.command_list.OMSetRenderTargets(1, Some(&target_rtv), false, None);
     self.set_target_viewport(parent);
-    prepared?;
-
-    let Some(compositor) = self.layer_compositor.as_ref() else {
-      return Ok(());
-    };
-    let constants = LayerBlurPass::backdrop(
-      &slots.region,
-      &slots.blur.plan,
-      &parent,
-      compositor.size(slots.blur.blurred),
-    );
-    self.draw_layer_blur(slots.blur.blurred, &constants, scissor, BlurDraw::BackdropErase)?;
-    self.draw_layer_blur(slots.blur.blurred, &constants, scissor, BlurDraw::BackdropAdd)
+    #[cfg(feature = "perf_profile")]
+    {
+      self.layer_profile.render_passes += 1;
+      self.layer_profile.target_copies += 1;
+      self.layer_profile.backdrops_blurred += 1;
+    }
+    prepared
   }
 
   /// Clears `target`'s texture and draws one blur pass reading `source`
@@ -754,6 +984,10 @@ impl Dx12State {
     );
     self.command_list.OMSetRenderTargets(1, Some(&rtv), false, None);
     self.command_list.ClearRenderTargetView(rtv, &[0.0; 4], None);
+    #[cfg(feature = "perf_profile")]
+    {
+      self.layer_profile.render_passes += 1;
+    }
     self.set_target_viewport(TargetSpace::blur_target(size, width, height));
     let scissor = RECT {
       left: 0,
@@ -813,6 +1047,7 @@ impl Dx12State {
     #[cfg(feature = "perf_profile")]
     {
       self.draw_calls += 1;
+      self.layer_profile.blur_draws += 1;
     }
     Ok(())
   }
