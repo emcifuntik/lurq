@@ -8,7 +8,9 @@ repository = "https://github.com/ivanzaida/lurq"
 homepage = "https://ivanzaida.github.io/lurq/"
 documentation = "https://docs.rs/lurq"
 readme = "../../README.md"
-exclude = ["target/**"]
+# What is published is named here: a file put anywhere else in this directory stays out of the package. The manifest
+# and the readme are packaged whatever this says. Unit tests in `src` read fonts from `tests/assets`.
+include = ["/src/**", "/assets/**", "/tests/**", "/benches/**", "/examples/**"]
 keywords = ["ui", "gui", "reactive", "wgpu", "devtools"]
 categories = ["gui", "rendering"]
 
