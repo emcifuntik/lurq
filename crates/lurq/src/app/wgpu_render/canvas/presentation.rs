@@ -24,9 +24,8 @@ impl Renderer {
     }
     let Some(mut back) = self
       .take_spare(id, metrics.pixel_width, metrics.pixel_height)
-      .map(|back| {
+      .inspect(|_| {
         canvas.presentation_event(PresentationEvent::Reuse);
-        back
       })
       .or_else(|| {
         if metrics.pixel_width > device.limits().max_texture_dimension_2d
@@ -110,10 +109,10 @@ impl Renderer {
     }
   }
   pub(super) fn abort_for_resize(&mut self, queue: &Queue, canvas: &CanvasHandle) {
-    if let Some((_, front)) = self.frames.end_replacement(&mut self.fronts, canvas.surface_id()) {
-      if let Some(back) = self.surfaces.insert(canvas.surface_id(), front) {
-        self.retire_back(queue, canvas.surface_id(), back);
-      }
+    if let Some((_, front)) = self.frames.end_replacement(&mut self.fronts, canvas.surface_id())
+      && let Some(back) = self.surfaces.insert(canvas.surface_id(), front)
+    {
+      self.retire_back(queue, canvas.surface_id(), back);
     }
   }
   pub(super) fn account_presentation(&self, canvas: &CanvasHandle) {

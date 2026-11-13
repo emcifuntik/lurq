@@ -29,6 +29,16 @@ app.register_font("ui", "Inter");
 
 A family may also be a CSS generic family (`"serif"`, `"sans-serif"`, `"monospace"`, `"cursive"`, `"fantasy"`), drawn with the platform's font for it; see [Generic Families](../theme/#generic-families) and [`GenericFamily`](https://docs.rs/lurq/latest/lurq/layout/text_style/enum.GenericFamily.html) for the fonts of each platform. A bundled font replaces one by an alias of the keyword: `app.register_font("monospace", "JetBrains Mono")`.
 
+### Hinted Fonts
+
+Text is drawn unhinted: a letter falls at any fraction of a pixel, and looks the same wherever it falls. An icon font is the opposite case. Its glyphs are drawn on a pixel grid, and a stroke a pixel and a half wide spread over three pixels is a blur. Load such a font with `load_hinted_font`:
+
+```rust
+app.load_hinted_font(include_bytes!("../assets/icons.ttf").to_vec());
+```
+
+Its glyphs are then drawn grid-fitted: at the nearest whole pixel size and position, with the font's TrueType hints applied along both axes. The font has to carry hints for this to do anything, and to ask for native ClearType in its `prep` program for the hints along x to count. A glyph under a transform, or in a text that is not snapped to pixels, is drawn unhinted like any other.
+
 Text uses `TextStyle`.
 
 ```rust
@@ -331,6 +341,6 @@ MarkdownProps::new(reply)
 - `tooltip(...)` shows under the link after the pointer rests on it for `ThemeMarkdown::link_tooltip_delay`, and at once while it has keyboard focus. It lets the pointer through.
 - `pointer_only()` leaves a link to the pointer, for an app whose reading text is not part of its Tab order: the link is no Tab stop, a press on it leaves the focus where it was, so Enter never reaches it and it never shows its focused look, its ring or a tooltip from the keyboard. A click and a middle click follow it, and the pointer over it shows its hovered look and its tooltip, as on any link.
 - Unset looks are the theme's: `ThemeMarkdown::link`, `link_hovered`, `link_focused`, `link_focus_ring`, `link_radius`, `link_tooltip` and `link_tooltip_box`.
-- Underlines (`TextStyle::underline`, `MarkdownTextStyle::underline`: color, thickness and offset, each defaulting to the text color and the font's metrics) are drawn under every line a span covers. Rich text draws them; a plain `Text` does not yet.
+- Underlines (`TextStyle::underline`, `MarkdownTextStyle::underline`: color, thickness and offset, each defaulting to the text color and the font's metrics) are drawn under every line a span covers, and lines through text (`strikethrough`: color and thickness) the same way. `~~struck~~` text has one by default, from `ThemeMarkdown::strikethrough`. A plain `Text` draws both too; see [layout](../layout/#underline-and-strikethrough).
 
 `.list_view(...)` lets the app draw a list block itself. It is called for every list with a `MarkdownList` and returns the element to draw, or `None` to draw the list as usual. `MarkdownList::inlines` and `blocks` draw content as the document does, links included; decide from `items()` before drawing with them, since drawing numbers the links.

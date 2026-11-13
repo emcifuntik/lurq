@@ -10,6 +10,7 @@ mod drop_zone;
 mod form;
 #[cfg(all(feature = "raster", feature = "wgpu"))]
 mod gpu_viewport;
+mod grid;
 #[cfg(feature = "raster")]
 mod image;
 #[cfg(feature = "router")]
@@ -71,6 +72,7 @@ pub use form::{
 };
 #[cfg(all(feature = "raster", feature = "wgpu"))]
 pub use gpu_viewport::GpuViewport;
+pub use grid::Grid;
 #[cfg(feature = "raster")]
 pub use image::Image;
 #[cfg(feature = "router")]
@@ -204,6 +206,23 @@ macro_rules! impl_into_node {
         self
       }
 
+      /// Sets the color of the text in this element and under it, like CSS
+      /// `color`: a `Text` that names no color of its own is drawn in the
+      /// foreground of its nearest ancestor that has one (see
+      /// `Node::foreground`).
+      pub fn foreground(mut self, color: impl Into<$crate::node::TextColor>) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::foreground(node, color));
+        self
+      }
+
+      /// Draws a line around the element, outside its box and taking no
+      /// room in layout, like CSS `outline` with `outline-offset` (see
+      /// `Outline`). Put it in `focus_visible` for a focus ring.
+      pub fn outline(mut self, outline: $crate::node::Outline) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::outline(node, outline));
+        self
+      }
+
       /// CSS-like `box-shadow`: a [`ShadowStyle`](crate::app::theme::ShadowStyle)
       /// theme role, one [`BoxShadow`](crate::node::BoxShadow), or a list
       /// (the first on top). Paint only: it does not change layout or hit testing.
@@ -324,6 +343,14 @@ macro_rules! impl_into_node {
         self
       }
 
+      /// Holds the element at an edge of the scroll container it is in while that scrolls, as CSS
+      /// `position: sticky`: `.sticky(Sticky::top(0.0))` for a header. See
+      /// [`Sticky`]($crate::layout::layout_kind::Sticky).
+      pub fn sticky(mut self, sticky: $crate::layout::layout_kind::Sticky) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::sticky(node, sticky));
+        self
+      }
+
       pub fn absolute(
         mut self,
         x: f32,
@@ -347,6 +374,31 @@ macro_rules! impl_into_node {
 
       pub fn flex(mut self, factor: f32) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::flex(node, factor));
+        self
+      }
+
+      /// The column of a [`Grid`]($crate::components::Grid) the element starts in, counted from 0. Without
+      /// one it takes the next cell that has room.
+      pub fn grid_column(mut self, index: usize) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::grid_cell(node, |cell| cell.set_column(index)));
+        self
+      }
+
+      /// The row of a [`Grid`]($crate::components::Grid) the element starts in, counted from 0.
+      pub fn grid_row(mut self, index: usize) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::grid_cell(node, |cell| cell.set_row(index)));
+        self
+      }
+
+      /// How many columns of a [`Grid`]($crate::components::Grid) the element takes; one by default.
+      pub fn column_span(mut self, columns: usize) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::grid_cell(node, |cell| cell.set_column_span(columns)));
+        self
+      }
+
+      /// How many rows of a [`Grid`]($crate::components::Grid) the element takes; one by default.
+      pub fn row_span(mut self, rows: usize) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::grid_cell(node, |cell| cell.set_row_span(rows)));
         self
       }
 
@@ -550,6 +602,29 @@ macro_rules! impl_into_node {
 
       pub fn hovered(mut self, f: impl FnOnce($crate::node::Style) -> $crate::node::Style) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::hovered(node, f));
+        self
+      }
+
+      /// Takes the element and everything in it out of input: no press,
+      /// click, tap or gesture reaches them, none of them is hovered,
+      /// pressed or focused, and Tab passes them by. The element still
+      /// covers what is behind it (see `Node::disabled`).
+      pub fn disabled(mut self, disabled: bool) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::disabled(node, disabled));
+        self
+      }
+
+      /// Merged over the element's style, after every other state style,
+      /// while it is disabled, by itself or by an element it is in. It
+      /// changes painting only.
+      pub fn disabled_style(mut self, style: $crate::node::Style) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::disabled_style(node, style));
+        self
+      }
+
+      /// Builder form of `disabled_style`.
+      pub fn when_disabled(mut self, f: impl FnOnce($crate::node::Style) -> $crate::node::Style) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::when_disabled(node, f));
         self
       }
 
@@ -1097,6 +1172,24 @@ macro_rules! impl_into_node {
 
       pub fn animation(mut self, spec: $crate::animation::Animation) -> Self {
         self.update_node(|node| $crate::node::NodeUpdate::animation(node, spec));
+        self
+      }
+
+      /// Keeps a child that is removed from the element where it was until the child's exit animation
+      /// ends. Only a child with a key or an id and an `.exit_animation(...)` of its own is kept.
+      pub fn presence(mut self) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::presence(node, true));
+        self
+      }
+
+      /// The animation the element leaves with. In an `Overlay`, a `Popup`
+      /// or a `Modal` it plays when the layer closes, and the layer's content
+      /// stays on screen, taking no input, until the longest exit animation
+      /// in it ends. On a child with a key or an id of a container with
+      /// `.presence()`, it plays when a render removes the child, which
+      /// stays where it was until it ends.
+      pub fn exit_animation(mut self, spec: $crate::animation::Animation) -> Self {
+        self.update_node(|node| $crate::node::NodeUpdate::exit_animation(node, spec));
         self
       }
 

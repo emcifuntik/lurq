@@ -14,7 +14,7 @@ use crate::{
       ThemeSpacing, ThemeTypography,
     },
   },
-  core::{ElementRect, ElementRef},
+  core::{ElementRect, ElementRef, NodeId},
   layout::{
     Alignment, Constraints, Offset, Size, StackAlignment,
     layout_kind::{
@@ -31,7 +31,7 @@ use crate::{
     border::{BorderPlacement, BorderRadius, ResolvedBorder, ResolvedBorders},
     color::Color,
     dimension::Dimension,
-    node::Node,
+    node::{Node, SyntheticNodeRole},
     node_kind::{NodeKind, SelectState, SliderPartRect, TextInputOverflow, TextInputState, TextOverflow},
     padding::Padding,
     slider_style::SliderPartStyle,
@@ -42,6 +42,8 @@ use crate::{
 mod box_shadow_quads;
 mod control_fill;
 mod flex_shrink;
+mod foreground;
+mod grid_layout;
 #[cfg(feature = "markdown")]
 pub(crate) mod inline_links;
 mod input_layout;
@@ -49,7 +51,9 @@ pub(crate) mod input_token_layout;
 mod input_token_quads;
 #[cfg(feature = "perf_profile")]
 mod layout_trace;
+mod line_limit;
 mod opacity_groups;
+mod outline_quads;
 mod scrollbar_quads;
 mod select_quads;
 mod selection_layout;
@@ -60,6 +64,7 @@ mod shrink_floors;
 mod shrink_sharing;
 #[cfg(feature = "markdown")]
 mod styled_input_layout;
+mod text_decorations;
 mod text_highlights;
 mod text_input_quads;
 mod text_layout_output;
@@ -91,6 +96,7 @@ fn layout_kind_profile_name(kind: &LayoutKind) -> &'static str {
     LayoutKind::Row { .. } => "row",
     LayoutKind::Column { .. } => "column",
     LayoutKind::Stack { .. } => "stack",
+    LayoutKind::Grid(_) => "grid",
     LayoutKind::LogicalModifier => "logical_modifier",
     LayoutKind::ScrollModifier { .. } => "scroll_modifier",
   }
@@ -160,9 +166,13 @@ pub(crate) struct ElementLayoutRecord {
   pub(crate) visible: bool,
 }
 
+/// A layer the overlay host draws over the tree. `origin` is the node that
+/// declares it, once that node has an id: the layer of the same declaration
+/// in the next pass is the same layer.
 pub(crate) enum OverlayLayoutRecord {
   SelectMenu {
     reuse_key: Option<Arc<str>>,
+    origin: Option<NodeId>,
     state: SelectState,
     bounds: ElementRect,
     /// Whether the select shows through its ancestors' clips; see
@@ -171,13 +181,21 @@ pub(crate) enum OverlayLayoutRecord {
   },
   Overlay {
     reuse_key: Option<Arc<str>>,
+    origin: Option<NodeId>,
     spec: OverlaySpec,
   },
   Modal {
     reuse_key: Option<Arc<str>>,
+    origin: Option<NodeId>,
     spec: ModalSpec,
     parent: ElementRect,
   },
+}
+
+/// The id of `node`, if it has one yet.
+fn assigned_id(node: &Node) -> Option<NodeId> {
+  let id = node.node_id();
+  id.is_assigned().then_some(id)
 }
 
 impl Clone for OverlayLayoutIndex {
@@ -195,28 +213,57 @@ impl Clone for OverlayLayoutRecord {
     match self {
       Self::SelectMenu {
         reuse_key,
+        origin,
         state,
         bounds,
         visible,
       } => Self::SelectMenu {
         reuse_key: reuse_key.clone(),
+        origin: *origin,
         state: state.clone(),
         bounds: *bounds,
         visible: *visible,
       },
-      Self::Overlay { reuse_key, spec } => Self::Overlay {
+      Self::Overlay {
+        reuse_key,
+        origin,
+        spec,
+      } => Self::Overlay {
         reuse_key: reuse_key.clone(),
+        origin: *origin,
         spec: spec.clone_for_reuse(),
       },
       Self::Modal {
         reuse_key,
+        origin,
         spec,
         parent,
       } => Self::Modal {
         reuse_key: reuse_key.clone(),
+        origin: *origin,
         spec: spec.clone_for_reuse(),
         parent: *parent,
       },
+    }
+  }
+}
+
+/// The scroll container a node is in, while its layout is synced with the
+/// scroll: the container's viewport, and the box what sticks may not leave,
+/// each as `[x, y, width, height]` from the node's own corner.
+#[derive(Clone, Copy)]
+struct StickyScope {
+  viewport: [f32; 4],
+  block: [f32; 4],
+}
+
+impl StickyScope {
+  /// The scope seen from a child at `offset`.
+  fn moved_into(self, offset: Offset) -> Self {
+    let moved = |rect: [f32; 4]| [rect[0] - offset.x, rect[1] - offset.y, rect[2], rect[3]];
+    Self {
+      viewport: moved(self.viewport),
+      block: moved(self.block),
     }
   }
 }
@@ -250,6 +297,16 @@ pub(crate) struct LayoutEngine {
   text_marks: RefCell<Arc<crate::app::theme::ThemeTextMarks>>,
   /// Open state of the `Select` whose trigger is being painted, if any.
   select_open: Cell<Option<bool>>,
+  /// The foreground the node being painted inherits, if an ancestor set one.
+  foreground: Cell<Option<Color>>,
+  /// The scroll viewports the node being painted is in, and the window: the
+  /// clips that cut a node's outline where they cut the node. The bounds a
+  /// plain container clips its content to let an outline past by its reach.
+  scroll_clip: Cell<ClipRect>,
+  /// Outlines of the nodes painted so far that are not painted yet: an
+  /// outline is painted over what follows its node, at the end of the scope
+  /// the node is in. See `outline_quads`.
+  pending_outlines: RefCell<Vec<Quad>>,
   /// Caret of the focused text input recorded by the last quad resolution,
   /// where an input method places its candidate window.
   ime_cursor_area: Cell<Option<crate::app::events::ImeCursorArea>>,
@@ -545,6 +602,9 @@ impl LayoutEngine {
       #[cfg(feature = "markdown")]
       text_marks: RefCell::new(Arc::new(crate::app::theme::ThemeTextMarks::default())),
       select_open: Cell::new(None),
+      foreground: Cell::new(None),
+      scroll_clip: Cell::new(ClipRect::default()),
+      pending_outlines: RefCell::new(Vec::new()),
       ime_cursor_area: Cell::new(None),
       opacity_groups: RefCell::new(Vec::new()),
       #[cfg(feature = "screenshot")]
@@ -557,6 +617,7 @@ impl LayoutEngine {
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       }),
       paint_scale: Cell::new(1.0),
       #[cfg(feature = "perf_profile")]
@@ -729,6 +790,7 @@ impl LayoutEngine {
           .node_id()
           .is_assigned()
           .then(|| Arc::<str>::from(format!("select:{}", node.node_id().value()))),
+        origin: assigned_id(node),
         state: state.clone(),
         bounds: rect,
         visible,
@@ -741,6 +803,7 @@ impl LayoutEngine {
           .node
           .component_key()
           .map(|key| Arc::<str>::from(format!("overlay:{key}"))),
+        origin: assigned_id(node),
         spec: spec.clone_for_reuse(),
       });
     }
@@ -754,6 +817,7 @@ impl LayoutEngine {
           .node
           .component_key()
           .map(|key| Arc::<str>::from(format!("modal:{key}"))),
+        origin: assigned_id(child),
         spec: spec.clone_for_reuse(),
         parent,
       });
@@ -919,6 +983,9 @@ impl LayoutEngine {
     self.sensitive_quads.borrow_mut().clear();
     self.ime_cursor_area.set(None);
     self.text_input_frame.set(None);
+    self.foreground.set(None);
+    self.scroll_clip.set(viewport);
+    self.pending_outlines.borrow_mut().clear();
     self.collect_quads(
       node,
       result,
@@ -932,8 +999,11 @@ impl LayoutEngine {
       true,
       quads,
     );
+    self.paint_pending_outlines(0, quads);
   }
 
+  // The paint state inherited down the tree, one argument per piece.
+  #[allow(clippy::too_many_arguments)]
   fn collect_quads(
     &self,
     node: &Node,
@@ -987,36 +1057,55 @@ impl LayoutEngine {
           (clip, cull_clip, culling_enabled)
         };
 
-      for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
-        let child_abs_x = abs_x + child_layout.offset.x;
-        let child_abs_y = abs_y + child_layout.offset.y;
-        if child_culling_enabled
-          && clipped_subtree_is_hidden(
+      let outlines = self.pending_outlines.borrow().len();
+      let layers = node.has_synthetic_role(SyntheticNodeRole::OverlayHost);
+      // What sticks is painted after its siblings, which scroll under it.
+      for stuck in [false, true] {
+        let mut sticks_later = false;
+        for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
+          if child_node.is_sticky() != stuck {
+            sticks_later |= !stuck;
+            continue;
+          }
+          let child_abs_x = abs_x + child_layout.offset.x;
+          let child_abs_y = abs_y + child_layout.offset.y;
+          if child_culling_enabled
+            && clipped_subtree_is_hidden(
+              child_node,
+              &child_layout.result,
+              child_abs_x,
+              child_abs_y,
+              inherited_transform,
+              child_cull_clip,
+              self.paint_outset(child_node),
+            )
+          {
+            continue;
+          }
+
+          self.collect_quads(
             child_node,
             &child_layout.result,
             child_abs_x,
             child_abs_y,
+            abs_x,
+            abs_y,
             inherited_transform,
+            child_clip,
             child_cull_clip,
-            self.box_shadow_outset(child_node),
-          )
-        {
-          continue;
+            child_culling_enabled,
+            quads,
+          );
+          // The page, and each layer over it, is painted whole before the next.
+          if layers {
+            self.paint_pending_outlines(outlines, quads);
+          }
         }
-
-        self.collect_quads(
-          child_node,
-          &child_layout.result,
-          child_abs_x,
-          child_abs_y,
-          abs_x,
-          abs_y,
-          inherited_transform,
-          child_clip,
-          child_cull_clip,
-          child_culling_enabled,
-          quads,
-        );
+        if !sticks_later {
+          break;
+        }
+        // The outlines of what scrolls under what sticks are under it too.
+        self.paint_pending_outlines(outlines, quads);
       }
       return;
     }
@@ -1043,6 +1132,7 @@ impl LayoutEngine {
     } else {
       (clip, cull_clip)
     };
+    let foreground_scope = self.enter_foreground_scope(node);
     let frame = self.push_node_quads(
       node,
       result,
@@ -1073,42 +1163,70 @@ impl LayoutEngine {
       ));
 
     let select_scope = self.enter_select_scope(node);
-    for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
-      let child_abs_x = abs_x + child_layout.offset.x;
-      let child_abs_y = abs_y + child_layout.offset.y;
-      if child_culling_enabled
-        && clipped_subtree_is_hidden(
+    let scroll_scope = frame.scroll_viewport.map(|viewport| self.scroll_clip.replace(viewport));
+    let outlines = self.pending_outlines.borrow().len();
+    let layers = node.has_synthetic_role(SyntheticNodeRole::OverlayHost);
+    // What sticks is painted after its siblings, which scroll under it.
+    for stuck in [false, true] {
+      let mut sticks_later = false;
+      for (child_layout, child_node) in result.children.iter().zip(node.children().iter()) {
+        if child_node.is_sticky() != stuck {
+          sticks_later |= !stuck;
+          continue;
+        }
+        let child_abs_x = abs_x + child_layout.offset.x;
+        let child_abs_y = abs_y + child_layout.offset.y;
+        if child_culling_enabled
+          && clipped_subtree_is_hidden(
+            child_node,
+            &child_layout.result,
+            child_abs_x,
+            child_abs_y,
+            transform,
+            child_cull_clip,
+            self.paint_outset(child_node),
+          )
+        {
+          continue;
+        }
+
+        self.collect_quads(
           child_node,
           &child_layout.result,
           child_abs_x,
           child_abs_y,
+          abs_x,
+          abs_y,
           transform,
+          child_clip,
           child_cull_clip,
-          self.box_shadow_outset(child_node),
-        )
-      {
-        continue;
+          child_culling_enabled,
+          quads,
+        );
+        // The page, and each layer over it, is painted whole before the next.
+        if layers {
+          self.paint_pending_outlines(outlines, quads);
+        }
       }
-
-      self.collect_quads(
-        child_node,
-        &child_layout.result,
-        child_abs_x,
-        child_abs_y,
-        abs_x,
-        abs_y,
-        transform,
-        child_clip,
-        child_cull_clip,
-        child_culling_enabled,
-        quads,
-      );
+      if !sticks_later {
+        break;
+      }
+      // The outlines of what scrolls under what sticks are under it too.
+      self.paint_pending_outlines(outlines, quads);
     }
     self.leave_select_scope(select_scope);
+    if let Some(outer) = scroll_scope {
+      self.scroll_clip.set(outer);
+      // What scrolls is painted whole, outlines and all, under the border and the bars of its container.
+      self.paint_pending_outlines(outlines, quads);
+    }
 
     self.push_node_overlay_quads(node, result, abs_x, abs_y, &frame, clip, quads);
+    self.leave_foreground_scope(foreground_scope);
     let opacity = node.effective_opacity();
     if opacity < DEFAULT_QUAD_OPACITY || blur > 0.0 {
+      // A layer holds the outlines of what is in it, and its own.
+      self.paint_pending_outlines(outlines, quads);
       self.close_opacity_group(opacity, blur, group_clip, group_start, quads);
     }
   }
@@ -1166,7 +1284,7 @@ impl LayoutEngine {
         style,
         transform_mode,
       } => {
-        let resolved_style = style.resolve(&self.typography.borrow(), &self.palette.borrow());
+        let resolved_style = self.painted_text_style(style);
         let vertical_align = resolved_style.vertical_align;
         QuadContent::Text {
           text: state.display_text().map_or_else(
@@ -1279,9 +1397,7 @@ impl LayoutEngine {
     };
     let transform = if inherited_transform.is_identity() {
       local_affine
-    } else if local_affine.is_identity() {
-      inherited_transform
-    } else if local_transform.is_identity() {
+    } else if local_affine.is_identity() || local_transform.is_identity() {
       inherited_transform
     } else {
       inherited_transform.then(&local_affine)
@@ -1606,6 +1722,12 @@ impl LayoutEngine {
           QuadContent::RichText { spans, .. } => Self::inline_underlines(result, spans, inline_paint),
           _ => Vec::new(),
         };
+        let text_lines = match &content {
+          QuadContent::Text { style, .. } => {
+            Self::text_decoration_quads(result, style, (abs_x, abs_y), transform, clip, opacity)
+          }
+          _ => Vec::new(),
+        };
         quads.push(Quad {
           x: content_x,
           y: content_y,
@@ -1620,15 +1742,14 @@ impl LayoutEngine {
           } else {
             node.get_border_radius(&self.radii.borrow())
           },
-          border: if content_uses_separate_visual_rect {
-            None
-          } else if defer_border_to_overlay {
+          border: if content_uses_separate_visual_rect || defer_border_to_overlay {
             None
           } else {
             resolved_border
           },
           clip: content_clip,
         });
+        quads.extend(text_lines);
         #[cfg(feature = "markdown")]
         {
           quads.extend(underlines);
@@ -1715,7 +1836,7 @@ impl LayoutEngine {
           .caret_color_value()
           .and_then(|color| color.resolve(&palette))
           .or_else(|| style.caret_color.as_ref().and_then(|color| color.resolve(&palette)))
-          .unwrap_or(style.color);
+          .unwrap_or_else(|| palette.text_color(style));
         let (caret_x, caret_y, caret_transform, caret_transform_origin) =
           transformed_quad_frame(caret_x, caret_y, transform);
         quads.push(Quad {
@@ -1928,12 +2049,30 @@ impl LayoutEngine {
         (clip, cull_clip, culling_enabled)
       };
 
+    let scroll_viewport = match node.layout_kind() {
+      LayoutKind::ScrollModifier { state, .. } => Some(content_clip(
+        self.scroll_clip.get(),
+        ClipRect {
+          x: abs_x,
+          y: abs_y,
+          width: state.viewport_width(),
+          height: state.viewport_height(),
+          active: true,
+          border_radius: None,
+        },
+        resolved_border,
+        transform,
+      )),
+      _ => None,
+    };
+
     NodeQuadFrame {
       transform,
       opacity,
       child_clip,
       child_cull_clip,
       child_culling_enabled,
+      scroll_viewport,
       deferred_border: resolved_border.filter(|_| defer_border_to_overlay),
     }
   }
@@ -1977,6 +2116,7 @@ impl LayoutEngine {
         clip,
       });
     }
+    self.push_outline_quad(node, result, abs_x, abs_y, opacity, transform, clip);
 
     if let Some((state, direction)) = node.scroll_container() {
       state.set_viewport_position(abs_x, abs_y);
@@ -2083,6 +2223,11 @@ impl LayoutEngine {
     // its original constraints so the child is measured naturally before it
     // is stretched again.
     if Self::has_dirty_stretched_intrinsic_child(node) || Self::has_dirty_shrunk_child(node) {
+      return None;
+    }
+    // A grid sizes its tracks from its items and lays each item out in its cell: one that changed is
+    // measured again by the grid, not under the cell it had.
+    if matches!(node.layout_kind(), LayoutKind::Grid(_)) {
       return None;
     }
 
@@ -2294,7 +2439,7 @@ impl LayoutEngine {
       }
       return cached;
     }
-    self.prepare_layout_result_tree(node, Arc::make_mut(&mut cached), true);
+    self.prepare_layout_result_tree(node, Arc::make_mut(&mut cached), true, None);
     cached
   }
 
@@ -2304,29 +2449,24 @@ impl LayoutEngine {
   /// rest stay shared with the caches that hold them. Serving a cached tree
   /// would otherwise copy all of it, and preparing every freshly laid-out
   /// parent would walk and copy its whole subtree again.
-  fn prepare_layout_result_tree(&self, node: &Node, result: &mut LayoutResult, restore_text_layout: bool) {
+  /// `sticky` is the scroll container the node is in, for placing what
+  /// sticks in it: `None` outside any, and for a caller that only syncs the
+  /// node's own subtree.
+  fn prepare_layout_result_tree(
+    &self,
+    node: &Node,
+    result: &mut LayoutResult,
+    restore_text_layout: bool,
+    sticky: Option<StickyScope>,
+  ) {
     result.generation = node.layout_cache.watch().generation();
     if restore_text_layout {
       Self::restore_text_layout_output(node, result);
     }
-    for (child_node, child_layout) in node.children().iter().zip(result.children.iter_mut()) {
-      if child_layout.result.holds.scroll {
-        self.prepare_layout_result_tree(child_node, Arc::make_mut(&mut child_layout.result), restore_text_layout);
-      } else if restore_text_layout && child_layout.result.holds.text {
-        Self::restore_text_layout_tree(child_node, &child_layout.result);
-      }
-    }
-    result.holds = result.children.iter().fold(
-      SubtreeHolds {
-        scroll: matches!(node.layout_kind(), LayoutKind::ScrollModifier { .. }),
-        text: result.text_layout.is_some(),
-      },
-      |holds, child| SubtreeHolds {
-        scroll: holds.scroll || child.result.holds.scroll,
-        text: holds.text || child.result.holds.text,
-      },
-    );
 
+    // A scroll container is synced before what is in it: what sticks there is placed against its viewport
+    // as it is scrolled now.
+    let mut sticky = sticky;
     if let LayoutKind::ScrollModifier { state, direction, .. } = node.layout_kind() {
       let content_width = result.children.first().map(|c| c.result.size.width).unwrap_or(0.0);
       let content_height = result.children.first().map(|c| c.result.size.height).unwrap_or(0.0);
@@ -2356,7 +2496,89 @@ impl LayoutEngine {
           y: offset.y + padding.top,
         };
       }
+      let viewport = [padding.left, padding.top, viewport.width, viewport.height];
+      sticky = Some(StickyScope {
+        viewport,
+        block: viewport,
+      });
     }
+
+    // What sticks stays in the box of the element it is in. A logical wrapper has no box of its own.
+    let scope = sticky.map(|scope| {
+      if matches!(node.layout_kind(), LayoutKind::LogicalModifier) {
+        return scope;
+      }
+      StickyScope {
+        viewport: scope.viewport,
+        block: self.content_box(node, result.size),
+      }
+    });
+    let mut shifts = result.sticky_shifts.take();
+    let mut holds_sticky = false;
+    for (index, (child_node, child_layout)) in node.children().iter().zip(result.children.iter_mut()).enumerate() {
+      let place = child_node.sticky();
+      holds_sticky |= place.is_some();
+      // A child that stuck and no longer does goes back to its place in flow, wherever the node is.
+      let shifted = shifts
+        .as_deref()
+        .and_then(|shifts| shifts.iter().find(|(shifted, _)| *shifted == index))
+        .map(|(_, shift)| *shift);
+      if let Some(scope) = scope.filter(|_| place.is_some() || shifted.is_some()) {
+        let shifted = shifted.unwrap_or_default();
+        let natural = Offset {
+          x: child_layout.offset.x - shifted.x,
+          y: child_layout.offset.y - shifted.y,
+        };
+        let placed = place.map_or(natural, |place| {
+          place.place(natural, child_layout.result.size, scope.viewport, scope.block)
+        });
+        let shift = Offset {
+          x: placed.x - natural.x,
+          y: placed.y - natural.y,
+        };
+        child_layout.offset = placed;
+        let shifts = shifts.get_or_insert_with(Box::default);
+        shifts.retain(|(shifted, _)| *shifted != index);
+        if shift != Offset::default() {
+          shifts.push((index, shift));
+        }
+      }
+      let child_scope = scope.map(|scope| scope.moved_into(child_layout.offset));
+      if child_layout.result.holds.scroll || (child_scope.is_some() && child_layout.result.holds.sticky) {
+        self.prepare_layout_result_tree(
+          child_node,
+          Arc::make_mut(&mut child_layout.result),
+          restore_text_layout,
+          child_scope,
+        );
+      } else if restore_text_layout && child_layout.result.holds.text {
+        Self::restore_text_layout_tree(child_node, &child_layout.result);
+      }
+    }
+    result.sticky_shifts = shifts.filter(|shifts| !shifts.is_empty());
+    result.holds = result.children.iter().fold(
+      SubtreeHolds {
+        scroll: matches!(node.layout_kind(), LayoutKind::ScrollModifier { .. }),
+        text: result.text_layout.is_some(),
+        sticky: holds_sticky || result.sticky_shifts.is_some(),
+      },
+      |holds, child| SubtreeHolds {
+        scroll: holds.scroll || child.result.holds.scroll,
+        text: holds.text || child.result.holds.text,
+        sticky: holds.sticky || child.result.holds.sticky,
+      },
+    );
+  }
+
+  /// The box of `node` inside its padding, as `[x, y, width, height]` from its own corner.
+  fn content_box(&self, node: &Node, size: Size) -> [f32; 4] {
+    let padding = self.resolved_padding_for_size(node, size);
+    [
+      padding.left,
+      padding.top,
+      (size.width - padding.left - padding.right).max(0.0),
+      (size.height - padding.top - padding.bottom).max(0.0),
+    ]
   }
 
   fn layout_node_uncached_with_child_overrides(
@@ -2389,7 +2611,7 @@ impl LayoutEngine {
     self.trace.laid_out(node, constraints);
     let mut result = self.layout_node_box(glyph_engine, node, constraints, child_overrides);
     Self::apply_runtime_rect(node, &mut result);
-    self.prepare_layout_result_tree(node, &mut result, false);
+    self.prepare_layout_result_tree(node, &mut result, false, None);
     let result = Arc::new(result);
     node.layout_cache.store_shared(constraints, result.clone());
     #[cfg(feature = "perf_profile")]
@@ -2442,6 +2664,7 @@ impl LayoutEngine {
       )
     };
     self.lay_out_text_selection(glyph_engine, node, &mut result);
+    self.lay_out_text_decorations(glyph_engine, node, &mut result);
     #[cfg(feature = "markdown")]
     self.lay_out_inline_text(glyph_engine, node, &mut result);
     result
@@ -2498,6 +2721,7 @@ impl LayoutEngine {
         )
       }
       LayoutKind::Stack { align } => self.layout_stack(glyph_engine, node, constraints, *align, child_overrides),
+      LayoutKind::Grid(spec) => self.layout_grid(glyph_engine, node, constraints, spec, child_overrides),
       LayoutKind::LogicalModifier => self.layout_passthrough(glyph_engine, node, constraints, child_overrides),
       LayoutKind::ScrollModifier { state, direction, .. } => {
         self.layout_scroll(glyph_engine, node, constraints, state, *direction, child_overrides)
@@ -2532,16 +2756,17 @@ impl LayoutEngine {
     match node.node_kind() {
       NodeKind::Text { state, style, .. } => {
         let source = node.text_content().unwrap_or_default();
-        let style = style.resolve(&self.typography.borrow(), &self.palette.borrow());
+        let resolved = style.resolve(&self.typography.borrow(), &self.palette.borrow());
         let (content, force_display_text) = (source, false);
         return self.layout_text_node(
           glyph_engine,
           content,
           state,
-          &style,
+          &resolved,
           constraints,
           node.text_wrap,
           node.text_overflow,
+          style.max_lines(),
           force_display_text,
         );
       }
@@ -2583,11 +2808,12 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       NodeKind::Slider { .. } => {
@@ -2605,11 +2831,12 @@ impl LayoutEngine {
         };
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       NodeKind::Select { state } => {
@@ -2626,22 +2853,24 @@ impl LayoutEngine {
           .unwrap_or(DEFAULT_SELECT_HEIGHT);
         return LayoutResult {
           size: constraints.constrain(Size::new(width, height)),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "canvas")]
       NodeKind::Canvas { .. } => {
         return LayoutResult {
           size: constraints.constrain(node.intrinsic_size.unwrap_or(Size::new(300.0, 150.0))),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "raster")]
@@ -2651,11 +2880,12 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "raster")]
@@ -2665,11 +2895,12 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.width() as f32, data.height() as f32));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "image")]
@@ -2679,11 +2910,12 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(feature = "svg")]
@@ -2693,11 +2925,12 @@ impl LayoutEngine {
           .unwrap_or(Size::new(data.viewbox_width(), data.viewbox_height()));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       #[cfg(all(feature = "svg", feature = "resources"))]
@@ -2707,11 +2940,12 @@ impl LayoutEngine {
           .unwrap_or(Size::new(DEFAULT_RESOURCE_WIDTH, DEFAULT_RESOURCE_HEIGHT));
         return LayoutResult {
           size: constraints.constrain(preferred),
-          children: vec![].into(),
+          children: vec![],
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         };
       }
       // Its paragraph places it (`inline_links`); on its own it has no box.
@@ -2727,11 +2961,12 @@ impl LayoutEngine {
     let preferred = node.intrinsic_size.unwrap_or_default();
     LayoutResult {
       size: constraints.constrain(preferred),
-      children: vec![].into(),
+      children: vec![],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -2759,11 +2994,12 @@ impl LayoutEngine {
     };
     LayoutResult {
       size,
-      children: vec![].into(),
+      children: vec![],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -2776,11 +3012,15 @@ impl LayoutEngine {
     constraints: Constraints,
     wrap: bool,
     overflow: TextOverflow,
+    max_lines: Option<u32>,
     force_display_text: bool,
   ) -> LayoutResult {
     let effective_wrap = wrap && overflow == TextOverflow::Clip;
     let overflow_display_text = match overflow {
-      TextOverflow::Clip => None,
+      // A wrapped text with a limit of lines ends in an ellipsis on the last line it may take.
+      TextOverflow::Clip => max_lines
+        .filter(|_| effective_wrap && bounded_text_width(constraints.max_width))
+        .and_then(|lines| self.text_cut_to_lines(glyph_engine, text, style, constraints, lines as usize)),
       TextOverflow::Elipsis => self.ellipsize_text(glyph_engine, text, style, constraints.max_width),
     };
     let layout_text = overflow_display_text.as_deref().unwrap_or(text);
@@ -2800,6 +3040,7 @@ impl LayoutEngine {
       render_wrap,
       carets: None,
       text_top: 0.0,
+      decoration: None,
       #[cfg(feature = "markdown")]
       inline: None,
     };
@@ -2838,6 +3079,7 @@ impl LayoutEngine {
       render_wrap,
       carets: None,
       text_top: 0.0,
+      decoration: None,
       #[cfg(feature = "markdown")]
       inline: None,
     };
@@ -2907,11 +3149,12 @@ impl LayoutEngine {
     if children.is_empty() {
       return LayoutResult {
         size: constraints.constrain(Size::default()),
-        children: vec![].into(),
+        children: vec![],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       };
     }
 
@@ -2947,11 +3190,12 @@ impl LayoutEngine {
       let result = if child.is_overlay_declaration() {
         Arc::new(LayoutResult {
           size: Size::default(),
-          children: Vec::new().into(),
+          children: Vec::new(),
           text_layout: None,
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         })
       } else {
         let flex_params = child.state_flex();
@@ -3120,11 +3364,12 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: child_layouts.into(),
+      children: child_layouts,
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -3401,11 +3646,12 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: child_layouts.into(),
+      children: child_layouts,
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -3475,11 +3721,12 @@ impl LayoutEngine {
 
     LayoutResult {
       size,
-      children: child_layouts.into(),
+      children: child_layouts,
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -3664,17 +3911,18 @@ impl LayoutEngine {
     resolved_width: Option<f32>,
     resolved_height: Option<f32>,
   ) {
-    if let Some(intrinsic) = node.intrinsic_size {
-      if intrinsic.width > 0.0 && intrinsic.height > 0.0 {
-        if let (Some(w), None) = (resolved_width, resolved_height) {
-          let h = w * intrinsic.height / intrinsic.width;
-          constraints.min_height = h;
-          constraints.max_height = h;
-        } else if let (None, Some(h)) = (resolved_width, resolved_height) {
-          let w = h * intrinsic.width / intrinsic.height;
-          constraints.min_width = w;
-          constraints.max_width = w;
-        }
+    if let Some(intrinsic) = node.intrinsic_size
+      && intrinsic.width > 0.0
+      && intrinsic.height > 0.0
+    {
+      if let (Some(w), None) = (resolved_width, resolved_height) {
+        let h = w * intrinsic.height / intrinsic.width;
+        constraints.min_height = h;
+        constraints.max_height = h;
+      } else if let (None, Some(h)) = (resolved_width, resolved_height) {
+        let w = h * intrinsic.width / intrinsic.height;
+        constraints.min_width = w;
+        constraints.max_width = w;
       }
     }
   }
@@ -3724,13 +3972,13 @@ impl LayoutEngine {
         size,
         children: vec![ChildLayout {
           offset: state.content_offset(),
-          result: child_result.into(),
-        }]
-        .into(),
+          result: child_result,
+        }],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       };
     }
 
@@ -3771,13 +4019,13 @@ impl LayoutEngine {
       size,
       children: vec![ChildLayout {
         offset: state.content_offset(),
-        result: child_result.into(),
-      }]
-      .into(),
+        result: child_result,
+      }],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -3791,11 +4039,12 @@ impl LayoutEngine {
     let Some(child) = node.children().first() else {
       return LayoutResult {
         size: Size::new(0.0, 0.0),
-        children: Vec::new().into(),
+        children: Vec::new(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       };
     };
     let child_result = self.layout_child_node(glyph_engine, child_overrides, 0, child, constraints);
@@ -3805,13 +4054,13 @@ impl LayoutEngine {
       size,
       children: vec![ChildLayout {
         offset: Offset::default(),
-        result: child_result.into(),
-      }]
-      .into(),
+        result: child_result,
+      }],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 
@@ -3823,14 +4072,14 @@ impl LayoutEngine {
     child: &Node,
     constraints: Constraints,
   ) -> Arc<LayoutResult> {
-    if let Some(Some(child_override)) = child_overrides.and_then(|overrides| overrides.get(index)) {
-      if child_override.constraints == constraints {
-        // The override was laid out before this parent layout began, which
-        // may have laid the child out again under other constraints since.
-        Self::restore_text_layout_tree(child, &child_override.result);
-        child.layout_cache.record_reuse(constraints, &child_override.result);
-        return child_override.result.clone();
-      }
+    if let Some(Some(child_override)) = child_overrides.and_then(|overrides| overrides.get(index))
+      && child_override.constraints == constraints
+    {
+      // The override was laid out before this parent layout began, which
+      // may have laid the child out again under other constraints since.
+      Self::restore_text_layout_tree(child, &child_override.result);
+      child.layout_cache.record_reuse(constraints, &child_override.result);
+      return child_override.result.clone();
     }
 
     self.layout_node(glyph_engine, child, constraints)
@@ -3861,11 +4110,10 @@ fn multiline_preferred_height(
     .map(|rows| rows.max(1) as f32 * line_height)
     .unwrap_or(line_height);
   let preferred_height = content_height.max(min_height);
-  let preferred_height = max_rows
-    .map(|rows| preferred_height.min((rows.max(1) as f32 * line_height).max(min_height)))
-    .unwrap_or(preferred_height);
 
-  preferred_height
+  max_rows
+    .map(|rows| preferred_height.min((rows.max(1) as f32 * line_height).max(min_height)))
+    .unwrap_or(preferred_height)
 }
 
 fn explicit_multiline_height(text: &str, line_height: f32) -> f32 {
@@ -4028,6 +4276,8 @@ struct NodeQuadFrame {
   child_clip: ClipRect,
   child_cull_clip: ClipRect,
   child_culling_enabled: bool,
+  /// For a scroll container: its viewport within the scroll viewports it is in.
+  scroll_viewport: Option<ClipRect>,
   deferred_border: Option<ResolvedBorders>,
 }
 
@@ -4120,6 +4370,8 @@ fn node_is_plain_logical_wrapper(node: &Node) -> bool {
     && node.border_radius.as_ref().is_none()
     && node.border.as_ref().is_none()
     && node.rare_style.box_shadow.is_none()
+    && node.rare_style.foreground.is_none()
+    && node.rare_style.outline.is_none()
     && node.rare_style.caret_color.is_none()
     && node.rare_style.caret_mode.is_none()
     && node.scrollbar_style.as_ref().is_none()
@@ -4128,6 +4380,7 @@ fn node_is_plain_logical_wrapper(node: &Node) -> bool {
     && node.state_styles.focused.is_none()
     && node.state_styles.focus_visible.is_none()
     && node.state_styles.drag_over.is_none()
+    && node.state_styles.disabled.is_none()
     && node.effective_opacity() == DEFAULT_QUAD_OPACITY
     && node.effective_blur() == 0.0
     && node.effective_backdrop_blur() == 0.0
@@ -4322,11 +4575,12 @@ mod tests {
       constraints,
       LayoutResult {
         size: constraints.constrain(Size::new(10.0, 10.0)),
-        children: Vec::new().into(),
+        children: Vec::new(),
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       },
     );
     child.layout_cache.mark_local_dirty();
@@ -5016,6 +5270,8 @@ mod tests {
 
   /// The setters and styles of the interaction states that can move layout
   /// on their own (focus-visible needs focus, which creates the state first).
+  // A table of setter pairs for one test; an alias would only add a name.
+  #[allow(clippy::type_complexity)]
   fn interaction_states() -> [(fn(&Node, bool) -> bool, fn(Node, crate::node::Style) -> Node); 4] {
     [
       (Node::set_style_hovered, Node::hovered_style),
@@ -5191,7 +5447,8 @@ mod tests {
       first.holds,
       SubtreeHolds {
         scroll: false,
-        text: false
+        text: false,
+        sticky: false,
       }
     );
     for (row, served_row) in first.children.iter().zip(&served.children) {
@@ -5225,7 +5482,8 @@ mod tests {
       result.holds,
       SubtreeHolds {
         scroll: true,
-        text: true
+        text: true,
+        sticky: false,
       }
     );
     let holds: Vec<_> = result.children.iter().map(|child| child.result.holds).collect();
@@ -5234,15 +5492,18 @@ mod tests {
       [
         SubtreeHolds {
           scroll: false,
-          text: false
+          text: false,
+          sticky: false,
         },
         SubtreeHolds {
           scroll: false,
-          text: true
+          text: true,
+          sticky: false,
         },
         SubtreeHolds {
           scroll: true,
-          text: false
+          text: false,
+          sticky: false,
         },
       ]
     );

@@ -85,6 +85,7 @@ mod inline_link_copy_tests;
 #[cfg(feature = "markdown")]
 mod inline_link_keys;
 mod input_token_paint;
+mod leaving_layers;
 #[cfg(feature = "image")]
 mod loading_images;
 #[cfg(feature = "image")]
@@ -854,6 +855,19 @@ pub struct Tree {
   /// The anchor of each overlay host layer after the page, in host order;
   /// `None` for a select menu or a modal over the page.
   overlay_layer_anchors: Vec<Option<OwnedElementRef>>,
+  /// The node that declares each overlay host layer after the page, in host
+  /// order, where it has an id: what tells a layer from another between
+  /// passes. `None` for a layer that is leaving.
+  overlay_layer_origins: Vec<Option<NodeId>>,
+  /// The closed layers the overlay host still draws, while their exit
+  /// animations play: see [`leaving_layers`].
+  leaving_layers: Vec<leaving_layers::LeavingLayer>,
+  /// The roots of the layers and of the children that began to leave, until
+  /// input is taken out of them.
+  layers_left: Vec<NodeId>,
+  /// The removed children the tree still draws where they were, while their
+  /// exit animations play: see [`leaving_layers`].
+  leaving_children: Vec<leaving_layers::LeavingLayer>,
   /// The anchors of the dropdowns in the tree, open or closed, while the
   /// overlay host is up: a press on one switches dropdowns.
   dropdown_anchors: Vec<OwnedElementRef>,
@@ -1242,6 +1256,10 @@ impl Tree {
       canvas_registry: Vec::new(),
       overlay_dismiss_entries: Vec::new(),
       overlay_layer_anchors: Vec::new(),
+      overlay_layer_origins: Vec::new(),
+      leaving_layers: Vec::new(),
+      layers_left: Vec::new(),
+      leaving_children: Vec::new(),
       dropdown_anchors: Vec::new(),
       ime_keys: ime::ImeKeys::default(),
       next_secondary_window_id: 1,
@@ -1625,7 +1643,11 @@ impl Tree {
   /// idle screen is a bug (stale runs for unmounted nodes are pruned at the end
   /// of each full pass).
   pub fn has_active_timeline(&self) -> bool {
-    self.transition_engine.has_active || self.animation_engine.has_active
+    // A layer or a child on its way out is dropped by a pass, so passes go on until it is.
+    self.transition_engine.has_active
+      || self.animation_engine.has_active
+      || !self.leaving_layers.is_empty()
+      || !self.leaving_children.is_empty()
   }
 
   /// When the running animations and transitions next draw something else, as of the last pass: the end of a
@@ -1644,7 +1666,13 @@ impl Tree {
     }
     let transition = self.transition_engine.next_change();
     let animation = self.animation_engine.next_change();
-    transition.into_iter().chain(animation).min()
+    let layer_dropped = self
+      .leaving_layers
+      .iter()
+      .chain(&self.leaving_children)
+      .map(|layer| layer.until)
+      .min();
+    transition.into_iter().chain(animation).chain(layer_dropped).min()
   }
 
   pub(crate) fn has_continuous_redraw_image(&self) -> bool {
@@ -1875,7 +1903,7 @@ impl Tree {
   pub(crate) fn secondary_pick_mode(&self) -> bool {
     #[cfg(feature = "devtools")]
     {
-      return self.devtools_pick_mode();
+      self.devtools_pick_mode()
     }
     #[cfg(not(feature = "devtools"))]
     false
@@ -1885,7 +1913,7 @@ impl Tree {
   pub(crate) fn pick_secondary_node_at(&mut self, _x: f32, _y: f32) -> Option<Vec<usize>> {
     #[cfg(feature = "devtools")]
     {
-      return self.pick_devtools_node_at(_x, _y);
+      self.pick_devtools_node_at(_x, _y)
     }
     #[cfg(not(feature = "devtools"))]
     None
@@ -2179,7 +2207,7 @@ impl Tree {
     wrapper.on_mounted();
     self.root = Some(*node);
     if let Some(root) = &mut self.root {
-      root.assign_ids(&self.id_gen);
+      root.assign_tree_ids(&self.id_gen);
     }
     self.root_component = Some(Box::new(wrapper));
     self.root_ctx = Some(ctx);
@@ -2236,7 +2264,7 @@ impl Tree {
       #[cfg(feature = "devtools")]
       set_component_debug_metadata(&mut node, ctx);
       if let Some(parts) = old_parts.as_mut() {
-        node.preserve_runtime_state_from(&mut parts.base);
+        node.preserve_runtime_state_from(&parts.base);
         node.preserve_ids_from(&mut parts.base);
       }
       self.root = Some(match old_parts {
@@ -2246,8 +2274,9 @@ impl Tree {
       if let Some(root) = &mut self.root {
         #[cfg(feature = "canvas")]
         detach_canvases_not_carried(old_canvases, Some(root));
-        root.assign_ids(&self.id_gen);
+        root.assign_tree_ids(&self.id_gen);
       }
+      self.begin_leaving_children();
       self.tree_rebuilt_since_layout = true;
       self.cached_render_list = None;
       self.refresh_interaction_state();
@@ -2271,14 +2300,15 @@ impl Tree {
     let mut node = element.into().into_node();
     let old_parts = old_root.map(overlay_host_parts);
     if let Some(mut parts) = old_parts {
-      node.preserve_runtime_state_from(&mut parts.base);
+      node.preserve_runtime_state_from(&parts.base);
       node.preserve_ids_from(&mut parts.base);
       node = root_with_preserved_overlay_parts(node, parts, &self.id_gen);
     }
     #[cfg(feature = "canvas")]
     detach_canvases_not_carried(old_canvases, Some(&node));
-    node.assign_ids(&self.id_gen);
+    node.assign_tree_ids(&self.id_gen);
     self.root = Some(node);
+    self.begin_leaving_children();
     self.root_component = None;
     self.root_ctx = None;
     self.last_layout = None;
@@ -2859,6 +2889,7 @@ impl Tree {
             radii,
             stroke: [0.0; 4],
             stroke_color: TRANSPARENT_COLOR,
+            stroke_style: crate::layout::render_list::StrokeStyle::default(),
             transform: xf,
             transform_origin: xf_origin,
             clip: scaled_clip,
@@ -3224,7 +3255,7 @@ impl Tree {
           let h = quad.height * scale;
           // Quad opacity rides the image command, not the raster: a faded
           // icon shares the cache entry with its opaque siblings.
-          let raster = crate::svg::rasterize::rasterize(&data, w, h);
+          let raster = crate::svg::rasterize::rasterize(data, w, h);
           let image_transform = quad.transform.matrix_2x2();
           let image_transform_origin = quad
             .transform_origin
@@ -3904,27 +3935,26 @@ impl Tree {
 
     if button == MouseButton::Left
       && let ClickDispatchTarget::Node(click_target_id) = click_target
-    {
-      if self.click_tracker.pending_matches(
+      && self.click_tracker.pending_matches(
         now,
         position,
         button,
         click_target_id,
         self.double_click_distance.unwrap_or(DOUBLE_CLICK_DISTANCE),
         self.double_click_interval.unwrap_or(DOUBLE_CLICK_INTERVAL),
-      ) {
-        self.click_tracker.take_pending();
-        self.dispatch_mouse_with_click_target(
-          x,
-          y,
-          button,
-          MouseEventKind::DoubleClick,
-          modifiers,
-          Some(click_target_id),
-        );
-        self.apply_reactive_updates_after_event();
-        return;
-      }
+      )
+    {
+      self.click_tracker.take_pending();
+      self.dispatch_mouse_with_click_target(
+        x,
+        y,
+        button,
+        MouseEventKind::DoubleClick,
+        modifiers,
+        Some(click_target_id),
+      );
+      self.apply_reactive_updates_after_event();
+      return;
     }
 
     self.flush_pending_click();
@@ -4044,31 +4074,25 @@ impl Tree {
           && self.follows_focused_link(click_modifiers))
       {
         true
-      } else if matches!((key.as_str(), code.as_str()), ("Enter", _) | (_, "Enter")) && {
-        #[cfg(feature = "form")]
-        {
-          self.submit_focused_single_line_text_input()
-        }
-        #[cfg(not(feature = "form"))]
-        {
-          false
-        }
-      } {
-        true
       } else {
-        false
+        matches!((key.as_str(), code.as_str()), ("Enter", _) | (_, "Enter")) && {
+          #[cfg(feature = "form")]
+          {
+            self.submit_focused_single_line_text_input()
+          }
+          #[cfg(not(feature = "form"))]
+          {
+            false
+          }
+        }
       };
 
-      if handled {
-        self.needs_redraw = true;
-      } else if self.dismiss_top_overlay_on_escape(&key, &code) {
+      if handled || self.dismiss_top_overlay_on_escape(&key, &code) {
         self.needs_redraw = true;
       } else {
         let blurred_text_input = self.blur_focused_text_input_on_key(&key, &code);
         let cleared_text_selection = self.clear_selectable_text_selection_on_key(&key, &code);
-        if blurred_text_input || cleared_text_selection {
-          self.needs_redraw = true;
-        } else if self.dispatch_text_input(&evt) {
+        if blurred_text_input || cleared_text_selection || self.dispatch_text_input(&evt) {
           self.needs_redraw = true;
         } else {
           self.dispatch_selectable_text_clipboard(&key, &code, shift, ctrl, meta);
@@ -4165,11 +4189,38 @@ impl Tree {
   /// Moves focus off a node its Row/Column dropped to make room
   /// (`ShrinkLimit::Drop`): a dropped node is not drawn, so it must not keep
   /// taking keys.
+  /// Writes the disabled state of a live element that was just disabled or enabled, and of everything in it.
+  fn sync_disabled_under(&self, id: NodeId) {
+    let Some(root) = &self.root else {
+      return;
+    };
+    let Some(path) = find_path_by_id(root, id) else {
+      return;
+    };
+    let Some(node) = find_node_by_path(root, &path) else {
+      return;
+    };
+    let inherited = path
+      .split_last()
+      .is_some_and(|(_, parents)| tab_navigation::path_is_disabled(root, parents));
+    node.sync_disabled_tree(inherited);
+  }
+
+  /// Whether the node, or an element it is in, is disabled.
+  fn is_node_disabled(&self, id: NodeId) -> bool {
+    let Some(root) = &self.root else {
+      return false;
+    };
+    find_path_by_id(root, id).is_some_and(|path| tab_navigation::path_is_disabled(root, &path))
+  }
+
   fn blur_focus_in_dropped_child(&mut self) {
     let (Some(root), Some(path)) = (&self.root, &self.focused_path) else {
       return;
     };
-    if tab_navigation::path_is_dropped(root, &self.dropped_nodes, path) {
+    // Nor does a disabled element keep the focus it had.
+    if tab_navigation::path_is_dropped(root, &self.dropped_nodes, path) || tab_navigation::path_is_disabled(root, path)
+    {
       self.blur_focus();
     }
   }
@@ -4275,7 +4326,7 @@ impl Tree {
   fn has_dirty_canvas(&self) -> bool {
     #[cfg(feature = "canvas")]
     {
-      return self.canvas_registry.iter().any(crate::canvas::CanvasHandle::dirty);
+      self.canvas_registry.iter().any(crate::canvas::CanvasHandle::dirty)
     }
     #[cfg(not(feature = "canvas"))]
     {
@@ -4384,9 +4435,7 @@ impl Tree {
   }
 
   fn take_matching_click_press(&mut self, position: (f32, f32), button: MouseButton) -> Option<ClickDispatchTarget> {
-    let Some(press) = self.click_press.take() else {
-      return None;
-    };
+    let press = self.click_press.take()?;
 
     if press.button != button {
       return None;
@@ -4445,6 +4494,9 @@ impl Tree {
 
     let mut hits = Vec::new();
     hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+    if take_disabled_hit(&mut hits).is_some() {
+      return Vec::new();
+    }
     trim_hits_to_scrollbar(&mut hits, lx, ly);
     hits.into_iter().map(|(node, _)| node.node_id()).collect()
   }
@@ -4704,7 +4756,19 @@ impl Tree {
 
     let mut hits = Vec::new();
     hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+    // A press or click on a disabled element reaches nothing: not it, not what it covers and not the elements it is
+    // in, as a click on a disabled control of the web. A move still reaches those elements, which stay hovered.
+    let disabled_hit = take_disabled_hit(&mut hits);
+    // Its scroll containers still scroll, so their scrollbars still take the pointer.
+    let scrollable_in_disabled = if disabled_hit.is_some() {
+      scroll_containers_in_disabled(root, result, lx, ly, &hits)
+    } else {
+      Vec::new()
+    };
     trim_hits_to_scrollbar(&mut hits, lx, ly);
+    let blocked = disabled_hit.is_some() && !matches!(evt.kind, MouseEventKind::Move);
+    // What stays hovered while the press itself has no target.
+    let hovered_hits = blocked.then(|| std::mem::take(&mut hits));
     // A scrollbar takes the pointer: nothing below it (text, inputs, sliders)
     // gets the built-in press or click behaviour.
     let on_scrollbar = hits
@@ -4861,7 +4925,7 @@ impl Tree {
       // Like HTML: a press where nothing can take focus blurs the focused
       // element. A press on a focusable element leaves focus to its own
       // focusing (on press or click); `focusable(false)` keeps focus.
-      blur_on_press = !on_menu && press_blurs_focus(&hits);
+      blur_on_press = !on_menu && !blocked && press_blurs_focus(&hits);
     }
 
     if !evt.default_prevented() && (is_left_click || is_left_down) && !on_scrollbar {
@@ -4869,37 +4933,36 @@ impl Tree {
         if let Some((node, rect)) = hits
           .iter()
           .find(|(node, _)| matches!(node.node_kind(), NodeKind::TextInput { .. }))
+          && let NodeKind::TextInput { state, .. } = node.node_kind()
         {
-          if let NodeKind::TextInput { state, .. } = node.node_kind() {
-            if !evt.shift && !evt.ctrl {
-              self.selectable_text_anchor = None;
-              clear_selectable_text_selections(root);
-            }
-            let padding = self
-              .layout_engine
-              .resolved_padding_for_size(node, Size::new(rect.width, rect.height));
-            let content_height = (rect.height - padding.top - padding.bottom).max(0.0);
-            let vertical_offset = padding.top + text_input_vertical_offset(state, content_height);
-            state.begin_selection_at_point(
-              rect.local_x - rect.x - padding.left,
-              rect.local_y - rect.y - vertical_offset,
-            );
-            pending_text_selection_drag = Some(TextSelectionDrag {
-              kind: TextSelectionDragKind::Input {
-                target_id: node.node_id(),
-                state: state.clone(),
-              },
-              x: rect.x + padding.left,
-              y: rect.y + vertical_offset,
-              transform: rect.transform,
-            });
-            pending_focus = Some(FocusTarget {
-              input_id: node.node_id(),
-              event_id: node.node_id(),
-            });
-            reset_text_input_caret_blink = true;
-            builtin_needs_redraw = true;
+          if !evt.shift && !evt.ctrl {
+            self.selectable_text_anchor = None;
+            clear_selectable_text_selections(root);
           }
+          let padding = self
+            .layout_engine
+            .resolved_padding_for_size(node, Size::new(rect.width, rect.height));
+          let content_height = (rect.height - padding.top - padding.bottom).max(0.0);
+          let vertical_offset = padding.top + text_input_vertical_offset(state, content_height);
+          state.begin_selection_at_point(
+            rect.local_x - rect.x - padding.left,
+            rect.local_y - rect.y - vertical_offset,
+          );
+          pending_text_selection_drag = Some(TextSelectionDrag {
+            kind: TextSelectionDragKind::Input {
+              target_id: node.node_id(),
+              state: state.clone(),
+            },
+            x: rect.x + padding.left,
+            y: rect.y + vertical_offset,
+            transform: rect.transform,
+          });
+          pending_focus = Some(FocusTarget {
+            input_id: node.node_id(),
+            event_id: node.node_id(),
+          });
+          reset_text_input_caret_blink = true;
+          builtin_needs_redraw = true;
         }
 
         let pointer_on_slider = hits
@@ -4909,45 +4972,44 @@ impl Tree {
         if pending_text_selection_drag.is_none()
           && !pointer_on_slider
           && let Some((node, rect)) = selectable_text_drag_start_endpoint(root, result, lx, ly)
+          && let Some((state, value)) = selectable_text_state_and_value(node)
         {
-          if let Some((state, value)) = selectable_text_state_and_value(node) {
-            let text_x = rect.local_x - rect.x;
-            let text_y = rect.local_y - rect.y;
-            let caret = state.caret_index_at_point(&value, text_x, text_y);
-            let extended = evt
-              .shift
-              .then_some(self.selectable_text_anchor)
-              .flatten()
-              .and_then(|anchor| anchor.extend_to(root, node.node_id(), caret));
-            let kind = match extended {
-              Some(kind) => kind,
-              None => {
-                let preserve_existing = evt.ctrl;
-                if !preserve_existing {
-                  clear_selectable_text_selections_except(root, Some(node.node_id()));
-                }
-                state.set_selection_indices(&value, caret, caret);
-                self.selectable_text_anchor = Some(SelectableTextAnchor {
-                  node_id: node.node_id(),
-                  index: caret,
-                });
-                TextSelectionDragKind::Text {
-                  start_id: node.node_id(),
-                  anchor: caret,
-                  state,
-                  value,
-                  preserve_existing,
-                }
+          let text_x = rect.local_x - rect.x;
+          let text_y = rect.local_y - rect.y;
+          let caret = state.caret_index_at_point(&value, text_x, text_y);
+          let extended = evt
+            .shift
+            .then_some(self.selectable_text_anchor)
+            .flatten()
+            .and_then(|anchor| anchor.extend_to(root, node.node_id(), caret));
+          let kind = match extended {
+            Some(kind) => kind,
+            None => {
+              let preserve_existing = evt.ctrl;
+              if !preserve_existing {
+                clear_selectable_text_selections_except(root, Some(node.node_id()));
               }
-            };
-            pending_text_selection_drag = Some(TextSelectionDrag {
-              kind,
-              x: rect.x,
-              y: rect.y,
-              transform: rect.transform,
-            });
-            builtin_needs_redraw = true;
-          }
+              state.set_selection_indices(&value, caret, caret);
+              self.selectable_text_anchor = Some(SelectableTextAnchor {
+                node_id: node.node_id(),
+                index: caret,
+              });
+              TextSelectionDragKind::Text {
+                start_id: node.node_id(),
+                anchor: caret,
+                state,
+                value,
+                preserve_existing,
+              }
+            }
+          };
+          pending_text_selection_drag = Some(TextSelectionDrag {
+            kind,
+            x: rect.x,
+            y: rect.y,
+            transform: rect.transform,
+          });
+          builtin_needs_redraw = true;
         }
 
         if pending_text_selection_drag.is_none()
@@ -4965,45 +5027,44 @@ impl Tree {
           && let Some((node, rect)) = hits
             .iter()
             .find(|(node, _)| matches!(node.node_kind(), NodeKind::Slider { .. }))
+          && let NodeKind::Slider { state } = node.node_kind()
         {
-          if let NodeKind::Slider { state } = node.node_kind() {
-            let (track_rect, thumb_rect) = state.part_rects(
-              rect.x,
-              rect.y,
-              rect.width,
-              rect.height,
-              true,
-              DEFAULT_SLIDER_THUMB_MIN_SIZE,
-            );
-            let travel_width = track_rect.width - thumb_rect.width;
-            let (drag_x, drag_width) = if travel_width > 0.0 {
-              (track_rect.x + thumb_rect.width * 0.5, travel_width)
-            } else {
-              (track_rect.x, track_rect.width)
-            };
-            // A mouse's press brings the thumb under the pointer. A finger's does not, as a slider of the platform's:
-            // the thumb goes with the finger from where it is, wherever on the slider the finger landed.
-            let drag_x = if self.touch_pointer.down {
-              drag_x + lx - (thumb_rect.x + thumb_rect.width * 0.5)
-            } else {
-              drag_x
-            };
-            let drag = SliderDrag {
-              target_id: node.node_id(),
-              binding_id: state.value_id(),
-              state: state.clone(),
-              x: drag_x,
-              width: drag_width,
-              on_finish: node.events.on_blur.clone(),
-            };
-            drag.update(lx);
-            pending_slider_drag = Some(drag);
-            pending_focus = Some(FocusTarget {
-              input_id: node.node_id(),
-              event_id: node.node_id(),
-            });
-            builtin_needs_redraw = true;
-          }
+          let (track_rect, thumb_rect) = state.part_rects(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            true,
+            DEFAULT_SLIDER_THUMB_MIN_SIZE,
+          );
+          let travel_width = track_rect.width - thumb_rect.width;
+          let (drag_x, drag_width) = if travel_width > 0.0 {
+            (track_rect.x + thumb_rect.width * 0.5, travel_width)
+          } else {
+            (track_rect.x, track_rect.width)
+          };
+          // A mouse's press brings the thumb under the pointer. A finger's does not, as a slider of the platform's:
+          // the thumb goes with the finger from where it is, wherever on the slider the finger landed.
+          let drag_x = if self.touch_pointer.down {
+            drag_x + lx - (thumb_rect.x + thumb_rect.width * 0.5)
+          } else {
+            drag_x
+          };
+          let drag = SliderDrag {
+            target_id: node.node_id(),
+            binding_id: state.value_id(),
+            state: state.clone(),
+            x: drag_x,
+            width: drag_width,
+            on_finish: node.events.on_blur.clone(),
+          };
+          drag.update(lx);
+          pending_slider_drag = Some(drag);
+          pending_focus = Some(FocusTarget {
+            input_id: node.node_id(),
+            event_id: node.node_id(),
+          });
+          builtin_needs_redraw = true;
         }
       } else if let Some((node, rect)) = hits
         .iter()
@@ -5038,58 +5099,58 @@ impl Tree {
           reset_text_input_caret_blink = true;
           builtin_needs_redraw = true;
         }
-      } else if let Some((node, rect)) = hits.iter().find(|(node, _)| is_selectable_text_node(node)) {
-        if let Some((state, value)) = selectable_text_state_and_value(node) {
-          let text_click_count = self.text_click_tracker.record(
-            Instant::now(),
-            (evt.x, evt.y),
-            button,
-            node.node_id(),
-            text_click_distance,
-            text_click_interval,
-          );
-          if !evt.shift && !evt.ctrl {
-            clear_selectable_text_selections_except(root, Some(node.node_id()));
-          }
-          match text_click_count {
-            1 => state.clear_selection_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
-            2 => state.select_word_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
-            _ => state.select_line_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
-          }
-          if let Some(index) = state.selection_anchor() {
-            self.selectable_text_anchor = Some(SelectableTextAnchor {
-              node_id: node.node_id(),
-              index,
-            });
-          }
-          builtin_needs_redraw = true;
+      } else if let Some((node, rect)) = hits.iter().find(|(node, _)| is_selectable_text_node(node))
+        && let Some((state, value)) = selectable_text_state_and_value(node)
+      {
+        let text_click_count = self.text_click_tracker.record(
+          Instant::now(),
+          (evt.x, evt.y),
+          button,
+          node.node_id(),
+          text_click_distance,
+          text_click_interval,
+        );
+        if !evt.shift && !evt.ctrl {
+          clear_selectable_text_selections_except(root, Some(node.node_id()));
         }
+        match text_click_count {
+          1 => state.clear_selection_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
+          2 => state.select_word_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
+          _ => state.select_line_at_point(&value, rect.local_x - rect.x, rect.local_y - rect.y),
+        }
+        if let Some(index) = state.selection_anchor() {
+          self.selectable_text_anchor = Some(SelectableTextAnchor {
+            node_id: node.node_id(),
+            index,
+          });
+        }
+        builtin_needs_redraw = true;
       }
       if let Some(target) = dispatch_builtin_pointer(&hits, lx, is_left_click) {
         pending_focus = Some(target);
         builtin_needs_redraw = true;
       }
-      if hits.is_empty() && is_left_click {
-        if let Some((node, rect)) = find_slider_by_y_recursive(root, result, 0.0, 0.0, ly) {
-          if let NodeKind::Slider { state } = node.node_kind() {
-            let (track_rect, thumb_rect) = state.part_rects(
-              rect.x,
-              rect.y,
-              rect.width,
-              rect.height,
-              node.is_style_hovered(),
-              DEFAULT_SLIDER_THUMB_MIN_SIZE,
-            );
-            let ratio = state.pointer_ratio(lx, track_rect, thumb_rect);
-            state.set_from_ratio(ratio);
-            state.clear_drag_ratio();
-            pending_focus = Some(FocusTarget {
-              input_id: node.node_id(),
-              event_id: node.node_id(),
-            });
-            builtin_needs_redraw = true;
-          }
-        }
+      if hits.is_empty()
+        && is_left_click
+        && let Some((node, rect)) = find_slider_by_y_recursive(root, result, 0.0, 0.0, ly)
+        && let NodeKind::Slider { state } = node.node_kind()
+      {
+        let (track_rect, thumb_rect) = state.part_rects(
+          rect.x,
+          rect.y,
+          rect.width,
+          rect.height,
+          node.is_style_hovered(),
+          DEFAULT_SLIDER_THUMB_MIN_SIZE,
+        );
+        let ratio = state.pointer_ratio(lx, track_rect, thumb_rect);
+        state.set_from_ratio(ratio);
+        state.clear_drag_ratio();
+        pending_focus = Some(FocusTarget {
+          input_id: node.node_id(),
+          event_id: node.node_id(),
+        });
+        builtin_needs_redraw = true;
       }
     }
 
@@ -5097,7 +5158,7 @@ impl Tree {
     // takes the pointer.
     let mut scrollbar_press = None;
     if !evt.default_prevented() {
-      for (node, _) in &hits {
+      for (node, _) in scrollable_in_disabled.iter().chain(&hits) {
         let Some((state, _)) = node.scroll_container() else {
           continue;
         };
@@ -5205,9 +5266,10 @@ impl Tree {
       }
     }
 
-    let current_ids: Vec<NodeId> = hits.iter().map(|(n, _)| n.node_id()).collect();
+    let hover_hits = hovered_hits.as_ref().unwrap_or(&hits);
+    let current_ids: Vec<NodeId> = hover_hits.iter().map(|(n, _)| n.node_id()).collect();
 
-    let moved = hover::move_hover(root, &self.hover_path, &hits);
+    let moved = hover::move_hover(root, &self.hover_path, hover_hits);
     if self.draws_hover(moved) {
       self.cached_render_list = None;
       self.needs_redraw = true;
@@ -5232,8 +5294,8 @@ impl Tree {
     }
 
     self.hover_path = current_ids;
-    self.cursor = hovered_cursor(hits.iter().map(|(node, _)| *node));
-    if matches!(evt.kind, MouseEventKind::Down) {
+    self.cursor = hovered_cursor(disabled_hit.into_iter().chain(hover_hits.iter().map(|(node, _)| *node)));
+    if matches!(evt.kind, MouseEventKind::Down) && !blocked {
       self.active_path = self.hover_path.clone();
     }
     if builtin_needs_redraw {
@@ -5620,7 +5682,7 @@ impl Tree {
     hit_test_tree_all(root, result, 0.0, 0.0, x, y, &mut hits);
     hits
       .into_iter()
-      .find(|(node, _)| !node.events.on_drop.is_empty())
+      .find(|(node, _)| !node.is_disabled() && !node.events.on_drop.is_empty())
       .map(|(node, _)| (node.node_id(), node.events.on_drop.clone()))
   }
 
@@ -5678,6 +5740,9 @@ impl Tree {
       return;
     };
     if find_node_by_path(root, &input_path).is_some_and(Node::is_focus_disabled) {
+      return;
+    }
+    if tab_navigation::path_is_disabled(root, &input_path) {
       return;
     }
     // A node its Row/Column dropped (`ShrinkLimit::Drop`) is not drawn and
@@ -5755,7 +5820,7 @@ impl Tree {
         Some((find_node_by_id(root, *target)?, rect))
       }));
     } else {
-      hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+      hits = scroll_hits(root, result, lx, ly);
     }
     let scroll_delta_can_be_consumed =
       scroll_delta_can_be_consumed_by_hits(&hits, evt.delta_x, evt.delta_y, gesture_dy);
@@ -6299,7 +6364,7 @@ impl Tree {
     let result = self.last_layout.as_ref()?;
     let scale = self.scale_factor();
     let mut hits = Vec::new();
-    hit_test_tree(root, result, 0.0, 0.0, x / scale, y / scale, &mut hits);
+    crate::app::hit_test::hit_test_tree_inspecting(root, result, 0.0, 0.0, x / scale, y / scale, &mut hits);
     let node = hits.first()?.0;
     find_path_by_id(root, node.node_id())
   }
@@ -6452,7 +6517,9 @@ impl Tree {
     let now = Instant::now();
     let elapsed = now.duration_since(self.perf_overlay_last_sample);
     if elapsed >= PERF_SAMPLE_INTERVAL {
-      self.perf_overlay_stats = PerfMeterStats {
+      // Without `perf_profile` the profiling fields are compiled out and the default fills them.
+      #[allow(clippy::needless_update)]
+      let stats = PerfMeterStats {
         fps: (self.perf_overlay_frames_since_sample as f32 / elapsed.as_secs_f32()).round() as u32,
         #[cfg(feature = "perf_profile")]
         total_ms: ms(self.last_profile.total),
@@ -6480,6 +6547,7 @@ impl Tree {
         glyph_count: self.last_profile.glyph_count,
         ..PerfMeterStats::default()
       };
+      self.perf_overlay_stats = stats;
       self.perf_overlay_frames_since_sample = 0;
       self.perf_overlay_last_sample = now;
     }
@@ -6543,8 +6611,9 @@ impl Tree {
     }
 
     if let Some(root) = &mut self.root {
-      root.assign_ids(&self.id_gen);
+      root.assign_tree_ids(&self.id_gen);
     }
+    self.begin_leaving_children();
     self.tree_rebuilt_since_layout = true;
     self.cached_render_list = None;
     self.needs_redraw = true;
@@ -6620,6 +6689,7 @@ impl Tree {
     self.rebuild_if_dirty();
     self.apply_focus_request();
     self.rebuild_if_dirty();
+    self.drop_leaving_children(self.now());
     self.sync_dynamic_content();
     #[cfg(all(feature = "image", feature = "resources"))]
     let image_resources_changed = self.resolve_resource_images(app);
@@ -6641,6 +6711,8 @@ impl Tree {
       .root
       .as_ref()
       .is_some_and(|root| root.has_synthetic_role(SyntheticNodeRole::OverlayHost) && root.children.len() > 1);
+    // Transitions read the colors, widths and shadows nodes head to against the theme's roles.
+    self.transition_engine.set_theme(app.theme());
     let mut animation_layout_changed = false;
     if had_overlay_host && !had_active_overlays {
       if let Some(root) = self.root.as_mut()
@@ -6689,6 +6761,7 @@ impl Tree {
         && !has_runtime_layout_state
         && has_last_layout
         && root_cache_contains
+        && !self.leaving_layer_due(now)
       {
         self.last_theme_version = theme_version;
         #[cfg(feature = "canvas")]
@@ -6767,7 +6840,10 @@ impl Tree {
         &mut app.shared.glyph_engine.lock(),
         constraints,
         theme_changed,
+        now,
       );
+      self.begin_leaving_children();
+      self.release_input_in_leaving_layers();
       // Focus/blur callbacks may mutate App services; the glyph lock used to
       // construct the overlay host must be released before dispatching them.
       if had_overlay_host
@@ -6892,27 +6968,27 @@ impl Tree {
 
   fn detach_overlay_host(&mut self) -> OverlayHostReuse {
     let Some(root) = self.root.take() else {
-      return OverlayHostReuse {
-        old_host: None,
-        old_overlays: Vec::new(),
-        old_overlay_used: Vec::new(),
-        old_overlay_layout_dirty: Vec::new(),
-      };
+      return OverlayHostReuse::default();
     };
     let parts = overlay_host_parts(root);
-    let old_overlay_layout_dirty = parts
-      .old_overlays
-      .iter()
-      .map(has_pending_layout_dirty_recursive)
-      .collect();
     self.root = Some(parts.base);
-    let old_overlay_used = vec![false; parts.old_overlays.len()];
-    OverlayHostReuse {
+    let mut reuse = OverlayHostReuse {
       old_host: parts.old_host,
-      old_overlays: parts.old_overlays,
-      old_overlay_used,
-      old_overlay_layout_dirty,
+      ..OverlayHostReuse::default()
+    };
+    for (position, layer) in parts.old_overlays.into_iter().enumerate() {
+      if layer.is_leaving_layer() {
+        reuse.leaving.push((position, layer));
+        continue;
+      }
+      reuse
+        .old_overlay_layout_dirty
+        .push(has_pending_layout_dirty_recursive(&layer));
+      reuse.old_overlay_used.push(false);
+      reuse.old_overlay_positions.push(position);
+      reuse.old_overlays.push(layer);
     }
+    reuse
   }
 
   fn sync_overlay_host_from_layout(
@@ -6922,13 +6998,17 @@ impl Tree {
     glyph_engine: &mut crate::app::glyph_engine::GlyphEngine,
     constraints: Constraints,
     theme_changed: bool,
+    now: Instant,
   ) -> Option<OwnedElementRef> {
     let Some(base) = self.root.take() else {
+      old_parts.drop_leaving();
       #[cfg(feature = "canvas")]
       detach_canvases_not_carried(old_parts.unused_canvas_bindings(), None);
       old_parts.free_ids(&self.id_gen);
       self.overlay_dismiss_entries.clear();
       self.overlay_layer_anchors.clear();
+      self.overlay_layer_origins.clear();
+      self.leaving_layers.clear();
       self.dropdown_anchors.clear();
       return None;
     };
@@ -6947,29 +7027,21 @@ impl Tree {
       &mut self.profiling,
     );
 
-    if overlays.is_empty() {
-      let focus_return = self.focused_overlay_hidden(old_parts.old_host.is_some(), &layers);
-      #[cfg(feature = "canvas")]
-      detach_canvases_not_carried(old_parts.unused_canvas_bindings(), Some(&base));
-      old_parts.free_ids(&self.id_gen);
-      self.root = Some(base);
-      // Overlays hidden with their anchor are still dismissed.
-      self.overlay_dismiss_entries = layers.dismiss_entries;
-      self.overlay_layer_anchors.clear();
-      self.dropdown_anchors.clear();
-      return focus_return;
-    }
-
+    let old_origins = std::mem::take(&mut self.overlay_layer_origins);
     let mut dropdown_anchors = std::mem::take(&mut base_overlay_index.dropdown_anchors);
-    let mut old_overlay_index = 0;
-    for overlay in &mut overlays {
-      preserve_overlay_reuse(overlay, &mut old_parts, old_overlay_index);
-      old_overlay_index += 1;
-    }
+    old_parts.claim(&mut overlays, &layers.origins, 0, &old_origins);
+    self.place_again_with_leaving_children(
+      &mut overlays,
+      &layers.placings,
+      viewport,
+      glyph_engine,
+      constraints,
+      theme_changed,
+    );
 
     let mut overlay_index = 0;
     while overlay_index < overlays.len() {
-      let nested_overlays = if overlays[overlay_index].has_synthetic_role(SyntheticNodeRole::SelectMenu) {
+      let mut nested_overlays = if overlays[overlay_index].has_synthetic_role(SyntheticNodeRole::SelectMenu) {
         Vec::new()
       } else {
         let overlay = &overlays[overlay_index];
@@ -7007,18 +7079,39 @@ impl Tree {
         nested
       };
 
-      for mut nested_overlay in nested_overlays {
-        preserve_overlay_reuse(&mut nested_overlay, &mut old_parts, old_overlay_index);
-        old_overlay_index += 1;
-        overlays.push(nested_overlay);
-      }
+      let first = overlays.len();
+      old_parts.claim(&mut nested_overlays, &layers.origins[first..], first, &old_origins);
+      self.place_again_with_leaving_children(
+        &mut nested_overlays,
+        &layers.placings[first..],
+        viewport,
+        glyph_engine,
+        constraints,
+        theme_changed,
+      );
+      overlays.append(&mut nested_overlays);
       overlay_index += 1;
     }
 
+    let leaving = self.leaving_layers(&mut old_parts, &layers, now);
+    if overlays.is_empty() && leaving.is_empty() {
+      let focus_return = self.focused_overlay_hidden(old_parts.old_host.is_some(), &layers);
+      #[cfg(feature = "canvas")]
+      detach_canvases_not_carried(old_parts.unused_canvas_bindings(), Some(&base));
+      old_parts.free_ids(&self.id_gen);
+      self.root = Some(base);
+      // Overlays hidden with their anchor are still dismissed.
+      self.overlay_dismiss_entries = layers.dismiss_entries;
+      self.overlay_layer_anchors.clear();
+      self.dropdown_anchors.clear();
+      return focus_return;
+    }
+
+    let stack = leaving_layers::stack_layers(overlays, leaving, &mut layers);
     let old_parts_had_host = old_parts.old_host.is_some();
-    let mut children = Vec::with_capacity(1 + overlays.len());
+    let mut children = Vec::with_capacity(1 + stack.len());
     children.push(base);
-    children.extend(overlays);
+    children.extend(stack);
     let mut host = Node::stack(crate::layout::StackAlignment::TopStart, children);
     host.set_tag_name("OverlayHost");
     host.set_synthetic_role(SyntheticNodeRole::OverlayHost);
@@ -7031,13 +7124,47 @@ impl Tree {
     #[cfg(feature = "canvas")]
     detach_canvases_not_carried(old_parts.unused_canvas_bindings(), Some(&host));
     old_parts.free_ids(&self.id_gen);
-    host.assign_ids(&self.id_gen);
+    host.assign_tree_ids(&self.id_gen);
     self.root = Some(host);
     let focus_return = self.focused_overlay_hidden(old_parts_had_host, &layers);
     self.overlay_dismiss_entries = layers.dismiss_entries;
     self.overlay_layer_anchors = layers.anchors;
+    self.overlay_layer_origins = layers.origins;
     self.dropdown_anchors = dropdown_anchors;
     focus_return
+  }
+
+  /// Places again the overlays among `overlays` that took a leaving child over from the layer they
+  /// continue: each was measured and put by its anchor before it had the child, which is in its flow.
+  fn place_again_with_leaving_children(
+    &mut self,
+    overlays: &mut [Node],
+    placings: &[Option<OverlayPlacing>],
+    viewport: Size,
+    glyph_engine: &mut crate::app::glyph_engine::GlyphEngine,
+    constraints: Constraints,
+    theme_changed: bool,
+  ) {
+    for (overlay, placing) in overlays.iter_mut().zip(placings) {
+      let Some(placing) = placing else {
+        continue;
+      };
+      if !overlay.holds_leaving_child() {
+        continue;
+      }
+      let (placed, _) = place_overlay(
+        std::mem::take(overlay),
+        *placing,
+        viewport,
+        glyph_engine,
+        &self.layout_engine,
+        constraints,
+        theme_changed,
+        #[cfg(feature = "perf_profile")]
+        &mut self.profiling,
+      );
+      *overlay = placed;
+    }
   }
 
   fn sync_dynamic_content(&mut self) {
@@ -7090,13 +7217,13 @@ impl Tree {
       }
     }
 
-    if let Some(key) = node.background_resource_image.clone() {
-      if let Some(img) = Self::resolve_image_resource(&key, loader, image_cache) {
-        let current_id = node.background_image.as_deref().map(crate::images::ImageData::id);
-        if current_id != Some(img.id()) {
-          node.background_image.set(Some(Box::new(img)));
-          layout_dirty = true;
-        }
+    if let Some(key) = node.background_resource_image.clone()
+      && let Some(img) = Self::resolve_image_resource(&key, loader, image_cache)
+    {
+      let current_id = node.background_image.as_deref().map(crate::images::ImageData::id);
+      if current_id != Some(img.id()) {
+        node.background_image.set(Some(Box::new(img)));
+        layout_dirty = true;
       }
     }
 
@@ -7396,11 +7523,21 @@ struct OverlayHostParts {
   old_overlays: Vec<Node>,
 }
 
+/// What the overlay host held before a pass, for the host the pass builds to
+/// take over: the open layers, and apart from them the layers that were
+/// leaving, which no new layer takes over.
+#[derive(Default)]
 struct OverlayHostReuse {
   old_host: Option<Node>,
   old_overlays: Vec<Node>,
   old_overlay_used: Vec<bool>,
   old_overlay_layout_dirty: Vec<bool>,
+  /// Where each of `old_overlays` was among the old host's layers.
+  old_overlay_positions: Vec<usize>,
+  /// The layers that were leaving, each with where it was among the old host's layers.
+  leaving: Vec<(usize, Node)>,
+  /// Leaving layers whose time is up: dropped with the pass.
+  dropped: Vec<Node>,
 }
 
 impl OverlayHostReuse {
@@ -7413,7 +7550,9 @@ impl OverlayHostReuse {
       .iter()
       .enumerate()
       .filter(|(index, _)| !self.old_overlay_used.get(*index).copied().unwrap_or(false))
-      .flat_map(|(_, overlay)| canvas_bindings(overlay))
+      .map(|(_, overlay)| overlay)
+      .chain(&self.dropped)
+      .flat_map(canvas_bindings)
       .collect()
   }
 
@@ -7421,9 +7560,85 @@ impl OverlayHostReuse {
     if let Some(old_host) = &mut self.old_host {
       old_host.free_ids(id_gen);
     }
-    for old_overlay in &mut self.old_overlays {
+    for old_overlay in self.old_overlays.iter_mut().chain(&mut self.dropped) {
       old_overlay.free_ids(id_gen);
     }
+  }
+
+  /// Every layer that was leaving is dropped with the pass.
+  fn drop_leaving(&mut self) {
+    let leaving = std::mem::take(&mut self.leaving);
+    self.dropped.extend(leaving.into_iter().map(|(_, layer)| layer));
+  }
+
+  /// The node that declared the old layer at `index` of `old_overlays`.
+  fn old_origin(&self, index: usize, old_origins: &[Option<NodeId>]) -> Option<NodeId> {
+    old_origins
+      .get(*self.old_overlay_positions.get(index)?)
+      .copied()
+      .flatten()
+  }
+
+  fn is_free(&self, index: usize) -> bool {
+    index < self.old_overlays.len() && !self.old_overlay_used.get(index).copied().unwrap_or(false)
+  }
+
+  /// Hands each of `overlays`, layers built in this pass, the state and ids
+  /// of the old layer it continues. `origins` are the nodes that declare
+  /// them, `first` is the place of the first of them among the layers built,
+  /// and `old_origins` are the nodes that declared the old host's layers.
+  ///
+  /// A layer continues the old layer of its key, or else the old layer the
+  /// same node declared. Only then do the layers left take the old layer at
+  /// their own place, so that a layer never takes the one a later layer
+  /// continues.
+  fn claim(&mut self, overlays: &mut [Node], origins: &[Option<NodeId>], first: usize, old_origins: &[Option<NodeId>]) {
+    let mut claimed = vec![false; overlays.len()];
+    for (offset, overlay) in overlays.iter_mut().enumerate() {
+      let origin = origins.get(offset).copied().flatten();
+      if let Some(index) = self.same_layer(overlay, origin, old_origins) {
+        preserve_overlay_reuse_at(overlay, self, index);
+        claimed[offset] = true;
+      }
+    }
+    for (offset, overlay) in overlays.iter_mut().enumerate() {
+      let origin = origins.get(offset).copied().flatten();
+      if !claimed[offset] && self.takes_place(overlay, origin, first + offset, old_origins) {
+        preserve_overlay_reuse_at(overlay, self, first + offset);
+      }
+    }
+  }
+
+  /// The free old layer `overlay` is known to continue: the one of its key,
+  /// or the one `origin` declared too, when neither has a key to say more.
+  fn same_layer(&self, overlay: &Node, origin: Option<NodeId>, old_origins: &[Option<NodeId>]) -> Option<usize> {
+    let key = overlay.component_key();
+    let free = || (0..self.old_overlays.len()).filter(|index| self.is_free(*index));
+    if key.is_some()
+      && let Some(index) = free().find(|index| self.old_overlays[*index].component_key() == key)
+    {
+      return Some(index);
+    }
+    let origin = origin?;
+    free().find(|index| {
+      let old = &self.old_overlays[*index];
+      (key.is_none() || old.component_key().is_none()) && self.old_origin(*index, old_origins) == Some(origin)
+    })
+  }
+
+  /// Whether `overlay`, which continues no old layer it is known by, takes
+  /// the old layer at its own place, `index`. A layer that animates in, or
+  /// an old one that animates out, is not taken for another layer's, one
+  /// that another node declared or that has another key: a popup opened by
+  /// the press that closes another enters, and the other leaves.
+  fn takes_place(&self, overlay: &Node, origin: Option<NodeId>, index: usize, old_origins: &[Option<NodeId>]) -> bool {
+    if !self.is_free(index) {
+      return false;
+    }
+    let old = &self.old_overlays[index];
+    let another = matches!((origin, self.old_origin(index, old_origins)), (Some(new), Some(old)) if new != old)
+      || matches!((overlay.component_key(), old.component_key()), (Some(new), Some(old)) if new != old);
+    !(another && (overlay.has_keyframe_animation() || old.has_keyframe_animation()))
   }
 }
 
@@ -7459,7 +7674,7 @@ fn root_with_preserved_overlay_parts(base: Node, mut parts: OverlayHostParts, id
   let mut host = Node::stack(crate::layout::StackAlignment::TopStart, children);
   host.set_tag_name("OverlayHost");
   host.set_synthetic_role(SyntheticNodeRole::OverlayHost);
-  host.preserve_runtime_state_from(&mut old_host);
+  host.preserve_runtime_state_from(&old_host);
   host.preserve_ids_from(&mut old_host);
   old_host.free_ids(id_gen);
   host
@@ -7482,28 +7697,6 @@ fn translate_overlay_layout_index(index: &mut OverlayLayoutIndex, x: f32, y: f32
       }
       OverlayLayoutRecord::Overlay { .. } => {}
     }
-  }
-}
-
-fn preserve_overlay_reuse(overlay: &mut Node, old_parts: &mut OverlayHostReuse, index: usize) {
-  let key = overlay.component_key().map(str::to_owned);
-  if let Some(key) = key
-    && let Some(keyed_index) = old_parts
-      .old_overlays
-      .iter()
-      .enumerate()
-      .find(|(old_index, old_overlay)| {
-        !old_parts.old_overlay_used.get(*old_index).copied().unwrap_or(false)
-          && old_overlay.component_key() == Some(key.as_str())
-      })
-      .map(|(old_index, _)| old_index)
-  {
-    preserve_overlay_reuse_at(overlay, old_parts, keyed_index);
-    return;
-  }
-
-  if index < old_parts.old_overlays.len() && !old_parts.old_overlay_used.get(index).copied().unwrap_or(false) {
-    preserve_overlay_reuse_at(overlay, old_parts, index);
   }
 }
 
@@ -7542,6 +7735,7 @@ fn build_overlays_from_layout_index(
     match record.clone() {
       OverlayLayoutRecord::SelectMenu {
         reuse_key,
+        origin,
         state,
         bounds,
         visible,
@@ -7576,8 +7770,14 @@ fn build_overlays_from_layout_index(
         set_overlay_reuse_key(&mut menu, reuse_key.as_deref());
         overlays.push(menu);
         layers.anchors.push(None);
+        layers.origins.push(origin);
+        layers.placings.push(None);
       }
-      OverlayLayoutRecord::Overlay { reuse_key, spec } => {
+      OverlayLayoutRecord::Overlay {
+        reuse_key,
+        origin,
+        spec,
+      } => {
         let Some(anchor) = find_element_record(index, &spec.anchor) else {
           continue;
         };
@@ -7603,7 +7803,7 @@ fn build_overlays_from_layout_index(
         let dismiss_on_outside_click = spec.dismiss_on_outside_click;
         let outside_press = spec.outside_press;
         let dismiss_on_escape = spec.dismiss_on_escape;
-        let (mut overlay, bounds) = build_overlay_node(
+        let (mut overlay, bounds, placing) = build_overlay_node(
           spec,
           anchor,
           viewport,
@@ -7631,9 +7831,12 @@ fn build_overlays_from_layout_index(
         }
         overlays.push(overlay);
         layers.anchors.push(Some(layer_anchor));
+        layers.origins.push(origin);
+        layers.placings.push(Some(placing));
       }
       OverlayLayoutRecord::Modal {
         reuse_key,
+        origin,
         spec,
         parent,
       } => {
@@ -7678,6 +7881,8 @@ fn build_overlays_from_layout_index(
         }
         overlays.push(modal);
         layers.anchors.push(owner);
+        layers.origins.push(origin);
+        layers.placings.push(None);
       }
     }
   }
@@ -7752,7 +7957,7 @@ fn build_overlay_node(
   constraints: Constraints,
   theme_changed: bool,
   #[cfg(feature = "perf_profile")] profiling: &mut crate::app::profiler::producer::WindowProfiler,
-) -> (Node, ElementRect) {
+) -> (Node, ElementRect, OverlayPlacing) {
   let mut node = spec.node;
   if spec.match_anchor_width {
     node = node.width(Dimension::Px(anchor.width));
@@ -7761,12 +7966,64 @@ fn build_overlay_node(
     node = node.hit_test(spec.hit_test);
   }
 
+  let placing = OverlayPlacing {
+    anchor,
+    placement: spec.placement,
+    offset_x: spec.offset_x,
+    offset_y: spec.offset_y,
+    collision: spec.collision,
+  };
+  let (node, bounds) = place_overlay(
+    node,
+    placing,
+    viewport,
+    glyph_engine,
+    layout_engine,
+    constraints,
+    theme_changed,
+    #[cfg(feature = "perf_profile")]
+    profiling,
+  );
+  (node, bounds, placing)
+}
+
+/// What places an overlay by its anchor, besides its own size.
+#[derive(Clone, Copy)]
+pub(super) struct OverlayPlacing {
+  anchor: ElementRect,
+  placement: Placement,
+  offset_x: f32,
+  offset_y: f32,
+  collision: CollisionStrategy,
+}
+
+/// Measures `node`, an overlay's content, and puts it by its anchor at that size. Run again on a layer that
+/// was placed, it measures the layer as it is now.
+#[allow(clippy::too_many_arguments)]
+fn place_overlay(
+  node: Node,
+  placing: OverlayPlacing,
+  viewport: Size,
+  glyph_engine: &mut crate::app::glyph_engine::GlyphEngine,
+  layout_engine: &LayoutEngine,
+  constraints: Constraints,
+  theme_changed: bool,
+  #[cfg(feature = "perf_profile")] profiling: &mut crate::app::profiler::producer::WindowProfiler,
+) -> (Node, ElementRect) {
+  let OverlayPlacing {
+    anchor,
+    placement,
+    offset_x,
+    offset_y,
+    collision,
+  } = placing;
   let measure_constraints = Constraints::loose(Size::new(
     constraints.max_width.min(viewport.width).max(0.0),
     constraints.max_height.min(viewport.height).max(0.0),
   ));
   let pending_runtime_layout_dirty = has_pending_layout_dirty_recursive(&node);
-  let measure_node = node.clone_for_reuse();
+  // Measured as its content sizes it, not at the size an earlier placing gave it.
+  let measure_node = node.clone_for_reuse().statically_positioned();
   let measured = crate::app::profiler::producer::layout_compute(
     #[cfg(feature = "perf_profile")]
     profiling,
@@ -7776,20 +8033,9 @@ fn build_overlay_node(
     invalidate_layout_cache_recursive(&node);
   }
   let overlay_size = measured.size;
-  let placement = resolve_overlay_collision(
-    spec.placement,
-    anchor,
-    overlay_size,
-    viewport,
-    spec.offset_x,
-    spec.offset_y,
-    spec.collision,
-  );
-  let (x, y) = overlay_position(anchor, overlay_size, placement, spec.offset_x, spec.offset_y);
-  let (x, y) = if matches!(
-    spec.collision,
-    CollisionStrategy::Clamp | CollisionStrategy::FlipThenClamp
-  ) {
+  let placement = resolve_overlay_collision(placement, anchor, overlay_size, viewport, offset_x, offset_y, collision);
+  let (x, y) = overlay_position(anchor, overlay_size, placement, offset_x, offset_y);
+  let (x, y) = if matches!(collision, CollisionStrategy::Clamp | CollisionStrategy::FlipThenClamp) {
     clamp_overlay_position(x, y, overlay_size, viewport)
   } else {
     (x, y)
@@ -8468,6 +8714,10 @@ fn find_element_recursive(
   if layout.dropped {
     return find_element_in_dropped(node, abs_x, abs_y, parent_x, parent_y, predicate);
   }
+  // A layer on its way out is painted and nothing else: the app has closed it.
+  if node.is_leaving_layer() {
+    return None;
+  }
   let rect = ElementRect {
     x: abs_x,
     y: abs_y,
@@ -8738,6 +8988,28 @@ impl<'t> ElementHandle<'t> {
     self.invalidate_render();
   }
 
+  /// Sets the color of the text in the element and under it; see `Node::foreground`.
+  pub fn set_foreground(&mut self, color: impl Into<crate::node::TextColor>) {
+    let Some(node) = self.node_mut() else { return };
+    NodeUpdate::foreground(node, color);
+    self.invalidate_render();
+  }
+
+  /// Disables or enables the element and everything in it; see `Node::disabled`.
+  pub fn set_disabled(&mut self, disabled: bool) {
+    let Some(node) = self.node_mut() else { return };
+    NodeUpdate::disabled(node, disabled);
+    self.tree.sync_disabled_under(self.node_id);
+    self.invalidate_render();
+  }
+
+  /// Sets the line drawn around the element; see `Outline`.
+  pub fn set_outline(&mut self, outline: crate::node::Outline) {
+    let Some(node) = self.node_mut() else { return };
+    NodeUpdate::outline(node, outline);
+    self.invalidate_render();
+  }
+
   /// Replaces the node's text content. On `TextInput` nodes use
   /// [`ElementHandle::as_text_input`] + `set_value` instead — the input's
   /// signal-backed value overwrites raw text content on the next pass.
@@ -8769,6 +9041,9 @@ impl<'t> ElementHandle<'t> {
   /// buttons submit their form, like a real browser click. For
   /// pointer-fidelity clicks use [`Tree::mouse_down`] / [`Tree::mouse_up`].
   pub fn click(&mut self) {
+    if self.tree.is_node_disabled(self.node_id) {
+      return;
+    }
     let center = self.bounds().map(|bounds| bounds.center()).unwrap_or((0.0, 0.0));
     let Some(node) = self.node() else { return };
     let focusable = node.is_focusable();
@@ -9086,37 +9361,38 @@ impl SelectHandle<'_> {
 /// final layout must equal `-scroll` from its own state. A mismatch means a
 /// stale cached layout leaked through the incremental relayout paths.
 fn verify_scroll_offsets(node: &Node, result: &crate::layout::layout_result::LayoutResult) {
-  if let LayoutKind::ScrollModifier { state, .. } = node.layout_kind() {
-    if let Some(child) = result.children.first() {
-      let expected_y = -state.scroll_y();
-      let expected_x = -state.scroll_x();
-      if (child.offset.y - expected_y).abs() > 0.5 || (child.offset.x - expected_x).abs() > 0.5 {
-        tracing::warn!(
-          target: "lurq::layout",
-          "stale scroll offset in final layout: offset=({:.1},{:.1}) expected=({expected_x:.1},{expected_y:.1}) content_h={:.1}",
-          child.offset.x,
-          child.offset.y,
-          child.result.size.height,
-        );
-      }
+  if let LayoutKind::ScrollModifier { state, .. } = node.layout_kind()
+    && let Some(child) = result.children.first()
+  {
+    let expected_y = -state.scroll_y();
+    let expected_x = -state.scroll_x();
+    if (child.offset.y - expected_y).abs() > 0.5 || (child.offset.x - expected_x).abs() > 0.5 {
+      tracing::warn!(
+        target: "lurq::layout",
+        "stale scroll offset in final layout: offset=({:.1},{:.1}) expected=({expected_x:.1},{expected_y:.1}) content_h={:.1}",
+        child.offset.x,
+        child.offset.y,
+        child.result.size.height,
+      );
     }
   }
   // A node with a large fixed pixel height (a virtualized list's spacer) must
   // be laid at exactly that height — a mismatch means the final layout served
   // a stale cached result for this subtree. Gated to giant spacers so
   // legitimately clamped fixed-size controls don't produce noise.
-  if let Some(crate::node::dimension::Dimension::Px(requested)) = node.frame.height {
-    if requested > 1000.0 && (result.size.height - requested).abs() > 0.5 {
-      tracing::warn!(
-        target: "lurq::layout",
-        "stale child geometry in final layout: laid_h={:.1} requested_h={requested:.1} (tag={} local_dirty={} descendant_dirty={} has_cached={})",
-        result.size.height,
-        node.tag_name(),
-        node.layout_cache.is_local_dirty(),
-        node.layout_cache.is_descendant_dirty(),
-        node.layout_cache.has_cached_result(),
-      );
-    }
+  if let Some(crate::node::dimension::Dimension::Px(requested)) = node.frame.height
+    && requested > 1000.0
+    && (result.size.height - requested).abs() > 0.5
+  {
+    tracing::warn!(
+      target: "lurq::layout",
+      "stale child geometry in final layout: laid_h={:.1} requested_h={requested:.1} (tag={} local_dirty={} descendant_dirty={} has_cached={})",
+      result.size.height,
+      node.tag_name(),
+      node.layout_cache.is_local_dirty(),
+      node.layout_cache.is_descendant_dirty(),
+      node.layout_cache.has_cached_result(),
+    );
   }
   for (child_layout, child) in result.children.iter().zip(node.children()) {
     verify_scroll_offsets(child, &child_layout.result);
@@ -9126,10 +9402,10 @@ fn verify_scroll_offsets(node: &Node, result: &crate::layout::layout_result::Lay
 /// Find the scroll node sharing `state`'s underlying scroll state — the
 /// stable identity of a scroll container across retained-tree rebuilds.
 fn find_scroll_node_id_by_state(node: &Node, state: &ScrollState) -> Option<NodeId> {
-  if let Some((node_state, _)) = node.scroll_container() {
-    if node_state.ptr_eq(state) {
-      return Some(node.node_id());
-    }
+  if let Some((node_state, _)) = node.scroll_container()
+    && node_state.ptr_eq(state)
+  {
+    return Some(node.node_id());
   }
   for child in node.children() {
     if let Some(found) = find_scroll_node_id_by_state(child, state) {
@@ -9319,9 +9595,7 @@ impl Tree {
   }
 
   fn take_pending_devtools_frame_capture(&mut self) -> Option<RenderFrameCapture> {
-    let Some(mut request) = self.devtools_state.screenshot_request.lock().unwrap().take() else {
-      return None;
-    };
+    let mut request = self.devtools_state.screenshot_request.lock().unwrap().take()?;
 
     let Some(bounds) = self.devtools_screenshot_bounds(&request.node_path) else {
       if request.attempts < 2 {
@@ -9957,51 +10231,30 @@ fn screenshot_draw_rect(
 
 #[cfg(feature = "devtools")]
 fn draw_screenshot_stroke(pixels: &mut [u8], bounds: DevtoolsScreenshotBounds, rect: &RectCmd, color: [u8; 4]) {
-  let top = rect.stroke[0].max(0.0);
-  let right = rect.stroke[1].max(0.0);
-  let bottom = rect.stroke[2].max(0.0);
-  let left = rect.stroke[3].max(0.0);
-  let radii = screenshot_effective_rect_radii(bounds, rect);
   let Some(draw) = screenshot_draw_rect(bounds, rect.x, rect.y, rect.width, rect.height, rect.clip) else {
     return;
   };
-
-  let inner_x = rect.x + left;
-  let inner_y = rect.y + top;
-  let inner_width = (rect.width - left - right).max(0.0);
-  let inner_height = (rect.height - top - bottom).max(0.0);
-  let inner_radii = [
-    (radii[0] - left.max(top)).max(0.0),
-    (radii[1] - right.max(top)).max(0.0),
-    (radii[2] - right.max(bottom)).max(0.0),
-    (radii[3] - left.max(bottom)).max(0.0),
-  ];
+  // The ring and its dashes are the ones the quad shaders paint.
+  let shape = crate::layout::stroke::StrokeShape {
+    half: [rect.width * 0.5, rect.height * 0.5],
+    radii: screenshot_effective_rect_radii(bounds, rect),
+    stroke: rect.stroke,
+    style: rect.stroke_style,
+  };
+  let centre = (rect.x + shape.half[0], rect.y + shape.half[1]);
 
   for py in draw.y0..draw.y1 {
     for px in draw.x0..draw.x1 {
-      let coverage = screenshot_sample_coverage(bounds, px, py, |world_x, world_y| {
-        if !screenshot_window_clip_contains(bounds, world_x, world_y)
-          || !screenshot_clip_contains(rect.clip, world_x, world_y)
-          || !screenshot_rounded_rect_contains(world_x, world_y, rect.x, rect.y, rect.width, rect.height, radii)
-        {
-          return false;
-        }
-        if inner_width > 0.0
-          && inner_height > 0.0
-          && screenshot_rounded_rect_contains(
-            world_x,
-            world_y,
-            inner_x,
-            inner_y,
-            inner_width,
-            inner_height,
-            inner_radii,
-          )
-        {
-          return false;
-        }
-        true
+      let clipped = screenshot_sample_coverage(bounds, px, py, |world_x, world_y| {
+        screenshot_window_clip_contains(bounds, world_x, world_y)
+          && screenshot_clip_contains(rect.clip, world_x, world_y)
       });
+      if clipped <= 0.0 {
+        continue;
+      }
+      let world_x = bounds.x as f32 + px as f32 + 0.5;
+      let world_y = bounds.y as f32 + py as f32 + 0.5;
+      let coverage = clipped * crate::layout::stroke::stroke_coverage(world_x - centre.0, world_y - centre.1, &shape);
       if coverage > 0.0 {
         blend_screenshot_pixel(
           pixels,
@@ -10383,7 +10636,6 @@ fn clip_screenshot_layer(
   }
 }
 
-#[cfg(feature = "devtools")]
 /// Composites a layer painted like `pixels` (straight alpha, same size) over
 /// them at `opacity`.
 #[cfg(feature = "devtools")]
@@ -10476,6 +10728,51 @@ fn set_node_hovered(node: &Node, hovered: bool) -> bool {
 /// The cursor of the innermost of the hovered `nodes` that sets one. A
 /// scrollbar under the pointer shows the default cursor, whatever cursor its
 /// node sets (a text input's text cursor, say).
+/// A disabled element under the pointer is the innermost hit: hit testing folds everything in it into it. Takes it
+/// off `hits`, which leaves the elements it is in, and returns it.
+fn take_disabled_hit<'a>(hits: &mut Vec<(&'a Node, crate::app::hit_test::HitRect)>) -> Option<&'a Node> {
+  hits
+    .first()
+    .is_some_and(|(node, _)| node.is_disabled())
+    .then(|| hits.remove(0).0)
+}
+
+/// The scroll containers inside the disabled element at the point, innermost first; `kept` is the hit list that
+/// element was taken off. Scrolling is no input to a control: a wheel, a finger and a press on their scrollbars
+/// still reach them, so what a disabled element holds can be read to its end.
+fn scroll_containers_in_disabled<'a>(
+  root: &'a Node,
+  layout: &LayoutResult,
+  x: f32,
+  y: f32,
+  kept: &[(&'a Node, crate::app::hit_test::HitRect)],
+) -> Vec<(&'a Node, crate::app::hit_test::HitRect)> {
+  let mut all = Vec::new();
+  crate::app::hit_test::hit_test_tree_inspecting(root, layout, 0.0, 0.0, x, y, &mut all);
+  all.retain(|(node, _)| {
+    node.scroll_container().is_some() && !kept.iter().any(|(kept, _)| kept.node_id() == node.node_id())
+  });
+  all
+}
+
+/// The hits a scroll at the point has, innermost first: what a pointer has there and, where it is over a disabled
+/// element, the scroll containers inside that element in place of it.
+fn scroll_hits<'a>(
+  root: &'a Node,
+  layout: &LayoutResult,
+  x: f32,
+  y: f32,
+) -> Vec<(&'a Node, crate::app::hit_test::HitRect)> {
+  let mut hits = Vec::new();
+  hit_test_tree(root, layout, 0.0, 0.0, x, y, &mut hits);
+  if take_disabled_hit(&mut hits).is_none() {
+    return hits;
+  }
+  let mut inside = scroll_containers_in_disabled(root, layout, x, y, &hits);
+  inside.append(&mut hits);
+  inside
+}
+
 fn hovered_cursor<'a>(mut nodes: impl Iterator<Item = &'a Node>) -> CursorIcon {
   nodes
     .find_map(|node| {
@@ -10642,8 +10939,11 @@ fn replace_live_component_root(node: &mut Node, mut replacement: Box<Node>, id_g
   reset_element_ref_flags_recursive(node);
   replacement.preserve_runtime_state_from(node);
   #[cfg(feature = "canvas")]
-  detach_canvases_not_carried(canvas_bindings(node), Some(&replacement));
+  let old_canvases = canvas_bindings(node);
+  // The children that are leaving go over to the replacement here, their canvases with them.
   replacement.preserve_ids_from(node);
+  #[cfg(feature = "canvas")]
+  detach_canvases_not_carried(old_canvases, Some(&replacement));
   node.free_ids(id_gen);
   replacement.assign_ids(id_gen);
   *node = *replacement;
@@ -10864,7 +11164,9 @@ fn has_timeline_target_recursive(node: &Node) -> bool {
   }
   #[cfg(test)]
   crate::core::layout_dirty::visit();
-  !node.transitions.is_empty() || node.animation.is_some() || node.children().iter().any(has_timeline_target_recursive)
+  !node.transitions.is_empty()
+    || node.playing_animation().is_some()
+    || node.children().iter().any(has_timeline_target_recursive)
 }
 
 /// Whether a scroll container in the subtree was scrolled, or asked to scroll, since it was last laid out. Like
@@ -11127,11 +11429,12 @@ fn nearest_form_path_for_path(root: &Node, path: &[usize]) -> Option<Vec<usize>>
   None
 }
 
+/// A form's submit handler and the data to hand it.
 #[cfg(feature = "form")]
-fn nearest_form_submission(
-  root: &Node,
-  path: &[usize],
-) -> Option<(Arc<dyn Fn(crate::node::FormData) + Send + Sync>, crate::node::FormData)> {
+type FormSubmission = (Arc<dyn Fn(crate::node::FormData) + Send + Sync>, crate::node::FormData);
+
+#[cfg(feature = "form")]
+fn nearest_form_submission(root: &Node, path: &[usize]) -> Option<FormSubmission> {
   let form_path = nearest_form_path_for_path(root, path)?;
   let form = find_node_by_path(root, &form_path)?;
   let handler = form.submit_handler()?;
@@ -11369,13 +11672,11 @@ fn nearest_selectable_text<'a>(
       abs_y + child_layout.offset.y,
       x,
       y,
-    ) {
-      if best
-        .as_ref()
-        .is_none_or(|(best_distance, ..)| candidate.0 < *best_distance)
-      {
-        best = Some(candidate);
-      }
+    ) && best
+      .as_ref()
+      .is_none_or(|(best_distance, ..)| candidate.0 < *best_distance)
+    {
+      best = Some(candidate);
     }
   }
 
@@ -11654,7 +11955,7 @@ fn transformed_text_raster_scale(transform: Transform2D) -> f32 {
   let det = aa * bb - ab * ab;
   let discriminant = (trace * trace - 4.0 * det).max(0.0);
   let max_scale = ((trace + discriminant.sqrt()) * 0.5).max(1.0).sqrt();
-  max_scale.max(2.0).min(4.0).ceil()
+  max_scale.clamp(2.0, 4.0).ceil()
 }
 
 #[cfg(feature = "devtools")]
@@ -11731,6 +12032,7 @@ fn devtools_overlay_rect_cmd(order: usize, rect: DevtoolsOverlayRect, color: Col
     radii: [0.0; 4],
     stroke: [1.0; 4],
     stroke_color,
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform: [1.0, 0.0, 0.0, 1.0],
     transform_origin: [0.0, 0.0],
     clip: ClipRect::default(),
@@ -11788,6 +12090,7 @@ fn push_devtools_size_label(
     radii: [3.0 * scale; 4],
     stroke: [1.0; 4],
     stroke_color: Color::new(96, 165, 250, 235),
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform: [1.0, 0.0, 0.0, 1.0],
     transform_origin: [0.0, 0.0],
     clip: ClipRect::default(),
@@ -11837,6 +12140,7 @@ fn push_perf_meter(
     radii: [6.0 * scale; 4],
     stroke: [1.0; 4],
     stroke_color: Color::from_hex("#374151"),
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform: [1.0, 0.0, 0.0, 1.0],
     transform_origin: [0.0, 0.0],
     clip: ClipRect::default(),
@@ -11987,6 +12291,8 @@ fn scaled_radii(border_radius: Option<BorderRadius>, scale: f32, width: f32, hei
     .unwrap_or([0.0; 4])
 }
 
+// The geometry of one border, passed as the caller already holds it.
+#[allow(clippy::too_many_arguments)]
 fn push_border_rects(
   rects: &mut Vec<RectCmd>,
   order: usize,
@@ -12062,7 +12368,15 @@ fn push_border_rect(
     return;
   }
 
-  if let Some(side) = single_stroke_side(stroke) {
+  // A border on one side of a box with square corners at its ends is a filled band, which lands on whole
+  // pixels. With a round corner there it follows the corner, and dashed it is cut: both are strokes.
+  let radii = scaled_radii(border_radius, scale, base_w, base_h);
+  let dashed = border.dash[0] > 0.0 && border.dash[1] > 0.0;
+  if let Some(side) = single_stroke_side(stroke)
+    && !dashed
+    && radii[side] <= 0.0
+    && radii[(side + 1) % 4] <= 0.0
+  {
     push_single_side_border_rect(
       rects,
       order,
@@ -12082,21 +12396,24 @@ fn push_border_rect(
   }
 
   let (mut x, mut y, mut w, mut h) = (base_x, base_y, base_w, base_h);
-  match border.placement {
+  // The radii are the box's own, and the stroke is told which of its edges they are the corners of.
+  let radii_at = match border.placement {
     BorderPlacement::Outside => {
       x -= stroke[3];
       y -= stroke[0];
       w += stroke[1] + stroke[3];
       h += stroke[0] + stroke[2];
+      1.0
     }
     BorderPlacement::Center => {
       x -= stroke[3] * 0.5;
       y -= stroke[0] * 0.5;
       w += (stroke[1] + stroke[3]) * 0.5;
       h += (stroke[0] + stroke[2]) * 0.5;
+      0.5
     }
-    _ => {}
-  }
+    BorderPlacement::Inside => 0.0,
+  };
 
   rects.push(RectCmd {
     order,
@@ -12105,9 +12422,13 @@ fn push_border_rect(
     width: w,
     height: h,
     color: TRANSPARENT_COLOR,
-    radii: scaled_radii(border_radius, scale, w, h),
+    radii,
     stroke,
     stroke_color: apply_opacity(border.color, opacity),
+    stroke_style: crate::layout::render_list::StrokeStyle {
+      dash: border.dash.map(|length| length * scale),
+      radii_at,
+    },
     transform,
     transform_origin: [origin_abs[0] - x, origin_abs[1] - y],
     clip,
@@ -12172,6 +12493,7 @@ fn push_single_side_border_rect(
     radii: [0.0; 4],
     stroke: [0.0; 4],
     stroke_color: TRANSPARENT_COLOR,
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform,
     transform_origin: [origin_abs[0] - x, origin_abs[1] - y],
     clip,

@@ -5,7 +5,7 @@ use super::*;
 use crate::node::transform::Transform2D;
 fn take(canvas: &CanvasHandle, renderer: &mut Renderer, device: &Device, queue: &Queue) -> CanvasSnapshot {
   let read = canvas.snapshot();
-  renderer.process(device, queue, &[canvas.clone()]);
+  renderer.process(device, queue, std::slice::from_ref(canvas));
   read.wait_timeout(Duration::from_secs(15)).unwrap().unwrap()
 }
 fn pixel(snapshot: &CanvasSnapshot, x: u32, y: u32) -> [u8; 4] {

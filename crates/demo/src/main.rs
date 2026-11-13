@@ -4,6 +4,12 @@ mod components_demo;
 mod context_demo;
 mod dnd_demo;
 mod dynamic_demo;
+mod engine_borders_demo;
+mod engine_grid_demo;
+mod engine_kit;
+mod engine_presence_demo;
+mod engine_sticky_demo;
+mod engine_style_demo;
 mod events_demo;
 mod inputs_demo;
 mod layout_demo;
@@ -131,6 +137,11 @@ fn demo_routes(theme: Signal<DemoTheme>, modal_open: Signal<bool>) -> Routes {
         .route("/inputs", move |ctx| {
           ctx.mount::<inputs_demo::InputsDemo>(inputs_theme.get())
         })
+        .route("/borders", |ctx| ctx.mount::<engine_borders_demo::BordersDemo>(()))
+        .route("/grid", |ctx| ctx.mount::<engine_grid_demo::GridDemo>(()))
+        .route("/sticky", |ctx| ctx.mount::<engine_sticky_demo::StickyDemo>(()))
+        .route("/presence", |ctx| ctx.mount::<engine_presence_demo::PresenceDemo>(()))
+        .route("/style", |ctx| ctx.mount::<engine_style_demo::StyleDemo>(()))
         .route("/events", |ctx| ctx.mount::<events_demo::EventsDemo>(()))
         .route("/reactivity", |ctx| ctx.mount::<reactivity_demo::ReactivityDemo>(()))
         .route("/components", |ctx| ctx.mount::<components_demo::ComponentsDemo>(()))
@@ -764,6 +775,7 @@ fn main() {
   lurq::app::devtools::load_fonts(&mut app);
   let renderer = set_selected_render_engine(&mut tree, &options.renderer);
   animation_demo::register_keyframes(&mut tree);
+  engine_presence_demo::register_keyframes(&mut tree);
   #[cfg(feature = "mcp")]
   {
     use lurq::mcp::{McpConfig, McpTool, Scope};

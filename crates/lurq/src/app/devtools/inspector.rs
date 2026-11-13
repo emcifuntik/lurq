@@ -767,6 +767,14 @@ fn italic_mono(content: &str, size: f32, color: &str) -> Text {
   )
 }
 
+fn child_summary(node: &DevToolsNode) -> String {
+  match node.children.as_slice() {
+    [] => "0".to_owned(),
+    [child] => format!("1 ({})", short_tag(&child.tag)),
+    children => format!("{}", children.len()),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::short_type_name;
@@ -778,13 +786,5 @@ mod tests {
       "ReactiveContext<LocaleContext>"
     );
     assert_eq!(short_type_name("&str"), "&str");
-  }
-}
-
-fn child_summary(node: &DevToolsNode) -> String {
-  match node.children.as_slice() {
-    [] => "0".to_owned(),
-    [child] => format!("1 ({})", short_tag(&child.tag)),
-    children => format!("{}", children.len()),
   }
 }

@@ -96,7 +96,7 @@ impl ResourceLoader {
     }
 
     let mut w = self.resolved.write();
-    w.remove(path).map(|data| LoadResourceResult::Loaded(data))
+    w.remove(path).map(LoadResourceResult::Loaded)
   }
 
   pub fn set_config(&mut self, config: LoaderConfig) {
@@ -174,7 +174,7 @@ impl ResourceLoader {
 
       let result = if let Some(e) = last_err {
         match e {
-          ureq::Error::StatusCode(code) if code == 404 => LoadResourceResult::Error(ResourceError::NotFound),
+          ureq::Error::StatusCode(404) => LoadResourceResult::Error(ResourceError::NotFound),
           ureq::Error::StatusCode(code) => LoadResourceResult::Error(ResourceError::NetworkError(code)),
           _ => LoadResourceResult::Error(ResourceError::Unknown(e.to_string())),
         }

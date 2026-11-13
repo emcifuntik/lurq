@@ -527,8 +527,10 @@ pub(crate) trait NodeUpdate {
   fn relative(&mut self, x: f32, y: f32);
   fn absolute(&mut self, x: f32, y: f32, width: impl Into<Dimension>, height: impl Into<Dimension>);
   fn absolute_position(&mut self, x: f32, y: f32);
+  fn sticky(&mut self, sticky: crate::layout::layout_kind::Sticky);
   fn align(&mut self, alignment: Alignment);
   fn flex(&mut self, factor: f32);
+  fn grid_cell(&mut self, update: impl FnOnce(&mut crate::layout::grid::GridCell));
   fn flex_shrink(&mut self, factor: f32);
   fn flex_full(&mut self, grow: f32, shrink: f32, basis: Option<f32>);
   fn shrink_order(&mut self, order: i32);
@@ -536,6 +538,8 @@ pub(crate) trait NodeUpdate {
   fn shrink_drop_below(&mut self, size: f32);
   fn background(&mut self, color: impl Into<BackgroundColor>);
   fn background_gradient(&mut self, gradient: impl Into<Gradient>);
+  fn foreground(&mut self, color: impl Into<TextColor>);
+  fn outline(&mut self, outline: crate::node::outline::Outline);
   fn caret_color(&mut self, color: impl Into<TextColor>);
   fn selection_color(&mut self, color: impl Into<TextColor>);
   fn text_input_caret_mode(&mut self, mode: CaretMode);
@@ -575,6 +579,9 @@ pub(crate) trait NodeUpdate {
   fn focused(&mut self, f: impl FnOnce(Style) -> Style);
   fn focus_visible(&mut self, f: impl FnOnce(Style) -> Style);
   fn drag_over(&mut self, f: impl FnOnce(Style) -> Style);
+  fn disabled(&mut self, disabled: bool);
+  fn disabled_style(&mut self, style: Style);
+  fn when_disabled(&mut self, f: impl FnOnce(Style) -> Style);
   fn on_click(&mut self, f: impl IntoMouseEventHandler);
   fn off_click(&mut self, f: impl IntoMouseEventHandler);
   fn on_mouse_click(&mut self, button: MouseButton, f: impl IntoMouseEventHandler);
@@ -658,6 +665,8 @@ pub(crate) trait NodeUpdate {
   fn transform(&mut self, t: Transform2D);
   fn transition(&mut self, spec: Transition);
   fn animation(&mut self, spec: Animation);
+  fn exit_animation(&mut self, spec: Animation);
+  fn presence(&mut self, presence: bool);
   fn scrollbar(&mut self, style: ScrollBarStyle);
   fn scrollbar_hovered(&mut self, f: impl Fn(ScrollBarStyle) -> ScrollBarStyle + Send + Sync + 'static);
   fn culling(&mut self, enabled: bool);
@@ -678,6 +687,9 @@ pub(crate) trait NodeUpdate {
   fn text_variant(&mut self, typography_style: impl Into<TypographyStyle>);
   fn text_color(&mut self, color: impl Into<TextColor>);
   fn text_shadow(&mut self, shadow: crate::layout::text_style::TextShadow);
+  fn text_underline(&mut self, underline: crate::layout::text_style::TextUnderline);
+  fn text_strikethrough(&mut self, strikethrough: crate::layout::text_style::TextStrikethrough);
+  fn text_max_lines(&mut self, max_lines: u32);
   fn text_align(&mut self, align: impl Into<TextAlign>);
   fn on_input(&mut self, f: impl IntoTextInputEventHandler);
   fn off_input(&mut self, f: impl IntoTextInputEventHandler);
@@ -775,17 +787,12 @@ pub enum ButtonKind {
   Submit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum BackgroundSize {
+  #[default]
   Stretch,
   Cover,
   Contain,
-}
-
-impl Default for BackgroundSize {
-  fn default() -> Self {
-    Self::Stretch
-  }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -813,6 +820,9 @@ pub(crate) enum SyntheticNodeRole {
   /// Stands for a child component's root in a component's cached output
   /// (`node/component_output.rs`); never in the live tree.
   ComponentSlot,
+  /// A closed layer the overlay host keeps while its exit animations play
+  /// (`node/presence.rs`): painted, and nothing else.
+  LeavingLayer,
 }
 
 #[derive(Default, Clone)]
@@ -869,9 +879,27 @@ pub struct EventHandlers {
 pub(crate) struct RareStyle {
   pub(crate) gradient: Option<Gradient>,
   pub(crate) box_shadow: Option<BoxShadowValue>,
+  /// The text color the node gives itself and its subtree; see [`Node::foreground`].
+  pub(crate) foreground: Option<TextColor>,
+  pub(crate) outline: Option<crate::node::outline::Outline>,
+  /// The node and its subtree take no input; see [`Node::disabled`].
+  pub(crate) disabled: bool,
+  /// A child removed from the node stays until its exit animation ends; see `node/presence.rs`.
+  pub(crate) presence: bool,
+  /// Where the node sticks in the scroll container it is in. Here, and not in `Position`, because every
+  /// node holds a `Position` and few stick.
+  pub(crate) sticky: Option<crate::layout::layout_kind::Sticky>,
   pub(crate) caret_color: Option<TextColor>,
   pub(crate) selection_color: Option<TextColor>,
   pub(crate) caret_mode: Option<CaretMode>,
+}
+
+/// Whether any node of the process was ever disabled. Until one is, no tree
+/// has a disabled state to keep.
+static DISABLED_IN_USE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn disabled_in_use() -> bool {
+  DISABLED_IN_USE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub(crate) type AnimationOverrides = Vec<(crate::animation::AnimatableProperty, crate::animation::AnimatableValue)>;
@@ -922,6 +950,8 @@ pub(crate) struct Node {
   pub(crate) align_self: Option<Alignment>,
   pub(crate) flex: Option<FlexParams>,
   pub(crate) shrink_rule: ShrinkRule,
+  /// Where the node asks to be in a grid it is a child of.
+  pub(crate) grid_cell: crate::layout::grid::GridCell,
   pub(crate) node_kind: NodeKind,
   pub(crate) text_content: Guard<Option<String>>,
   pub(crate) text_wrap: bool,
@@ -969,7 +999,8 @@ pub(crate) struct Node {
   /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
   pub(crate) transitions: LazyBox<Vec<Transition>>,
   /// Boxed: few nodes animate, and `Node` size is budgeted (lurq#25).
-  pub(crate) animation: Option<Box<Animation>>,
+  /// What the node plays and what it leaves with: `node/presence.rs`.
+  pub(crate) animation: Option<Box<crate::node::presence::NodeAnimations>>,
   pub(crate) layout_cache: crate::node::layout_cache::LayoutCache,
   pub(crate) children: Vec<Node>,
   pub(crate) events: LazyBox<EventHandlers>,
@@ -1206,6 +1237,10 @@ impl NodeUpdate for Node {
     self.layout_cache.invalidate();
   }
 
+  fn sticky(&mut self, sticky: crate::layout::layout_kind::Sticky) {
+    self.rare_style.sticky = Some(sticky);
+  }
+
   fn align(&mut self, alignment: Alignment) {
     self.align_self = Some(alignment);
     self.layout_cache.invalidate();
@@ -1213,6 +1248,11 @@ impl NodeUpdate for Node {
 
   fn flex(&mut self, factor: f32) {
     self.flex = Some(FlexParams::grow(factor));
+    self.layout_cache.invalidate();
+  }
+
+  fn grid_cell(&mut self, update: impl FnOnce(&mut crate::layout::grid::GridCell)) {
+    update(&mut self.grid_cell);
     self.layout_cache.invalidate();
   }
 
@@ -1254,6 +1294,14 @@ impl NodeUpdate for Node {
 
   fn background_gradient(&mut self, gradient: impl Into<Gradient>) {
     self.rare_style.gradient = Some(gradient.into());
+  }
+
+  fn foreground(&mut self, color: impl Into<TextColor>) {
+    self.rare_style.foreground = Some(color.into());
+  }
+
+  fn outline(&mut self, outline: crate::node::outline::Outline) {
+    self.rare_style.outline = Some(outline);
   }
 
   fn caret_color(&mut self, color: impl Into<TextColor>) {
@@ -1420,6 +1468,24 @@ impl NodeUpdate for Node {
 
   fn drag_over(&mut self, f: impl FnOnce(Style) -> Style) {
     NodeUpdate::drag_over_style(self, f(Style::new()));
+  }
+
+  fn disabled(&mut self, disabled: bool) {
+    // Writing through the lazy box would allocate it for a node that is, and stays, enabled.
+    if self.rare_style.disabled != disabled {
+      self.rare_style.disabled = disabled;
+    }
+    if disabled {
+      DISABLED_IN_USE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+  }
+
+  fn disabled_style(&mut self, style: Style) {
+    self.state_styles.disabled = Some(style);
+  }
+
+  fn when_disabled(&mut self, f: impl FnOnce(Style) -> Style) {
+    NodeUpdate::disabled_style(self, f(Style::new()));
   }
 
   fn active(&mut self, f: impl FnOnce(Style) -> Style) {
@@ -1891,6 +1957,14 @@ impl NodeUpdate for Node {
     self.set_animation(spec);
   }
 
+  fn exit_animation(&mut self, spec: Animation) {
+    self.set_exit_animation(spec);
+  }
+
+  fn presence(&mut self, presence: bool) {
+    self.rare_style.presence = presence;
+  }
+
   fn scrollbar(&mut self, style: ScrollBarStyle) {
     self.scrollbar_style.set(Some(Box::new(style)));
   }
@@ -1990,6 +2064,27 @@ impl NodeUpdate for Node {
   fn text_shadow(&mut self, shadow: crate::layout::text_style::TextShadow) {
     if let NodeKind::Text { style, .. } = &mut self.node_kind {
       style.set_shadow(shadow);
+    }
+  }
+
+  fn text_underline(&mut self, underline: crate::layout::text_style::TextUnderline) {
+    if let NodeKind::Text { style, .. } = &mut self.node_kind {
+      style.set_underline(underline);
+      self.layout_cache.invalidate();
+    }
+  }
+
+  fn text_strikethrough(&mut self, strikethrough: crate::layout::text_style::TextStrikethrough) {
+    if let NodeKind::Text { style, .. } = &mut self.node_kind {
+      style.set_strikethrough(strikethrough);
+      self.layout_cache.invalidate();
+    }
+  }
+
+  fn text_max_lines(&mut self, max_lines: u32) {
+    if let NodeKind::Text { style, .. } = &mut self.node_kind {
+      style.set_max_lines(max_lines);
+      self.layout_cache.invalidate();
     }
   }
 
@@ -2207,6 +2302,7 @@ impl Node {
       align_self: None,
       flex: None,
       shrink_rule: ShrinkRule::default(),
+      grid_cell: Default::default(),
       node_kind,
       node_id: NodeId::UNASSIGNED,
       tag_name: {
@@ -2560,7 +2656,7 @@ impl Node {
 
   pub fn select_style(mut self, style: crate::node::SelectStyle) -> Self {
     let trigger = style.resolved_trigger(false, false, false);
-    if let Some(padding) = trigger.padding.clone() {
+    if let Some(padding) = trigger.padding {
       self = self.padding_custom(padding);
     }
     if let Some(min_width) = trigger.min_width {
@@ -2610,7 +2706,7 @@ impl Node {
       self = self.opacity(opacity);
     }
     if let Some(padding) = &part.padding {
-      self = self.padding_custom(padding.clone());
+      self = self.padding_custom(*padding);
     }
     if let Some(min_width) = part.min_width {
       self = self.min_width(min_width);
@@ -2761,6 +2857,30 @@ impl Node {
     Self::from_parts(LayoutKind::Stack { align }, NodeKind::Empty, children)
   }
 
+  pub(crate) fn grid(spec: crate::layout::grid::GridSpec, children: Vec<Node>) -> Self {
+    Self::from_parts(LayoutKind::Grid(Box::new(spec)), NodeKind::Empty, children)
+  }
+
+  /// Changes what a grid lays its children out by; nothing for a node that is no grid.
+  pub(crate) fn update_grid(&mut self, update: impl FnOnce(&mut crate::layout::grid::GridSpec)) {
+    if let LayoutKind::Grid(spec) = &mut self.layout_kind {
+      update(spec);
+      self.layout_cache.invalidate();
+    }
+  }
+
+  /// Where the node asks to be in a grid. A logical wrapper that asks for nothing passes its child's on, the
+  /// way [`Self::state_flex`] passes the child's flex factors on.
+  pub(crate) fn grid_cell(&self) -> crate::layout::grid::GridCell {
+    if self.grid_cell.is_auto()
+      && matches!(self.layout_kind, LayoutKind::LogicalModifier)
+      && let Some(child) = self.children.first()
+    {
+      return child.grid_cell();
+    }
+    self.grid_cell
+  }
+
   pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
     let padding = padding.into();
     self.padding.merge_from(&padding);
@@ -2784,11 +2904,27 @@ impl Node {
     self
   }
 
+  /// The node in flow again, at the size its content gives it.
+  pub(crate) fn statically_positioned(mut self) -> Self {
+    self.position = Position::Static;
+    self.layout_cache.invalidate();
+    self
+  }
+
   pub(crate) fn absolute_positioned(self, x: f32, y: f32, width: Option<Dimension>, height: Option<Dimension>) -> Self {
     let mut node = self;
     node.position = Position::Absolute { x, y, width, height };
     node.layout_cache.invalidate();
     node
+  }
+
+  /// Where the node sticks in its scroll container, if it does: see [`Sticky`](crate::layout::layout_kind::Sticky).
+  pub(crate) fn sticky(&self) -> Option<crate::layout::layout_kind::Sticky> {
+    self.rare_style.sticky
+  }
+
+  pub(crate) fn is_sticky(&self) -> bool {
+    self.rare_style.sticky.is_some()
   }
 
   pub fn align(mut self, alignment: Alignment) -> Self {
@@ -2826,6 +2962,25 @@ impl Node {
 
   pub fn background_gradient(mut self, gradient: impl Into<Gradient>) -> Self {
     self.rare_style.gradient = Some(gradient.into());
+    self
+  }
+
+  /// Sets the color of the text in this node and under it, like CSS `color`:
+  /// a `Text` that names no color of its own is drawn in the foreground of
+  /// its nearest ancestor that has one, and in its typography style's color
+  /// when none does. `Text::color`, and a `Text::styled` style, are a text's
+  /// own color and win. It is paint only: it changes no size or position.
+  /// The content of an overlay (a popup, a modal, a select's menu) starts
+  /// again from no foreground.
+  pub fn foreground(mut self, color: impl Into<TextColor>) -> Self {
+    self.rare_style.foreground = Some(color.into());
+    self
+  }
+
+  /// Draws a line around the node, outside its box: see
+  /// [`Outline`](crate::node::outline::Outline). It is paint only.
+  pub fn outline(mut self, outline: crate::node::outline::Outline) -> Self {
+    self.rare_style.outline = Some(outline);
     self
   }
 
@@ -3042,6 +3197,29 @@ impl Node {
 
   pub fn hovered(self, f: impl FnOnce(Style) -> Style) -> Self {
     self.hovered_style(f(Style::new()))
+  }
+
+  /// Takes the node and everything in it out of input: no press, click, tap
+  /// or gesture reaches them, none of them is hovered, pressed or focused,
+  /// and Tab passes them by. The node still covers what is behind it, and a
+  /// press on it reaches nothing, the elements it is in included; a pointer
+  /// that moves or scrolls over it still reaches those.
+  pub fn disabled(mut self, disabled: bool) -> Self {
+    NodeUpdate::disabled(&mut self, disabled);
+    self
+  }
+
+  /// Merged over the node's style, after every other state style, while the
+  /// node is disabled, by itself or by an element it is in. It changes
+  /// painting only: a frame, padding or flex in it is ignored.
+  pub fn disabled_style(mut self, style: Style) -> Self {
+    self.state_styles.disabled = Some(style);
+    self
+  }
+
+  /// Builder form of [`Self::disabled_style`].
+  pub fn when_disabled(self, f: impl FnOnce(Style) -> Style) -> Self {
+    self.disabled_style(f(Style::new()))
   }
 
   pub fn drag_over(self, f: impl FnOnce(Style) -> Style) -> Self {
@@ -3539,11 +3717,6 @@ impl Node {
   pub fn animation(mut self, spec: Animation) -> Self {
     self.set_animation(spec);
     self
-  }
-
-  fn set_animation(&mut self, spec: Animation) {
-    self.animation = Some(Box::new(spec));
-    self.layout_cache.invalidate();
   }
 
   pub fn scrollbar(mut self, style: ScrollBarStyle) -> Self {
@@ -4075,6 +4248,30 @@ impl Node {
     self
   }
 
+  /// [`Self::assign_ids`] for the root of a tree that was just built, which
+  /// also writes to every node whether it is disabled. A built node starts
+  /// enabled, as it starts unhovered, and this is the walk that visits them
+  /// all, so the state costs no walk of its own; and none of this runs in a
+  /// process that never disabled anything.
+  pub(crate) fn assign_tree_ids(&mut self, id_gen: &IdGenerator) {
+    if disabled_in_use() {
+      self.assign_ids_and_disabled(id_gen, false);
+    } else {
+      self.assign_ids(id_gen);
+    }
+  }
+
+  fn assign_ids_and_disabled(&mut self, id_gen: &IdGenerator, inherited: bool) {
+    if !self.node_id.is_assigned() {
+      self.node_id = id_gen.next();
+    }
+    let disabled = inherited || self.is_disabled();
+    self.sync_disabled_state(disabled);
+    for child in &mut self.children {
+      child.assign_ids_and_disabled(id_gen, disabled);
+    }
+  }
+
   pub fn assign_ids(&mut self, id_gen: &IdGenerator) {
     if !self.node_id.is_assigned() {
       self.node_id = id_gen.next();
@@ -4355,6 +4552,89 @@ impl Node {
     self.background_color().and_then(BackgroundColor::as_color)
   }
 
+  /// What `pick` finds in the state style that wins for it: of the styles
+  /// whose state the node is in that set the value, the one applied last
+  /// (disabled, then drag-over, active, hovered, focus-visible, focused). Builds no
+  /// merged style, and reads a state only for a style that sets the value.
+  fn state_style_value<'a, T>(&'a self, pick: impl Fn(&'a Style) -> Option<T>) -> Option<T> {
+    let states = &*self.state_styles;
+    let state = &self.style_state;
+    if let Some(value) = states.disabled.as_ref().and_then(&pick)
+      && state.is_disabled()
+    {
+      return Some(value);
+    }
+    if let Some(value) = states.drag_over.as_ref().and_then(&pick)
+      && state.is_drag_over()
+    {
+      return Some(value);
+    }
+    if let Some(value) = states.active.as_ref().and_then(&pick)
+      && state.is_active()
+    {
+      return Some(value);
+    }
+    if let Some(value) = states.hovered.as_ref().and_then(&pick)
+      && state.is_hovered()
+    {
+      return Some(value);
+    }
+    if let Some(value) = states.focus_visible.as_ref().and_then(&pick)
+      && state.is_focus_visible()
+    {
+      return Some(value);
+    }
+    if let Some(value) = states.focused.as_ref().and_then(&pick)
+      && state.is_focused()
+    {
+      return Some(value);
+    }
+    None
+  }
+
+  /// The node was built disabled. An element it is in may disable it too:
+  /// see [`InteractionState::is_disabled`](crate::node::interaction_state::InteractionState::is_disabled).
+  pub(crate) fn is_disabled(&self) -> bool {
+    self.rare_style.disabled
+  }
+
+  /// Records in this node and in every node under it whether it is disabled,
+  /// by itself or by an element it is in (`inherited`), where state styles
+  /// and the app's `InteractionState` read it.
+  pub(crate) fn sync_disabled_tree(&self, inherited: bool) {
+    let disabled = inherited || self.is_disabled();
+    self.sync_disabled_state(disabled);
+    for child in &self.children {
+      child.sync_disabled_tree(disabled);
+    }
+  }
+
+  /// Touches the state only when it changes, so an enabled node allocates none.
+  fn sync_disabled_state(&self, disabled: bool) {
+    if self.style_state.is_disabled() != disabled {
+      self.style_state.set_disabled(disabled);
+    }
+    if let Some(interaction) = &self.interaction
+      && interaction.is_disabled() != disabled
+    {
+      interaction.set_disabled(disabled);
+    }
+  }
+
+  /// The foreground in effect: the winning state style's over the node's own.
+  pub(crate) fn effective_foreground(&self) -> Option<&TextColor> {
+    self
+      .state_style_value(|style| style.foreground.as_ref())
+      .or(self.rare_style.foreground.as_ref())
+  }
+
+  /// The outline in effect: the winning state style's over the node's own.
+  pub(crate) fn effective_outline(&self) -> Option<&crate::node::outline::Outline> {
+    self
+      .state_style_value(|style| style.outline.as_deref())
+      .or(self.rare_style.outline.as_ref())
+  }
+
   pub(crate) fn caret_color_value(&self) -> Option<TextColor> {
     self.rare_style.caret_color.clone()
   }
@@ -4477,10 +4757,12 @@ impl Node {
       .and_then(|borders| borders.resolve_with_sizes(palette, border_sizes))
   }
 
-  /// The node's opacity as drawn: the opacity it was built with, or a running transition or animation's.
+  /// The node's opacity as drawn: a running transition or animation's, else the winning state style's, else the
+  /// opacity it was built with.
   pub(crate) fn effective_opacity(&self) -> f32 {
     self
       .animation_override_float(crate::animation::AnimatableProperty::Opacity)
+      .or_else(|| self.state_style_value(|style| style.opacity))
       .unwrap_or(self.opacity)
   }
 
@@ -4532,6 +4814,17 @@ impl Node {
 
   pub(crate) fn hit_test_behavior(&self) -> HitTestBehavior {
     self.hit_test
+  }
+
+  /// The value a running transition or animation gives `prop` this frame.
+  pub(crate) fn animation_override(
+    &self,
+    prop: crate::animation::AnimatableProperty,
+  ) -> Option<crate::animation::AnimatableValue> {
+    self
+      .animation_overrides
+      .iter()
+      .find_map(|(overridden, value)| (*overridden == prop).then_some(*value))
   }
 
   fn animation_override_color(&self) -> Option<Color> {
@@ -4902,43 +5195,43 @@ impl Node {
         ..
       },
     ) = (&mut self.layout_kind, &old.layout_kind)
+      && direction == old_direction
     {
-      if direction == old_direction {
-        *state = old_state.clone();
-      }
+      *state = old_state.clone();
     }
 
-    let positional = self
-      .children
-      .iter()
-      .zip(&old.children)
-      .all(|(child, old_child)| child.can_preserve_runtime_state_from(old_child));
-    let mut child_layout_signatures_match = true;
+    // The children that are leaving `old` are continued by no child: the rest are matched as if they were
+    // not there. With one among them the layout is not the cached one, which has it.
+    let without_leaving = old.children_to_match();
+    let old_len = without_leaving.as_ref().map_or(old.children.len(), Vec::len);
+    let old_child = |index: usize| -> &Node {
+      match &without_leaving {
+        Some(children) => children[index],
+        None => &old.children[index],
+      }
+    };
+    let matched_len = self.children.len().min(old_len);
+    let positional =
+      (0..matched_len).all(|index| self.children[index].can_preserve_runtime_state_from(old_child(index)));
+    let mut child_layout_signatures_match = without_leaving.is_none();
     if positional {
-      for (child, old_child) in self.children.iter_mut().zip(&old.children) {
-        child_layout_signatures_match &= child.preserve_runtime_state_and_layout_signature_from(old_child);
+      for index in 0..matched_len {
+        child_layout_signatures_match &=
+          self.children[index].preserve_runtime_state_and_layout_signature_from(old_child(index));
       }
     } else {
       // Reordered children preserve state by identity, but cache signatures
       // still describe their positions. Compare those before copying state.
-      child_layout_signatures_match = self.child_layout_signatures_match(old);
-      let mut claimed = vec![false; old.children.len()];
+      child_layout_signatures_match = without_leaving.is_none() && self.child_layout_signatures_match(old);
+      let mut claimed = vec![false; old_len];
       for index in 0..self.children.len() {
         let child = &self.children[index];
-        let matched =
-          old
-            .children
-            .get(index)
-            .filter(|old_child| !claimed[index] && child.can_preserve_runtime_state_from(old_child))
-            .map(|_| index)
-            .or_else(|| {
-              old.children.iter().enumerate().find_map(|(offset, old_child)| {
-                (!claimed[offset] && child.identity_matches(old_child)).then_some(offset)
-              })
-            });
+        let matched = (index < old_len && !claimed[index] && child.can_preserve_runtime_state_from(old_child(index)))
+          .then_some(index)
+          .or_else(|| (0..old_len).find(|offset| !claimed[*offset] && child.identity_matches(old_child(*offset))));
         if let Some(offset) = matched {
           claimed[offset] = true;
-          self.children[index].preserve_runtime_state_from(&old.children[offset]);
+          self.children[index].preserve_runtime_state_from(old_child(offset));
         }
       }
     }
@@ -5018,6 +5311,7 @@ impl Node {
       && self.align_self == old.align_self
       && self.flex == old.flex
       && self.shrink_rule == old.shrink_rule
+      && self.grid_cell == old.grid_cell
       && self.text_content.as_ref() == old.text_content.as_ref()
       && self.text_wrap == old.text_wrap
       && self.text_overflow == old.text_overflow
@@ -5035,7 +5329,12 @@ impl Node {
     self.animation_overrides.iter().any(|(prop, _)| {
       !matches!(
         prop,
-        AnimatableProperty::Opacity | AnimatableProperty::Blur | AnimatableProperty::BackdropBlur
+        AnimatableProperty::Opacity
+          | AnimatableProperty::Blur
+          | AnimatableProperty::BackdropBlur
+          | AnimatableProperty::Foreground
+          | AnimatableProperty::Outline
+          | AnimatableProperty::BoxShadow
       )
     })
   }
@@ -5072,6 +5371,7 @@ impl Node {
         },
       ) => spacing == old_spacing && align == old_align && justify == old_justify && wrap == old_wrap,
       (LayoutKind::Stack { align }, LayoutKind::Stack { align: old_align }) => align == old_align,
+      (LayoutKind::Grid(spec), LayoutKind::Grid(old_spec)) => spec == old_spec,
       (LayoutKind::LogicalModifier, LayoutKind::LogicalModifier) => true,
       (
         LayoutKind::ScrollModifier { direction, .. },
@@ -5183,11 +5483,23 @@ impl Node {
   }
 
   pub(crate) fn preserve_ids_from(&mut self, old: &mut Node) {
-    if self.can_reuse_id_from(old) && old.node_id.is_assigned() {
+    // The element `old` was goes on as this node, or this node only stands where it stood.
+    let continues = self.can_reuse_id_from(old);
+    if continues && old.node_id.is_assigned() {
       self.node_id = old.node_id;
       old.node_id = NodeId::UNASSIGNED;
     }
+    // What is leaving the element goes on being drawn in it, and is no child for a new one to continue.
+    let leaving = if continues {
+      old.take_leaving_children(self)
+    } else {
+      Vec::new()
+    };
+    self.preserve_child_ids_from(old);
+    self.keep_leaving_children(leaving);
+  }
 
+  fn preserve_child_ids_from(&mut self, old: &mut Node) {
     // Keyed/slotted children can move between renders (a windowed or reordered
     // list). Match them by identity so node ids follow the element. Unchanged
     // positions need no claimed-child buffer, even for identified children.
@@ -5330,6 +5642,7 @@ impl Node {
       align_self: self.align_self,
       flex: self.flex,
       shrink_rule: self.shrink_rule,
+      grid_cell: self.grid_cell,
       node_kind: {
         #[cfg(feature = "canvas")]
         if let NodeKind::Canvas { canvas } = &self.node_kind {
@@ -5491,30 +5804,35 @@ impl Node {
 
   pub(crate) fn state_style(&self) -> Style {
     let mut style = Style::new();
-    if self.style_state.is_focused() {
-      if let Some(focused) = &self.state_styles.focused {
-        style.merge_from(focused);
-      }
+    if self.style_state.is_focused()
+      && let Some(focused) = &self.state_styles.focused
+    {
+      style.merge_from(focused);
     }
     if self.style_state.is_focus_visible()
       && let Some(focus_visible) = &self.state_styles.focus_visible
     {
       style.merge_from(focus_visible);
     }
-    if self.style_state.is_hovered() {
-      if let Some(hovered) = &self.state_styles.hovered {
-        style.merge_from(hovered);
-      }
+    if self.style_state.is_hovered()
+      && let Some(hovered) = &self.state_styles.hovered
+    {
+      style.merge_from(hovered);
     }
-    if self.style_state.is_active() {
-      if let Some(active) = &self.state_styles.active {
-        style.merge_from(active);
-      }
+    if self.style_state.is_active()
+      && let Some(active) = &self.state_styles.active
+    {
+      style.merge_from(active);
     }
     if self.style_state.is_drag_over()
       && let Some(drag_over) = &self.state_styles.drag_over
     {
       style.merge_from(drag_over);
+    }
+    if let Some(disabled) = &self.state_styles.disabled
+      && self.style_state.is_disabled()
+    {
+      style.merge_from(disabled);
     }
     style
   }
@@ -5625,11 +5943,12 @@ mod tests {
           Constraints::loose(Size::new(400.0, 400.0)),
           LayoutResult {
             size: Size::new(10.0, 10.0),
-            children: Vec::new().into(),
+            children: Vec::new(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
             generation: 0,
+            sticky_shifts: None,
           },
         );
       }
@@ -5803,6 +6122,16 @@ mod tests {
   }
 
   #[test]
+  fn foreground_keeps_layout_cache_signature() {
+    use crate::node::color::Color;
+
+    let old = Node::text("Hi").foreground(Color::new(200, 30, 30, 255));
+    let new = Node::text("Hi").foreground(Color::new(30, 60, 200, 255));
+
+    assert!(new.layout_signature_matches(&old));
+  }
+
+  #[test]
   fn opacity_override_keeps_layout_cache_signature() {
     use crate::animation::{AnimatableProperty, AnimatableValue};
 
@@ -5871,11 +6200,12 @@ mod tests {
             offset: Offset::default(),
             result: LayoutResult {
               size: Size::new(50.0, 20.0),
-              children: Vec::new().into(),
+              children: Vec::new(),
               text_layout: None,
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
               generation: 0,
+              sticky_shifts: None,
             }
             .into(),
           },
@@ -5883,20 +6213,21 @@ mod tests {
             offset: Offset::new(50.0, 0.0),
             result: LayoutResult {
               size: Size::new(50.0, 20.0),
-              children: Vec::new().into(),
+              children: Vec::new(),
               text_layout: None,
               dropped: false,
               holds: SubtreeHolds::UNKNOWN,
               generation: 0,
+              sticky_shifts: None,
             }
             .into(),
           },
-        ]
-        .into(),
+        ],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       },
     );
     let mut new = Node::row(
@@ -5930,27 +6261,28 @@ mod tests {
               offset: Offset::default(),
               result: LayoutResult {
                 size: Size::new(30.0, 20.0),
-                children: Vec::new().into(),
+                children: Vec::new(),
                 text_layout: None,
                 dropped: false,
                 holds: SubtreeHolds::UNKNOWN,
                 generation: 0,
+                sticky_shifts: None,
               }
               .into(),
-            }]
-            .into(),
+            }],
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
             generation: 0,
+            sticky_shifts: None,
           }
           .into(),
-        }]
-        .into(),
+        }],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       },
     );
 
@@ -5980,19 +6312,20 @@ mod tests {
           offset: Offset::default(),
           result: LayoutResult {
             size: Size::new(100.0, 20.0),
-            children: Vec::new().into(),
+            children: Vec::new(),
             text_layout: None,
             dropped: false,
             holds: SubtreeHolds::UNKNOWN,
             generation: 0,
+            sticky_shifts: None,
           }
           .into(),
-        }]
-        .into(),
+        }],
         text_layout: None,
         dropped: false,
         holds: SubtreeHolds::UNKNOWN,
         generation: 0,
+        sticky_shifts: None,
       },
     );
 

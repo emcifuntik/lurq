@@ -221,8 +221,8 @@ impl Tree {
     let (Some(root), Some(layout)) = (&self.root, &self.last_layout) else {
       return false;
     };
-    let mut hits = Vec::new();
-    hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+    // A finger on a disabled element scrolls what it would scroll were the element enabled.
+    let mut hits = super::scroll_hits(root, layout, lx, ly);
     trim_hits_to_scrollbar(&mut hits, lx, ly);
     // A bar that is always there is dragged at once. A scroll indicator, which comes and goes, is content to
     // a finger that moves, and is dragged by one that rested on it first, as the platform's.
@@ -290,8 +290,7 @@ impl Tree {
     let (Some(root), Some(layout)) = (&self.root, &self.last_layout) else {
       return;
     };
-    let mut hits = Vec::new();
-    hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+    let hits = super::scroll_hits(root, layout, lx, ly);
 
     let vertical = delta_y.abs() >= delta_x.abs();
     // The way the offset goes: a finger moving up or left brings later content.

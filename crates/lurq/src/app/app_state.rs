@@ -22,6 +22,8 @@ pub struct SecondaryWindowRequest {
   /// Optional stable machine name (titles aren't unique) surfaced to external
   /// tooling such as the MCP `lurq_windows` tool.
   pub(crate) name: Option<String>,
+  // The type is read once, where it is used; an alias would only add a name.
+  #[allow(clippy::type_complexity)]
   pub(crate) build: Box<dyn FnOnce(&mut App, &mut crate::app::Tree) + Send>,
 }
 
@@ -246,6 +248,17 @@ impl App {
 
   pub fn load_font(&mut self, data: Vec<u8>) {
     self.shared.glyph_engine.lock().load_font(data);
+  }
+
+  /// Loads a font whose glyphs are drawn grid-fitted: at the nearest whole pixel size
+  /// and position, with the font's TrueType hints applied along both axes.
+  ///
+  /// This is for an icon font hinted for it. Text is drawn unhinted, so that a letter
+  /// looks the same wherever on the line it falls; load a text font with
+  /// [`Self::load_font`]. A glyph of a hinted font under a transform, or in text that
+  /// is not snapped to pixels, is drawn unhinted like any other.
+  pub fn load_hinted_font(&mut self, data: Vec<u8>) {
+    self.shared.glyph_engine.lock().load_hinted_font(data);
   }
 
   pub fn load_font_file(&mut self, path: &Path) {

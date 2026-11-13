@@ -256,7 +256,7 @@ fn input_tokens_center_and_right_alignment_move_paint_hit_and_caret_together() {
 fn input_tokens_crlf_and_trailing_newline_follow_visual_rows_after_soft_wrap() {
   let mut editor = Editor::new("words words {{task.title}}\r\n", 45.0);
   let snapshot = editor.render();
-  let last_pill = snapshot.rects.iter().filter(|r| r.color == FILL).last().unwrap();
+  let last_pill = snapshot.rects.iter().filter(|r| r.color == FILL).next_back().unwrap();
   let caret = snapshot.rects.iter().find(|r| r.color == CARET).unwrap();
   assert!(caret.y > last_pill.y);
   assert!(caret.y - last_pill.y < 30.0, "CRLF is one visual break");

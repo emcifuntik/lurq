@@ -449,6 +449,7 @@ impl ManagedWindow {
     if self.window.is_some() {
       return;
     }
+    sync_system_motion(app);
 
     let attrs = self.attrs.take().unwrap_or_default();
     self.tree.window().record_initial_title(&attrs.title);
@@ -567,7 +568,7 @@ impl ManagedWindow {
         }
         WindowCommand::SetFullScreen(full_screen) => {
           if let Some(window) = &self.window {
-            window.set_fullscreen(full_screen.then(|| Fullscreen::Borderless(None)));
+            window.set_fullscreen(full_screen.then_some(Fullscreen::Borderless(None)));
           }
           self.tree.window().set_full_screen(full_screen);
         }
@@ -968,6 +969,10 @@ impl ManagedWindow {
       }
       WindowEvent::Focused(focused) => {
         self.tree.window().set_focused(focused);
+        // A window that takes focus may be coming back from the system's settings.
+        if focused {
+          sync_system_motion(app);
+        }
         self.request_redraw();
       }
       WindowEvent::Moved(position) => {
@@ -1362,10 +1367,8 @@ impl ManagedSecondaryWindow {
     }
     self.sync_window_state(tree);
     let presented = show_after_first_present && self.present_now(app, tree);
-    if show_after_first_present {
-      if let Some(window) = &self.window {
-        window.set_visible(true);
-      }
+    if show_after_first_present && let Some(window) = &self.window {
+      window.set_visible(true);
     }
     if !presented {
       self.request_redraw();
@@ -1413,7 +1416,7 @@ impl ManagedSecondaryWindow {
         }
         WindowCommand::SetFullScreen(full_screen) => {
           if let Some(window) = &self.window {
-            window.set_fullscreen(full_screen.then(|| Fullscreen::Borderless(None)));
+            window.set_fullscreen(full_screen.then_some(Fullscreen::Borderless(None)));
           }
           tree.window().set_full_screen(full_screen);
         }
@@ -1622,6 +1625,9 @@ impl ManagedSecondaryWindow {
       }
       WindowEvent::Focused(focused) => {
         tree.window().set_focused(focused);
+        if focused {
+          sync_system_motion(app);
+        }
         self.request_redraw();
       }
       WindowEvent::Moved(position) => {
@@ -2108,6 +2114,13 @@ fn stamp_profiled_input(tree: &mut Tree, event: &WindowEvent) {
       | WindowEvent::MouseWheel { .. }
   );
   tree.stamp_profiled_input(input.then(Instant::now));
+}
+
+/// Gives the theme the system's reduce-motion setting, where the platform has one lurq reads.
+fn sync_system_motion(app: &App) {
+  if let Some(reduced) = crate::app::theme::system_reduced_motion() {
+    app.theme().set_system_reduced_motion(reduced);
+  }
 }
 
 fn window_event_name(event: &WindowEvent) -> &'static str {

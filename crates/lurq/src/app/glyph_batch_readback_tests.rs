@@ -172,6 +172,7 @@ fn one_by_one() -> RenderList {
       radii: [0.0; 4],
       stroke: [0.0; 4],
       stroke_color: Color::new(0, 0, 0, 0),
+      stroke_style: crate::layout::render_list::StrokeStyle::default(),
       transform: [1.0, 0.0, 0.0, 1.0],
       transform_origin: [0.0; 2],
       clip: ClipRect::default(),

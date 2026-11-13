@@ -89,6 +89,24 @@ pub(super) fn dropped_node_ids(root: &Node, layout: &LayoutResult) -> Vec<NodeId
 
 /// Whether the node at `path` (child indices from `root`) is one of the
 /// `dropped` nodes or lies inside one.
+/// Whether the node at `path`, or an element it is in, is disabled.
+pub(super) fn path_is_disabled(root: &Node, path: &[usize]) -> bool {
+  let mut node = root;
+  if node.is_disabled() {
+    return true;
+  }
+  for &index in path {
+    let Some(child) = node.children().get(index) else {
+      return false;
+    };
+    node = child;
+    if node.is_disabled() {
+      return true;
+    }
+  }
+  false
+}
+
 pub(super) fn path_is_dropped(root: &Node, dropped: &[NodeId], path: &[usize]) -> bool {
   if dropped.is_empty() {
     return false;
@@ -142,7 +160,9 @@ fn next_stop(scope: &Node, dropped: &[NodeId], focused: Option<NodeId>, reverse:
 }
 
 fn collect_stops(node: &Node, dropped: &[NodeId], focus_event_id: Option<NodeId>, in_form: bool, walk: &mut Walk) {
-  if dropped.contains(&node.node_id()) {
+  // Nothing in a disabled element takes focus, so Tab passes all of it by.
+  // Nor in a layer that is on its way out, which is only painted.
+  if dropped.contains(&node.node_id()) || node.is_disabled() || node.is_leaving_layer() {
     return;
   }
   let order = walk.visited;

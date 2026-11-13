@@ -458,12 +458,7 @@ impl Component for ClickableSpinner {
     Row::new().child(
       Rect::new(40.0, 40.0)
         .background("#2563eb")
-        .animation(
-          Animation::new(TURN)
-            .duration_ms(1000)
-            .easing(clicks.easing.clone())
-            .infinite(),
-        )
+        .animation(Animation::new(TURN).duration_ms(1000).easing(clicks.easing).infinite())
         .on_click(move |_| clicks.at.lock().expect("one thread").push(clicks.clock.now())),
     )
   }
@@ -1160,4 +1155,137 @@ fn a_middle_button_autoscroll_moves_the_content_at_every_refresh_and_then_lets_t
     ..LoopNeeds::default()
   };
   assert_eq!(LoopWait::of(needs, Instant::now()), LoopWait::Wait, "the loop waits");
+}
+
+const LEAVE: KeyframesId = KeyframesId::new(42);
+const PANEL: &str = "#dc2626";
+
+/// The open state of a popup and the keyframes its content leaves with.
+#[derive(Clone)]
+struct Leaver {
+  open: crate::core::Signal<bool>,
+  exit: KeyframesId,
+}
+
+impl PartialEq for Leaver {
+  fn eq(&self, other: &Self) -> bool {
+    self.exit == other.exit
+  }
+}
+
+#[cfg(feature = "devtools")]
+impl crate::app::component::DevtoolsInspectable for Leaver {
+  fn write_info(&self, _buffer: &mut Vec<crate::app::component::ComponentInfo>) {}
+}
+
+/// A square that closes the popup beside it when clicked; the popup's content has an exit animation of 150 ms.
+struct LeavingPopup {
+  anchor: crate::core::ElementRef,
+}
+
+impl Component for LeavingPopup {
+  type Props = Leaver;
+
+  fn create(_ctx: &mut Ctx) -> Self {
+    Self {
+      anchor: crate::core::ElementRef::new(),
+    }
+  }
+
+  fn render(&self, ctx: &mut Ctx) -> impl Into<Element> {
+    let props = ctx.props::<Leaver>().clone();
+    let close = props.open.clone();
+    let content = Rect::new(60.0, 30.0)
+      .background(PANEL)
+      .exit_animation(Animation::new(props.exit).duration_ms(150).linear());
+    Row::new()
+      .child(Rect::new(40.0, 40.0).on_click(move |_| close.set(false)))
+      .child(Rect::new(40.0, 40.0).ref_element(self.anchor.clone()))
+      .child(
+        crate::components::Popup::new(self.anchor.clone(), content)
+          .open(props.open)
+          .dismiss_on_outside_click(false),
+      )
+  }
+}
+
+fn panels_painted(tree: &Tree) -> usize {
+  let panel = crate::node::color::Color::from_hex(PANEL);
+  tree
+    .resolve_quads(tree.last_layout().expect("a pass ran"))
+    .iter()
+    .filter(|quad| matches!(&quad.content, crate::layout::quad::QuadContent::Rect { color, .. } if *color == panel))
+    .count()
+}
+
+/// Opens the popup, lets the loop settle, clicks it closed and runs the loop past the exit animation's end.
+/// Returns the shell and how many frames the loop drew from the click on.
+fn close_a_popup_that_leaves(exit: KeyframesId) -> (Shell, usize) {
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.register_keyframes(
+    Keyframes::new(LEAVE)
+      .frame(0.0, |f| {
+        f.set(AnimatableProperty::Opacity, 1.0);
+      })
+      .frame(1.0, |f| {
+        f.set(AnimatableProperty::Opacity, 0.0);
+      }),
+  );
+  tree.mount_root::<LeavingPopup>(
+    &mut app,
+    Leaver {
+      open: crate::core::Signal::new(true),
+      exit,
+    },
+  );
+  let mut shell = Shell::new(tree);
+  shell.run_for(Duration::from_millis(100));
+  assert_eq!(panels_painted(&shell.tree), 1, "the popup is open");
+  assert!(!shell.tree.has_active_timeline());
+
+  let before = shell.frames().len();
+  shell.clicks.push_back(Instant::now() + Duration::from_millis(10));
+  shell.run_for(Duration::from_millis(60));
+  assert_eq!(panels_painted(&shell.tree), 1, "closed, it is still painted");
+  shell.run_for(Duration::from_millis(340));
+  let frames = shell.frames().len() - before;
+  (shell, frames)
+}
+
+fn assert_the_loop_waits(shell: &Shell) {
+  assert_eq!(panels_painted(&shell.tree), 0, "the layer is dropped");
+  assert!(!shell.tree.has_active_timeline());
+  assert!(!shell.tree.needs_redraw());
+  let needs = LoopNeeds {
+    polling: shell.tree.needs_polling(),
+    next_redraw: shell.tree.next_scheduled_redraw(),
+    next_timer: shell.tree.next_timer_at(),
+    ..LoopNeeds::default()
+  };
+  assert_eq!(
+    LoopWait::of(needs, Instant::now()),
+    LoopWait::Wait,
+    "nothing is left to wake for"
+  );
+}
+
+#[test]
+fn the_loop_draws_a_leaving_layer_out_and_then_waits() {
+  let (shell, frames) = close_a_popup_that_leaves(LEAVE);
+
+  assert!(
+    (6..=14).contains(&frames),
+    "0.15 s of a fade at the display's rate: {frames} frames"
+  );
+  assert_the_loop_waits(&shell);
+}
+
+#[test]
+fn the_loop_wakes_to_drop_a_leaving_layer_whose_animation_draws_nothing() {
+  // Keyframes nobody registered: no run paces a frame, and the layer's own end still wakes the loop.
+  let (shell, frames) = close_a_popup_that_leaves(KeyframesId::new(43));
+
+  assert!(frames <= 4, "the close and the drop: {frames} frames");
+  assert_the_loop_waits(&shell);
 }

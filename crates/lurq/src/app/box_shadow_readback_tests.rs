@@ -33,6 +33,7 @@ fn fill(x: f32, y: f32, width: f32, height: f32, radius: f32, color: Color) -> R
     radii: [radius; 4],
     stroke: [0.0; 4],
     stroke_color: Color::new(0, 0, 0, 0),
+    stroke_style: crate::layout::render_list::StrokeStyle::default(),
     transform: [1.0, 0.0, 0.0, 1.0],
     transform_origin: [width * 0.5, height * 0.5],
     clip: ClipRect::default(),

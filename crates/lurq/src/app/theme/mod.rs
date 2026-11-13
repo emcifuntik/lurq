@@ -16,6 +16,7 @@ mod caret;
 mod form;
 #[cfg(feature = "markdown")]
 mod markdown;
+mod motion;
 mod palette;
 mod radius;
 mod role_name;
@@ -37,6 +38,8 @@ pub use form::{
 pub use markdown::{
   MarkdownBlockStyle, MarkdownFocusRing, MarkdownInlineStyle, MarkdownLinkState, MarkdownTextStyle, ThemeMarkdown,
 };
+#[cfg_attr(not(feature = "winit"), allow(unused_imports))]
+pub(crate) use motion::system_reduced_motion;
 pub use palette::{PaletteColor, ThemePalette};
 pub use radius::{RadiusSize, ThemeRadii};
 pub use role_name::RoleName;
@@ -76,6 +79,10 @@ struct ThemeInner {
   markdown: ThemeMarkdown,
   #[cfg(feature = "form")]
   form: FormTheme,
+  /// What the app decided about reduced motion; `None` follows the system.
+  reduced_motion: Option<bool>,
+  /// What the system asks for, as the shell last read it.
+  system_reduced_motion: bool,
   version: u64,
 }
 
@@ -123,6 +130,8 @@ impl Default for Theme {
         markdown: ThemeMarkdown::default(),
         #[cfg(feature = "form")]
         form: FormTheme::default(),
+        reduced_motion: None,
+        system_reduced_motion: false,
         version: 0,
       })),
       version_signal: Signal::new(0),
@@ -482,6 +491,35 @@ impl Theme {
     self.mutate_inner(|inner| inner.form = form);
   }
 
+  /// Whether motion is to be reduced: what [`Self::set_reduced_motion`] set,
+  /// or else what the user asked of every app in the system's accessibility
+  /// settings, on the platforms lurq reads it on (Windows, macOS, iOS).
+  ///
+  /// While it is, a transition of where an element is or how large it is
+  /// (its transform, offset, width and height) ends at once; a fade or a
+  /// change of color still runs. Keyframe animations are the app's: read
+  /// this, or `Ctx::reduced_motion`, to hold back one that moves.
+  pub fn reduced_motion(&self) -> bool {
+    let inner = self.inner.read().unwrap();
+    inner.reduced_motion.unwrap_or(inner.system_reduced_motion)
+  }
+
+  /// Decides whether motion is reduced, for the app: `Some(true)` or
+  /// `Some(false)`. `None`, the default, follows the system's setting.
+  pub fn set_reduced_motion(&self, reduced: Option<bool>) {
+    if self.inner.read().unwrap().reduced_motion != reduced {
+      self.mutate_inner(|inner| inner.reduced_motion = reduced);
+    }
+  }
+
+  /// The system's setting, from the shell that read it.
+  #[cfg_attr(not(feature = "winit"), allow(dead_code))]
+  pub(crate) fn set_system_reduced_motion(&self, reduced: bool) {
+    if self.inner.read().unwrap().system_reduced_motion != reduced {
+      self.mutate_inner(|inner| inner.system_reduced_motion = reduced);
+    }
+  }
+
   pub(crate) fn version(&self) -> u64 {
     self.inner.read().unwrap().version
   }
@@ -510,6 +548,8 @@ impl Theme {
 pub struct ThemeLens<T> {
   theme: Theme,
   getter: Arc<dyn Fn(&Theme) -> T + Send + Sync>,
+  // Reads as the pair of the getter above it.
+  #[allow(clippy::type_complexity)]
   setter: Arc<dyn Fn(&Theme, T) + Send + Sync>,
 }
 

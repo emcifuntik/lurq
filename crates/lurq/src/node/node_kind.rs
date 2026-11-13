@@ -254,9 +254,20 @@ pub(crate) struct TextStyleSource {
   base: TextStyleBase,
   color: Option<TextColor>,
   text_align: Option<TextAlign>,
+  /// What few texts set. Boxed: a text's style is part of every node, whose size is budgeted
+  /// (`size_budget.rs`).
+  rare: Option<Box<RareTextStyle>>,
+}
+
+#[derive(Clone, Default, PartialEq)]
+struct RareTextStyle {
   letter_spacing: Option<f32>,
   font_features: Option<crate::layout::text_style::FontFeatures>,
   shadow: Option<crate::layout::text_style::TextShadow>,
+  underline: Option<crate::layout::text_style::TextUnderline>,
+  strikethrough: Option<crate::layout::text_style::TextStrikethrough>,
+  /// The most lines the text is laid out in; see `Text::max_lines`.
+  max_lines: Option<u32>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -272,9 +283,7 @@ impl TextStyleSource {
       base: TextStyleBase::Default,
       color: None,
       text_align: None,
-      letter_spacing: None,
-      font_features: None,
-      shadow: None,
+      rare: None,
     }
   }
 
@@ -283,9 +292,7 @@ impl TextStyleSource {
       base: TextStyleBase::Explicit(style),
       color: None,
       text_align: None,
-      letter_spacing: None,
-      font_features: None,
-      shadow: None,
+      rare: None,
     }
   }
 
@@ -297,20 +304,47 @@ impl TextStyleSource {
     self.color = Some(color.into());
   }
 
+  /// Whether the text names its color: one set on it, or the color of the
+  /// style it was built from. Otherwise its color is its typography style's,
+  /// which a foreground above it replaces.
+  pub(crate) fn names_color(&self) -> bool {
+    self.color.is_some() || matches!(self.base, TextStyleBase::Explicit(_))
+  }
+
   pub(crate) fn set_text_align(&mut self, align: impl Into<TextAlign>) {
     self.text_align = Some(align.into());
   }
 
   pub(crate) fn set_letter_spacing(&mut self, letter_spacing: f32) {
-    self.letter_spacing = Some(letter_spacing);
+    self.rare_mut().letter_spacing = Some(letter_spacing);
   }
 
   pub(crate) fn set_font_features(&mut self, font_features: crate::layout::text_style::FontFeatures) {
-    self.font_features = Some(font_features);
+    self.rare_mut().font_features = Some(font_features);
   }
 
   pub(crate) fn set_shadow(&mut self, shadow: crate::layout::text_style::TextShadow) {
-    self.shadow = Some(shadow);
+    self.rare_mut().shadow = Some(shadow);
+  }
+
+  fn rare_mut(&mut self) -> &mut RareTextStyle {
+    self.rare.get_or_insert_with(Box::default)
+  }
+
+  pub(crate) fn set_underline(&mut self, underline: crate::layout::text_style::TextUnderline) {
+    self.rare_mut().underline = Some(underline);
+  }
+
+  pub(crate) fn set_strikethrough(&mut self, strikethrough: crate::layout::text_style::TextStrikethrough) {
+    self.rare_mut().strikethrough = Some(strikethrough);
+  }
+
+  pub(crate) fn set_max_lines(&mut self, max_lines: u32) {
+    self.rare_mut().max_lines = Some(max_lines);
+  }
+
+  pub(crate) fn max_lines(&self) -> Option<u32> {
+    self.rare.as_ref().and_then(|rare| rare.max_lines)
   }
 
   pub(crate) fn resolve(&self, typography: &ThemeTypography, palette: &ThemePalette) -> TextStyle {
@@ -319,20 +353,30 @@ impl TextStyleSource {
       TextStyleBase::Typography(style) => typography.resolve_or_default(*style),
       TextStyleBase::Explicit(style) => style.clone(),
     };
+    // A style that keeps the default text color names none: the theme's foreground is its color.
+    style.color = palette.text_color(&style);
     if let Some(color) = self.color.as_ref().and_then(|color| color.resolve(palette)) {
       style.color = color;
     }
     if let Some(text_align) = self.text_align {
       style.text_align = text_align;
     }
-    if let Some(letter_spacing) = self.letter_spacing {
-      style.letter_spacing = letter_spacing;
-    }
-    if let Some(font_features) = &self.font_features {
-      style.font_features = font_features.clone();
-    }
-    if let Some(shadow) = self.shadow {
-      style.shadow = Some(shadow);
+    if let Some(rare) = &self.rare {
+      if let Some(letter_spacing) = rare.letter_spacing {
+        style.letter_spacing = letter_spacing;
+      }
+      if let Some(font_features) = &rare.font_features {
+        style.font_features = font_features.clone();
+      }
+      if let Some(shadow) = rare.shadow {
+        style.shadow = Some(shadow);
+      }
+      if let Some(underline) = rare.underline {
+        style.underline = Some(underline);
+      }
+      if let Some(strikethrough) = rare.strikethrough {
+        style.strikethrough = Some(strikethrough);
+      }
     }
     style
   }

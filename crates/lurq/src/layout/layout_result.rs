@@ -20,6 +20,13 @@ pub struct LayoutResult {
   /// The subtree generation this geometry was prepared for. Carried caches
   /// retain their old generation and must be checked against the new nodes.
   pub(crate) generation: u64,
+  /// How far each sticky child's offset in `children` is from its place in
+  /// flow, by child index: what scrolling moved it by, which the next scroll
+  /// takes back out before it places the child again. `None` where no child
+  /// is moved. Behind one pointer, where a `Vec` is three: few results have
+  /// one, and every node of a tree has a result.
+  #[allow(clippy::box_collection)]
+  pub(crate) sticky_shifts: Option<Box<Vec<(usize, Offset)>>>,
 }
 
 /// What a laid-out subtree holds that serving it from a cache writes back:
@@ -30,6 +37,9 @@ pub struct LayoutResult {
 pub(crate) struct SubtreeHolds {
   pub(crate) scroll: bool,
   pub(crate) text: bool,
+  /// A sticky node, which a scroll container above places again when it
+  /// scrolls.
+  pub(crate) sticky: bool,
 }
 
 impl SubtreeHolds {
@@ -37,6 +47,7 @@ impl SubtreeHolds {
   pub(crate) const UNKNOWN: Self = Self {
     scroll: true,
     text: true,
+    sticky: true,
   };
 }
 
@@ -86,6 +97,7 @@ mod tests {
           dropped: false,
           holds: SubtreeHolds::UNKNOWN,
           generation: 0,
+          sticky_shifts: None,
         }
         .into(),
       }],
@@ -93,6 +105,7 @@ mod tests {
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     };
 
     let mut cloned = result.clone();

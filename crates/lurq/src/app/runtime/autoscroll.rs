@@ -290,6 +290,7 @@ impl Tree {
       radii: [radius * scale; 4],
       stroke: [stroke * scale; 4],
       stroke_color,
+      stroke_style: crate::layout::render_list::StrokeStyle::default(),
       transform: [1.0, 0.0, 0.0, 1.0],
       transform_origin: [0.0, 0.0],
       clip: ClipRect::default(),

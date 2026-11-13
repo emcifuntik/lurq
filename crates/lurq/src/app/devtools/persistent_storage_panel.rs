@@ -150,7 +150,6 @@ fn type_cell(entry: &PersistentStorageSnapshotEntry, active_type_tooltip: Signal
         let active_type_tooltip = active_type_tooltip.clone();
         let full_type_name = full_type_name.clone();
         let type_name = entry.type_name.clone();
-        let should_log = should_log;
         move || {
           if should_log {
             log_tooltip("devtools", "enter", &type_name, &full_type_name, true);
@@ -162,7 +161,6 @@ fn type_cell(entry: &PersistentStorageSnapshotEntry, active_type_tooltip: Signal
         let active_type_tooltip = active_type_tooltip.clone();
         let full_type_name = full_type_name.clone();
         let type_name = entry.type_name.clone();
-        let should_log = should_log;
         move || {
           if should_log {
             log_tooltip("devtools", "leave", &type_name, &full_type_name, false);

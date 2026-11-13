@@ -17,7 +17,9 @@
 //! lost the hover is drawn differently for it or ran a handler for it (see
 //! [`set_hover`]), and for every change while DevTools shows the tree.
 
-use super::{Tree, find_node_by_id, hovered_cursor, scrollbar_hit_at, set_node_hovered, trim_hits_to_scrollbar};
+use super::{
+  Tree, find_node_by_id, hovered_cursor, scrollbar_hit_at, set_node_hovered, take_disabled_hit, trim_hits_to_scrollbar,
+};
 use crate::{
   app::{
     events::{InputSource, input_source, with_input_source},
@@ -75,11 +77,18 @@ impl Tree {
     };
     let mut hits = Vec::new();
     hit_test_tree(root, result, 0.0, 0.0, lx, ly, &mut hits);
+    // A disabled element is not hovered; the elements it is in are.
+    let disabled = take_disabled_hit(&mut hits);
     trim_hits_to_scrollbar(&mut hits, lx, ly);
 
     let moved = with_input_source(source, || move_hover(root, &self.hover_path, &hits));
+    let scrollable_in_disabled = if disabled.is_some() {
+      super::scroll_containers_in_disabled(root, result, lx, ly, &hits)
+    } else {
+      Vec::new()
+    };
     let mut thumb_changed = false;
-    for (node, _) in &hits {
+    for (node, _) in scrollable_in_disabled.iter().chain(&hits) {
       if let Some((state, _)) = node.scroll_container() {
         let on_thumb = scrollbar_hit_at(node, lx, ly).is_some();
         if on_thumb != state.is_thumb_hovered() {
@@ -89,7 +98,7 @@ impl Tree {
       }
     }
     self.hover_path = hits.iter().map(|(node, _)| node.node_id()).collect();
-    self.cursor = hovered_cursor(hits.iter().map(|(node, _)| *node));
+    self.cursor = hovered_cursor(disabled.into_iter().chain(hits.iter().map(|(node, _)| *node)));
     let draws_hover = self.draws_hover(moved);
     if draws_hover {
       self.cached_render_list = None;

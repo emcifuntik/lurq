@@ -7,6 +7,7 @@ pub(crate) mod backdrop_reuse;
 pub mod box_shadow;
 pub mod constraints;
 pub mod flex_direction;
+pub mod grid;
 pub mod layout_engine;
 pub mod layout_kind;
 pub mod layout_result;
@@ -17,6 +18,7 @@ pub mod render_list;
 pub mod scrollbar;
 pub mod size;
 pub mod stack_alignment;
+pub mod stroke;
 pub mod text_style;
 
 pub use alignment::*;

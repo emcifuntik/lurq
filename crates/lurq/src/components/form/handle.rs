@@ -32,6 +32,8 @@ struct FormHandleInner {
   bools: Mutex<BTreeMap<Arc<str>, Signal<bool>>>,
   validators: Vec<FieldValidator>,
   errors: Mutex<FormErrors>,
+  // The same shape as the maps beside it.
+  #[allow(clippy::type_complexity)]
   error_signals: Mutex<BTreeMap<Arc<str>, Signal<Option<Arc<str>>>>>,
   touched: Mutex<BTreeMap<Arc<str>, bool>>,
   touched_signals: Mutex<BTreeMap<Arc<str>, Signal<bool>>>,

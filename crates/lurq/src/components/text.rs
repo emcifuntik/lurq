@@ -90,6 +90,29 @@ impl Text {
     self
   }
 
+  /// Draws a line under the text, over the underline of its style if it has
+  /// one: `TextUnderline::new()` is the font's underline in the text's color.
+  pub fn underline(mut self, underline: crate::layout::text_style::TextUnderline) -> Self {
+    self.update_node(|node| crate::node::NodeUpdate::text_underline(node, underline));
+    self
+  }
+
+  /// Lays the text out in at most `max_lines` lines, like CSS `line-clamp`:
+  /// a wrapped text that needs more ends in an ellipsis on the last of
+  /// them. `0` is no limit. A text that does not wrap (`nowrap`, or
+  /// `TextOverflow::Elipsis`, which keeps it on one line) is not affected.
+  pub fn max_lines(mut self, max_lines: u32) -> Self {
+    self.update_node(|node| crate::node::NodeUpdate::text_max_lines(node, max_lines));
+    self
+  }
+
+  /// Draws a line through the text: `TextStrikethrough::new()` is the font's
+  /// strikeout in the text's color.
+  pub fn strikethrough(mut self, strikethrough: crate::layout::text_style::TextStrikethrough) -> Self {
+    self.update_node(|node| crate::node::NodeUpdate::text_strikethrough(node, strikethrough));
+    self
+  }
+
   pub fn caret_color(mut self, color: impl Into<crate::node::TextColor>) -> Self {
     self.update_node(|node| crate::node::NodeUpdate::caret_color(node, color));
     self

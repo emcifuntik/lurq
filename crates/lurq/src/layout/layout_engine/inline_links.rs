@@ -100,7 +100,12 @@ impl LayoutEngine {
     let NodeKind::RichText { spans, generated, .. } = node.node_kind() else {
       return;
     };
-    if node.children().is_empty() && generated.is_empty() && !spans.iter().any(|span| span.style.underline.is_some()) {
+    if node.children().is_empty()
+      && generated.is_empty()
+      && !spans
+        .iter()
+        .any(|span| span.style.underline.is_some() || span.style.strikethrough.is_some())
+    {
       return;
     }
     let (text_size, span_boxes) = self.painted_span_boxes(glyph_engine, node, spans, result.size.width);
@@ -164,6 +169,8 @@ impl LayoutEngine {
         baseline: span_box.baseline / scale,
         underline_offset: span_box.underline_offset / scale,
         underline_thickness: span_box.underline_thickness / scale,
+        strikethrough_offset: span_box.strikethrough_offset / scale,
+        strikethrough_thickness: span_box.strikethrough_thickness / scale,
       })
       .collect();
     (Size::new(size.width / scale, size.height / scale), logical)
@@ -236,51 +243,31 @@ impl LayoutEngine {
     }
   }
 
-  /// The underlines of underlined spans, drawn in `spans`' painted colors.
-  /// Underlines of neighbouring spans that meet on a line are one: a link's
-  /// words are several spans (emphasis, the joiners that keep it on one
-  /// line) under one line.
+  /// The underlines of underlined spans and the lines through struck ones,
+  /// drawn in `spans`' painted colors. Lines of neighbouring spans that meet
+  /// on a line of text are one: a link's words are several spans (emphasis,
+  /// the joiners that keep it on one line) under one line.
   pub(super) fn inline_underlines(result: &LayoutResult, spans: &[RichTextSpan], paint: InlinePaint) -> Vec<Quad> {
     let Some(inline) = inline_layout(result) else {
       return Vec::new();
     };
-    let mut underlines: Vec<(InlineRect, Color)> = Vec::new();
-    let pieces = inline.span_boxes.iter().filter_map(|span_box| {
-      let style = &spans.get(usize::try_from(span_box.span).ok()?)?.style;
-      let underline = style.underline?;
-      let thickness = underline
-        .thickness
-        .filter(|thickness| thickness.is_finite() && *thickness >= 0.0)
-        .unwrap_or(span_box.underline_thickness.max(1.0));
-      let offset = underline
-        .offset
-        .filter(|offset| offset.is_finite())
-        .unwrap_or(span_box.underline_offset - thickness * 0.5);
-      if span_box.width <= 0.0 {
-        return None;
-      }
+    let style_of = |span_box: &SpanBox| spans.get(usize::try_from(span_box.span).ok()?).map(|span| &span.style);
+    let piece = |(rect, color): (super::text_decorations::LineRect, Color)| {
       let rect = InlineRect {
-        x: span_box.x,
-        y: (inline.top + span_box.baseline + offset).round(),
-        width: span_box.width,
-        height: thickness,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
       };
-      Some((rect, underline.color.unwrap_or(style.color)))
-    });
-    for (rect, color) in pieces {
-      match underlines.last_mut() {
-        Some((last, last_color))
-          if *last_color == color
-            && last.y == rect.y
-            && last.height == rect.height
-            && (last.x + last.width - rect.x).abs() < 0.5 =>
-        {
-          last.width = rect.x + rect.width - last.x;
-        }
-        _ => underlines.push((rect, color)),
-      }
-    }
-    underlines
+      (rect, color)
+    };
+    let mut lines = joined_lines(inline.span_boxes.iter().filter_map(|span_box| {
+      super::text_decorations::underline_piece(style_of(span_box)?, span_box, inline.top).map(piece)
+    }));
+    lines.extend(joined_lines(inline.span_boxes.iter().filter_map(|span_box| {
+      super::text_decorations::strikethrough_piece(style_of(span_box)?, span_box, inline.top).map(piece)
+    })));
+    lines
       .into_iter()
       .map(|(rect, color)| paint.rect(rect, color, None, None))
       .collect()
@@ -306,6 +293,7 @@ impl LayoutEngine {
         width: ring.width,
         color: ring.color,
         placement: BorderPlacement::Inside,
+        dash: [0.0; 2],
       };
       let borders = ResolvedBorders {
         top: Some(border),
@@ -324,6 +312,25 @@ impl LayoutEngine {
       }
     }
   }
+}
+
+/// Joins the lines that meet on a line of text in one color into one.
+fn joined_lines(pieces: impl Iterator<Item = (InlineRect, Color)>) -> Vec<(InlineRect, Color)> {
+  let mut lines: Vec<(InlineRect, Color)> = Vec::new();
+  for (rect, color) in pieces {
+    match lines.last_mut() {
+      Some((last, last_color))
+        if *last_color == color
+          && last.y == rect.y
+          && last.height == rect.height
+          && (last.x + last.width - rect.x).abs() < 0.5 =>
+      {
+        last.width = rect.x + rect.width - last.x;
+      }
+      _ => lines.push((rect, color)),
+    }
+  }
+  lines
 }
 
 /// Where and how a paragraph paints around its text.
@@ -460,7 +467,7 @@ fn link_child_layout(child: &Node, span_boxes: &[SpanBox], top: f32) -> ChildLay
     offset: origin,
     result: Arc::new(LayoutResult {
       size: Size::new(first.width, first.height),
-      children: Vec::new().into(),
+      children: Vec::new(),
       text_layout: Some(Arc::new(TextLayoutOutput::InlineLink(InlineLinkOutput {
         origin,
         ..output
@@ -468,6 +475,7 @@ fn link_child_layout(child: &Node, span_boxes: &[SpanBox], top: f32) -> ChildLay
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }),
   }
 }

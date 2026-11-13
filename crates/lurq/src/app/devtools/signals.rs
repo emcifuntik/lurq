@@ -337,7 +337,7 @@ fn dependency_header(selected: Option<&SignalRow>) -> Element {
 
 fn dependency_graph(selected: Option<&SignalRow>) -> Element {
   let Some(signal) = selected else {
-    return empty_graph("Select a signal").into();
+    return empty_graph("Select a signal");
   };
 
   Column::new()

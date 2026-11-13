@@ -253,6 +253,8 @@ impl Tree {
       if let (Some(root), Some(layout)) = (&self.root, &self.last_layout) {
         let mut hits = Vec::new();
         hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+        // A touch on a disabled element is still a touch on the elements it is in: a pan over it moves them.
+        super::take_disabled_hit(&mut hits);
         targets.extend(hits.iter().map(|(node, _)| node.node_id()));
       }
       self.touch_pointer.touches.retain(|touch| touch.id != id);
@@ -775,6 +777,10 @@ impl Tree {
     if let (Some(root), Some(layout)) = (&self.root, &self.last_layout) {
       let mut hits = Vec::new();
       hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+      // A finger resting on a disabled element presses nothing.
+      if super::take_disabled_hit(&mut hits).is_some() {
+        hits.clear();
+      }
       let control = EventControl::new();
       'bubble: for (node, _) in &hits {
         let event = LongPressEvent {
@@ -931,6 +937,9 @@ impl Tree {
     let (root, layout) = (self.root.as_ref()?, self.last_layout.as_ref()?);
     let mut hits = Vec::new();
     hit_test_tree(root, layout, 0.0, 0.0, x / scale, y / scale, &mut hits);
+    if super::take_disabled_hit(&mut hits).is_some() {
+      return None;
+    }
     let (_, rect) = hits
       .iter()
       .find(|(node, _)| !node.events.on_click.is_empty())

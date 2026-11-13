@@ -149,6 +149,54 @@ Stack layout:
 
 Absolute children do not contribute to stack size.
 
+### Grid
+
+`Grid` lays its children out in the cells of columns and rows, as CSS grid does.
+
+```rust
+use lurq::{
+  components::{Grid, Text, TextInput},
+  layout::grid::GridTrack,
+};
+
+// A form: labels as wide as the widest, fields in the room that is left, notes across both.
+Grid::new()
+  .columns([GridTrack::Auto, GridTrack::Fr(1.0)])
+  .gap(8.0)
+  .child(Text::new("Name"))
+  .child(TextInput::new(name))
+  .child(Text::new("Email"))
+  .child(TextInput::new(email))
+  .child(Text::new("Both are kept on this device.").column_span(2))
+```
+
+A track, a column or a row, is a `GridTrack`:
+
+| Track | Size |
+|-------|------|
+| `GridTrack::Px(120.0)`, or a plain `120.0` | A length in logical pixels. |
+| `GridTrack::Fr(1.0)` | A share of the room the other tracks and the gaps leave; `Fr(1.0)` and `Fr(2.0)` split it one to two. |
+| `GridTrack::Auto` | As large as the largest item in it. |
+
+- `.columns([...])` and `.rows([...])` name the tracks. `Grid::with_columns(3)` is three equal columns. Rows past the
+  last one named are added as the items need them, as tall as their content; an item placed past the last column adds
+  columns the same way.
+- `.gap(v)` is the gap between columns and between rows, `.column_gap(v)` and `.row_gap(v)` one of them: logical
+  pixels or a `SpacingSize` role. There is no gap around the tracks; use `.padding(...)`.
+- Children take the cells in their order, row after row, each in the next cell that has room for it.
+  `.column_span(n)` and `.row_span(n)` make a child take several; `.grid_column(i)` and `.grid_row(i)` name where it
+  starts, counted from 0. A child that names both is put there whatever is there already.
+- A child is stretched to its cell: `.align_items(Alignment::...)` says how it sits from top to bottom otherwise, and
+  `.justify_items(...)` from side to side. A child with a size of its own keeps it, at the start of its cell when it
+  is stretched.
+- In room of a known width a grid with `Fr` columns fills it. In unbounded room, as a child of a `Row` that does not
+  flex, it is as wide as its columns, and an `Fr` column is as wide as its content needs, in proportion with the
+  other `Fr` columns.
+- `Fr` rows share the height of a grid that is given one (`.height(...)`, or stretched by its parent). In a grid as
+  tall as its content they are as tall as theirs, in proportion.
+- `Auto` columns that do not fit the width give way in proportion, and their text wraps.
+- An absolutely positioned child takes no cell and is placed over the grid, as in a `Stack`.
+
 ## Relative Positioning
 
 ```rust
@@ -443,6 +491,35 @@ VirtualizedList::new(ctx, entries)
   .mount_keyed::<EntryRow, _, _, _>(|entry| entry.id, Clone::clone)
 ```
 
+### Sticky elements
+
+`.sticky(Sticky::top(0.0))` holds an element at an edge of the scroll container it is in while that scrolls, as CSS
+`position: sticky` does: a section's header that stays at the top while its rows scroll under it.
+
+```rust
+use lurq::{
+  components::{Column, Row, ScrollVertical, Text},
+  layout::layout_kind::Sticky,
+};
+
+let section = Column::new()
+  .child(Row::new().background("#f4f4f5").child(Text::new("A")).sticky(Sticky::top(0.0)))
+  .child(Text::new("Ada"))
+  .child(Text::new("Alan"));
+ScrollVertical::new(Column::new().child(section)).size(240.0, 320.0)
+```
+
+- The element is laid out in flow and keeps its room there: nothing around it moves when it sticks.
+- `Sticky::top`, `bottom`, `left` and `right` take the distance to keep from that edge of the viewport, in logical
+  pixels; `with_top` and the others add an edge, so `Sticky::top(0.0).with_left(0.0)` holds a corner cell of what
+  scrolls both ways.
+- It never leaves the box of its parent, inside the parent's padding. The end of a section takes the section's header
+  with it, and the next section's header takes its place. An element whose parent is no larger than itself has
+  nowhere to stick.
+- It sticks in the nearest scroll container around it. In none, it stays where it is laid out.
+- It is painted over its siblings and is hit before them, so a press on a stuck header does not reach the row under it.
+- Scrolling only moves it: nothing in it or around it is laid out again. An element ref on it reports where it is drawn.
+
 ### Middle-button autoscroll
 
 A scroll container can scroll the way browsers do while the middle button is held: `.middle_button_autoscroll(true)` on
@@ -514,6 +591,49 @@ lurq::components::Text::styled("hello", TextStyle {
   ..TextStyle::default()
 })
 ```
+
+### Line Limit
+
+`Text::max_lines(n)` lays a wrapped text out in at most `n` lines, as CSS `line-clamp` does. A text that needs more
+keeps its start and ends in an ellipsis on the last line:
+
+```rust
+use lurq::components::Text;
+
+// A card's description: two lines, then "…".
+Text::new(description).max_lines(2)
+```
+
+- The text keeps as much as leaves room for the ellipsis on the last line, and no whitespace before it.
+- Lines ended by a line break in the text count as lines.
+- A text that fits in `n` lines is left as it is, and `0` is no limit.
+- It applies to a text that wraps in a bounded width. `nowrap()` and `TextOverflow::Elipsis`, which keep a text on one
+  line, are not affected; use `TextOverflow::Elipsis` for a single line cut at its width.
+- The limit holds for the text as it is painted, at any display scale: the text is cut so that neither the layout that
+  sizes it nor the one that paints it, in device pixels, needs more lines.
+
+### Underline And Strikethrough
+
+A text draws a line under its words, or through them, like CSS `text-decoration`:
+
+```rust
+use lurq::{
+  components::Text,
+  layout::text_style::{TextStrikethrough, TextUnderline},
+};
+
+Text::new("Read the docs").underline(TextUnderline::new());
+Text::new("12.99").strikethrough(TextStrikethrough::new().color(muted));
+```
+
+- `Text::underline(...)` and `Text::strikethrough(...)` set them on one text; `TextStyle::underline` and
+  `TextStyle::strikethrough` set them in a style, a typography role's included.
+- Each unset value follows the text: its color (the [foreground](../styling-events/#foreground) it takes, when it names
+  none), and the thickness and position the font gives its underline and its strikeout. `TextUnderline` also takes an
+  `offset`.
+- The lines are drawn for every laid-out line of the text, wrapped lines included, under and through its words and not
+  the whitespace a wrapped line ends in. They change neither the text's size nor its wrapping.
+- Markdown draws `~~struck~~` text with a line through it (`ThemeMarkdown::strikethrough`).
 
 The glyph engine also records caret positions for text selection, one before and one after every glyph of the layout
 the text is drawn with (a right-to-left glyph's caret before it is at its right edge). `Text::selectable(true)` uses

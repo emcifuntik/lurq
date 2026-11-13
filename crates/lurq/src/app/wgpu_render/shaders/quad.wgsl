@@ -117,59 +117,120 @@ fn vs_main(in: VsIn) -> VsOut {
     return out;
 }
 
-/// Arc-length along the outline of a uniform-radius rounded box, from
-/// the start of the side's 45° wedge to the projection of `p` onto the
-/// outline. Only used for one-sided rings with a dash/dot pattern.
-///
-/// `side_idx`: 0 = top, 1 = right, 2 = bottom, 3 = left.
-/// `r`:        circular corner radius (assumes h == v on every corner).
-///
-/// Each side spans: half of the entering corner arc + the straight
-/// edge + half of the exiting corner arc. The result is in pixels and
-/// monotonically increases as we walk the outline within the wedge.
-fn perimeter_param(p: vec2<f32>, hs: vec2<f32>, r: f32, side_idx: i32) -> f32 {
-    let pi = 3.14159265359;
-    let quarter = pi * r * 0.5;
-    let half_quarter = quarter * 0.5;
+// Strokes. The same formulas as `layout/stroke.rs`, which describes the
+// shape, and `quad.hlsl`; keep the three in step.
 
-    // Map the fragment into the canonical "top side" frame so we only
-    // implement the geometry once. After this swap, `q` is in the same
-    // coordinate space as if `side_idx` were 0 (top), and the entering
-    // corner is at the top-left, exiting corner at the top-right.
-    var q: vec2<f32>;
-    var sz: vec2<f32>;
-    switch side_idx {
-        case 0: { q = p;                              sz = hs;                          }
-        case 1: { q = vec2<f32>( p.y,        -p.x);   sz = vec2<f32>(hs.y, hs.x);       }
-        case 2: { q = vec2<f32>(-p.x,        -p.y);   sz = hs;                          }
-        case 3: { q = vec2<f32>(-p.y,         p.x);   sz = vec2<f32>(hs.y, hs.x);       }
-        default: { q = p; sz = hs; }
+/// How far the hole of a stroke reaches past an edge whose side has no
+/// stroke, so the ring has no coverage there.
+const HOLE_MARGIN: f32 = 1.0;
+
+fn stroke_inset(width: f32) -> f32 {
+    if (width > 0.0) { return width; }
+    return -HOLE_MARGIN;
+}
+
+/// How much nearer the second of two edges that meet at a corner has to be
+/// for a point to be taken as that edge's.
+const CORNER_BIAS: f32 = 0.01;
+
+/// Whether a point `first` away from one edge of a corner and `second` from
+/// the other is taken as the first edge's: the nearer one, and always the one
+/// that has a stroke where the other has none.
+fn first_edge(first: f32, second: f32, first_width: f32, second_width: f32) -> bool {
+    if (second_width <= 0.0) { return true; }
+    if (first_width <= 0.0) { return false; }
+    return first <= second + CORNER_BIAS;
+}
+
+/// Where along the rect's outline the part of it nearest `p` is, in pixels
+/// clockwise from the start of the top edge (`.x`), and the outline's whole
+/// length (`.y`). `radii` are circular, in the order TL, TR, BR, BL; `stroke`
+/// is the widths of the sides (top, right, bottom, left).
+fn outline_position(p: vec2<f32>, hs: vec2<f32>, radii: vec4<f32>, stroke: vec4<f32>) -> vec2<f32> {
+    let limit = max(min(hs.x, hs.y), 0.0);
+    let r = clamp(radii, vec4<f32>(0.0), vec4<f32>(limit));
+    let quarter = 1.57079632679;
+    let top = max(2.0 * hs.x - r.x - r.y, 0.0);
+    let right = max(2.0 * hs.y - r.y - r.z, 0.0);
+    let bottom = max(2.0 * hs.x - r.z - r.w, 0.0);
+    let left = max(2.0 * hs.y - r.w - r.x, 0.0);
+    // Where each part of the outline starts.
+    let right_arc = top;
+    let right_edge = right_arc + quarter * r.y;
+    let bottom_arc = right_edge + right;
+    let bottom_edge = bottom_arc + quarter * r.z;
+    let left_arc = bottom_edge + bottom;
+    let left_edge = left_arc + quarter * r.w;
+    let top_arc = left_edge + left;
+    let total = top_arc + quarter * r.x;
+
+    let on_top = clamp(p.x + hs.x - r.x, 0.0, top);
+    let on_right = right_edge + clamp(p.y + hs.y - r.y, 0.0, right);
+    let on_bottom = bottom_edge + clamp(hs.x - r.z - p.x, 0.0, bottom);
+    let on_left = left_edge + clamp(hs.y - r.w - p.y, 0.0, left);
+    var position: f32;
+    if (p.y < 0.0) {
+        if (p.x < 0.0) {
+            let c = vec2<f32>(-hs.x + r.x, -hs.y + r.x);
+            if (p.x < c.x && p.y < c.y) {
+                position = top_arc + atan2(c.y - p.y, c.x - p.x) * r.x;
+            } else if (first_edge(p.x + hs.x, p.y + hs.y, stroke.w, stroke.x)) {
+                position = on_left;
+            } else {
+                position = on_top;
+            }
+        } else {
+            let c = vec2<f32>(hs.x - r.y, -hs.y + r.y);
+            if (p.x > c.x && p.y < c.y) {
+                position = right_arc + atan2(p.x - c.x, c.y - p.y) * r.y;
+            } else if (first_edge(p.y + hs.y, hs.x - p.x, stroke.x, stroke.y)) {
+                position = on_top;
+            } else {
+                position = on_right;
+            }
+        }
+    } else {
+        if (p.x < 0.0) {
+            let c = vec2<f32>(-hs.x + r.w, hs.y - r.w);
+            if (p.x < c.x && p.y > c.y) {
+                position = left_arc + atan2(c.x - p.x, p.y - c.y) * r.w;
+            } else if (first_edge(hs.y - p.y, p.x + hs.x, stroke.z, stroke.w)) {
+                position = on_bottom;
+            } else {
+                position = on_left;
+            }
+        } else {
+            let c = vec2<f32>(hs.x - r.z, hs.y - r.z);
+            if (p.x > c.x && p.y > c.y) {
+                position = bottom_arc + atan2(p.y - c.y, p.x - c.x) * r.z;
+            } else if (first_edge(hs.x - p.x, hs.y - p.y, stroke.y, stroke.z)) {
+                position = on_right;
+            } else {
+                position = on_bottom;
+            }
+        }
     }
+    return vec2<f32>(position, total);
+}
 
-    let straight_len = max(2.0 * sz.x - 2.0 * r, 0.0);
-    let total = half_quarter + straight_len + half_quarter;
-
-    // Entering corner zone: q.x < -sz.x + r AND q.y near top.
-    let left_corner = vec2<f32>(-sz.x + r, -sz.y + r);
-    let right_corner = vec2<f32>(sz.x - r, -sz.y + r);
-
-    if (q.x < left_corner.x) {
-        // Top half of TL arc. Theta sweeps from -3π/4 (wedge boundary)
-        // to -π/2 (top tangent). Param goes 0 → half_quarter.
-        let v = q - left_corner;
-        let theta = atan2(v.y, v.x);
-        let t = clamp(theta - (-0.75 * pi), 0.0, 0.25 * pi);
-        return t * r;
-    } else if (q.x > right_corner.x) {
-        // Top half of TR arc. Theta sweeps from -π/2 to -π/4.
-        let v = q - right_corner;
-        let theta = atan2(v.y, v.x);
-        let t = clamp(theta - (-0.5 * pi), 0.0, 0.25 * pi);
-        return half_quarter + straight_len + t * r;
+/// How much of a dashed stroke shows at `position` along an outline of
+/// length `total`: 1 in a dash, 0 in a gap, a ramp of a pixel between. The
+/// period is fitted to the outline a whole number of times.
+fn dash_coverage(position: f32, total: f32, dash: f32, gap: f32) -> f32 {
+    if (dash <= 0.0 || gap <= 0.0 || total <= 0.0) {
+        return 1.0;
     }
-    // Straight portion of the top edge.
-    let s = clamp(q.x - left_corner.x, 0.0, straight_len);
-    return half_quarter + s;
+    let period = dash + gap;
+    let fitted = total / max(floor(total / period + 0.5), 1.0);
+    let on = dash * fitted / period;
+    let phase = position - floor(position / fitted) * fitted;
+    var d: f32;
+    if (phase <= on) {
+        d = -min(phase, on - phase);
+    } else {
+        d = min(phase - on, fitted - phase);
+    }
+    return clamp(0.5 - d, 0.0, 1.0);
 }
 
 /// Pick the (h, v) radius pair for whichever quadrant `p` lies in.
@@ -241,30 +302,48 @@ fn rounded_fill_alpha(local: vec2<f32>, half_size: vec2<f32>, radii_h: vec4<f32>
     return clamp(0.5 - dist / subsample_aa_width(dist), 0.0, 1.0);
 }
 
+/// The ring of a stroke: inside the outer edge and outside the hole.
+/// `stroke` is the widths (top, right, bottom, left); `radii_at` says which
+/// edge of the stroke the radii are the corners of (0 outer, 1 the hole's).
 fn rounded_stroke_alpha(
     local: vec2<f32>,
     half_size: vec2<f32>,
     radii_h: vec4<f32>,
     radii_v: vec4<f32>,
     stroke: vec4<f32>,
-    max_stroke: f32,
+    radii_at: f32,
 ) -> f32 {
+    let widths = max(stroke, vec4<f32>(0.0));
     let radius = pick_radius(local, radii_h, radii_v);
-    let outer_dist = sd_rounded_box(local, half_size, radius);
-    let inner_half = max(vec2<f32>(
-        half_size.x - 0.5 * (stroke.y + stroke.w),
-        half_size.y - 0.5 * (stroke.x + stroke.z),
+    // The sides that meet at this quadrant's corner.
+    var across = widths.y;
+    if (local.x < 0.0) { across = widths.w; }
+    var along = widths.z;
+    if (local.y < 0.0) { along = widths.x; }
+
+    var outer_r = vec2<f32>(0.0, 0.0);
+    var hole_r = vec2<f32>(0.0, 0.0);
+    if (radius.x > 0.0) {
+        outer_r.x = radius.x + radii_at * across;
+        hole_r.x = max(outer_r.x - stroke_inset(across), 0.0);
+    }
+    if (radius.y > 0.0) {
+        outer_r.y = radius.y + radii_at * along;
+        hole_r.y = max(outer_r.y - stroke_inset(along), 0.0);
+    }
+    let outer_dist = sd_rounded_box(local, half_size, outer_r);
+
+    let top = stroke_inset(widths.x);
+    let right = stroke_inset(widths.y);
+    let bottom = stroke_inset(widths.z);
+    let left = stroke_inset(widths.w);
+    let hole_half = max(vec2<f32>(
+        half_size.x - 0.5 * (left + right),
+        half_size.y - 0.5 * (top + bottom),
     ), vec2<f32>(0.0, 0.0));
-    let inner_centre = vec2<f32>(
-        0.5 * (stroke.w - stroke.y),
-        0.5 * (stroke.x - stroke.z),
-    );
-    let inner_r = vec2<f32>(
-        max(0.0, radius.x - max_stroke),
-        max(0.0, radius.y - max_stroke),
-    );
-    let inner_dist = sd_rounded_box(local - inner_centre, inner_half, inner_r);
-    let dist = max(outer_dist, -inner_dist);
+    let hole_centre = vec2<f32>(0.5 * (left - right), 0.5 * (top - bottom));
+    let hole_dist = sd_rounded_box(local - hole_centre, hole_half, hole_r);
+    let dist = max(outer_dist, -hole_dist);
     return clamp(0.5 - dist / subsample_aa_width(dist), 0.0, 1.0);
 }
 
@@ -283,13 +362,13 @@ fn supersampled_stroke_alpha(
     radii_h: vec4<f32>,
     radii_v: vec4<f32>,
     stroke: vec4<f32>,
-    max_stroke: f32,
+    radii_at: f32,
 ) -> f32 {
     return (
-        rounded_stroke_alpha(local + vec2<f32>(-0.25, -0.25), half_size, radii_h, radii_v, stroke, max_stroke) +
-        rounded_stroke_alpha(local + vec2<f32>(0.25, -0.25), half_size, radii_h, radii_v, stroke, max_stroke) +
-        rounded_stroke_alpha(local + vec2<f32>(-0.25, 0.25), half_size, radii_h, radii_v, stroke, max_stroke) +
-        rounded_stroke_alpha(local + vec2<f32>(0.25, 0.25), half_size, radii_h, radii_v, stroke, max_stroke)
+        rounded_stroke_alpha(local + vec2<f32>(-0.25, -0.25), half_size, radii_h, radii_v, stroke, radii_at) +
+        rounded_stroke_alpha(local + vec2<f32>(0.25, -0.25), half_size, radii_h, radii_v, stroke, radii_at) +
+        rounded_stroke_alpha(local + vec2<f32>(-0.25, 0.25), half_size, radii_h, radii_v, stroke, radii_at) +
+        rounded_stroke_alpha(local + vec2<f32>(0.25, 0.25), half_size, radii_h, radii_v, stroke, radii_at)
     ) * 0.25;
 }
 
@@ -441,16 +520,6 @@ fn sample_gradient(off: i32, local: vec2<f32>, half: vec2<f32>) -> vec4<f32> {
     return color;
 }
 
-/// Count how many sides have a positive stroke width.
-fn nonzero_side_count(s: vec4<f32>) -> i32 {
-    var n: i32 = 0;
-    if (s.x > 0.0) { n = n + 1; }
-    if (s.y > 0.0) { n = n + 1; }
-    if (s.z > 0.0) { n = n + 1; }
-    if (s.w > 0.0) { n = n + 1; }
-    return n;
-}
-
 // The render target is not sRGB, so the fixed-function blend mixes
 // sRGB-encoded values, as CSS and design tools do. `fs_main` works in linear
 // light like the rest of the pipeline and encodes each result it returns.
@@ -507,60 +576,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         return encode_srgb(vec4<f32>(base_color.rgb, base_color.a * alpha * clip_alpha));
     }
 
-    let nz = nonzero_side_count(in.stroke);
-    let outer_r = pick_radius(in.local, in.radii_h, in.radii_v);
-    let outer_dist = sd_rounded_box(in.local, in.half_size, outer_r);
-    let inner_half = vec2<f32>(
-        in.half_size.x - 0.5 * (in.stroke.y + in.stroke.w),
-        in.half_size.y - 0.5 * (in.stroke.x + in.stroke.z),
-    );
-    let inner_centre = vec2<f32>(
-        0.5 * (in.stroke.w - in.stroke.y),
-        0.5 * (in.stroke.x - in.stroke.z),
-    );
-
-    let inner_r = vec2<f32>(
-        max(0.0, outer_r.x - max_stroke),
-        max(0.0, outer_r.y - max_stroke),
-    );
-    let inner_dist = sd_rounded_box(in.local - inner_centre, inner_half, inner_r);
-    let dist = max(outer_dist, -inner_dist);
-    let aa = aa_width(dist);
-
-    var side_idx: i32 = -1;
-    if (nz == 1) {
-        if (in.stroke.x > 0.0) { side_idx = 0; } // top
-        if (in.stroke.y > 0.0) { side_idx = 1; } // right
-        if (in.stroke.z > 0.0) { side_idx = 2; } // bottom
-        if (in.stroke.w > 0.0) { side_idx = 3; } // left
-    }
-
-    var alpha = supersampled_stroke_alpha(in.local, in.half_size, in.radii_h, in.radii_v, in.stroke, max_stroke);
-
-    // Dash / dot modulation. Only meaningful on one-sided rings with a
-    // uniform circular corner radius (h == v on every corner). Other
-    // configurations leave the pattern unhonoured.
-    let pattern_kind = in.pattern.x;
-    if (side_idx >= 0 && pattern_kind > 0.5) {
-        // Treat as circular if h ~= v on the relevant corners. Otherwise
-        // keep solid.
-        let r_max = max(max(in.radii_h.x, in.radii_h.y), max(in.radii_h.z, in.radii_h.w));
-        let r_min = min(min(in.radii_h.x, in.radii_h.y), min(in.radii_h.z, in.radii_h.w));
-        let v_max = max(max(in.radii_v.x, in.radii_v.y), max(in.radii_v.z, in.radii_v.w));
-        let circular = abs(r_max - v_max) < 0.001 && abs(r_max - r_min) < 0.001;
-        if (circular) {
-            let r = r_max;
-            let arc = perimeter_param(in.local, in.half_size, r, side_idx);
-            let dash = max(in.pattern.y, 0.0001);
-            let gap  = max(in.pattern.z, 0.0001);
-            let period = dash + gap;
-            let phase = arc - floor(arc / period) * period;
-            let edge_aa = aa;
-            // Smooth on at phase=0, smooth off at phase=dash.
-            let dash_alpha = clamp(0.5 + (dash - phase) / edge_aa, 0.0, 1.0)
-                           * clamp(0.5 + phase / edge_aa, 0.0, 1.0);
-            alpha = alpha * dash_alpha;
-        }
+    // A stroke's pattern holds its dash (y), its gap (z) and the edge its radii are at (w).
+    var alpha = supersampled_stroke_alpha(in.local, in.half_size, in.radii_h, in.radii_v, in.stroke, in.pattern.w);
+    if (alpha > 0.0 && in.pattern.y > 0.0 && in.pattern.z > 0.0) {
+        let place = outline_position(in.local, in.half_size, in.radii_h, in.stroke);
+        alpha = alpha * dash_coverage(place.x, place.y, in.pattern.y, in.pattern.z);
     }
 
     if (alpha <= 0.0) {

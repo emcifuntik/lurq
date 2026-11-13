@@ -298,6 +298,8 @@ impl CaretPositionsBuilder {
     }))
   }
 
+  // `runs` is a list of ranges, and a point has the one.
+  #[allow(clippy::single_range_in_vec_init)]
   fn push_point(&mut self, point: CaretPosition) {
     let paragraph = Arc::new(ParagraphCarets {
       positions: vec![CaretPosition {

@@ -134,6 +134,8 @@ impl<T> std::fmt::Debug for Shared<T> {
 }
 
 struct DropDispatch {
+  // A log of the fields of each drop event, compared whole.
+  #[allow(clippy::type_complexity)]
   drops: Arc<Mutex<Vec<(f32, f32, f32, f32, bool, bool)>>>,
 }
 

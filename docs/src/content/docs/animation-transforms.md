@@ -54,8 +54,49 @@ Transition builders include:
 | `Transition::blur()` | Animate the [blur](../blur/) radius |
 | `Transition::backdrop_blur()` | Animate the [backdrop blur](../blur/#frosted-glass) radius |
 | `Transition::transform()` | Animate `Transform2D` |
+| `Transition::foreground()` | Animate the [foreground](../styling-events/#foreground): the color of the text in the element and under it |
+| `Transition::outline()` | Animate the [outline](../styling-events/#outline): its width, offset and color together |
+| `Transition::box_shadow()` | Animate the [box shadows](../styling-events/#box-shadows) |
+
+Colors, border widths and shadows given as theme roles (`PaletteColor`, `BorderSize`, `ShadowStyle`) are read against
+the theme, so they animate like concrete values; a role whose value changes, when the theme changes, runs the
+transition too.
+
+- The foreground, the outline and the box shadow are painted only: a transition of them lays nothing out.
+- An outline that appears grows in from no width and no opacity at its own offset and color, and one that goes away
+  fades back the same way, so a focus ring with `Transition::outline()` comes and goes smoothly even though the element
+  has no outline at rest.
+- Box shadows animate shadow by shadow, as in CSS: one with no partner in the other list comes from, or goes to,
+  nothing where it is. A list in which a shadow turns from outer to inset changes halfway, and a list of more than four
+  shadows changes at once.
 
 `duration(...)`, `duration_ms(...)`, `delay(...)`, `delay_ms(...)`, `easing(...)`, and `linear()` configure timing.
+
+## Reduced Motion
+
+A user can ask every app for less motion in the system's accessibility settings. lurq reads the setting on Windows
+(Settings › Accessibility › Visual effects › Animation effects), macOS (System Settings › Accessibility › Display ›
+Reduce motion) and iOS (Settings › Accessibility › Motion › Reduce Motion), when a window opens and each time one takes
+focus, so a change made in the settings shows when the user comes back.
+
+```rust
+// What is in effect: the app's decision, or else the system's setting.
+let reduced = ctx.reduced_motion();
+
+// The app decides, whatever the system says; `None` follows the system again.
+app.theme().set_reduced_motion(Some(true));
+```
+
+- While motion is reduced, a transition of where an element is or how large it is (`transform`, `offset_x`, `offset_y`,
+  `width`, `height`) ends at once: the element is at its new place and size in the next frame. Sheets and stack
+  navigation, which move with such transitions, switch without the slide.
+- A fade or a change of color is not motion and still runs: opacity, colors, the foreground, the outline, box shadows,
+  blur, radii and border widths.
+- Keyframe animations are the app's and are not changed. Read `ctx.reduced_motion()`, which renders the component again
+  when the setting changes, to hold back one that moves or to show a fade in its place.
+- Linux and other platforms have no setting every desktop shares, so lurq reads none there: motion is reduced only when
+  the app says so with `set_reduced_motion`.
+- A tree without a window, as in a test, never reads the system: its motion does not depend on the machine.
 
 `Easing::Spring { velocity }` eases as a spring that comes to rest without going past its end: quick at first,
 settling slowly. `velocity` is the speed the value already has when the transition starts, as a share of the
@@ -109,6 +150,102 @@ Keyframe offsets are normalized from `0.0` to `1.0`. The engine finds the surrou
 | `direction(...)` / `alternate()` | Normal, reverse, alternate, or alternate-reverse playback |
 | `fill_mode(...)` | None, forwards, backwards, or both; forwards holds the pose the run stops on, part way into an iteration for a fractional count |
 | `iteration_count(...)` / `infinite()` | Finite or infinite playback |
+
+## Presence: Entering And Leaving Layers
+
+The content of a layer (an `Overlay`, a `Popup` or a `Modal`) is mounted when the layer opens, so the animation an
+element in it plays is how it enters. `.exit_animation(...)` names the animation an element leaves with:
+
+```rust
+use lurq::{
+  animation::{AnimatableProperty, Animation, Keyframes, KeyframesId},
+  components::{Column, Popup},
+};
+
+const FADE_IN: KeyframesId = KeyframesId::new(10);
+const FADE_OUT: KeyframesId = KeyframesId::new(11);
+
+tree.register_keyframes(
+  Keyframes::new(FADE_IN)
+    .frame(0.0, |f| {
+      f.set(AnimatableProperty::Opacity, 0.0);
+    })
+    .frame(1.0, |f| {
+      f.set(AnimatableProperty::Opacity, 1.0);
+    }),
+);
+tree.register_keyframes(
+  Keyframes::new(FADE_OUT)
+    .frame(0.0, |f| {
+      f.set(AnimatableProperty::Opacity, 1.0);
+    })
+    .frame(1.0, |f| {
+      f.set(AnimatableProperty::Opacity, 0.0);
+    }),
+);
+
+let menu = Column::new()
+  .animation(Animation::new(FADE_IN).duration_ms(120))
+  .exit_animation(Animation::new(FADE_OUT).duration_ms(90));
+Popup::new(anchor, menu).open(open.clone())
+```
+
+When a layer closes, by its open state or because what declared it is no longer rendered, lurq keeps what the layer
+showed on screen until the longest exit animation in it ends, and drops it in the first pass after that. A layer with
+no exit animation in it is gone with the pass that closes it, as before.
+
+- Any element in the layer can have its own: a dialog's backdrop can fade while its panel fades and scales. An exit
+  animation that ends before the longest holds its last pose until the layer is dropped, whatever its fill mode, and
+  one that repeats without end plays once. An element without one stays as it was, and an animation it was playing
+  goes on.
+- An exit animation starts from its first frame, also when it uses the keyframes the element entered with, as
+  `Animation::new(FADE_IN).direction(AnimationDirection::Reverse)` does.
+- A leaving layer is only painted: it shows what it showed when it closed and is not rendered again. No press, hover
+  or wheel reaches it and what is under it takes them; focus that was in it is let go; Tab passes it by; a leaving
+  modal is not a Tab scope and traps nothing; `get_element_by_id`, `find_element` and element refs do not find what
+  is in it.
+- It keeps its place among the other layers: a popup closed inside a dialog leaves over the dialog, and a layer under
+  another stays under it.
+- Opening the layer again while it leaves mounts it anew: the new one enters over the one still leaving.
+- A popup that is hidden because its anchor scrolled out of view is still open, so it does not leave: it is gone at
+  once and comes back with its anchor.
+- Outside a layer an exit animation plays for a child of a container with `.presence()`: see
+  [Children of a container](#children-of-a-container). Anywhere else an element that is removed is gone with the
+  render that removes it.
+- Exit animations are keyframe animations, so [reduced motion](#reduced-motion) leaves them to the app: use a fade,
+  or none, where `ctx.reduced_motion()` is set.
+
+### Children of a container
+
+`.presence()` on a container keeps a child that a render removes from it until the child's exit animation ends:
+
+```rust
+let mut list = Column::new().presence();
+for task in &tasks {
+  list = list.child(
+    Row::new()
+      .key(task.id.clone())
+      .exit_animation(Animation::new(FADE_OUT).duration_ms(150))
+      .child(Text::new(&task.title)),
+  );
+}
+```
+
+- The child has to have a key or an id (`.key(...)`, `.id(...)`) and an `.exit_animation(...)` of its own. Children
+  without a key are matched by their place, where one that was removed and one whose content changed look the same.
+- It stays where it was among its siblings and in flow: the ones after it do not move until it is gone. An exit
+  animation of its `Height` or `Width` to zero lets them close the gap as it leaves.
+- Like a leaving layer it is only painted: no pointer, focus or Tab, and no lookup finds it. A child of the same key
+  added again while it leaves is a new one, beside it.
+- The elements inside it leave with their own exit animations too, and the child is gone when the longest ends.
+- It works wherever the container is: in the page, in a component that renders by itself, in a popup or a dialog.
+- A container without `.presence()` drops a removed child at once, whatever the child's animations. A list that
+  mounts only the rows in view, like `VirtualizedList`, removes rows as they scroll out, so it has none.
+
+Two layers are told apart by where they are declared. A popup that the press closing another one opens is another
+layer: it enters while the first leaves. Two layers declared at the same place in turn (`if a { popup_a } else {
+popup_b }`) are one layer to lurq, as two elements at one place are one element, unless their contents have different
+keys (`content.key("a")`).
 
 ## Frame Pacing
 

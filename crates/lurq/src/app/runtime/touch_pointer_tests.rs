@@ -218,13 +218,13 @@ fn what_a_finger_holds_shows_as_pressed_only_while_the_finger_is_near() {
 
   // 60 logical pixels beside the button: within reach.
   tree.touch_pointer_move(320.0, 100.0);
-  assert_eq!(looks(&tree).1, true);
+  assert!(looks(&tree).1);
   // 100 beside it: out of reach.
   tree.touch_pointer_move(400.0, 100.0);
-  assert_eq!(looks(&tree).1, false);
+  assert!(!looks(&tree).1);
   // Back within reach.
   tree.touch_pointer_move(320.0, 100.0);
-  assert_eq!(looks(&tree).1, true);
+  assert!(looks(&tree).1);
 
   // Lifted there, beside the button, it clicks it: the release is the button's, which the pointer comes
   // back onto.

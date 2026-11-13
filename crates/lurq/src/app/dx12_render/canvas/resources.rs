@@ -270,7 +270,7 @@ pub(super) unsafe fn upload_asset(
     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
   );
   profile_if! {
-    if let Some(detail) = profile.as_deref_mut() {
+    if let Some(detail) = profile {
       detail.add_stage(AssetUploadStage::UploadStagingCommands, _staging_start);
     }
   }

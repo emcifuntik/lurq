@@ -29,7 +29,7 @@ use crate::layout::{
     glyph_reach, rect_extent,
   },
   quad::ClipRect,
-  render_list::{GlyphCmd, RectCmd, RectShadow, RenderGradient, RenderGradientStop, RenderList},
+  render_list::{GlyphCmd, RectCmd, RectShadow, RenderGradient, RenderGradientStop, RenderList, StrokeStyle},
 };
 
 /// The most bytes one blur's input may take; a blur with more behind it is
@@ -551,6 +551,7 @@ impl Notes {
       radii,
       stroke,
       stroke_color,
+      stroke_style: StrokeStyle { dash, radii_at },
       transform,
       transform_origin,
       clip,
@@ -563,6 +564,8 @@ impl Notes {
     self.f32s(radii);
     self.f32s(stroke);
     self.color(*stroke_color);
+    self.f32s(dash);
+    self.f32(*radii_at);
     self.f32s(transform);
     self.f32s(transform_origin);
     self.clip(clip);

@@ -20,12 +20,14 @@ mod cap_height;
 mod carets;
 mod face_weight;
 mod generic_families;
+mod hinted;
 pub(crate) mod input_tokens;
 #[cfg(target_os = "ios")]
 mod ios_emoji;
 #[cfg(target_os = "ios")]
 mod ios_fallback;
 mod letter_spacing;
+mod line_clamp;
 mod reflow;
 mod scaler;
 mod shaped_texts;
@@ -476,6 +478,7 @@ pub(crate) struct GlyphEngine {
   font_system: FontSystem,
   swash_context: ScaleContext,
   transformed_scale_context: ScaleContext,
+  hinted_fonts: hinted::HintedFonts,
   font_aliases: HashMap<String, String>,
   face_weights: FaceWeights,
   bold_text: bool,
@@ -532,6 +535,7 @@ impl GlyphEngine {
       canvas_text_framed: false,
       swash_context: ScaleContext::new(),
       transformed_scale_context: ScaleContext::new(),
+      hinted_fonts: hinted::HintedFonts::default(),
       font_aliases: HashMap::new(),
       input_cache: input_tokens::InputCache::default(),
       face_weights: FaceWeights::default(),
@@ -571,6 +575,15 @@ impl GlyphEngine {
 
   pub(crate) fn load_font(&mut self, data: Vec<u8>) {
     self.font_system.db_mut().load_font_data(data);
+    self.clear_text_caches();
+  }
+
+  /// Loads a font whose glyphs are drawn grid-fitted: at whole pixel sizes and
+  /// positions, with the font's hints applied. Meant for icon fonts; see `hinted`.
+  pub(crate) fn load_hinted_font(&mut self, data: Vec<u8>) {
+    let source = cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(data));
+    let faces = self.font_system.db_mut().load_font_source(source);
+    self.hinted_fonts.add(faces);
     self.clear_text_caches();
   }
 
@@ -847,7 +860,7 @@ impl GlyphEngine {
           glyph.font_weight,
           glyph.cache_key_flags,
         );
-        if !self.get_or_pack_glyph(key).is_some_and(|packed| packed.height > 0) {
+        if self.get_or_pack_glyph(key).is_none_or(|packed| packed.height == 0) {
           continue;
         }
         if first.is_none() {
@@ -958,6 +971,22 @@ impl GlyphEngine {
       optical_top,
       optical_bottom,
     })
+  }
+
+  /// Where the laid-out lines of a plain text lie: one box per line that
+  /// holds words, laid out as measuring and painting lay it out, from the
+  /// plain text cache they share.
+  pub(crate) fn text_line_boxes(
+    &mut self,
+    text: &str,
+    style: &TextStyle,
+    max_width: f32,
+    wrap: bool,
+  ) -> std::sync::Arc<[SpanBox]> {
+    let buffer = self.full_text_buffer(text, style, max_width, wrap);
+    let boxes = span_boxes::line_boxes(&buffer, &mut self.font_system, &mut self.underline_metrics);
+    self.retain_plain_buffer(buffer);
+    boxes
   }
 
   /// Where the glyphs of a line in `style` sit in its line box by the font's
@@ -1666,28 +1695,28 @@ impl GlyphEngine {
       let key = CacheKey::new_for_raster(text, style, max_width, wrap, snap_to_pixel);
       ClippedCacheKey::new(key, origin_x, origin_y, clip)
     });
-    if let Some(clipped_key) = clipped_key.as_ref() {
-      if let Some(cached) = self.clipped_glyph_layout_cache.get(clipped_key) {
-        self.glyph_hits += cached.len();
-        #[cfg(feature = "perf_profile")]
-        let append_start = Instant::now();
-        append_glyph_cmds_from_cached(
-          cached,
-          origin_x,
-          origin_y,
-          style,
-          atlas_w,
-          atlas_h,
-          snap_to_pixel,
-          clip,
-          out,
-        );
-        #[cfg(feature = "perf_profile")]
-        {
-          self.profile.append_cached += append_start.elapsed();
-        }
-        return;
+    if let Some(clipped_key) = clipped_key.as_ref()
+      && let Some(cached) = self.clipped_glyph_layout_cache.get(clipped_key)
+    {
+      self.glyph_hits += cached.len();
+      #[cfg(feature = "perf_profile")]
+      let append_start = Instant::now();
+      append_glyph_cmds_from_cached(
+        cached,
+        origin_x,
+        origin_y,
+        style,
+        atlas_w,
+        atlas_h,
+        snap_to_pixel,
+        clip,
+        out,
+      );
+      #[cfg(feature = "perf_profile")]
+      {
+        self.profile.append_cached += append_start.elapsed();
       }
+      return;
     }
 
     #[cfg(feature = "perf_profile")]
@@ -1750,7 +1779,7 @@ impl GlyphEngine {
           continue;
         }
         let cached_glyph = if snap_to_pixel {
-          let physical = glyph.physical((0.0, run.line_y), 1.0);
+          let physical = self.hinted_fonts.physical(glyph, run.line_y);
           let Some(packed) = self.get_or_pack_glyph(physical.cache_key) else {
             if let Some(marker) = &debug_marker {
               eprintln!(
@@ -1973,7 +2002,7 @@ impl GlyphEngine {
         let default_color = first.style.color;
         let color = glyph_color(glyph.color_opt, default_color);
         let cached_glyph = if snap_to_pixel {
-          let physical = glyph.physical((0.0, run.line_y), 1.0);
+          let physical = self.hinted_fonts.physical(glyph, run.line_y);
           let Some(packed) = self.get_or_pack_glyph(physical.cache_key) else {
             continue;
           };
@@ -2109,7 +2138,16 @@ impl GlyphEngine {
     }
     #[cfg(feature = "perf_profile")]
     let swash_start = Instant::now();
-    let image = render_glyph_image(&mut self.swash_context, &font, cache_key);
+    let image = if cache_key.flags.contains(hinted::HINTED) {
+      let face = self
+        .font_system
+        .db()
+        .face(cache_key.font_id)
+        .map_or(0, |face| face.index);
+      self.hinted_fonts.render(&font, face, cache_key)
+    } else {
+      render_glyph_image(&mut self.swash_context, &font, cache_key)
+    };
     #[cfg(feature = "perf_profile")]
     {
       self.profile.swash_lookup += swash_start.elapsed();
@@ -2470,17 +2508,17 @@ impl GlyphEngine {
       for index in work {
         let fingerprint = entry.paragraphs[index].fingerprint;
         let needs_shape = entry.buffer.lines[index].shape_opt().is_none();
-        if needs_shape {
-          if let Some(&prior) = duplicates.get(&fingerprint).filter(|&&prior| {
+        if needs_shape
+          && let Some(&prior) = duplicates.get(&fingerprint).filter(|&&prior| {
             let old = &entry.buffer.lines[prior];
             let new = &entry.buffer.lines[index];
             old.text() == new.text() && old.ending() == new.ending()
-          }) {
-            entry.buffer.lines[index] = entry.buffer.lines[prior].clone();
-            #[cfg(feature = "perf_profile")]
-            {
-              self.profile.plain_reused_lines += 1;
-            }
+          })
+        {
+          entry.buffer.lines[index] = entry.buffer.lines[prior].clone();
+          #[cfg(feature = "perf_profile")]
+          {
+            self.profile.plain_reused_lines += 1;
           }
         }
         let needs_layout = entry.buffer.lines[index].layout_opt().is_none();
@@ -2737,7 +2775,7 @@ impl GlyphEngine {
         if glyph_cluster_is_whitespace(run.text, glyph) {
           continue;
         }
-        let physical = glyph.physical((0.0, run.line_y), 1.0);
+        let physical = self.hinted_fonts.physical(glyph, run.line_y);
         glyphs.push(CachedRichShapedGlyph {
           x: physical.x as f32,
           y: physical.y as f32,
@@ -3137,10 +3175,10 @@ fn plain_buffer_cache_budget() -> usize {
   // Diagnostic override for comparing budgets in the same dev profiling binary.
   // Ordinary builds, release builds, and unit tests always use the default.
   #[cfg(all(feature = "perf_profile", debug_assertions, not(test)))]
-  if let Ok(value) = std::env::var("LURQ_TEXT_CACHE_MIB") {
-    if let Ok(mib @ 1..=1024) = value.parse::<usize>() {
-      return mib * 1024 * 1024;
-    }
+  if let Ok(value) = std::env::var("LURQ_TEXT_CACHE_MIB")
+    && let Ok(mib @ 1..=1024) = value.parse::<usize>()
+  {
+    return mib * 1024 * 1024;
   }
   PLAIN_BUFFER_CACHE_BYTES
 }
@@ -3307,7 +3345,8 @@ fn render_glyph_image(context: &mut ScaleContext, font: &Font, cache_key: GlyphC
   // Unhinted outlines sample the same smooth shape at every phase, so all
   // instances match (the transformed-glyph path below renders unhinted for the
   // same reason, as do DirectWrite's "natural" modes, which pair subpixel
-  // positioning with unhinted horizontal metrics).
+  // positioning with unhinted horizontal metrics). A font loaded as hinted does
+  // not come here from a pixel-snapped run: `hinted` places and draws its glyphs.
   let mut scaler = scaler::unhinted_scaler(context, font, cache_key).build();
   let offset = Vector::new(cache_key.x_bin.as_float(), cache_key.y_bin.as_float());
   let transform = cache_key
@@ -3891,6 +3930,8 @@ impl AtlasPacker {
 
   /// A snapshot of the atlas: its pixels as they are now, shared, not
   /// copied. Glyphs packed while a snapshot is held go into a copy.
+  // It refreshes the snapshot it hands out, so it needs `&mut self`.
+  #[allow(clippy::wrong_self_convention)]
   pub(crate) fn to_atlas(&mut self) -> GlyphAtlas {
     if self.snapshot_version != self.version {
       self.snapshot_rects = self.dirty_rects.iter().copied().collect();
@@ -3940,11 +3981,11 @@ fn coalesce_dirty_rects(mut rects: Vec<GlyphAtlasDirtyRect>) -> Vec<GlyphAtlasDi
       continue;
     }
 
-    if let Some(last) = merged.last_mut() {
-      if should_merge_dirty_rects(*last, rect) {
-        *last = union_dirty_rect(*last, rect);
-        continue;
-      }
+    if let Some(last) = merged.last_mut()
+      && should_merge_dirty_rects(*last, rect)
+    {
+      *last = union_dirty_rect(*last, rect);
+      continue;
     }
 
     merged.push(rect);
@@ -3973,10 +4014,8 @@ fn horizontal_gap(a: GlyphAtlasDirtyRect, b: GlyphAtlasDirtyRect) -> u32 {
   let b_right = b.x.saturating_add(b.width);
   if a_right < b.x {
     b.x - a_right
-  } else if b_right < a.x {
-    a.x - b_right
   } else {
-    0
+    a.x.saturating_sub(b_right)
   }
 }
 

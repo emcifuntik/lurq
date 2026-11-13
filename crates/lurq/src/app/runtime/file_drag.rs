@@ -125,6 +125,7 @@ impl Tree {
     if let (Some(root), Some(layout)) = (&self.root, &self.last_layout) {
       let mut hits = Vec::new();
       hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+      super::take_disabled_hit(&mut hits);
       let event = FileDropEvent::new(lx, ly, paths, NodeId::UNASSIGNED);
       'drop: for (node, _) in &hits {
         let event = event.at(node.node_id());
@@ -168,6 +169,7 @@ impl Tree {
     };
     let mut hits = Vec::new();
     hit_test_tree(root, layout, 0.0, 0.0, lx, ly, &mut hits);
+    super::take_disabled_hit(&mut hits);
     let current_ids: Vec<NodeId> = hits.iter().map(|(node, _)| node.node_id()).collect();
 
     for old_id in &session.over_path {

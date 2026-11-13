@@ -62,14 +62,14 @@ pub(crate) fn finish_capture(mut pixels: Vec<u8>, capture: &RenderFrameCapture) 
 /// Save tight RGBA8 capture pixels as a PNG, creating the parent directory.
 /// A failure is logged: a file capture has no caller waiting for it.
 pub(crate) fn save_capture_png(output_path: &std::path::Path, pixels: &[u8], width: u32, height: u32) {
-  if let Some(parent) = output_path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-    if let Err(error) = std::fs::create_dir_all(parent) {
-      tracing::warn!(
-        "failed to create screenshot output directory {}: {error}",
-        parent.display()
-      );
-      return;
-    }
+  if let Some(parent) = output_path.parent().filter(|parent| !parent.as_os_str().is_empty())
+    && let Err(error) = std::fs::create_dir_all(parent)
+  {
+    tracing::warn!(
+      "failed to create screenshot output directory {}: {error}",
+      parent.display()
+    );
+    return;
   }
   if let Err(error) = image::save_buffer_with_format(
     output_path,

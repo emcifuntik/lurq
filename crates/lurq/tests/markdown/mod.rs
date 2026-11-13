@@ -1,6 +1,7 @@
 mod code_font;
 mod code_scroll;
 mod fit_content;
+mod foreground;
 mod highlights;
 mod link_activation;
 mod link_bidi;
@@ -16,5 +17,6 @@ mod links;
 mod outer_id;
 mod parse;
 mod selection;
+mod strikethrough;
 mod table_cells;
 mod text;

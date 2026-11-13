@@ -13,7 +13,9 @@ pub(crate) use generic_family::{alias_name, cosmic_family};
 
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 const DEFAULT_LINE_HEIGHT: f32 = 1.2;
-const DEFAULT_TEXT_COLOR: Color = Color::new(0, 0, 0, 255);
+/// The color of `TextStyle::default()`. A typography style that keeps it names no color: its text is drawn in
+/// the theme's foreground (`ThemePalette::foreground`).
+pub(crate) const DEFAULT_TEXT_COLOR: Color = Color::new(0, 0, 0, 255);
 #[cfg(target_os = "windows")]
 const DEFAULT_FONT_FAMILY_WINDOWS: &str = "Segoe UI";
 #[cfg(not(target_os = "windows"))]
@@ -65,10 +67,13 @@ pub struct TextStyle {
   pub caret_color: Option<TextColor>,
   pub shadow: Option<TextShadow>,
   /// A line under the text, like CSS `text-decoration-line: underline`.
-  /// `None` by default. Rich text (Markdown) draws it under every laid-out
-  /// line its run covers, wrapped lines included; it changes neither
-  /// measurement nor wrapping. A plain `Text` does not draw it yet.
+  /// `None` by default. It is drawn under every laid-out line the text
+  /// covers, wrapped lines included, and changes neither measurement nor
+  /// wrapping.
   pub underline: Option<TextUnderline>,
+  /// A line through the text, like CSS `text-decoration-line: line-through`.
+  /// `None` by default. Drawn as the underline is, over the glyphs.
+  pub strikethrough: Option<TextStrikethrough>,
 }
 
 impl Default for TextStyle {
@@ -88,6 +93,7 @@ impl Default for TextStyle {
       caret_color: None,
       shadow: None,
       underline: None,
+      strikethrough: None,
     }
   }
 }
@@ -136,6 +142,36 @@ impl TextUnderline {
 
   pub fn offset(mut self, offset: f32) -> Self {
     self.offset = Some(offset);
+    self
+  }
+}
+
+/// A line through the text, like CSS `text-decoration: line-through` with
+/// `text-decoration-color` and `text-decoration-thickness`. Each unset value
+/// follows the text: the text's color, and the thickness the font gives its
+/// strikeout. The line sits where the font puts its strikeout.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TextStrikethrough {
+  /// The line's color; `None` is the text's color.
+  pub color: Option<Color>,
+  /// The line's thickness in logical pixels; `None` is the font's strikeout
+  /// thickness. Non-finite or negative values count as unset.
+  pub thickness: Option<f32>,
+}
+
+impl TextStrikethrough {
+  /// A line through the text in its color, at the font's thickness.
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  pub fn color(mut self, color: Color) -> Self {
+    self.color = Some(color);
+    self
+  }
+
+  pub fn thickness(mut self, thickness: f32) -> Self {
+    self.thickness = Some(thickness);
     self
   }
 }

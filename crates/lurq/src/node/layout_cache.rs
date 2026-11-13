@@ -522,11 +522,12 @@ mod tests {
   fn result(width: f32) -> LayoutResult {
     LayoutResult {
       size: Size::new(width, 10.0),
-      children: vec![].into(),
+      children: vec![],
       text_layout: None,
       dropped: false,
       holds: SubtreeHolds::UNKNOWN,
       generation: 0,
+      sticky_shifts: None,
     }
   }
 

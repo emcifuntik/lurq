@@ -4,6 +4,7 @@ mod in_phase;
 mod interpolation;
 mod keyframes;
 mod opacity;
+mod presence;
 mod timeline_pruning;
 mod transform;
 mod transition;

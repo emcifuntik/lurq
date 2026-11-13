@@ -44,18 +44,10 @@ pub(crate) struct StackEntry {
   pub(crate) state: Option<Arc<dyn Any + Send + Sync>>,
 }
 
+#[derive(Default)]
 pub(crate) struct HistoryStack {
   entries: Vec<HistoryEntry>,
   cursor: usize,
-}
-
-impl Default for HistoryStack {
-  fn default() -> Self {
-    Self {
-      entries: Vec::new(),
-      cursor: 0,
-    }
-  }
 }
 
 impl std::fmt::Debug for RouterHandle {

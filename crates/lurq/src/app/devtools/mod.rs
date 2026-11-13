@@ -371,6 +371,8 @@ impl Component for DevTools {
   }
 }
 
+// Each argument is a separate piece of panel state; bundling them is a refactor of its own.
+#[allow(clippy::too_many_arguments)]
 fn components_view(
   snapshot: &DevToolsSnapshot,
   selected: Option<&DevToolsNode>,

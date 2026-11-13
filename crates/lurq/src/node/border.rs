@@ -137,6 +137,34 @@ pub struct Border {
   pub width: BorderSizeValue,
   pub color: BackgroundColor,
   pub placement: BorderPlacement,
+  /// The dashes of a dashed border; `None` is a solid line.
+  pub dash: Option<BorderDash>,
+}
+
+/// The dashes of a dashed border, cut along the element's outline clockwise from the start of its top edge.
+/// The period is fitted to the outline's length, so the last dash meets the first with a whole gap between
+/// them; a border on some sides only shows the dashes that fall on them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BorderDash {
+  /// Dashes three times the border's width long, with gaps as long.
+  Auto,
+  /// A dash and the gap after it, in logical pixels. A border with no dash or no gap is a solid line.
+  Lengths { dash: f32, gap: f32 },
+}
+
+impl BorderDash {
+  /// The dash and the gap of a border `width` wide, both zero for a solid line.
+  fn resolve(self, width: f32) -> [f32; 2] {
+    let [dash, gap] = match self {
+      Self::Auto => [width * 3.0; 2],
+      Self::Lengths { dash, gap } => [dash, gap],
+    };
+    if dash.is_finite() && gap.is_finite() && dash > 0.0 && gap > 0.0 {
+      [dash, gap]
+    } else {
+      [0.0; 2]
+    }
+  }
 }
 
 impl Border {
@@ -145,7 +173,20 @@ impl Border {
       width: width.into(),
       color: color.into(),
       placement,
+      dash: None,
     }
+  }
+
+  /// A dashed line: dashes three times the border's width long, with gaps as long.
+  pub fn dashed(mut self) -> Self {
+    self.dash = Some(BorderDash::Auto);
+    self
+  }
+
+  /// A dashed line of dashes `dash` logical pixels long with gaps of `gap`.
+  pub fn dash(mut self, dash: f32, gap: f32) -> Self {
+    self.dash = Some(BorderDash::Lengths { dash, gap });
+    self
   }
 
   pub fn inside(width: impl Into<BorderSizeValue>, color: impl Into<BackgroundColor>) -> Self {
@@ -161,10 +202,12 @@ impl Border {
   }
 
   pub(crate) fn resolve(&self, palette: &ThemePalette, border_sizes: &ThemeBorderSizes) -> Option<ResolvedBorder> {
+    let width = self.width.resolve(border_sizes);
     Some(ResolvedBorder {
-      width: self.width.resolve(border_sizes),
+      width,
       color: self.color.resolve(palette)?,
       placement: self.placement,
+      dash: self.dash.map_or([0.0; 2], |dash| dash.resolve(width)),
     })
   }
 }
@@ -273,6 +316,8 @@ pub struct ResolvedBorder {
   pub width: f32,
   pub color: Color,
   pub placement: BorderPlacement,
+  /// The length of a dash and of the gap after it, in logical pixels; both zero for a solid line.
+  pub dash: [f32; 2],
 }
 
 #[derive(Clone, Copy, Default, Debug, PartialEq)]

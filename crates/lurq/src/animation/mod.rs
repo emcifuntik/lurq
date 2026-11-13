@@ -1,3 +1,5 @@
+// The file holds the `Animation` type; its items are re-exported from here.
+#[allow(clippy::module_inception)]
 mod animation;
 mod easing;
 mod interpolate;
@@ -8,6 +10,6 @@ pub use animation::{
   Animation, AnimationDirection, AnimationEngine, AnimationFillMode, AnimationIterationCount, clock_origin,
 };
 pub use easing::{Easing, StepPosition};
-pub use interpolate::{AnimatableProperty, AnimatableValue};
+pub use interpolate::{AnimatableProperty, AnimatableValue, ShadowList};
 pub use keyframes::{KeyframeBuilder, KeyframeEntry, Keyframes, KeyframesId};
 pub use transition::{Transition, TransitionEngine, TransitionProperty};

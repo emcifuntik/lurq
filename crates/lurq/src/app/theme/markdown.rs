@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use crate::{
   layout::{
     scrollbar::ScrollBarStyle,
-    text_style::{FontFeatures, FontStyle, FontWeight, TextStyle, TextUnderline},
+    text_style::{FontFeatures, FontStyle, FontWeight, TextStrikethrough, TextStyle, TextUnderline},
   },
   node::{border::BorderRadius, color::Color, padding::Padding},
 };
@@ -23,6 +23,8 @@ pub struct MarkdownTextStyle {
   pub color: Option<Color>,
   /// Underlines the text; replaces the base style's underline.
   pub underline: Option<TextUnderline>,
+  /// Draws a line through the text; replaces the base style's.
+  pub strikethrough: Option<TextStrikethrough>,
 }
 
 impl MarkdownTextStyle {
@@ -61,6 +63,9 @@ impl MarkdownTextStyle {
     }
     if let Some(underline) = self.underline {
       style.underline = Some(underline);
+    }
+    if let Some(strikethrough) = self.strikethrough {
+      style.strikethrough = Some(strikethrough);
     }
     style
   }
@@ -386,7 +391,12 @@ impl Default for ThemeMarkdown {
       link_tooltip,
       link_tooltip_box,
       link_tooltip_delay: Duration::from_millis(500),
-      strikethrough: MarkdownInlineStyle::default(),
+      strikethrough: MarkdownInlineStyle {
+        text: MarkdownTextStyle {
+          strikethrough: Some(TextStrikethrough::new()),
+          ..MarkdownTextStyle::default()
+        },
+      },
       list_marker,
       blockquote_marker,
       table_header,

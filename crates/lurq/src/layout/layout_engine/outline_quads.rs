@@ -1,0 +1,156 @@
+//! Paint of a node's outline: a ring around its box, drawn over its content
+//! and over what is painted after the node.
+//!
+//! Of two buttons side by side, the second is painted after the first: a ring
+//! painted with the first would be covered where it lies over the second. So
+//! a node's outline is kept (`pending_outlines`) and painted at the end of
+//! the scope the node is in, over everything in that scope:
+//!
+//! - a scroll container, whose border and bars are over what scrolls;
+//! - an element with an opacity or a blur, which is painted as one layer;
+//! - the siblings that scroll under an element that sticks;
+//! - the page, and each layer over it: a menu, a dialog;
+//! - failing these, the tree.
+//!
+//! Containers clip their content to their bounds by default, and a control
+//! often fills its container to the edge: clipped as content is, its ring
+//! would be cut there, on every side it touches. So an outline takes the clip
+//! its node is under let out by how far the outline reaches. A node that is
+//! itself cut by a container is still cut with its ring, a little further
+//! out. A scroll viewport, and the window, cut the ring where they cut the
+//! node: what scrolls out of view takes its ring with it.
+
+use super::{DEFAULT_TRANSPARENT_COLOR, LayoutEngine, intersect_clip, transformed_quad_frame};
+use crate::{
+  layout::{
+    layout_result::LayoutResult,
+    quad::{ClipRect, Quad, QuadContent},
+  },
+  node::{
+    border::{BorderPlacement, BorderRadius, ResolvedBorder, ResolvedBorders},
+    node::Node,
+    outline::ResolvedOutline,
+    transform::Transform2D,
+  },
+};
+
+impl LayoutEngine {
+  fn resolved_outline(&self, node: &Node) -> Option<ResolvedOutline> {
+    // A transition or an animation of the outline draws its own this frame: a ring on its way in or out.
+    if let Some(crate::animation::AnimatableValue::Outline(animated)) =
+      node.animation_override(crate::animation::AnimatableProperty::Outline)
+    {
+      return animated.filter(|outline| outline.width > 0.0 && outline.color.a() > 0);
+    }
+    node
+      .effective_outline()?
+      .resolve(&self.palette.borrow(), &self.border_sizes.borrow())
+  }
+
+  /// How far `node` paints past its layout box: its outer shadows and its
+  /// outline. Culling keeps a node whose box is clipped away while these
+  /// still show.
+  #[inline(never)]
+  pub(super) fn paint_outset(&self, node: &Node) -> f32 {
+    let shadow = self.box_shadow_outset(node);
+    match self.resolved_outline(node) {
+      Some(outline) => shadow.max(outline.outset()),
+      None => shadow,
+    }
+  }
+
+  /// The clip of an outline that reaches `outset` past its node, which is
+  /// under `clip`.
+  fn outline_clip(&self, clip: ClipRect, outset: f32) -> ClipRect {
+    if !clip.active || outset <= 0.0 {
+      return clip;
+    }
+    let corner = |radius: f32| if radius > 0.0 { radius + outset } else { 0.0 };
+    let let_out = ClipRect {
+      x: clip.x - outset,
+      y: clip.y - outset,
+      width: clip.width + outset * 2.0,
+      height: clip.height + outset * 2.0,
+      active: true,
+      border_radius: clip.border_radius.map(|radius| BorderRadius {
+        top_left: corner(radius.top_left),
+        top_right: corner(radius.top_right),
+        bottom_right: corner(radius.bottom_right),
+        bottom_left: corner(radius.bottom_left),
+      }),
+    };
+    intersect_clip(self.scroll_clip.get(), let_out)
+  }
+
+  /// Paints the outlines kept since `mark`, a length of `pending_outlines`
+  /// taken when a scope began: the end of that scope.
+  pub(super) fn paint_pending_outlines(&self, mark: usize, quads: &mut Vec<Quad>) {
+    let mut pending = self.pending_outlines.borrow_mut();
+    if pending.len() > mark {
+      quads.extend(pending.drain(mark..));
+    }
+  }
+
+  /// Keeps the node's outline for the end of the scope the node is in: a
+  /// quad grown past the node's box by the outline's offset and width, with
+  /// the line as its inside border. The corners follow the node's, grown by
+  /// the same amount; a square corner stays square.
+  #[inline(never)]
+  #[allow(clippy::too_many_arguments)]
+  pub(super) fn push_outline_quad(
+    &self,
+    node: &Node,
+    result: &LayoutResult,
+    abs_x: f32,
+    abs_y: f32,
+    opacity: f32,
+    transform: Transform2D,
+    clip: ClipRect,
+  ) {
+    let Some(outline) = self.resolved_outline(node) else {
+      return;
+    };
+    let grow = outline.outset();
+    let width = result.size.width + grow * 2.0;
+    let height = result.size.height + grow * 2.0;
+    if width <= 0.0 || height <= 0.0 {
+      return;
+    }
+    let corner = |radius: f32| if radius > 0.0 { (radius + grow).max(0.0) } else { 0.0 };
+    let border_radius = node.get_border_radius(&self.radii.borrow()).map(|radius| BorderRadius {
+      top_left: corner(radius.top_left),
+      top_right: corner(radius.top_right),
+      bottom_right: corner(radius.bottom_right),
+      bottom_left: corner(radius.bottom_left),
+    });
+    let side = Some(ResolvedBorder {
+      width: outline.width,
+      color: outline.color,
+      placement: BorderPlacement::Inside,
+      dash: [0.0; 2],
+    });
+    let (x, y, quad_transform, transform_origin) = transformed_quad_frame(abs_x - grow, abs_y - grow, transform);
+    let clip = self.outline_clip(clip, grow);
+    self.pending_outlines.borrow_mut().push(Quad {
+      x,
+      y,
+      width,
+      height,
+      opacity,
+      transform: quad_transform,
+      transform_origin,
+      content: QuadContent::Rect {
+        color: DEFAULT_TRANSPARENT_COLOR,
+        gradient: None,
+      },
+      border_radius,
+      border: Some(ResolvedBorders {
+        top: side,
+        right: side,
+        bottom: side,
+        left: side,
+      }),
+      clip,
+    });
+  }
+}

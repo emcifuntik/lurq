@@ -26,12 +26,15 @@ Common visual modifiers:
 | --- | --- |
 | `.background(color)` | Background color from a concrete color or `PaletteColor`. |
 | `.background_gradient(gradient)` | Linear, radial, or conic gradient fill. See [Gradients](#gradients). |
+| `.foreground(color)` | Color of the text in the element and under it. See [Foreground](#foreground). |
 | `.rounded(radius)` | Uniform corner radius from `f32` or `RadiusSize`. |
 | `.corner_radius_*` | Per-corner radius from `f32` or `RadiusSize`. |
 | `.border_inside(width, color)` | Border inside the element bounds from a concrete width or `BorderSize`. |
 | `.border_center(width, color)` | Border centered on the element edge from a concrete width or `BorderSize`. |
 | `.border_outside(width, color)` | Border outside the element bounds from a concrete width or `BorderSize`. |
+| `.border(border)`, `.border_top(border)` … | A `Border` on every side or on one, solid or dashed. See [Borders](#borders). |
 | `.box_shadow(shadow)` | Drop or inset shadows from a `ShadowStyle` role, a `BoxShadow`, or a list. See [Box Shadows](#box-shadows). |
+| `.outline(outline)` | A line around the element, outside its box, that takes no room in layout. See [Outline](#outline). |
 | `.opacity(value)` | Fade the element and its subtree as one group. See [Opacity](#opacity). |
 | `.blur(radius)` | Blur the element and its subtree as one layer. See [Blur](../blur/). |
 | `.backdrop_blur(radius)` | Blur what is painted behind the element: frosted glass. See [Blur](../blur/#frosted-glass). |
@@ -41,6 +44,96 @@ Common visual modifiers:
 Translucent colors (`"#000000a6"`, `.opacity(...)`, anti-aliased edges, text, images) blend on the sRGB-encoded
 channels, as CSS and design tools do: a `#000000a6` scrim over `#eeeeee` shows `#535353`. Both native backends render
 through a non-sRGB target to get this; the devtools screenshot renderer blends the same way.
+
+## Foreground
+
+`.foreground(color)` sets the color of the text in an element and under it, as CSS `color` does. A `Text` that names no
+color of its own is drawn in the foreground of its nearest ancestor that has one:
+
+```rust
+use lurq::{
+  app::theme::PaletteColor,
+  components::{Row, Text},
+};
+
+// Both labels are white; the count is the muted role.
+Row::new()
+  .background("#171717")
+  .foreground("#fafafa")
+  .child(Text::new("Inbox"))
+  .child(Text::new("Unread"))
+  .child(Text::new("12").color(PaletteColor::TextMuted))
+```
+
+- The color is a concrete color or a `PaletteColor`, which follows the theme.
+- A text's own color wins: `Text::color(...)`, and the color of the style given to `Text::styled(...)`.
+- A text with a typography variant and no color of its own takes the foreground in place of the variant's color.
+- With no foreground above it a text keeps its typography style's color, and where that is the default text color,
+  the theme's foreground: see [The theme's foreground](#the-themes-foreground).
+- `.foreground(...)` on a `Text` sets the color of that text.
+- A `TextInput` and Markdown draw in their own styles and do not read it.
+- The content of an overlay (a popup, a modal, a select's menu) is painted outside the element that declares it and
+  starts from no foreground. Set one on the overlay's content.
+- It is paint only: it changes no size or position. On a live element use `ElementHandle::set_foreground`.
+
+### The theme's foreground
+
+`PaletteColor::Foreground` is the color of text that names none. It is black by default, the color of
+`TextStyle::default()`, so a theme that never sets it draws text as it always did.
+
+```rust
+// Light text for a dark theme: every text that names no color follows.
+app.theme().set_palette_color(PaletteColor::Foreground, Color::from_hex("#fafafa"));
+```
+
+A style that keeps the default text color names no color, and the theme's foreground stands in for it:
+
+- a `Text` with no color, whether it has no variant, a typography variant whose style keeps the default color, or a
+  style given to `Text::styled(...)` that keeps it;
+- a `TextInput`'s text, its placeholder where that has no style of its own, and its caret;
+- a Markdown document whose style keeps the default color.
+
+A typography style with a color of its own keeps it, and so does a text with `Text::color(...)`. A `.foreground(...)`
+above a text comes first, as described above. To draw text in exactly the default black under another foreground, name
+it: `Text::color("#000000")`.
+
+## Borders
+
+`.border_inside`, `.border_center` and `.border_outside` draw a line of one width on all four sides, inside the
+element's box, centered on its edge, or outside it. `.border(border)` takes a `Border`, and `.border_top`,
+`.border_right`, `.border_bottom` and `.border_left` set one side each:
+
+```rust
+use lurq::{components::Row, node::border::Border};
+
+// A card with an accent on its left edge and a dashed drop target.
+Row::new().rounded(8.0).border_left(Border::inside(3.0, "#2563eb"));
+Row::new().rounded(8.0).border(Border::inside(1.0, "#94a3b8").dashed());
+```
+
+- A border follows the element's corner radii. The corner of its inner edge is the corner's radius less the widths of
+  the two sides that meet there, as CSS shapes a padding box, so sides of different widths meet in a smooth curve.
+- A border on one side of a rounded element follows the corners at its ends and thins out to nothing where it meets a
+  side that has none, as in CSS. Between two square corners it is a plain band.
+- A border outside or centered on a rounded element keeps the element's corners for its inner edge and is rounder on
+  its outer edge by its width. A square corner stays square.
+- Sides that differ in width only are painted as one shape; sides of different colors, placements or dashes are painted
+  apart, each as a border of its own.
+
+### Dashed borders
+
+`Border::dashed()` cuts the line into dashes three times its width long, with gaps as long.
+`Border::dash(dash, gap)` sets both lengths, in logical pixels:
+
+```rust
+Border::inside(2.0, "#64748b").dashed();        // 6 on, 6 off
+Border::inside(1.0, "#64748b").dash(4.0, 2.0);
+```
+
+The dashes run along the element's outline, around its corners, clockwise from the start of its top edge. The period is
+fitted to the outline's length, so the last dash meets the first with a whole gap between them and the lengths drawn
+can differ a little from the ones given. A dashed border on some sides only shows the dashes that fall on them; the
+dashes of a single side run to its ends. A border with no dash or no gap is a solid line.
 
 ## Opacity
 
@@ -206,6 +299,43 @@ How shadows paint:
 
 Both native backends evaluate the blurred rounded rect analytically in the quad shader (a closed-form `erf` along one axis, eight samples along the other), so a shadow is one more instance in the quad pipeline: no offscreen pass and no blur texture. wgpu and DX12 render the same pixels; the devtools screenshot renderer uses the same formula on the CPU.
 
+## Outline
+
+`.outline(Outline::new(width, color))` draws a line around an element, outside its box, as CSS `outline` does, and
+`.offset(px)` on the outline leaves a gap between the box and the line, as `outline-offset` does. It is what a focus
+ring is made of:
+
+```rust
+use lurq::{
+  app::theme::PaletteColor,
+  components::Button,
+  node::Outline,
+};
+
+Button::new("Save")
+  .rounded(6.0)
+  .focus_visible(|style| style.outline(Outline::new(2.0, PaletteColor::BorderFocus).offset(2.0)))
+```
+
+- The width is logical pixels or a `BorderSize` role; the color is a concrete color or a `PaletteColor`.
+- It takes no room in layout: showing or hiding it moves nothing, unlike a border, which is part of the box.
+- The line follows the element's corner radii, grown by the offset and the width, so the ring stays concentric with a
+  rounded control. A square corner stays square.
+- A negative offset draws the line inside the box.
+- It is painted over the element's own content and over the elements painted after it, as CSS paints an outline: of
+  two buttons side by side with no gap, the ring of the first lies over the second. It stays with what its element is
+  painted with: under the border and the bars of the scroll container it scrolls in, under an element that
+  [sticks](../layout/#sticky-elements) over it, inside the layer of an ancestor with an opacity or a blur, and under
+  a menu or a dialog over the page.
+- A container clips its content to its bounds, but not the ring of what touches its edge: an outline reaches past the
+  containers its element is in by its own offset and width, so a button that fills its row keeps its whole ring with no
+  padding around it. An element that is itself cut by a container is cut with its ring.
+- A scroll container and the window cut the ring where they cut the element: what scrolls out of view takes its ring
+  with it.
+- An outline with no width, or `Outline::none()`, paints nothing; a state style uses `Outline::none()` to remove the
+  element's own outline.
+- On a live element use `ElementHandle::set_outline`.
+
 ## Hover, Active, And Focus Styles
 
 State styles merge into the base style while the node is hovered, active, focused, or focus-visible.
@@ -228,6 +358,32 @@ The focused style (`.focused(...)`) shows whenever the node has focus, whether a
 
 A fifth state style, `.drag_over(...)` (`drag_over_style`), applies while files from the OS are dragged over the node; see [File Drag And Drop](#file-drag-and-drop).
 
+A state style can also set:
+
+- `.foreground(color)`: the color of the text in the element and under it while the state holds (see
+  [Foreground](#foreground)), so one style recolors a button's label and icon together.
+- `.opacity(value)`: the opacity of the element and its subtree while the state holds, in place of the element's own. A
+  `Transition::opacity()` on the element animates the change.
+- `.outline(outline)`: an [outline](#outline) while the state holds, typically a focus ring in `focus_visible`.
+
+These three change painting only. Where several state styles set the same value, the one applied last wins: the
+[disabled](#disabled) style, then drag-over, active, hovered, focus-visible, focused.
+
+```rust
+use lurq::{components::{Row, Text}, node::Outline};
+
+// A ghost button: one hover style changes the fill and the label.
+Row::new()
+  .padding_horizontal(12.0)
+  .padding_vertical(8.0)
+  .rounded(6.0)
+  .foreground("#18181b")
+  .hovered(|style| style.background("#e4e4e9").foreground("#09090b"))
+  .active(|style| style.opacity(0.8))
+  .focus_visible(|style| style.outline(Outline::new(2.0, "#71717a").offset(2.0)))
+  .child(Text::new("Cancel"))
+```
+
 State styles can affect layout if they change frame, padding, or flex. That is supported, but it can force relayout when interaction state changes.
 
 Use `ctx.interaction()` when component code needs to read the current interaction state:
@@ -238,6 +394,46 @@ let hovered = interaction.is_hovered();
 ```
 
 Attach the state to an element with `.interactive(interaction)` if you need to observe that element's state from component code.
+
+## Disabled
+
+`.disabled(true)` takes an element and everything in it out of input:
+
+```rust
+use lurq::components::{Button, Row};
+
+// Neither button can be clicked, focused or reached with Tab.
+Row::new()
+  .disabled(saving)
+  .when_disabled(|style| style.opacity(0.5))
+  .child(Button::new("Save").on_click(save))
+  .child(Button::new("Discard").on_click(discard))
+```
+
+- No press, click, double click, tap, long press or drop reaches a disabled element or anything in it, and none of
+  them is hovered, pressed or focused. Built-in controls in it (text inputs, checkboxes, sliders, selects, links) do
+  nothing.
+- Tab passes it by, `ctx.focus(...)` and `ElementHandle::focus()` on it are ignored, `ElementHandle::click()` does
+  nothing, and an element that had focus when it, or an element it is in, became disabled loses it.
+- It still covers what is behind it: a press on a disabled element reaches nothing. That includes the elements it is
+  in, as with a disabled control on the web: a clickable card is not clicked through its disabled button. A press on it
+  leaves focus where it is.
+- A pointer that moves over it still reaches the elements it is in: a row stays hovered over its disabled button.
+- Scrolling is not input to a control, so it works as if nothing were disabled: a wheel or a finger over a disabled
+  element scrolls the containers the element is in and the scroll containers inside it, and their scrollbars can be
+  dragged, so what a disabled panel holds can be read to its end. Scroll handlers (`on_scroll`) of the disabled element
+  and of what is in it do not run, other than those of its scroll containers.
+- The disabled style, `.when_disabled(|style| ...)` or `.disabled_style(style)`, is merged over the element's style
+  after every other state style while the element is disabled, by itself or by an element it is in, so each element in
+  a disabled group can have its own. It changes painting only: a frame, padding or flex in it is ignored. Use
+  `.opacity(...)` or `.foreground(...)` in it to dim a whole control from its root, and `.cursor(...)` for the cursor
+  over it.
+- `InteractionState::is_disabled()`, on a state given to an element with `.interactive(state)`, is `true` for a
+  disabled element and for the elements in it, in view or not. It is written when the tree is built and when a live
+  element is disabled or enabled, so it is right as soon as either has happened.
+- On a live element use `ElementHandle::set_disabled`.
+
+Disabling is about input. It sets no look of its own: without a disabled style a disabled element is painted as before.
 
 ## Mouse Events
 
@@ -416,7 +612,7 @@ ScrollVertical::new(content)
 
 `padding` (default 2) is the gap around the bar. `edge_inset` overrides the gap between the bar and the edge it runs along (right for a vertical bar, bottom for a horizontal one), and `end_inset` the gap between each end of the track and the container's edge; `.insets(edge, end)` sets both. Both are measured from the scroll container's outer bounds, border included, so a thumb clears an 11 px rounded corner with `end_inset` 11, and the track is the container's length minus twice `end_inset`. The thumb is `track × visible / content` long, at least `min_thumb_length`. A `Reserved` gutter is `width` plus twice the edge inset.
 
-`visible` says when the bar shows. `ScrollBarVisibility::Auto` (the default) shows it while the content overflows, `Always` also while it fits, and `Never` (`ScrollBarStyle::hidden()`) paints no bar and takes no pointer for one, while the wheel, the keyboard and scroll requests still scroll. `ScrollBarVisibility::OnHover` (`ScrollBarStyle::on_hover()`) keeps the bar of overflowing content hidden until it is needed: it shows while the pointer is anywhere over the scroll container, while the content scrolls (the wheel, a scroll request, a text input bringing its caret into view) and while its thumb is dragged. Once none of these holds it stays for `fade_delay` (default 600 ms) and fades out over `fade_duration` (default 200 ms) along `fade_easing` (default `Easing::EASE_OUT`); `.fade(delay, duration)` sets both times, and a zero `fade_duration` hides it at once. A hidden bar is not painted and takes no pointer, so what lies under its place gets the hover and the press; a shown one, fading too, behaves as an `Auto` bar. The pointer coming straight onto a hidden bar's place shows the bar, which takes the pointer from its next move. `OnHover` works the same for scroll containers, `VirtualizedList` and a multiline `TextInput`; with `ScrollBarPlacement::Reserved` the gutter stays reserved while the bar is hidden. lurq does not read the system's reduced-motion setting: an app that follows it sets `fade_duration` to zero.
+`visible` says when the bar shows. `ScrollBarVisibility::Auto` (the default) shows it while the content overflows, `Always` also while it fits, and `Never` (`ScrollBarStyle::hidden()`) paints no bar and takes no pointer for one, while the wheel, the keyboard and scroll requests still scroll. `ScrollBarVisibility::OnHover` (`ScrollBarStyle::on_hover()`) keeps the bar of overflowing content hidden until it is needed: it shows while the pointer is anywhere over the scroll container, while the content scrolls (the wheel, a scroll request, a text input bringing its caret into view) and while its thumb is dragged. Once none of these holds it stays for `fade_delay` (default 600 ms) and fades out over `fade_duration` (default 200 ms) along `fade_easing` (default `Easing::EASE_OUT`); `.fade(delay, duration)` sets both times, and a zero `fade_duration` hides it at once. A hidden bar is not painted and takes no pointer, so what lies under its place gets the hover and the press; a shown one, fading too, behaves as an `Auto` bar. The pointer coming straight onto a hidden bar's place shows the bar, which takes the pointer from its next move. `OnHover` works the same for scroll containers, `VirtualizedList` and a multiline `TextInput`; with `ScrollBarPlacement::Reserved` the gutter stays reserved while the bar is hidden. The fade is a change of opacity, which [reduced motion](../animation-transforms/#reduced-motion) keeps; an app that wants none sets `fade_duration` to zero.
 
 `.scrollbar_hovered(...)` receives the effective style, so it applies to either the theme default or the component override. It applies while the pointer is over the area where the scrollbar takes the pointer, described below.
 

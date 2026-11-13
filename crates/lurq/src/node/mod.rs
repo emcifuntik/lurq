@@ -18,10 +18,14 @@ pub(crate) mod layout_cache;
 mod layout_tracking;
 pub(crate) mod lazy_box;
 mod letter_spacing;
+// The file holds the `Node` type; paths across the crate name it.
+#[allow(clippy::module_inception)]
 pub(crate) mod node;
 pub(crate) mod node_kind;
 pub(crate) mod outer_decoration;
+pub mod outline;
 pub mod padding;
+pub(crate) mod presence;
 pub mod radius_value;
 pub mod select_icon;
 pub(crate) mod select_state;
@@ -60,6 +64,7 @@ pub use node::{
   VoidEventHandler,
 };
 pub(crate) use node::{Node, NodeUpdate, SyntheticNodeRole};
+pub use outline::{Outline, ResolvedOutline};
 pub use radius_value::RadiusValue;
 pub use select_icon::{SelectAdornmentState, SelectCheckmarkPosition, SelectIcon};
 pub use select_style::{SelectPartStyle, SelectStyle};
