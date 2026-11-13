@@ -1,4 +1,4 @@
-"""Build the lurq icon font, with its grid-fitting hints, from the SVG sources.
+"""Build the lurq icon font, with its grid-fitting hints, from the icons drawn in Pencil.
 
 Reads:
   design/icons/svg/<name>.svg   one glyph each: a 24x24 viewBox of filled outlines, the SVG
@@ -8,14 +8,27 @@ Reads:
 Writes:
   crates/lurq/assets/lurq-icons.ttf  the hinted font the toolkit embeds
   design/icons/codepoints.json       only to append a name it has not seen (from U+E000 up)
+  design/icons/svg/<name>.svg        with --from-board: the glyphs that are new or redrawn
 
 Run from the repository root (needs fontTools):
 
   python scripts/build-icon-font.py
+  python scripts/build-icon-font.py --from-board
   python scripts/build-icon-font.py --unhinted target/lurq-icons-unhinted.ttf
 
-The second form also writes the same outlines without instructions, to compare against.
-The build is deterministic: the same sources give the same bytes.
+The first form builds the font from the sources in the repository. The build is
+deterministic: the same sources give the same bytes.
+
+`--from-board` first brings the sources up to date with the Pencil file: every component
+named `Icon/<name>` is exported as SVG, and a glyph that is new or drawn differently
+replaces its source. A source whose component is gone from the board is kept and named in
+the output, since its codepoint may be in use. A .pen file is encrypted on disk, so the
+export goes through Pencil itself: the app has to be running, and the script starts its
+MCP server and asks it. The server is the `mcp-server` executable in the app's resources:
+`--pencil-mcp <path>`, or the PENCIL_MCP_SERVER variable, or the `pencil` server registered
+with Claude Code in ~/.claude.json. `--board <file.pen>` reads another file.
+
+`--unhinted` also writes the same outlines without instructions, to compare against.
 
 The hinter works on one axis at a time. It finds the edges that run straight across the
 axis (and the extrema of wide arcs), and pairs a low edge with the high edge across the
@@ -34,6 +47,12 @@ without it a smooth rasterizer ignores hints along x.
 
 import argparse
 import json
+import os
+import queue
+import re
+import subprocess
+import tempfile
+import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -51,13 +70,17 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ROOT / "design" / "icons" / "svg"
 CODEPOINTS = ROOT / "design" / "icons" / "codepoints.json"
 FONT = ROOT / "crates" / "lurq" / "assets" / "lurq-icons.ttf"
+BOARD = ROOT / "pencil" / "lurq-design-system.pen"
+COMPONENT = "Icon/"  # a glyph is the reusable component named Icon/<name>
+GLYPH_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+ANSWER_WITHIN = 120  # seconds Pencil gets to answer a request
 
 UPM = 2400
 UNIT = 100  # font units per design unit: the icons are drawn on a 24-unit grid
 FIRST_CODEPOINT = 0xE000
 FAMILY = "lurq icons"
 EPOCH = 3_850_070_400  # the font's date: 1 January 2026, in seconds since 1904
-SVG ="{http://www.w3.org/2000/svg}"
+SVG = "{http://www.w3.org/2000/svg}"
 
 # In font units.
 MIN_EDGE = 80  # shortest straight run that counts as an edge
@@ -495,6 +518,119 @@ def hint(glyph, contours):
     return max(len(line.split()) - 2 for line in lines if line.startswith("PUSH"))
 
 
+class Pencil:
+    """Pencil's MCP server on a pipe. It talks to the running app, which reads the .pen file."""
+
+    def __init__(self, command):
+        try:
+            self.server = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError as error:
+            raise SystemExit(f"Pencil's MCP server did not start: {error}")
+        self.answers = queue.Queue()
+        threading.Thread(target=self.read, daemon=True).start()
+        self.requests = 0
+        client = {"name": "lurq build-icon-font", "version": "1"}
+        self.request("initialize", {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": client})
+        self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def read(self):
+        for line in self.server.stdout:
+            self.answers.put(json.loads(line))
+        self.answers.put(None)
+
+    def send(self, message):
+        self.server.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+        self.server.stdin.flush()
+
+    def request(self, method, params):
+        self.requests += 1
+        self.send({"jsonrpc": "2.0", "id": self.requests, "method": method, "params": params})
+        while True:
+            try:
+                answer = self.answers.get(timeout=ANSWER_WITHIN)
+            except queue.Empty:
+                raise SystemExit(f"Pencil did not answer within {ANSWER_WITHIN} seconds. Is the app running?")
+            if answer is None:
+                raise SystemExit("Pencil's MCP server closed the connection. Is the app running?")
+            if answer.get("id") == self.requests:
+                if "error" in answer:
+                    raise SystemExit(f"Pencil refused {method}: {answer['error'].get('message', answer['error'])}")
+                return answer["result"]
+
+    def execute(self, board, description, snippet):
+        """Run a snippet against a .pen file and return what it printed."""
+        arguments = {"uri": board.resolve().as_uri(), "description": description, "input": snippet}
+        result = self.request("tools/call", {"name": "execute", "arguments": arguments})
+        text = "\n".join(part.get("text", "") for part in result.get("content", []))
+        if result.get("isError") or not text.startswith("OK"):
+            raise SystemExit(f"Pencil could not read {board}:\n{text.strip()}")
+        return text
+
+    def close(self):
+        self.server.stdin.close()
+        try:
+            self.server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.server.kill()
+
+
+def pencil_command(given):
+    """The command that starts Pencil's MCP server: as given, from the environment, or as Claude Code has it."""
+    server = given or os.environ.get("PENCIL_MCP_SERVER")
+    if not server:
+        registered = Path.home() / ".claude.json"
+        servers = json.loads(registered.read_text(encoding="utf-8")).get("mcpServers", {}) if registered.is_file() else {}
+        server = servers.get("pencil", {}).get("command")
+    if not server or not Path(server).is_file():
+        raise SystemExit(
+            "Pencil's MCP server was not found. Pass --pencil-mcp <path> or set PENCIL_MCP_SERVER: "
+            "it is the mcp-server executable under resources/app.asar.unpacked/out in the Pencil app."
+        )
+    return [str(server), "--app", "desktop", "--agent", "lurq-build-icon-font"]
+
+
+def export_board(board, command):
+    """Bring the SVG sources up to date with the icons drawn in a .pen file. Nothing in the file changes."""
+    if not board.is_file():
+        raise SystemExit(f"No Pencil file at {board}")
+    pencil = Pencil(command)
+    with tempfile.TemporaryDirectory() as folder:
+        snippet = (
+            'const icons = Get(n => n.reusable && typeof n.name === "string" && n.name.startsWith(%s)'
+            " ? [n.id, n.name.slice(%d)] : undefined);"
+            "Print(JSON.stringify(icons));"
+            'Export(icons.map(icon => icon[0]), "svg", %s)'
+        ) % (json.dumps(COMPONENT), len(COMPONENT), json.dumps(Path(folder).as_posix()))
+        printed = pencil.execute(board, "Export the icon components as SVG", snippet)
+        pencil.close()
+        listed = next((line for line in printed.splitlines() if line.startswith("[")), "[]")
+        icons = json.loads(listed)
+        if not icons:
+            raise SystemExit(f"No component named {COMPONENT}<name> in {board}")
+        names = [name for _, name in icons]
+        for name in names:
+            if not GLYPH_NAME.fullmatch(name):
+                raise SystemExit(f"{COMPONENT}{name}: a glyph name is lower-case words joined by hyphens")
+            if names.count(name) > 1:
+                raise SystemExit(f"{COMPONENT}{name} is on the board more than once")
+        added, redrawn = [], []
+        SOURCES.mkdir(parents=True, exist_ok=True)
+        for node, name in icons:
+            exported = Path(folder, f"{node}.svg")
+            if not exported.is_file():
+                raise SystemExit(f"Pencil did not export {COMPONENT}{name}")
+            source = SOURCES / f"{name}.svg"
+            if source.is_file() and source.read_bytes() == exported.read_bytes():
+                continue
+            (redrawn if source.is_file() else added).append(name)
+            source.write_bytes(exported.read_bytes())
+    gone = sorted(path.stem for path in SOURCES.glob("*.svg") if path.stem not in names)
+    print(f"Read {len(icons)} icons from {board.name}: {len(added)} new, {len(redrawn)} redrawn.")
+    for title, changed in (("New", added), ("Redrawn", redrawn), ("No longer on the board, kept", gone)):
+        if changed:
+            print(f"{title}: {', '.join(sorted(changed))}")
+
+
 def read_codepoints(names):
     """Codepoints by name. A name seen before keeps its codepoint; a new one takes the next free."""
     known = json.loads(CODEPOINTS.read_text(encoding="utf-8")) if CODEPOINTS.is_file() else {}
@@ -556,8 +692,14 @@ def build(sources, codepoints, hinted):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--from-board", action="store_true", help="first bring the SVG sources up to date with the Pencil file")
+    parser.add_argument("--board", type=Path, default=BOARD, help="the Pencil file --from-board reads")
+    parser.add_argument("--pencil-mcp", type=Path, help="the MCP server executable of the Pencil app")
     parser.add_argument("--unhinted", type=Path, help="also write the font without hints to this path, to compare against")
     args = parser.parse_args()
+
+    if args.from_board:
+        export_board(args.board, pencil_command(args.pencil_mcp))
 
     sources = {path.stem: read_contours(path) for path in sorted(SOURCES.glob("*.svg"))}
     if not sources:
