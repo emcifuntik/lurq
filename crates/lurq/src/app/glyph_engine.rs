@@ -175,12 +175,21 @@ impl CacheKey {
   }
 }
 
+/// Bytes in each of the three samples a long text is hashed by.
+const TEXT_SAMPLE_BYTES: usize = 128;
+
+/// Whether [`hash_sampled_text`] reads only samples of `text`. Two such texts
+/// of one length that differ between the samples hash alike.
+fn text_is_sampled(text: &str) -> bool {
+  text.len() > TEXT_SAMPLE_BYTES * 3
+}
+
 /// Hashes a long text by three samples of it and its length: hashing a whole
 /// document on every lookup would cost more than the lookup saves.
 fn hash_sampled_text<H: Hasher>(text: &str, hasher: &mut H) {
-  const SAMPLE: usize = 128;
+  const SAMPLE: usize = TEXT_SAMPLE_BYTES;
   text.len().hash(hasher);
-  if text.len() <= SAMPLE * 3 {
+  if !text_is_sampled(text) {
     text.hash(hasher);
     return;
   }
@@ -5702,6 +5711,44 @@ mod tests {
     engine.set_bold_text(false);
     assert_eq!(sizes(&mut engine), regular);
     assert_eq!(engine.measure_hits, hits + 2);
+  }
+
+  #[test]
+  fn long_texts_with_one_fingerprint_are_laid_out_once_each() {
+    // Paragraphs of one length that differ only between the first, the middle
+    // and the last 128 bytes, which is all the fingerprint of a long text
+    // reads: each is measured once and found on every pass after, with the
+    // size of an engine that never saw the others.
+    let style = TextStyle::default();
+    let texts: Vec<String> = ["i", "W", "m", " "]
+      .iter()
+      .map(|differs| {
+        let mut text = "a line of a log that says the same as the others. ".repeat(10);
+        text.replace_range(128..186, &differs.repeat(58));
+        text
+      })
+      .collect();
+    let mut engine = GlyphEngine::new();
+    let fingerprints: std::collections::HashSet<u64> = texts
+      .iter()
+      .map(|text| engine.texts.fingerprint(text, &style, 300.0, true))
+      .collect();
+    assert_eq!(fingerprints.len(), 1, "the texts differ where the fingerprint reads");
+    let size = |engine: &mut GlyphEngine, text: &str| {
+      let size = engine.measure_text(text, &style, 300.0);
+      [size.width, size.height]
+    };
+    let alone: Vec<[f32; 2]> = texts.iter().map(|text| size(&mut GlyphEngine::new(), text)).collect();
+    assert_ne!(alone[0], alone[1], "the texts are laid out differently");
+
+    for pass in 0..4 {
+      engine.begin_pass();
+      for (text, alone) in texts.iter().zip(&alone) {
+        assert_eq!(size(&mut engine, text), *alone, "pass {pass}");
+      }
+      let misses = if pass == 0 { texts.len() } else { 0 };
+      assert_eq!(engine.measure_misses, misses, "pass {pass}");
+    }
   }
 
   #[test]

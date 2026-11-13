@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+Fixes:
+
+- Long plain texts that share a fingerprint each keep their entry in the text cache. The cache of 0.61.0 finds a text by a fingerprint that reads the first, the middle and the last 128 bytes of a text over 384 bytes, and kept one entry per fingerprint. Texts of one length that differ only between those samples (rows of a table or a log, two versions of a document) took the entry from one another when a window showed them together, and each was laid out again on every frame; what was drawn was right. Now the first holds the place of the fingerprint and each of the others is kept under the fingerprint of its whole text, which is hashed only for such a text. Eight such paragraphs of 630 bytes drawn again took 134 µs a frame and take 19 µs, as eight that differ inside a sample do.
+
 ## 0.61.0 — 2026-11-13
 
 Added:
