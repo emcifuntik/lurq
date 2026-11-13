@@ -25,11 +25,11 @@ use std::{cell::Cell, ops::Range};
 use crate::layout::{
   backdrop::BackdropRegion,
   opacity_layer::{
-    Extent, LayerBlur, LayerCmd, LayerPlan, LayerStep, LayerTarget, RoundedBox, clipped, glyph_extent, glyph_reach,
-    rect_extent,
+    Extent, LayerBlur, LayerBounds, LayerCmd, LayerPlan, LayerStep, LayerTarget, RoundedBox, clipped, glyph_extent,
+    glyph_reach, rect_extent,
   },
   quad::ClipRect,
-  render_list::{GlyphCmd, RectCmd, RenderList},
+  render_list::{GlyphCmd, RectCmd, RectShadow, RenderGradient, RenderGradientStop, RenderList},
 };
 
 /// The most bytes one blur's input may take; a blur with more behind it is
@@ -492,155 +492,270 @@ impl Notes {
       .extend_from_slice(&[color.r(), color.g(), color.b(), color.a()]);
   }
 
+  // The functions from here on name every field of what they write down, without `..`: a field added to a command
+  // later does not compile here until it is written down or left out by name.
+
   fn clip(&mut self, clip: &ClipRect) {
-    self.flag(clip.active);
-    if !clip.active {
+    let &ClipRect {
+      x,
+      y,
+      width,
+      height,
+      active,
+      border_radius,
+    } = clip;
+    self.flag(active);
+    if !active {
       return;
     }
-    self.f32s(&[clip.x, clip.y, clip.width, clip.height]);
-    self.flag(clip.border_radius.is_some());
-    if let Some(radius) = clip.border_radius {
-      self.f32s(&[
-        radius.top_left,
-        radius.top_right,
-        radius.bottom_right,
-        radius.bottom_left,
-      ]);
+    self.f32s(&[x, y, width, height]);
+    self.flag(border_radius.is_some());
+    if let Some(radius) = border_radius {
+      let crate::node::border::BorderRadius {
+        top_left,
+        top_right,
+        bottom_right,
+        bottom_left,
+      } = radius;
+      self.f32s(&[top_left, top_right, bottom_right, bottom_left]);
     }
   }
 
   fn rounded(&mut self, rounded: Option<&RoundedBox>) {
     self.flag(rounded.is_some());
-    if let Some(rounded) = rounded {
-      self.f32s(&rounded.center);
-      self.f32s(&rounded.half);
-      self.f32s(&rounded.radii);
-      self.f32s(&rounded.inverse);
-      self.f32(rounded.scale);
+    if let Some(&RoundedBox {
+      center,
+      half,
+      radii,
+      inverse,
+      scale,
+    }) = rounded
+    {
+      self.f32s(&center);
+      self.f32s(&half);
+      self.f32s(&radii);
+      self.f32s(&inverse);
+      self.f32(scale);
     }
   }
 
   fn rect(&mut self, rect: &RectCmd) {
+    let RectCmd {
+      // An order places the draw among the others, which the sequence of the notes does.
+      order: _,
+      x,
+      y,
+      width,
+      height,
+      color,
+      radii,
+      stroke,
+      stroke_color,
+      transform,
+      transform_origin,
+      clip,
+      gradient,
+      shadow,
+    } = rect;
     self.tag(b'r');
-    self.f32s(&[rect.x, rect.y, rect.width, rect.height]);
-    self.color(rect.color);
-    self.f32s(&rect.radii);
-    self.f32s(&rect.stroke);
-    self.color(rect.stroke_color);
-    self.f32s(&rect.transform);
-    self.f32s(&rect.transform_origin);
-    self.clip(&rect.clip);
-    self.flag(rect.gradient.is_some());
-    if let Some(gradient) = &rect.gradient {
-      self.u32s(&[gradient.kind, gradient.flags, gradient.stops.len() as u32]);
-      self.f32s(&gradient.dir);
-      self.f32s(&gradient.center);
-      self.f32(gradient.from_angle);
-      for stop in &gradient.stops {
-        self.f32s(&stop.color);
-        self.f32(stop.position);
+    self.f32s(&[*x, *y, *width, *height]);
+    self.color(*color);
+    self.f32s(radii);
+    self.f32s(stroke);
+    self.color(*stroke_color);
+    self.f32s(transform);
+    self.f32s(transform_origin);
+    self.clip(clip);
+    self.flag(gradient.is_some());
+    if let Some(RenderGradient {
+      kind,
+      flags,
+      dir,
+      center,
+      from_angle,
+      stops,
+    }) = gradient
+    {
+      self.u32s(&[*kind, *flags, stops.len() as u32]);
+      self.f32s(dir);
+      self.f32s(center);
+      self.f32(*from_angle);
+      for RenderGradientStop { color, position } in stops {
+        self.f32s(color);
+        self.f32(*position);
       }
     }
-    self.flag(rect.shadow.is_some());
-    if let Some(shadow) = &rect.shadow {
-      self.flag(shadow.inset);
-      self.f32s(&shadow.offset);
-      self.f32s(&[shadow.spread, shadow.sigma]);
-      self.f32s(&shadow.shape_radii);
+    self.flag(shadow.is_some());
+    if let Some(RectShadow {
+      inset,
+      offset,
+      spread,
+      sigma,
+      shape_radii,
+    }) = shadow
+    {
+      self.flag(*inset);
+      self.f32s(offset);
+      self.f32s(&[*spread, *sigma]);
+      self.f32s(shape_radii);
     }
   }
 
   fn glyph(&mut self, glyph: &GlyphCmd) {
+    let &GlyphCmd {
+      order: _,
+      x,
+      y,
+      width,
+      height,
+      color,
+      atlas_min,
+      atlas_max,
+      transform,
+      transform_origin,
+      sharpness,
+      color_glyph,
+      shadow_sigma,
+      ref clip,
+    } = glyph;
     self.tag(b'g');
-    let (color, transform) = (glyph.color, glyph.transform);
     self.f32s(&[
-      glyph.x,
-      glyph.y,
-      glyph.width,
-      glyph.height,
+      x,
+      y,
+      width,
+      height,
       color[0],
       color[1],
       color[2],
       color[3],
-      glyph.atlas_min[0],
-      glyph.atlas_min[1],
-      glyph.atlas_max[0],
-      glyph.atlas_max[1],
+      atlas_min[0],
+      atlas_min[1],
+      atlas_max[0],
+      atlas_max[1],
       transform[0],
       transform[1],
       transform[2],
       transform[3],
-      glyph.transform_origin[0],
-      glyph.transform_origin[1],
-      glyph.sharpness,
-      glyph.shadow_sigma,
+      transform_origin[0],
+      transform_origin[1],
+      sharpness,
+      shadow_sigma,
     ]);
-    self.flag(glyph.color_glyph);
-    self.clip(&glyph.clip);
+    self.flag(color_glyph);
+    self.clip(clip);
   }
 
   /// An image of pixels the engine uploads: it shows them again for the
   /// same id, frame and version.
   #[cfg(feature = "raster")]
   fn image(&mut self, image: &crate::images::ImageCmd) {
+    let crate::images::ImageCmd {
+      order: _,
+      x,
+      y,
+      width,
+      height,
+      image_id,
+      frame_index,
+      version,
+      // The pixels themselves, which the id, the frame and the version stand for.
+      data: _,
+      animation_frames,
+      // A native texture's pixels change without the command changing: `Frame::note_draws` gives up on an input
+      // that reaches one.
+      native: _,
+      image_width,
+      image_height,
+      image_format,
+      uv_min,
+      uv_max,
+      radii,
+      transform,
+      transform_origin,
+      clip,
+      opacity,
+    } = image;
     self.tag(b'i');
-    self.f32s(&[image.x, image.y, image.width, image.height]);
-    self.u64(image.image_id);
-    self.u64(image.frame_index as u64);
-    self.u64(image.version);
-    self.u32s(&[image.image_width, image.image_height]);
-    self.tag(match image.image_format {
+    self.f32s(&[*x, *y, *width, *height]);
+    self.u64(*image_id);
+    self.u64(*frame_index as u64);
+    self.u64(*version);
+    self.u32s(&[*image_width, *image_height]);
+    self.tag(match image_format {
       crate::images::ImagePixelFormat::Rgba8 => 0,
       crate::images::ImagePixelFormat::Nv12 => 1,
     });
-    self.u64(
-      image
-        .animation_frames
-        .as_ref()
-        .map_or(u64::MAX, |frames| frames.len() as u64),
-    );
-    self.f32s(&image.uv_min);
-    self.f32s(&image.uv_max);
-    self.f32s(&image.radii);
-    self.f32s(&image.transform);
-    self.f32s(&image.transform_origin);
-    self.clip(&image.clip);
-    self.f32(image.opacity);
+    self.u64(animation_frames.as_ref().map_or(u64::MAX, |frames| frames.len() as u64));
+    self.f32s(uv_min);
+    self.f32s(uv_max);
+    self.f32s(radii);
+    self.f32s(transform);
+    self.f32s(transform_origin);
+    self.clip(clip);
+    self.f32(*opacity);
   }
 
   #[cfg(feature = "svg")]
   fn svg(&mut self, svg: &crate::svg::SvgCmd) {
+    let crate::svg::SvgCmd {
+      order: _,
+      x,
+      y,
+      width,
+      height,
+      svg_id,
+      mesh,
+      clip,
+    } = svg;
+    let crate::svg::tessellate::TessellatedSvg { vertices, indices } = &**mesh;
     self.tag(b's');
-    self.f32s(&[svg.x, svg.y, svg.width, svg.height]);
-    self.u64(svg.svg_id);
-    self.clip(&svg.clip);
-    self.u32s(&[svg.mesh.vertices.len() as u32, svg.mesh.indices.len() as u32]);
-    for vertex in &svg.mesh.vertices {
-      self.f32s(&vertex.position);
-      self.f32s(&vertex.color);
+    self.f32s(&[*x, *y, *width, *height]);
+    self.u64(*svg_id);
+    self.clip(clip);
+    self.u32s(&[vertices.len() as u32, indices.len() as u32]);
+    for crate::svg::tessellate::SvgVertex { position, color } in vertices {
+      self.f32s(position);
+      self.f32s(color);
     }
-    self.u32s(&svg.mesh.indices);
+    self.u32s(indices);
   }
 
   /// A layer as it is composited.
   fn layer(&mut self, layer: &LayerCmd) {
-    self.f32(layer.opacity);
-    let bounds = layer.bounds;
-    self.u32s(&[bounds.x, bounds.y, bounds.width, bounds.height]);
-    self.flag(layer.blur.is_some());
-    if let Some(blur) = &layer.blur {
-      self.f32(blur.sigma);
-      self.i32s(&[blur.x, blur.y]);
-      self.u32s(&[blur.width, blur.height]);
-      self.rounded(blur.clip.as_ref());
+    let &LayerCmd {
+      // The orders say which draws are in the layer, and those are written down themselves.
+      start_order: _,
+      end_order: _,
+      opacity,
+      bounds,
+      blur,
+    } = layer;
+    let LayerBounds { x, y, width, height } = bounds;
+    self.f32(opacity);
+    self.u32s(&[x, y, width, height]);
+    self.flag(blur.is_some());
+    if let Some(LayerBlur {
+      sigma,
+      x,
+      y,
+      width,
+      height,
+      clip,
+    }) = blur
+    {
+      self.f32(sigma);
+      self.i32s(&[x, y]);
+      self.u32s(&[width, height]);
+      self.rounded(clip.as_ref());
     }
   }
 
   /// A backdrop blur as it is run and put back.
   fn region(&mut self, region: &BackdropRegion) {
-    self.layer(&region.layer);
-    self.rounded(Some(&region.mask));
-    self.rounded(region.clip.as_ref());
+    let BackdropRegion { layer, mask, clip } = region;
+    self.layer(layer);
+    self.rounded(Some(mask));
+    self.rounded(clip.as_ref());
   }
 }
 
