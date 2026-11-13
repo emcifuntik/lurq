@@ -12,7 +12,7 @@ This page tracks text pipeline benchmark results and optimization work.
 - DX12 stages full glyph-atlas uploads in frame upload arenas. The full-upload correctness workaround remains, but the later staging optimization replaces the older allocation/copy path.
 - Detailed counters require `perf_profile`. The workspace's eleven development dependency overrides do not propagate to consuming applications; configure their own workspace profiles when reproducing those dev-build measurements.
 
-Changed after 0.60.0 by the [Chat Screen Text Optimization](/lurq/text-chat-optimization/) round:
+Changed in 0.61.0 by the [Chat Screen Text Optimization](/lurq/text-chat-optimization/) round:
 
 - The 64-entry buffer cache above now holds documents only: plain texts of 1,024 bytes and more. Shorter texts (labels, chat messages) are kept shaped by their text and face in a 4 MiB least-recently-used cache of their own, and laid out again, not shaped again, for a new width, size, wrapping or scale factor.
 - Each laid-out plain text has one cache entry holding its size, vertical extents, carets and glyphs, found with one fast hash of the text. A full cache drops the entries no pass used for 16 passes; it never empties at once.

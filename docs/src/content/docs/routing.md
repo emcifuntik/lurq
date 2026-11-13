@@ -8,7 +8,7 @@ description: Declarative routes, nested layouts, links, params, guards, and navi
 Requires the `router` feature flag.
 
 ```toml
-lurq = { version = "0.60.0", features = ["router"] }
+lurq = { version = "0.61.0", features = ["router"] }
 ```
 
 The router is an in-process UI router. It does not depend on browser URLs; it owns a reactive path signal and renders the matching route tree inside your `Tree`.
@@ -92,8 +92,8 @@ Nested layouts work the same way: a child layout can render another `Outlet`.
 
 ## A Stack Of Screens
 
-`StackOutlet` goes where an `Outlet` would, and moves between screens as a phone's apps do. It is added after
-**lurq 0.60.0**. An `Outlet` shows the current route and drops the one before; a `StackOutlet` keeps every
+`StackOutlet` goes where an `Outlet` would, and moves between screens as a phone's apps do. It is added in
+**lurq 0.61.0**. An `Outlet` shows the current route and drops the one before; a `StackOutlet` keeps every
 entry of the history, from the first to the current one, as a screen of its own:
 
 - a `push` brings the new screen in from the right, over the one before;
@@ -476,7 +476,7 @@ tree.mouse_up(x, y, MouseButton::Left);
 
 ## Tabs
 
-Added after **lurq 0.60.0**. `Tabs` is a set of places side by side, each a router with a history of its own, one
+Added in **lurq 0.61.0**. `Tabs` is a set of places side by side, each a router with a history of its own, one
 of them shown. A tab that is not shown stays as it was, with its screens, their state and their scroll: it is
 kept out of layout, painting and input until it is shown again. `TabOutlet` shows the active one.
 

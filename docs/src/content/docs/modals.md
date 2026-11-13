@@ -79,7 +79,7 @@ Modal::new(content).open(open.clone()).target(panel_ref);
 
 ## Sheets
 
-Added after **lurq 0.60.0**. A `Sheet` is content that comes up from the bottom of the window over everything in
+Added in **lurq 0.61.0**. A `Sheet` is content that comes up from the bottom of the window over everything in
 it, as a phone's apps show a choice or a short task. It is a component of its own, mounted anywhere in the tree
 and taking no room there, and it is up while its signal is set:
 

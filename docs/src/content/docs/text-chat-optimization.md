@@ -3,7 +3,7 @@ title: Chat Screen Text Optimization
 description: A benchmark of a chat screen of short texts, and what a frame of it costs before and after this round's changes to the text caches, shaping and glyph drawing.
 ---
 
-> Benchmark report of November 12, 2026, for the changes listed under "Unreleased" in the changelog after 0.60.0. The numbers describe this fixture, machine and toolchain. See [Text Pipeline Optimization](../text-pipeline-optimization/) for the pipeline as a whole and the earlier rounds, which measured one long document.
+> Benchmark report of November 12, 2026, for the changes released in 0.61.0. The numbers describe this fixture, machine and toolchain. See [Text Pipeline Optimization](../text-pipeline-optimization/) for the pipeline as a whole and the earlier rounds, which measured one long document.
 
 ## The screen
 

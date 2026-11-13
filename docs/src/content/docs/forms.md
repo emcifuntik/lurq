@@ -8,7 +8,7 @@ description: Form handling, field binding, submission, and the Button component.
 Requires the `form` feature flag.
 
 ```toml
-lurq = { version = "0.60.0", features = ["form"] }
+lurq = { version = "0.61.0", features = ["form"] }
 ```
 
 Compound form controls read their defaults from `theme.form()`. See [Theme](../theme/#form-theme) for the strict form field, input, checkbox, slider, and button roles.

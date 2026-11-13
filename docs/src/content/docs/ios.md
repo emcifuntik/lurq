@@ -3,7 +3,7 @@ title: iOS
 description: Run a lurq app on an iPhone, and what the shell does there for touch, scrolling, the keyboard and the safe area.
 ---
 
-Added after **lurq 0.60.0**, for the iPhone. The `winit` shell with the `wgpu` renderer runs the same component
+Added in **lurq 0.61.0**, for the iPhone. The `winit` shell with the `wgpu` renderer runs the same component
 tree on a phone as on a desktop; this page says what an app has to set up and what it gets. What is not done yet
 is listed in `docs/ios-gaps.md` in the repository. The iPad and several windows are not supported.
 

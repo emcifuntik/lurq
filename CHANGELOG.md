@@ -1,9 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.61.0 — 2026-11-13
 
 Added:
 
+- lurq runs on an iPhone: the `winit` shell with the `wgpu` renderer draws the same component tree as on a desktop. The app starts in a scene, for which its `Info.plist` names `LurqSceneDelegate`, and a `CADisplayLink` paces its frames. See [iOS](docs/src/content/docs/ios.md); what is not done is listed in `docs/ios-gaps.md`.
+- Touch: one finger is the pointer, with the platform's timings, and hovers nothing; `MouseEvent::pointer` (`PointerKind`) tells a finger from a mouse. Nodes and components take a finger's own events (`on_touch_start` and the rest) and gestures: `on_tap`, `on_long_press`, `on_swipe`, `on_pan`, `on_pinch`, `on_rotate`, `on_edge_pan` and `on_history_swipe`. Scroll containers and `VirtualizedList` follow a finger as the platform's lists do, with momentum, a rubber band at the ends, a phone's scroll indicator and a tap on the status bar to scroll to the top. `WindowHandle::haptic(Haptic)` plays a haptic.
+- Text inputs on iOS use the system's keyboard, with suggestions, autocorrection and dictation, and the platform's caret, selection handles, loupe and copy and paste menu. `TextInput::keyboard`, `return_key` and `content` choose the keyboard. Over inputs whose `content` is `ContentKind::Username`, `Email`, `Password` or `NewPassword` the keyboard offers the person's saved logins and fills a chosen one in. `ScrollState::set_keyboard_dismissal(KeyboardDismissal)` has a list put the keyboard away as a finger scrolls it.
+- `WindowHandle::on_app_event` and `AppEvent`: the app became active or inactive, went to the background or came back, was opened with a link or a shortcut, was turned, or was asked by the system for another window. `WinitWindow::with_orientations` takes `Orientation`s joined with `|`. `WindowInfo::safe_area` (`SafeAreaInsets`, the keyboard's part of the bottom in `keyboard`) turns with the device; `Ctx::safe_area()` adds the bars a component around draws over the content, and `Ctx::scroll_to_top()` scrolls the page to its top.
+- `StackOutlet` in the place of an `Outlet` keeps every entry of the history as a screen of its own: a push comes in from the side, back goes out, and a finger from the edge drags the top screen back. `NavigationBar` draws the title and the way back, with a large title that scrolls away, a search field (`NavigationSearch`), a prompt, a toolbar and a blur of the content under it; `NavigationItem`, `StackMotion` and `StackOutletProps::bar_with` change or replace it. It works on a desktop too. See [routing](docs/src/content/docs/routing.md).
+- `Sheet` and `SheetHost`: content that comes up from the bottom of the window over everything, stands at its detents (`SheetDetent`) and is dragged between them and away. A list inside gives the finger to the sheet at its top, and the sheet rises with the keyboard. `Sheet::mount_with` makes the content itself, for a stack of screens in a sheet. See [modals](docs/src/content/docs/modals.md).
+- `Tabs`, `TabOutlet`, `TabBar` and `TabItem`: a set of tabs, each a router with a history of its own, kept while not shown, with a bar across the bottom or the top that has pictures, titles and badges. `TabBar::floating()` is a rounded bar clear of the window's edges, which `minimizes_on_scroll` draws in as a list is scrolled; `TabItem::search()` stands apart at its end. `NavigationItem::hides_tab_bar` takes the bar away with a screen. See [routing](docs/src/content/docs/routing.md).
+- `SystemSettings` in `ctx.window().system`: the appearance, the text scale, bold text, reduce motion, reduce transparency, increase contrast, button shapes. A phone tells all of it, a desktop shell the appearance. The theme follows three of them by itself (`Theme::apply_system`, off with `Theme::set_follows_system(false)`): a palette for each appearance once `Theme::set_palettes(light, dark)` gave two, the typography at the person's text size, and bold text. See [theme](docs/src/content/docs/theme.md).
+- `PullToRefresh`, `ActivityIndicator` and `SwipeRow`: a list pulled down to refresh, the spinner it shows, and a row with actions at either side that a swipe uncovers.
+- `ScrollState::set_paging(true)` scrolls a list a page at a time under a finger, and `ScrollState::page()` says which page it is on. `ZoomScroll` holds content that two fingers pinch larger and smaller and a double tap zooms.
+- `lurq::app::biometry`: `available()` and `authenticate(reason, policy, done)` ask for Face ID or Touch ID, and `keep_secret`, `read_secret`, `has_secret` and `forget_secret` keep a secret in the device's keychain, where the system checks the person before it gives the secret back (`AuthPolicy::BiometryOnly` for the faces or fingers known then). Off a phone the answer is `Unavailable` at once.
+- On iOS a window opened with `ctx.window_opener()` is put into a scene of its own, for a tablet or a display that is plugged in. It was tried in a simulated iPad only; see `docs/ios-ipad-checks.md`.
+- `Easing::Spring`.
+- `crates/mobile_demo`: an app with a screen for each of the above, and its Xcode project.
 - `.presence()` on a container: a child with a key or an id and an `.exit_animation(...)` of its own that a render removes stays where it was, in flow and taking no input, until its exit animation ends. It works in the page, in a component that renders by itself and in a popup or a dialog. See [animation](docs/src/content/docs/animation-transforms.md#children-of-a-container).
 - `Grid`: a container that lays its children out in the cells of columns and rows, as a subset of CSS grid. Tracks are `GridTrack::Px`, `Fr` (a share of the room left) or `Auto` (the size of their content); `.columns`, `.rows`, `.gap`, `.column_gap`, `.row_gap`, `.align_items` and `.justify_items` on the grid; `.column_span`, `.row_span`, `.grid_column` and `.grid_row` on its children. Children fill the cells in their order, row after row, and rows are added as they are needed. See [layout](docs/src/content/docs/layout.md#grid).
 - Sticky positioning: `.sticky(Sticky::top(0.0))` on nodes and components holds an element at an edge of the scroll container it is in while that scrolls, for as long as its parent's box has room for it, as CSS `position: sticky`. `Sticky` has `top`, `bottom`, `left` and `right` and `with_*` for more than one edge. The element keeps its room in flow, is painted over its siblings and hit before them, and scrolling places it without a layout. See [layout](docs/src/content/docs/layout.md#sticky-elements).
@@ -36,7 +50,7 @@ Added:
 - `SelectOption::leading(element)` and `SelectOption::trailing(element)`: an element before or after an option's label, such as a brand mark, a status dot or a badge (lurq#104). It keeps its own size, sits `SelectStyle::option_adornment_gap` (default 8) from the label and is centred on the label's line, also beside a detail line. The closed field of a single-select shows the selected option's elements, and a custom `Select::trigger` gets them as `SelectTriggerState::leading` and `trailing`. The elements are decorative: type-ahead and automation keep using the label.
 - `SelectOption::leading_with(|state| ...)` and `trailing_with`: the element is built for the state it is drawn in. The builder receives a `SelectAdornmentState` (`selected`, `highlighted`, `disabled`, `in_field` and the row's or field's `text_color`), so a mark can take the label's colour on a selected or highlighted row.
 
-Performance (the chat screen of `text_chat`, 1280 × 2160, release build, Windows, Ryzen 9 7950X and RTX 5090; median of the runs taken at the end, master → this branch; every scenario, phase and the method are in [Chat Screen Text Optimization](docs/src/content/docs/text-chat-optimization.md)):
+Performance (the chat screen of `text_chat`, 1280 × 2160, release build, Windows, Ryzen 9 7950X and RTX 5090; median of the runs taken at the end, before → after the round; every scenario, phase and the method are in [Chat Screen Text Optimization](docs/src/content/docs/text-chat-optimization.md)):
 
 - Texts painted one after another share a draw in both native renderers when they are under the same clip or, in the window, under clips that cut nothing off them: 210 → 9 draw calls for the screen's 206 texts, and 245 → 117 µs of DX12 encoding a frame.
 - A frame that rasterises a new glyph no longer copies the glyph atlas (twice 4 MiB at 1024 × 1024): the second frame of a new window 2.9 → 1.6 ms.
@@ -47,6 +61,8 @@ Performance (the chat screen of `text_chat`, 1280 × 2160, release build, Window
 
 Behaviour changes:
 
+- `MouseEvent` has a new public field, `pointer`, and `WindowInfo` two, `safe_area` and `system`: code that builds one with every field named must add them.
+- A theme given two palettes with `Theme::set_palettes` changes with the system's appearance, and its typography and bold text follow the person's settings on a phone. `Theme::set_follows_system(false)` leaves the theme as the app set it.
 - `LayoutKind` has a new variant, `Grid`: code that matches it without a wildcard arm must add it.
 - A border on one side of a rounded element follows the corners at its ends and thins out where it meets a side without a border, as CSS draws it. It was a square band that stuck out past the rounded corners.
 - A border outside or centered on a rounded element has the element's corners on its inner edge and is rounder on its outer edge by its width. Its outer edge had the element's radius and its inner edge a smaller one, which left a gap between the border and the element's background at each corner.
@@ -72,6 +88,9 @@ Behaviour changes:
 
 Fixes:
 
+- A variable font is drawn at the weight asked for. The platform's own font on a Mac and a phone is one variable face named Regular, and every weight was matched to that name, so nothing was bold.
+- A scroll container's own padding was taken from its content's width and then not applied to where the content starts.
+- A title bar given a height of its own is that high for the content under it.
 - A wide blur against the window's left or right edge is no longer flat along it. A blur that runs on a reduced copy read the copy's outermost texel for the last half of it, so the pixels next to the window's edge repeated their neighbour: with a sharp edge 6 pixels from the window's, the first pixel under `backdrop_blur(24.0)` was 3 levels of 255 off. The reduced copy now has a texel of the repeated edge around it, and all four edges are read the same way.
 
 Dependencies:
@@ -80,6 +99,9 @@ Dependencies:
 
 Internal:
 
+- `FrameSource` is the one place the shell asks for and takes frames, on every platform.
+- The workspace builds and its tests pass on macOS and in an iOS simulator.
+- The `lurq` package names what it publishes (`include` in its manifest), so a file put in the crate's directory stays out of a release unless it is in `src`, `assets`, `tests`, `benches` or `examples`.
 - A blur is finished before it is composited. The vertical Gaussian runs on the (reduced) copy into a texture of its own, as the horizontal one does, and the pass that composites a blurred layer or puts a backdrop back reads that texture once per pixel. Before, that pass ran the vertical Gaussian itself at the window's resolution, 25 reads per pixel, or 50 over a reduced copy (two Gaussians, interpolated): `backdrop_blur(32.0)` took about 56 texture reads per pixel of glass and takes about 14. A blur takes one more pass and one more pooled texture for it.
 - The wgpu renderer writes the uniforms of a layer composite or a blur pass only when they differ from the ones the layer texture's buffer holds. Every such write is a staging buffer and a copy at the frame's submit, and a faded group, a blurred layer or a glass that holds still has the same passes frame after frame: a frame that blurs four backdrops again took 16 writes for them and takes none.
 - `render::glyph_batch` decides which glyph runs share a draw, for both renderers; `glyph_engine::text_cache` and `glyph_engine::shaped_texts` are the two caches of plain text. GPU readback tests draw a scene of clipped, rounded, cut and overlapping texts batched and run by run through wgpu and DX12 and compare the frames pixel for pixel.
