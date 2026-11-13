@@ -18,7 +18,12 @@ pub(crate) struct AuthScreen {
   /// What the last ask came to, and whether what is behind the lock is shown.
   said: Signal<String>,
   open: Signal<bool>,
+  /// What the last thing done with the secret came to.
+  kept: Signal<String>,
 }
+
+/// The name the demo's secret is kept under.
+const SECRET: &str = "demo-token";
 
 impl Component for AuthScreen {
   type Props = ();
@@ -27,6 +32,7 @@ impl Component for AuthScreen {
     Self {
       said: ctx.signal("Not asked yet".to_owned()),
       open: ctx.signal(false),
+      kept: ctx.signal(String::new()),
     }
   }
 
@@ -53,6 +59,40 @@ impl Component for AuthScreen {
       }
     };
     let lock = self.open.clone();
+    // A secret in the keychain: the system asks for the face or the finger before it gives it back.
+    let keep = {
+      let kept = self.kept.clone();
+      move || {
+        kept.set(
+          match biometry::keep_secret(SECRET, b"a token to log in with", AuthPolicy::BiometryOrPasscode) {
+            Ok(()) => "Kept. Reading it asks who you are.".to_owned(),
+            Err(error) => format!("Not kept: {error:?}"),
+          },
+        );
+      }
+    };
+    let read = {
+      let kept = self.kept.clone();
+      move || {
+        let kept = kept.clone();
+        kept.set("Asking…".to_owned());
+        biometry::read_secret(SECRET, "Read the secret that was kept", move |answer| {
+          kept.set(match answer {
+            Ok(secret) => format!("Read: {}", String::from_utf8_lossy(&secret)),
+            Err(error) => format!("Not read: {error:?}"),
+          });
+        });
+      }
+    };
+    let forget = {
+      let kept = self.kept.clone();
+      move || {
+        kept.set(match biometry::forget_secret(SECRET) {
+          Ok(()) => "Forgotten.".to_owned(),
+          Err(error) => format!("Not forgotten: {error:?}"),
+        });
+      }
+    };
     Column::new()
       .width(FILL)
       .padding(16.0)
@@ -73,5 +113,18 @@ impl Component for AuthScreen {
         "Locked."
       })))
       .child(button("Lock again", move || lock.set(false)).width(FILL))
+      .child(caption("A secret kept in the keychain, behind the same check").width(FILL))
+      .child(button("Keep a secret", keep).width(FILL))
+      .child(button("Read it", read).width(FILL))
+      .child(button("Forget it", forget).width(FILL))
+      .child(card(label(&format!(
+        "{} {}",
+        self.kept.get(),
+        if biometry::has_secret(SECRET) {
+          "One is kept."
+        } else {
+          "None is kept."
+        }
+      ))))
   }
 }

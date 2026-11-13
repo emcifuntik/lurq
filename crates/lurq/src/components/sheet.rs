@@ -1,11 +1,11 @@
 //! A sheet: content that comes up from the bottom of the window over everything in it, as a phone's apps
 //! show a choice or a short task.
 //!
-//! - It comes up when its signal is set, and goes down when the signal is cleared, by Escape, by a tap beside
-//!   it, or by a finger that drags it down far enough or fast enough.
+//! - It comes up when its signal is set, and goes down when the signal is cleared, by Escape, by a tap beside it, or by
+//!   a finger that drags it down far enough or fast enough.
 //! - It stands at one of its [`SheetDetent`]s, and a finger moves it between them.
-//! - Content that scrolls, named with [`SheetProps::scroll`], scrolls under a finger once the sheet is at its
-//!   highest and gives the finger to the sheet when it is at its top.
+//! - Content that scrolls, named with [`SheetProps::scroll`], scrolls under a finger once the sheet is at its highest
+//!   and gives the finger to the sheet when it is at its top.
 
 use std::{sync::Arc, time::Duration};
 

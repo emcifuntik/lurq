@@ -3499,7 +3499,7 @@ fn platform_font_system(locale: String, db: cosmic_text::fontdb::Database) -> Fo
   FontSystem::new_with_locale_and_db(locale, db)
 }
 
-fn load_platform_fonts(font_system: &mut FontSystem) {
+pub(crate) fn load_platform_fonts(font_system: &mut FontSystem) {
   #[cfg(target_os = "windows")]
   {
     for file in [

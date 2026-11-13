@@ -11,10 +11,10 @@ use crate::{
     App,
     events::{
       EdgePanEvent, GesturePhase, HistoryDirection, HistorySwipeEvent, LongPressEvent, PanEvent, PinchEvent,
-      RotateEvent, SwipeEvent, TapEvent, TouchEvent, TouchPhase,
+      RotateEvent, ScrollPhase, SwipeEvent, TapEvent, TouchEvent, TouchPhase,
     },
   },
-  components::{Column, Rect},
+  components::{Column, Rect, ScrollVertical},
 };
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -170,6 +170,44 @@ fn a_finger_hovers_nothing() {
   // A mouse does.
   tree.mouse_move(100.0, 100.0);
   assert_eq!(looks(&tree), (true, false));
+}
+
+#[test]
+fn what_a_fingers_scroll_brings_to_where_it_pressed_is_not_hovered() {
+  let mut app = App::new();
+  let mut tree = Tree::new();
+  tree.resize(100, 100);
+  let log = Log::default();
+  let entered = log.clone();
+  tree.set_root(
+    ScrollVertical::new(
+      Column::new()
+        .child(Rect::new(100.0, 60.0))
+        .child(Rect::new(100.0, 60.0).on_mouse_enter(move || entered.lock().unwrap().push("enter".to_owned())))
+        .child(Rect::new(100.0, 500.0)),
+    )
+    .size(100.0, 100.0),
+  );
+  tree.pass(&mut app, &HeadlessSurface);
+
+  // The finger rests on the first row, then travels up with it: the press ends, and the list brings the second
+  // row to where the finger landed.
+  tree.touch_press(50.0, 30.0);
+  tree.touch_cancel_press(50.0, 30.0);
+  tree.touch_scroll_begin(50.0, 30.0, 0.0, -60.0);
+  tree.touch_scroll(50.0, 30.0, 0.0, -60.0, ScrollPhase::Scroll, false);
+  // What lays the window out anew looks for what a pointer that holds still is over.
+  tree.resize(100, 120);
+  tree.pass(&mut app, &HeadlessSurface);
+
+  let (root, layout) = (tree.root.as_ref().unwrap(), tree.last_layout.as_ref().unwrap());
+  let mut hits = Vec::new();
+  hit_test_tree(root, layout, 0.0, 0.0, 50.0, 30.0, &mut hits);
+  assert!(hits.iter().all(|(node, _)| !node.style_state.is_hovered()));
+  assert!(
+    logged(&log).is_empty(),
+    "the finger is on the first row, wherever that went"
+  );
 }
 
 #[test]

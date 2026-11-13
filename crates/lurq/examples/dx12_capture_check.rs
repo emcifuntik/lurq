@@ -6,10 +6,11 @@
 //! ```text
 //! cargo run -p lurq --example dx12_capture_check --features screenshot,dx12
 //! ```
-#![cfg(all(windows, feature = "screenshot", feature = "dx12"))]
 
+#[cfg(windows)]
 use std::num::NonZeroIsize;
 
+#[cfg(windows)]
 use lurq::{
   app::{
     dx12_render::Dx12RenderEngine,
@@ -21,7 +22,9 @@ use lurq::{
   },
   node::color::Color,
 };
+#[cfg(windows)]
 use raw_window_handle::{DisplayHandle, RawWindowHandle, Win32WindowHandle, WindowHandle};
+#[cfg(windows)]
 use windows::{
   Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
@@ -30,16 +33,23 @@ use windows::{
   core::w,
 };
 
+#[cfg(windows)]
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
   unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
+#[cfg(windows)]
 const SURFACE: u32 = 256;
+#[cfg(windows)]
 const CAPTURE_ORIGIN: u32 = 32;
+#[cfg(windows)]
 const CAPTURE_SIZE: u32 = 192;
+#[cfg(windows)]
 const CLEAR: [u8; 4] = [128, 64, 32, 255];
+#[cfg(windows)]
 const RECT: [u8; 4] = [40, 120, 200, 255];
 
+#[cfg(windows)]
 fn main() {
   let hwnd = unsafe {
     let class_name = w!("lurq_dx12_capture_check");
@@ -151,6 +161,7 @@ fn main() {
   println!("dx12 capture check passed: {}", output_path.display());
 }
 
+#[cfg(windows)]
 fn assert_pixel(png: &image::RgbaImage, x: u32, y: u32, expected: [u8; 4]) {
   let actual = png.get_pixel(x, y).0;
   for (channel, (actual, expected)) in actual.iter().zip(expected).enumerate() {
@@ -159,4 +170,9 @@ fn assert_pixel(png: &image::RgbaImage, x: u32, y: u32, expected: [u8; 4]) {
       "pixel ({x}, {y}) channel {channel}: expected {expected} within 2, got {actual} (full pixel {actual:?})",
     );
   }
+}
+
+#[cfg(not(windows))]
+fn main() {
+  eprintln!("This check requires Windows and DX12");
 }

@@ -289,6 +289,10 @@ fn wheel_scroll_event_does_not_emit_when_content_does_not_overflow() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn scrollbar_thumb_drag_applies_reactive_scroll_updates_immediately() {
   let mut runtime = Tree::new();
   let renders = Arc::new(AtomicUsize::new(0));
@@ -645,6 +649,10 @@ fn preserve_prepend_anchor_compensates_added_content_height() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn horizontal_scrollbar_thumb_drags_content() {
   let mut runtime = Tree::new();
   runtime.set_root(ScrollHorizontal::new(Rect::new(400.0, 100.0).background(CONTENT_COLOR)).size(100.0, 100.0));
@@ -662,6 +670,10 @@ fn horizontal_scrollbar_thumb_drags_content() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn scrollbar_drag_release_does_not_click_under_cursor() {
   let mut runtime = Tree::new();
   let clicks = Arc::new(AtomicUsize::new(0));
@@ -684,6 +696,10 @@ fn scrollbar_drag_release_does_not_click_under_cursor() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn scrollbar_thumb_drag_emits_scroll_event() {
   let mut runtime = Tree::new();
   let scroll_events = Arc::new(AtomicUsize::new(0));
@@ -705,6 +721,10 @@ fn scrollbar_thumb_drag_emits_scroll_event() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn hovering_scrollbar_thumb_does_not_hover_content_underneath() {
   let mut runtime = Tree::new();
   let content_ref = CoreElementRef::new();

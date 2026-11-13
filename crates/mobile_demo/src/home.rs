@@ -120,7 +120,9 @@ fn screen_row(ctx: &mut Ctx, screen: &Screen) -> Element {
     .background(SURFACE)
     .border_inside(1.0, Color::from_hex(BORDER))
     .rounded(10.0)
-    .hovered(|style| style.background("#273449"));
+    .hovered(|style| style.background("#273449"))
+    // A finger hovers nothing: what it presses shows as pressed.
+    .active(|style| style.background("#273449"));
 
   Link::build_empty(ctx, screen.path).child(row).width(FILL).into()
 }

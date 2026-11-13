@@ -16,7 +16,7 @@ use lurq::{
 
 use crate::ui::{BG, BORDER, FILL, PRIMARY, SURFACE, TEXT, button, caption, card, event_log, push_log, text};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, lurq::DevtoolsInspectable)]
 struct Shape {
   scale: f32,
   /// Radians, clockwise.

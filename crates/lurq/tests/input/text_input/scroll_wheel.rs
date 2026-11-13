@@ -204,6 +204,10 @@ fn text_input_scrollbar_shows_only_while_the_text_overflows() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn text_input_scrollbar_thumb_hovers_and_drags() {
   let mut editor = Editor::new(&LINES);
   let thumb = editor.thumb().expect("six lines overflow three rows");

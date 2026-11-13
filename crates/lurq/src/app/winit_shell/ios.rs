@@ -311,6 +311,70 @@ impl Drop for FrameLink {
   }
 }
 
+/// The scroll view whose finger takes the keyboard down with it. Main thread only.
+///
+/// Nothing an app can call moves the system's keyboard. A `UIScrollView` whose `keyboardDismissMode` is
+/// interactive does: UIKit follows that view's own pan gesture, and once the finger is on the keyboard the
+/// keyboard goes down and up with it. The view is not seen and scrolls nothing; its pan gesture is put on
+/// winit's view, where the fingers are, and takes no touch from it.
+pub(super) struct KeyboardDrag {
+  scroll_view: Retained<AnyObject>,
+  interactive: bool,
+}
+
+impl KeyboardDrag {
+  pub(super) fn new(view: NonNull<c_void>) -> Self {
+    let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+    unsafe {
+      let scroll_view: Retained<AnyObject> = msg_send![class!(UIScrollView), new];
+      let bounds: CGRect = msg_send![view, bounds];
+      let _: () = msg_send![&*scroll_view, setFrame: bounds];
+      // `UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight`.
+      let _: () = msg_send![&*scroll_view, setAutoresizingMask: 18usize];
+      // Not seen, and no finger lands on it: the fingers are winit's view's.
+      let _: () = msg_send![&*scroll_view, setUserInteractionEnabled: false];
+      let _: () = msg_send![&*scroll_view, setHidden: false];
+      let _: () = msg_send![&*scroll_view, setAlpha: 0.0f64];
+      let _: () = msg_send![&*scroll_view, setScrollsToTop: false];
+      let _: () = msg_send![&*scroll_view, setAlwaysBounceVertical: true];
+      let _: () = msg_send![&*scroll_view, setShowsVerticalScrollIndicator: false];
+      let _: () = msg_send![&*scroll_view, setShowsHorizontalScrollIndicator: false];
+      let _: () = msg_send![&*scroll_view, setContentSize: CGSize { width: bounds.size.width, height: 100_000.0 }];
+      let _: () = msg_send![&*scroll_view, setContentOffset: CGPoint { x: 0.0, y: 50_000.0 }];
+      let _: () = msg_send![view, insertSubview: &*scroll_view, atIndex: 0isize];
+      // The gesture hears the fingers of winit's view, and leaves them to it.
+      let pan: Retained<AnyObject> = msg_send![&*scroll_view, panGestureRecognizer];
+      let _: () = msg_send![&*pan, setCancelsTouchesInView: false];
+      let _: () = msg_send![&*pan, setDelaysTouchesBegan: false];
+      let _: () = msg_send![&*pan, setDelaysTouchesEnded: false];
+      let _: () = msg_send![&*pan, setEnabled: false];
+      let _: () = msg_send![view, addGestureRecognizer: &*pan];
+      Self {
+        scroll_view,
+        interactive: false,
+      }
+    }
+  }
+
+  /// Whether the keyboard follows the finger that has just landed. Said at each landing, before the gesture
+  /// begins.
+  pub(super) fn set_interactive(&mut self, interactive: bool) {
+    unsafe {
+      // Back to the middle of its content, wherever the last finger left it: it has to have room both ways.
+      let _: () = msg_send![&*self.scroll_view, setContentOffset: CGPoint { x: 0.0, y: 50_000.0 }];
+      if self.interactive == interactive {
+        return;
+      }
+      self.interactive = interactive;
+      // `UIScrollViewKeyboardDismissModeInteractive`.
+      let mode: isize = if interactive { 2 } else { 0 };
+      let _: () = msg_send![&*self.scroll_view, setKeyboardDismissMode: mode];
+      let pan: Retained<AnyObject> = msg_send![&*self.scroll_view, panGestureRecognizer];
+      let _: () = msg_send![&*pan, setEnabled: interactive];
+    }
+  }
+}
+
 /// The scroll view that takes the status bar's tap. Main thread only.
 pub(super) struct StatusBarTap {
   scroll_view: Retained<AnyObject>,
@@ -427,7 +491,7 @@ pub(super) fn register_scene_delegate() {
     _this: &AnyObject,
     _cmd: Sel,
     scene: *mut AnyObject,
-    _session: *mut AnyObject,
+    session: *mut AnyObject,
     options: *mut AnyObject,
   ) {
     let Some(scene) = (unsafe { Retained::retain(scene) }) else {
@@ -435,6 +499,19 @@ pub(super) fn register_scene_delegate() {
     };
     let is_window_scene: bool = unsafe { msg_send![&*scene, isKindOfClass: class!(UIWindowScene)] };
     if !is_window_scene {
+      return;
+    }
+    // A display plugged in has a scene of its own, by a role of its own
+    // (`UIWindowSceneSessionRoleExternalDisplayNonInteractive`).
+    let external = unsafe { session.as_ref() }.is_some_and(|session| {
+      let role: *mut AnyObject = unsafe { msg_send![session, role] };
+      unsafe { role.as_ref() }
+        .and_then(string_of)
+        .is_some_and(|role| role.contains("External"))
+    });
+    // The app's first scene shows its first window. Any after it, and a display's, is for another window.
+    if external || !SCENE.load(Ordering::Acquire).is_null() {
+      other_scene_connected(scene, external);
       return;
     }
     // What the app was started with: a link, a shortcut.
@@ -456,19 +533,34 @@ pub(super) fn register_scene_delegate() {
       .is_ok()
     {
       drop(unsafe { Retained::from_raw(scene) });
+    } else {
+      other_scene_disconnected(scene);
     }
   }
-  extern "C-unwind" fn did_become_active(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject) {
-    push_app_event(AppEvent::Active);
+  // What a scene says of itself is told of the app when it is the app's first: another window going to the
+  // background leaves the app in front.
+  fn first(scene: *mut AnyObject) -> bool {
+    std::ptr::eq(SCENE.load(Ordering::Acquire), scene)
   }
-  extern "C-unwind" fn will_resign_active(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject) {
-    push_app_event(AppEvent::Inactive);
+  extern "C-unwind" fn did_become_active(_this: &AnyObject, _cmd: Sel, scene: *mut AnyObject) {
+    if first(scene) {
+      push_app_event(AppEvent::Active);
+    }
   }
-  extern "C-unwind" fn did_enter_background(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject) {
-    push_app_event(AppEvent::Background);
+  extern "C-unwind" fn will_resign_active(_this: &AnyObject, _cmd: Sel, scene: *mut AnyObject) {
+    if first(scene) {
+      push_app_event(AppEvent::Inactive);
+    }
   }
-  extern "C-unwind" fn will_enter_foreground(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject) {
-    push_app_event(AppEvent::Foreground);
+  extern "C-unwind" fn did_enter_background(_this: &AnyObject, _cmd: Sel, scene: *mut AnyObject) {
+    if first(scene) {
+      push_app_event(AppEvent::Background);
+    }
+  }
+  extern "C-unwind" fn will_enter_foreground(_this: &AnyObject, _cmd: Sel, scene: *mut AnyObject) {
+    if first(scene) {
+      push_app_event(AppEvent::Foreground);
+    }
   }
   extern "C-unwind" fn open_urls(_this: &AnyObject, _cmd: Sel, _scene: *mut AnyObject, contexts: *mut AnyObject) {
     push_opened_urls(contexts);
@@ -598,6 +690,184 @@ fn show_window_in_scene() {
   }
 }
 
+/// A scene UIKit connected beside the app's first: another window of the app on an iPad, or a display plugged
+/// in.
+struct OtherScene {
+  /// The scene, retained.
+  scene: usize,
+  external: bool,
+  /// The window shown in it, one of the app's further windows; 0 while it has none.
+  window: usize,
+}
+
+/// The scenes beside the first, in the order UIKit connected them.
+static OTHER_SCENES: Mutex<Vec<OtherScene>> = Mutex::new(Vec::new());
+/// Windows of the app that the shell made and UIKit has no scene for yet, the first made first.
+static WAITING_WINDOWS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// Windows whose scene the person or the system closed, since the shell last asked.
+static CLOSED_WINDOWS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// Puts a window into a scene, as large as the scene is, and shows it.
+fn show_window_in(scene: usize, window: usize) {
+  let (scene, window) = (scene as *mut AnyObject, window as *mut AnyObject);
+  let (Some(scene), Some(window)) = (unsafe { scene.as_ref() }, unsafe { window.as_ref() }) else {
+    return;
+  };
+  unsafe {
+    let _: () = msg_send![window, setWindowScene: scene];
+    let space: Retained<AnyObject> = msg_send![scene, coordinateSpace];
+    let bounds: CGRect = msg_send![&*space, bounds];
+    let _: () = msg_send![window, setFrame: bounds];
+    let _: () = msg_send![window, setHidden: false];
+  }
+}
+
+/// UIKit connected a scene beside the app's first. A window that waited for one is shown in it; with none
+/// waiting the app is told, and the window it opens then is.
+fn other_scene_connected(scene: Retained<AnyObject>, external: bool) {
+  // A window the app opened asked for a window on the device's own screen, not for a display.
+  let window = if external {
+    None
+  } else {
+    let mut waiting = WAITING_WINDOWS.lock().unwrap();
+    (!waiting.is_empty()).then(|| waiting.remove(0))
+  };
+  let scene = Retained::into_raw(scene) as usize;
+  OTHER_SCENES.lock().unwrap().push(OtherScene {
+    scene,
+    external,
+    window: window.unwrap_or(0),
+  });
+  match window {
+    Some(window) => show_window_in(scene, window),
+    None => push_app_event(AppEvent::WindowAsked { external }),
+  }
+}
+
+/// A scene beside the app's first is gone: the person closed the window, or the display was unplugged. The
+/// shell closes the window that was shown in it.
+fn other_scene_disconnected(scene: *mut AnyObject) {
+  let gone = {
+    let mut scenes = OTHER_SCENES.lock().unwrap();
+    scenes
+      .iter()
+      .position(|other| other.scene == scene as usize)
+      .map(|index| scenes.remove(index))
+  };
+  let Some(gone) = gone else {
+    return;
+  };
+  drop(unsafe { Retained::from_raw(gone.scene as *mut AnyObject) });
+  if gone.window != 0 {
+    CLOSED_WINDOWS.lock().unwrap().push(gone.window);
+  }
+}
+
+/// Shows a further window of the app, by a view of winit's in it: in a scene that has no window yet, the one
+/// connected first, or in one UIKit is asked for now. Where an app has one scene and no more, a phone, the
+/// window waits for a display to be plugged in.
+pub(super) fn join_other_scene(view: NonNull<c_void>) {
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  let window: Option<Retained<AnyObject>> = unsafe { msg_send![view, window] };
+  let Some(window) = window else {
+    return;
+  };
+  let window = Retained::as_ptr(&window) as usize;
+  let free = OTHER_SCENES
+    .lock()
+    .unwrap()
+    .iter_mut()
+    .find(|other| other.window == 0)
+    .map(|other| {
+      other.window = window;
+      other.scene
+    });
+  if let Some(scene) = free {
+    show_window_in(scene, window);
+    return;
+  }
+  WAITING_WINDOWS.lock().unwrap().push(window);
+  unsafe {
+    let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
+    let several: bool = msg_send![&*app, supportsMultipleScenes];
+    if several {
+      let none = std::ptr::null_mut::<AnyObject>();
+      let _: () = msg_send![
+        &*app,
+        requestSceneSessionActivation: none,
+        userActivity: none,
+        options: none,
+        errorHandler: std::ptr::null_mut::<c_void>()
+      ];
+    }
+  }
+}
+
+/// A further window of the app is closed by the app: its scene is closed with it, or it waits for one no
+/// longer.
+pub(super) fn leave_other_scene(view: NonNull<c_void>) {
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  let window: Option<Retained<AnyObject>> = unsafe { msg_send![view, window] };
+  let Some(window) = window else {
+    return;
+  };
+  let window = Retained::as_ptr(&window) as usize;
+  WAITING_WINDOWS.lock().unwrap().retain(|waiting| *waiting != window);
+  // The scene is told apart from one the person closes: its going closes no window.
+  let scene = OTHER_SCENES
+    .lock()
+    .unwrap()
+    .iter_mut()
+    .find(|other| other.window == window)
+    .map(|other| {
+      other.window = 0;
+      (other.scene, other.external)
+    });
+  // A display stays as long as it is plugged in, for the next window.
+  if let Some((scene, false)) = scene
+    && let Some(scene) = unsafe { (scene as *mut AnyObject).as_ref() }
+  {
+    unsafe {
+      let app: Retained<AnyObject> = msg_send![class!(UIApplication), sharedApplication];
+      let session: Retained<AnyObject> = msg_send![scene, session];
+      let _: () = msg_send![
+        &*app,
+        requestSceneSessionDestruction: &*session,
+        options: std::ptr::null_mut::<AnyObject>(),
+        errorHandler: std::ptr::null_mut::<c_void>()
+      ];
+      // The window that was closed may have been the one in front, with the first behind it: UIKit shows
+      // the home screen then, and the app, which is still open, is asked for in front again.
+      if let Some(first) = SCENE.load(Ordering::Acquire).as_ref() {
+        let session: Retained<AnyObject> = msg_send![first, session];
+        let none = std::ptr::null_mut::<AnyObject>();
+        let _: () = msg_send![
+          &*app,
+          requestSceneSessionActivation: &*session,
+          userActivity: none,
+          options: none,
+          errorHandler: std::ptr::null_mut::<c_void>()
+        ];
+      }
+    }
+  }
+}
+
+/// Whether the person or the system closed the scene of the window a view of winit's is in, since the shell
+/// last asked of that window.
+pub(super) fn other_scene_closed(view: NonNull<c_void>) -> bool {
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  let window: Option<Retained<AnyObject>> = unsafe { msg_send![view, window] };
+  let Some(window) = window else {
+    return false;
+  };
+  let window = Retained::as_ptr(&window) as usize;
+  let mut closed = CLOSED_WINDOWS.lock().unwrap();
+  let before = closed.len();
+  closed.retain(|closed| *closed != window);
+  closed.len() != before
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct UIEdgeInsets {
@@ -627,6 +897,19 @@ pub(super) fn safe_area(view: NonNull<c_void>) -> (f32, f32, f32, f32) {
     Some(probe) => unsafe { msg_send![probe, safeAreaInsets] },
     None => insets,
   };
+  (
+    insets.top as f32,
+    insets.right as f32,
+    insets.bottom as f32,
+    insets.left as f32,
+  )
+}
+
+/// The safe area of the window a view of winit's is in, as that window says it: for a further window of the
+/// app, in a scene of its own, which the first scene's unseen window says nothing of.
+pub(super) fn own_safe_area(view: NonNull<c_void>) -> (f32, f32, f32, f32) {
+  let view: &AnyObject = unsafe { view.cast::<AnyObject>().as_ref() };
+  let insets: UIEdgeInsets = unsafe { msg_send![view, safeAreaInsets] };
   (
     insets.top as f32,
     insets.right as f32,

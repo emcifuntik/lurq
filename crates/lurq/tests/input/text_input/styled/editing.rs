@@ -202,7 +202,7 @@ fn styled_ime_composition_commits_in_the_typing_style() {
 fn styled_word_and_line_moves_and_double_click_ignore_span_boundaries() {
   let mut editor = Editor::new("hello world", vec![span(0..3, bold())]);
   editor.select(0, 0);
-  let (ctrl, alt) = if cfg!(target_os = "macos") {
+  let (ctrl, alt) = if cfg!(target_vendor = "apple") {
     (false, true)
   } else {
     (true, false)

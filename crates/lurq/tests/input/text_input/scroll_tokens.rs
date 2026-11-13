@@ -64,9 +64,9 @@ impl Editor {
       key.into(),
       key.into(),
       false,
-      command && cfg!(not(target_os = "macos")),
+      command && cfg!(not(target_vendor = "apple")),
       false,
-      command && cfg!(target_os = "macos"),
+      command && cfg!(target_vendor = "apple"),
     );
   }
   fn assert_caret_visible(&mut self) -> (f32, f32) {

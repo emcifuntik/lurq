@@ -13,3 +13,4 @@ mod virtualized_list_reveal;
 mod virtualized_list_row_state;
 mod virtualized_list_touch;
 mod window_chrome;
+mod zoom;

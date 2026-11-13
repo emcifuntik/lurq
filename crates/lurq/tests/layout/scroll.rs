@@ -163,6 +163,10 @@ fn flexed_scroll_with_zero_height_frame_uses_parent_flex_size() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn flexed_scroll_with_zero_height_frame_consumes_wheel_scroll() {
   let mut rt = rt();
   let scroll_state = ScrollState::new();
@@ -188,6 +192,10 @@ fn flexed_scroll_with_zero_height_frame_consumes_wheel_scroll() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn flexed_scroll_with_zero_height_frame_keeps_scroll_metrics_after_cached_pass() {
   let mut rt = rt();
   let scroll_state = ScrollState::new();
@@ -216,6 +224,10 @@ fn flexed_scroll_with_zero_height_frame_keeps_scroll_metrics_after_cached_pass()
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn flex_shrunk_scroll_state_uses_final_layout_size() {
   let mut rt = rt();
   let scroll_state = ScrollState::new();
@@ -358,6 +370,10 @@ fn scrollbar_node_style_overrides_theme_style() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn scrollbar_hovered_overrides_scrollbar_style() {
   let mut rt = rt();
   let thumb_color = Color::from_hex("#ef4444");
@@ -384,6 +400,10 @@ fn scrollbar_hovered_overrides_scrollbar_style() {
 }
 
 #[test]
+#[cfg_attr(
+  target_os = "ios",
+  ignore = "a desktop's scrollbar; a phone's default is an indicator that fades"
+)]
 fn horizontal_scrollbar_hovered_overrides_scrollbar_style() {
   let mut rt = rt();
   let thumb_color = Color::from_hex("#ef4444");

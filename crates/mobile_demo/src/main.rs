@@ -14,6 +14,7 @@ mod home;
 mod inputs;
 mod lists;
 mod more;
+mod other_window;
 mod scroll;
 mod sheets;
 mod system;
@@ -53,7 +54,12 @@ impl Component for MobileDemo {
 
   fn create(ctx: &mut Ctx) -> Self {
     let said = app_events();
+    let opener = ctx.window_opener();
     ctx.window().on_app_event(move |event| {
+      // The system has a place for another window: beside this one on a tablet, or on a display.
+      if let lurq::app::window::AppEvent::WindowAsked { external } = event {
+        other_window::open(&opener, *external);
+      }
       said.update(|said| {
         said.insert(0, format!("{event:?}"));
         said.truncate(6);
@@ -214,7 +220,11 @@ fn screen(ctx: &mut Ctx, path: &str, content: impl FnOnce(&mut Ctx) -> Element) 
     .padding_left(safe_area.left)
     .padding_right(safe_area.right)
     // The home screen's list goes on under the bar of tabs, and shows through it: it pads its own content.
-    .padding_bottom(if matches!(path, "/" | "/system" | "/lists") { 0.0 } else { safe_area.bottom })
+    .padding_bottom(if matches!(path, "/" | "/system" | "/lists") {
+      0.0
+    } else {
+      safe_area.bottom
+    })
     .into()
 }
 
