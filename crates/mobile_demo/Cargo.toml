@@ -10,4 +10,4 @@ default = []
 mcp = ["lurq/mcp"]
 
 [dependencies]
-lurq = { version = "=0.60.0", path = "../lurq", default-features = false, features = ["winit", "wgpu", "router", "raster"] }
+lurq = { version = "=0.61.0", path = "../lurq", default-features = false, features = ["winit", "wgpu", "router", "raster"] }
